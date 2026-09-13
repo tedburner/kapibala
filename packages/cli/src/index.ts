@@ -1,0 +1,179 @@
+import path from 'node:path';
+import {
+  AgentSession,
+  JSONLMessageStore,
+  type ModelProfile,
+  OpenAICompatibleProvider,
+  builtinTools,
+} from '@kiturone/kapibala';
+import minimist from 'minimist';
+import { clearCommand } from './commands/clear.js';
+import { type CommandContext, CommandDispatcher } from './commands/dispatcher.js';
+import { helpCommand } from './commands/help.js';
+import { modelCommand } from './commands/model.js';
+import { settingsCommand } from './commands/settings.js';
+import { statusCommand } from './commands/status.js';
+import { runOneShot } from './oneshot.js';
+import { startREPL } from './repl.js';
+import { BUILTIN_PROFILES, loadSettings, resolveApiKey, resolveBaseURL } from './settings.js';
+import { runSetupWizard } from './wizard.js';
+
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const args = minimist(argv, {
+    string: ['model', 'base-url', 'api-key', 'prompt'],
+    boolean: ['help', 'version', 'debug'],
+    alias: { m: 'model', h: 'help', v: 'version', p: 'prompt' },
+  });
+
+  if (args.help) {
+    console.log(`
+🐾 Kapibala (kpbl) v0.0.1 - Production-grade TypeScript AI Agent Harness
+
+使用方式:
+  kpbl [选项] [问题/指令]
+
+示例:
+  kpbl                             # 启动交互式会话终端 (REPL)
+  kpbl "请帮我查看当前目录结构"    # 免交互单次会话模式 (直接问答)
+  kpbl -m deepseek-v4-pro          # 指定深度推理模型启动终端
+
+选项:
+  -m, --model <id>       指定要使用的模型 profile id (如 deepseek-v4-flash, gpt-4o)
+  -p, --prompt <text>    直接执行问答并输出结果 (单次模式)
+  --base-url <url>       临时覆盖模型 API 端点
+  --api-key <key>        临时指定 API 密钥
+  --debug                输出调试日志与事件追踪
+  -v, --version          查看当前版本
+  -h, --help             查看帮助信息
+`);
+    process.exit(0);
+  }
+
+  if (args.version) {
+    console.log('kpbl v0.0.1');
+    process.exit(0);
+  }
+
+  // 1. 加载 settings
+  const { settings, sourcePath } = loadSettings();
+
+  // 命令行参数覆盖
+  const targetModelId = args.model || settings.defaultModel;
+  let activeProfile =
+    settings.profiles.find((p) => p.id === targetModelId) ||
+    BUILTIN_PROFILES.find((p) => p.id === targetModelId);
+
+  if (!activeProfile) {
+    activeProfile = settings.profiles[0] ?? BUILTIN_PROFILES[0]!;
+  }
+
+  if (args['base-url']) {
+    activeProfile = { ...activeProfile, baseURL: args['base-url'] };
+  }
+  if (args['api-key']) {
+    activeProfile = { ...activeProfile, apiKey: args['api-key'] };
+  }
+
+  // 2. 检测可用性，若完全无配置则唤起初次向导
+  let activeApiKey = resolveApiKey(activeProfile);
+
+  if (!activeApiKey && activeProfile.apiKeyEnv !== 'NONE') {
+    const { profile, apiKey } = await runSetupWizard();
+    activeProfile = profile;
+    activeApiKey = apiKey;
+  }
+
+  // 3. 构建 Provider 与 Session
+  const createProvider = (profile: ModelProfile, apiKey: string) => {
+    return new OpenAICompatibleProvider({
+      baseURL: resolveBaseURL(profile),
+      apiKey,
+      modelName: profile.modelName,
+      supportsThinking: profile.supportsThinking,
+    });
+  };
+
+  let currentProvider = createProvider(activeProfile, activeApiKey || 'none');
+
+  // 会话历史记录持久化至工作区 .kapibala/history.jsonl
+  const workspaceHistoryPath = path.join(process.cwd(), '.kapibala', 'history.jsonl');
+  const store = new JSONLMessageStore(workspaceHistoryPath);
+
+  const session = new AgentSession({
+    defaultProfile: activeProfile,
+    defaultProvider: currentProvider,
+    store,
+    rootDir: process.cwd(),
+    logger: args.debug ? (msg) => console.log(`\x1b[90m[DEBUG] ${msg}\x1b[0m`) : undefined,
+  });
+
+  // 注册内置工具
+  for (const tool of builtinTools) {
+    session.tools.register(tool);
+  }
+
+  // 4. 初始化 CommandDispatcher
+  const dispatcher = new CommandDispatcher();
+  dispatcher.register('model', modelCommand);
+  dispatcher.register('settings', settingsCommand);
+  dispatcher.register('clear', clearCommand);
+  dispatcher.register('status', statusCommand);
+  dispatcher.register('help', helpCommand);
+  dispatcher.register('exit', () => {
+    console.log('\x1b[32m再见！🐾\x1b[0m');
+    process.exit(0);
+  });
+  dispatcher.register('quit', () => {
+    console.log('\x1b[32m再见！🐾\x1b[0m');
+    process.exit(0);
+  });
+
+  const commandContext: CommandContext = {
+    session,
+    settings,
+    settingsPath: sourcePath,
+    onModelSwitched: (newProfileId: string) => {
+      // 向导或命令可能刚把新 profile 写进磁盘，这里必须重新加载而不是查启动时的快照：
+      // 快照里没有新 profile 会导致"向导已打印已就绪、实际 provider 没换"，
+      // 而且过期的 ctx.settings 会在后续 saveGlobalSettings 时把刚写入的配置覆盖回去。
+      const { settings: fresh, sourcePath: freshPath } = loadSettings();
+      Object.assign(settings, fresh);
+      commandContext.settingsPath = freshPath;
+
+      const profile =
+        settings.profiles.find((x) => x.id === newProfileId) ??
+        BUILTIN_PROFILES.find((x) => x.id === newProfileId);
+      if (!profile) {
+        console.log(`\x1b[31m未找到模型 Profile '${newProfileId}'，模型切换已跳过。\x1b[0m`);
+        return;
+      }
+
+      const key = resolveApiKey(profile) || 'none';
+      currentProvider = createProvider(profile, key);
+      session.switchModel(profile, 'default', currentProvider);
+    },
+    onExit: () => process.exit(0),
+  };
+
+  // 5. 启动会话
+  await session.init();
+
+  // 检查是否传入了直接问答参数 (如: kpbl "请帮我分析项目" 或 kpbl -p "xxx")
+  const oneShotPrompt = args.prompt || (args._.length > 0 ? args._.join(' ') : null);
+  if (oneShotPrompt && typeof oneShotPrompt === 'string' && oneShotPrompt.trim().length > 0) {
+    await runOneShot({
+      session,
+      prompt: oneShotPrompt.trim(),
+      debug: Boolean(args.debug),
+    });
+    return;
+  }
+
+  // 启动交互式 REPL 会话终端
+  await startREPL({
+    session,
+    dispatcher,
+    context: commandContext,
+    debug: Boolean(args.debug),
+  });
+}

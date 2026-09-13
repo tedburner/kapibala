@@ -1,0 +1,30 @@
+{
+  "name": "@kiturone/kapibala-cli",
+  "version": "0.0.1",
+  "description": "Interactive CLI for Kapibala (kpbl)",
+  "license": "MIT",
+  "author": "tedburner",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tedburner/kapibala.git",
+    "directory": "packages/cli"
+  },
+  "type": "module",
+  "bin": {
+    "kpbl": "./dist/bin.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "@kiturone/kapibala": "workspace:*",
+    "minimist": "^1.2.8"
+  },
+  "devDependencies": {
+    "@types/minimist": "^1.2.5",
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.3"
+  }
+}

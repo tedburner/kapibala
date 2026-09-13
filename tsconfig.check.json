@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "types": ["node"],
+    "paths": {
+      "@kiturone/kapibala": ["./packages/core/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/core/src/**/*",
+    "packages/core/tests/**/*",
+    "packages/cli/src/**/*",
+    "packages/cli/tests/**/*",
+    "examples/**/*",
+    "scripts/**/*"
+  ]
+}

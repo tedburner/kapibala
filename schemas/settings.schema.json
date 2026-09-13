@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/tedburner/kapibala/main/schemas/settings.schema.json",
+  "title": "Kapibala (kpbl) User Settings",
+  "description": "Kapibala 配置文件契约，适用于 ~/.kapibala/settings.json（全局）与 ./.kapibala/settings.json（项目本地）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["defaultModel", "profiles"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "本文件的 schema 地址，编辑器据此提供自动补全与校验。"
+    },
+    "defaultModel": {
+      "type": "string",
+      "description": "启动时默认使用的模型，取值必须是 profiles 中某个 id。"
+    },
+    "modelRouting": {
+      "type": "object",
+      "description": "场景模型路由蓝图。v0.0.1 仅持久化契约，运行时统一回退到 defaultModel。",
+      "additionalProperties": false,
+      "properties": {
+        "planning": {
+          "type": "string",
+          "description": "规划/架构拆解场景使用的模型 id（调用次数少、更看重推理能力）。"
+        },
+        "execution": {
+          "type": "string",
+          "description": "工具循环执行场景使用的模型 id（更看重延迟与成本）。"
+        },
+        "summary": {
+          "type": "string",
+          "description": "上下文压缩与会话总结场景使用的模型 id。"
+        },
+        "fast": {
+          "type": "string",
+          "description": "快速分类/意图识别场景使用的模型 id。"
+        }
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "description": "模型画像列表，每个条目绑定端点、密钥来源与协议特性。",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/modelProfile" }
+    }
+  },
+  "definitions": {
+    "modelProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "provider", "baseURL", "apiKeyEnv", "modelName"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "唯一标识，供 /model <id> 与 modelRouting 引用。"
+        },
+        "name": {
+          "type": "string",
+          "description": "交互界面中展示的友好名称。"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["openai-compatible"],
+          "description": "v0.0.1 固定走 OpenAI 兼容协议。"
+        },
+        "baseURL": {
+          "type": "string",
+          "description": "API 端点，例如 https://api.deepseek.com/v1"
+        },
+        "apiKeyEnv": {
+          "type": "string",
+          "description": "密钥所在的环境变量名；接入无需鉴权的本地服务时填 NONE。"
+        },
+        "apiKey": {
+          "type": "string",
+          "description": "内联密钥。不推荐：优先使用环境变量，避免凭据落入配置文件。"
+        },
+        "modelName": {
+          "type": "string",
+          "description": "实际发给 API 的 model 参数。"
+        },
+        "contextWindow": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "上下文窗口 token 数，默认 128000。"
+        },
+        "supportsThinking": {
+          "type": "boolean",
+          "description": "是否解析 reasoning_content 为规范 thinking 块。"
+        }
+      }
+    }
+  }
+}

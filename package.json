@@ -1,0 +1,33 @@
+{
+  "name": "kapibala-monorepo",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Kapibala (kpbl) - Production-grade TypeScript AI Agent Harness",
+  "license": "MIT",
+  "author": "tedburner",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tedburner/kapibala.git"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter \"@kiturone/kapibala*\" build",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check-secrets": "tsx scripts/check-secrets.ts",
+    "lint": "pnpm check-secrets && biome check .",
+    "format": "biome format --write .",
+    "verify": "pnpm typecheck && pnpm test && pnpm lint",
+    "dev:cli": "pnpm --filter \"@kiturone/kapibala-cli\" dev",
+    "link:cli": "cd packages/cli && npm link --force"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@kiturone/kapibala": "workspace:*",
+    "@types/node": "^22.20.2",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
+  }
+}

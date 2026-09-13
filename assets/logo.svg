@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 560" width="1240" height="560" role="img" aria-label="Kapibala">
+  <title>Kapibala</title>
+  <!--
+    横向 lockup：卡皮巴拉头像 + Kapibala 字标
+    字标用 textLength / lengthAdjust 锁宽，避免换机字体度量漂移
+    水豚造型的单一真源是 assets/capybara.svg；本文件由 .workbuddy/build-assets.py 派生，改造型请改那一个。
+  -->
+  <defs>
+<g id="kapibala">
+      <!-- 耳朵：底部由头部覆盖 -->
+      <ellipse cx="178" cy="94" rx="44" ry="56" fill="#C79B78" stroke="#653821" stroke-width="11"
+               stroke-linejoin="round" transform="rotate(-18 178 94)" />
+      <ellipse cx="462" cy="94" rx="44" ry="56" fill="#C79B78" stroke="#653821" stroke-width="11"
+               stroke-linejoin="round" transform="rotate(18 462 94)" />
+      <ellipse cx="180" cy="100" rx="20" ry="27" fill="#85553E" stroke="#653821" stroke-width="7"
+               transform="rotate(-18 180 100)" />
+      <ellipse cx="460" cy="100" rx="20" ry="27" fill="#85553E" stroke="#653821" stroke-width="7"
+               transform="rotate(18 460 100)" />
+
+      <!-- 宽圆头 -->
+      <path d="M 320 92
+               C 218 92, 122 122, 100 190
+               C 84 244, 82 330, 100 400
+               C 114 456, 150 520, 210 544
+               C 260 563, 380 563, 430 544
+               C 490 520, 526 456, 540 400
+               C 558 330, 556 244, 540 190
+               C 518 122, 422 92, 320 92 Z"
+            fill="#C79B78" stroke="#653821" stroke-width="11" stroke-linejoin="round" />
+
+      <!-- 头顶呆毛 -->
+      <g stroke="#653821" stroke-width="9" stroke-linecap="round" fill="none">
+        <path d="M 300 98 L 286 70" />
+        <path d="M 320 92 L 318 64" />
+        <path d="M 340 98 L 354 72" />
+      </g>
+
+      <!-- 腮红 -->
+      <circle cx="185" cy="390" r="32" fill="#C17F5D" opacity="0.9" />
+      <circle cx="455" cy="390" r="32" fill="#C17F5D" opacity="0.9" />
+
+      <!-- 口鼻：上窄下宽的钝形深色部 —— 水豚最标志性的特征 -->
+      <path d="M 320 268
+               C 300 268, 288 290, 283 322
+               C 277 362, 250 392, 234 420
+               C 218 448, 222 470, 244 484
+               C 268 498, 294 504, 320 504
+               C 346 504, 372 498, 396 484
+               C 418 470, 422 448, 406 420
+               C 390 392, 363 362, 357 322
+               C 352 290, 340 268, 320 268 Z"
+            fill="#94684F" />
+
+      <!-- 鼻头 -->
+      <path d="M 302 296 Q 320 278 338 296 Q 320 314 302 296 Z" fill="#653821" />
+      <!-- 人中 + 微笑 -->
+      <g stroke="#653821" stroke-width="10" stroke-linecap="round" fill="none">
+        <path d="M 320 314 L 320 344" />
+        <path d="M 320 344 Q 304 362 288 348" />
+        <path d="M 320 344 Q 336 362 352 348" />
+      </g>
+
+      <!-- 高位远距的眯眼笑 -->
+      <g stroke="#653821" stroke-width="11" stroke-linecap="round" fill="none">
+        <path d="M 200 250 Q 232 216 264 248" />
+        <path d="M 376 248 Q 408 216 440 250" />
+      </g>
+    </g>
+  </defs>
+
+  <g transform="translate(-15 23) scale(0.86)">
+    <use href="#kapibala" />
+  </g>
+
+  <text x="530" y="340" textLength="660" lengthAdjust="spacingAndGlyphs"
+        font-family="'Trebuchet MS','Segoe UI',Candara,Corbel,Verdana,system-ui,Arial,sans-serif"
+        font-size="165" font-weight="bold" fill="#33291F">Kapibala</text>
+</svg>

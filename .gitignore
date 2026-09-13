@@ -1,15 +1,35 @@
+# Dependencies & Build artifacts
+node_modules/
+dist/
+.turbo/
+.tsup/
+
+# Logs & caches
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Kapibala user settings and session stores
+.kapibala/
+**/.kapibala/
+*.jsonl
+
+# Local agent workspace (session memory / diagnostics), never part of the package
+.workbuddy/
+
+# Environment variables & API Keys (CRITICAL: NEVER COMMIT)
+.env
+.env.*
+*.env
+*.env.local
+*.local
+*.key
+*.pem
+*.token
+*.credentials
+
+# OS & Editor files
 .DS_Store
 Thumbs.db
-
-.workbuddy/
 .idea/
-.vscode/
-
-node_modules/
-target/
-build/
-dist/
-
-*.log
-.env
-.env.local
