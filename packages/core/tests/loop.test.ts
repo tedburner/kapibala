@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AbortError } from '../src/errors/index.js';
 import { ToolExecutor } from '../src/executor/index.js';
 import { HookRegistry } from '../src/hooks/registry.js';
@@ -91,6 +91,30 @@ describe('AgentLoop 工具结果回填与历史合法性', () => {
       content: 'echo:hi',
       isError: false,
     });
+  });
+
+  it('direct consumers cannot stop after message_stop with dangling tool history', async () => {
+    const provider = new ScriptedProvider([
+      [
+        { type: 'tool_call_finish', id: 'call_direct', name: 'echo', input: { value: 'x' } },
+        { type: 'message_stop' },
+      ],
+    ]);
+    const history: CanonicalMessage[] = [makeUserMessage('run once')];
+    const { loop } = buildLoop({ provider, history });
+    const iterator = loop.run(history)[Symbol.asyncIterator]();
+
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) break;
+      if (next.value.type === 'message_stop') {
+        await iterator.return?.();
+        break;
+      }
+    }
+
+    expect(findDanglingToolUses(history)).toEqual([]);
+    expect(history.map((message) => message.role)).toEqual(['user', 'assistant', 'tool']);
   });
 
   it('熔断发生时历史已闭合，且 error hook 会被触发', async () => {
@@ -187,5 +211,37 @@ describe('AgentLoop 工具结果回填与历史合法性', () => {
     expect(observed).toHaveLength(1);
     expect(observed[0]!.message).toBe('stream exploded');
     expect(findDanglingToolUses(history)).toEqual([]);
+  });
+
+  it('工具耗时不应重复计入模型耗时', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-19T00:00:00Z'));
+    try {
+      const provider = new ScriptedProvider([
+        [
+          { type: 'tool_call_finish', id: 'call_metric', name: 'echo', input: {} },
+          { type: 'message_stop' },
+        ],
+        [{ type: 'text_delta', text: 'done' }, { type: 'message_stop' }],
+      ]);
+      const tools = makeEchoToolRegistry(() => {
+        vi.setSystemTime(Date.now() + 1_000);
+        return 'done';
+      });
+      const history: CanonicalMessage[] = [makeUserMessage('measure it')];
+      const { loop } = buildLoop({ provider, history, tools });
+
+      const events = await collect(loop.run(history));
+      const firstTurn = events.find(
+        (event): event is Extract<SessionEvent, { type: 'turn_finish' }> =>
+          event.type === 'turn_finish' && event.turn === 1,
+      );
+
+      expect(firstTurn).toBeDefined();
+      expect(firstTurn!.metrics.toolDurationMs).toBe(1_000);
+      expect(firstTurn!.metrics.modelDurationMs).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

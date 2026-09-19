@@ -4,6 +4,7 @@ export const helpCommand: CommandHandler = () => {
   console.log('\n\x1b[36m=== Kapibala (kpbl) 内置命令帮助 ===\x1b[0m');
   console.log('  \x1b[33m/model\x1b[0m                   查看当前模型及可用 profile 列表');
   console.log('  \x1b[33m/model <id>\x1b[0m              热切换当前使用的模型');
+  console.log('  \x1b[33m/model key [id]\x1b[0m          更新当前或指定模型的 API Key');
   console.log('  \x1b[33m/model setup\x1b[0m             重新唤起交互式模型配置向导');
   console.log('  \x1b[33m/settings\x1b[0m                查看系统配置与场景路由');
   console.log('  \x1b[33m/settings default <id>\x1b[0m   将指定模型设为全局默认');

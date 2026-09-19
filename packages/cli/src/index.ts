@@ -14,8 +14,15 @@ import { modelCommand } from './commands/model.js';
 import { settingsCommand } from './commands/settings.js';
 import { statusCommand } from './commands/status.js';
 import { runOneShot } from './oneshot.js';
+import { resolveProjectTrust } from './project-trust.js';
 import { startREPL } from './repl.js';
-import { BUILTIN_PROFILES, loadSettings, resolveApiKey, resolveBaseURL } from './settings.js';
+import {
+  API_KEY_ENV_NONE,
+  BUILTIN_PROFILES,
+  loadSettings,
+  resolveApiKey,
+  resolveBaseURL,
+} from './settings.js';
 import { runSetupWizard } from './wizard.js';
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -55,7 +62,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // 1. 加载 settings
-  const { settings, sourcePath } = loadSettings();
+  const trustResult = await resolveProjectTrust(loadSettings());
+  if (trustResult.status === 'rejected') {
+    console.error('\x1b[31m项目配置未获信任，Kapibala 已退出。\x1b[0m');
+    process.exitCode = 2;
+    return;
+  }
+  if (trustResult.status === 'non_interactive') {
+    console.error(
+      '\x1b[31m检测到未信任的项目配置；非交互环境无法确认信任，Kapibala 已退出。\x1b[0m',
+    );
+    process.exitCode = 2;
+    return;
+  }
+  const { settings, sourcePath } = trustResult.loaded;
 
   // 命令行参数覆盖
   const targetModelId = args.model || settings.defaultModel;
@@ -77,7 +97,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // 2. 检测可用性，若完全无配置则唤起初次向导
   let activeApiKey = resolveApiKey(activeProfile);
 
-  if (!activeApiKey && activeProfile.apiKeyEnv !== 'NONE') {
+  if (!activeApiKey && activeProfile.apiKeyEnv !== API_KEY_ENV_NONE) {
     const { profile, apiKey } = await runSetupWizard();
     activeProfile = profile;
     activeApiKey = apiKey;
@@ -112,6 +132,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     session.tools.register(tool);
   }
 
+  // 优雅退出：必须先走 session.destroy()（插件 teardown + session:end 钩子）再退出进程，
+  // 与 rl.close / oneshot finally 的资源回收语义保持一致。
+  const gracefulExit = () => {
+    console.log('\x1b[32m再见！🐾\x1b[0m');
+    void session
+      .destroy()
+      .catch(() => undefined)
+      .finally(() => process.exit(0));
+  };
+
   // 4. 初始化 CommandDispatcher
   const dispatcher = new CommandDispatcher();
   dispatcher.register('model', modelCommand);
@@ -119,14 +149,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   dispatcher.register('clear', clearCommand);
   dispatcher.register('status', statusCommand);
   dispatcher.register('help', helpCommand);
-  dispatcher.register('exit', () => {
-    console.log('\x1b[32m再见！🐾\x1b[0m');
-    process.exit(0);
-  });
-  dispatcher.register('quit', () => {
-    console.log('\x1b[32m再见！🐾\x1b[0m');
-    process.exit(0);
-  });
+  dispatcher.register('exit', () => gracefulExit());
+  dispatcher.register('quit', () => gracefulExit());
 
   const commandContext: CommandContext = {
     session,
@@ -152,7 +176,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       currentProvider = createProvider(profile, key);
       session.switchModel(profile, 'default', currentProvider);
     },
-    onExit: () => process.exit(0),
+    onExit: () => gracefulExit(),
   };
 
   // 5. 启动会话
@@ -161,11 +185,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // 检查是否传入了直接问答参数 (如: kpbl "请帮我分析项目" 或 kpbl -p "xxx")
   const oneShotPrompt = args.prompt || (args._.length > 0 ? args._.join(' ') : null);
   if (oneShotPrompt && typeof oneShotPrompt === 'string' && oneShotPrompt.trim().length > 0) {
-    await runOneShot({
+    const exitCode = await runOneShot({
       session,
       prompt: oneShotPrompt.trim(),
       debug: Boolean(args.debug),
     });
+    if (exitCode !== 0) process.exitCode = exitCode;
     return;
   }
 

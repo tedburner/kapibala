@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelProfile } from '../src/models/index.js';
 import { AgentSession } from '../src/session/index.js';
 import { JSONLMessageStore } from '../src/store/jsonl.js';
-import type { SessionEvent } from '../src/types/index.js';
-import { ScriptedProvider, makeEchoToolRegistry } from './helpers/mock.js';
+import type { ContentBlock, SessionEvent } from '../src/types/index.js';
+import { ScriptedProvider, findDanglingToolUses, makeEchoToolRegistry } from './helpers/mock.js';
 
 const TEST_PROFILE: ModelProfile = {
   id: 'test-profile',
@@ -110,5 +110,90 @@ describe('AgentSession 消息级落盘', () => {
     await expect(session.use({ name: 'late', setup: vi.fn() })).rejects.toThrow(
       /already destroyed/,
     );
+  });
+
+  it('does not expose a tool-use message until its tool result has closed history', async () => {
+    const provider = new ScriptedProvider([
+      [
+        { type: 'tool_call_finish', id: 'call_buffered', name: 'echo', input: { value: 'hi' } },
+        { type: 'message_stop' },
+      ],
+      [{ type: 'text_delta', text: 'done' }, { type: 'message_stop' }],
+    ]);
+    const session = new AgentSession({
+      defaultProfile: TEST_PROFILE,
+      defaultProvider: provider,
+      store,
+      rootDir: tempDir,
+    });
+    for (const tool of makeEchoToolRegistry().list()) session.tools.register(tool);
+
+    const iterator = session.run('use echo')[Symbol.asyncIterator]();
+    let sawToolAssistant = false;
+    while (!sawToolAssistant) {
+      const next = await iterator.next();
+      expect(next.done).toBe(false);
+      if (next.value?.type === 'message_stop') {
+        sawToolAssistant = next.value.message.content.some(
+          (block: ContentBlock) => block.type === 'tool_use',
+        );
+      }
+    }
+
+    await iterator.return?.();
+    expect(findDanglingToolUses(session.getHistory())).toEqual([]);
+    expect((await store.load()).map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+    ]);
+  });
+
+  it('does not admit a tool-use message when model:after rejects', async () => {
+    const provider = new ScriptedProvider([
+      [
+        { type: 'tool_call_finish', id: 'call_hook', name: 'echo', input: { value: 'hi' } },
+        { type: 'message_stop' },
+      ],
+    ]);
+    const session = new AgentSession({
+      defaultProfile: TEST_PROFILE,
+      defaultProvider: provider,
+      store,
+      rootDir: tempDir,
+    });
+    session.hooks.on('model:after', async () => {
+      throw new Error('hook failed');
+    });
+
+    await expect(async () => {
+      for await (const _event of session.run('trigger hook')) {
+        // drain
+      }
+    }).rejects.toThrow('hook failed');
+
+    expect(findDanglingToolUses(session.getHistory())).toEqual([]);
+    expect(session.getHistory().map((message) => message.role)).toEqual(['user']);
+    expect((await store.load()).map((message) => message.role)).toEqual(['user']);
+  });
+
+  it('rejects concurrent mutations of the same session and releases the lock on return', async () => {
+    const session = new AgentSession({
+      defaultProfile: TEST_PROFILE,
+      defaultProvider: new ScriptedProvider([[{ type: 'message_stop' }]]),
+      rootDir: tempDir,
+    });
+
+    const first = session.run('first')[Symbol.asyncIterator]();
+    await first.next();
+
+    await expect(session.run('second')[Symbol.asyncIterator]().next()).rejects.toThrow(
+      /already running/i,
+    );
+    await expect(session.reset()).rejects.toThrow(/already running/i);
+    expect(() => session.switchModel(TEST_PROFILE)).toThrow(/already running/i);
+
+    await first.return?.();
+    await expect(session.reset()).resolves.toBeUndefined();
   });
 });

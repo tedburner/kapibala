@@ -11,14 +11,15 @@ export const statusCommand: CommandHandler = (_args, ctx) => {
   console.log(`  - 输出生成 (Completion): ${stats.totalTokens.completionTokens}`);
   console.log(`  - 总计消耗 (Total):      ${stats.totalTokens.totalTokens}`);
 
-  if (stats.lastMetrics) {
-    const m = stats.lastMetrics;
+  if (stats.lastRunMetrics) {
+    const m = stats.lastRunMetrics;
     const ttft = m.ttftMs !== undefined ? `${m.ttftMs}ms` : 'N/A';
-    console.log('\n最近一轮关键性能指标 (Metrics):');
+    console.log('\n最近一次请求关键性能指标 (Metrics):');
     console.log(`  - 首Token耗时 (TTFT):   ${ttft}`);
     console.log(`  - 模型生成耗时:         ${m.modelDurationMs}ms`);
-    console.log(`  - 工具执行耗时:         ${m.toolDurationMs}ms (${m.toolCallsCount} 次调用)`);
-    console.log(`  - 单轮总耗时:           ${m.totalDurationMs}ms\n`);
+    console.log(`  - 工具执行耗时:         ${m.toolDurationMs}ms (${m.toolCalls} 次调用)`);
+    console.log(`  - 请求总耗时:           ${m.totalDurationMs}ms (${m.turns} 个内部步骤)`);
+    console.log(`  - 请求状态:             ${m.status}\n`);
   } else {
     console.log('');
   }

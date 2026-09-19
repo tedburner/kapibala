@@ -93,6 +93,27 @@ describe('JSONLMessageStore', () => {
     });
   });
 
+  it('drops duplicate and late tool results instead of accepting any previously declared id', async () => {
+    const assistant: CanonicalMessage = {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'a.txt' } }],
+    };
+    const result: CanonicalMessage = {
+      role: 'tool',
+      content: [{ type: 'tool_result', toolUseId: 'call_1', content: 'ok' }],
+    };
+
+    await store.append(assistant);
+    await store.append(result);
+    await store.append(result); // duplicate while the contiguous tool section is still open
+    await store.append({ role: 'user', content: [{ type: 'text', text: 'next' }] });
+    await store.append(result); // late result after a new non-tool message
+
+    const loaded = await store.load();
+    expect(loaded.map((message) => message.role)).toEqual(['assistant', 'tool', 'user']);
+    expect(loaded.filter((message) => message.role === 'tool')).toHaveLength(1);
+  });
+
   it('should clear store file', async () => {
     await store.append({
       role: 'user',

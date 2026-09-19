@@ -1,6 +1,8 @@
 import readline from 'node:readline';
-import type { AgentSession } from '@kiturone/kapibala';
+import { AbortError, type AgentSession } from '@kiturone/kapibala';
 import type { CommandContext, CommandDispatcher } from './commands/dispatcher.js';
+import { createEventRenderer } from './ui/events.js';
+import { readSecret } from './ui/secret.js';
 
 export interface REPLOptions {
   session: AgentSession;
@@ -20,6 +22,14 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     output: process.stdout,
   });
 
+  context.readSecret = async (prompt: string) => {
+    const secret = await readSecret(prompt);
+    // readSecret 临时接管同一个 TTY；清除 readline 可能缓存的掩码输入，避免进入下一条命令。
+    (rl as unknown as { line: string }).line = '';
+    (rl as unknown as { cursor: number }).cursor = 0;
+    return secret;
+  };
+
   const updatePrompt = () => {
     const active = session.getActiveProfile();
     rl.setPrompt(`\x1b[36mkpbl\x1b[0m \x1b[90m(${active.id})\x1b[0m \x1b[32m❯\x1b[0m `);
@@ -30,6 +40,15 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   context.onModelSwitched = (newProfileId: string) => {
     originalOnModelSwitched(newProfileId);
     updatePrompt();
+  };
+
+  const gracefulExit = () => {
+    console.log('\n\x1b[32m再见！🐾\x1b[0m');
+    // 退出前触发 session:end 与插件 teardown(设计文档 §3.2 / §3.3)
+    void session
+      .destroy()
+      .catch(() => undefined)
+      .finally(() => process.exit(0));
   };
 
   // 优雅处理 Ctrl+C 中断状态机 (参考 Claude Code CLI 规范)
@@ -61,8 +80,7 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     // 若输入框为空：
     if (now - lastCtrlCTime < 1500) {
       // 连续 2 次快速按下：直接退出程序
-      console.log('\n\x1b[32m再见！🐾\x1b[0m');
-      process.exit(0);
+      gracefulExit();
     } else {
       lastCtrlCTime = now;
       process.stdout.write('\n\x1b[90m(再按一次 Ctrl+C 退出程序，或输入 /exit)\x1b[0m\n');
@@ -73,14 +91,7 @@ export async function startREPL(options: REPLOptions): Promise<void> {
 
   // 处理 Ctrl+D / EOF
   rl.on('close', () => {
-    // 退出前触发 session:end 与插件 teardown(设计文档 §3.2 / §3.3)
-    session
-      .destroy()
-      .catch(() => undefined)
-      .finally(() => {
-        console.log('\n\x1b[32m再见！🐾\x1b[0m');
-        process.exit(0);
-      });
+    gracefulExit();
   });
 
   const printWelcome = () => {
@@ -138,70 +149,28 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     }
 
     // 2. 正常对话交互，启动流式执行
-    activeAbortController = new AbortController();
-    let isFirstText = true;
-    let isThinking = false;
+    // controller 用局部变量持有：SIGINT 处理器会把全局引用置 null，
+    // 若 catch 里读全局会把中止误判为异常并重复报错。
+    const controller = new AbortController();
+    activeAbortController = controller;
 
     try {
-      for await (const event of session.run(input, { signal: activeAbortController.signal })) {
-        if (event.type === 'step_log') {
-          if (debug) {
-            const time = new Date(event.log.timestamp).toLocaleTimeString();
-            const dur = event.log.durationMs !== undefined ? ` [${event.log.durationMs}ms]` : '';
-            process.stdout.write(
-              `\x1b[90m⚙ [LOG ${time} | Turn ${event.log.turn} | ${event.log.stage}] ${event.log.message}${dur}\x1b[0m\n`,
-            );
-          }
-        } else if (event.type === 'thinking_delta') {
-          if (!isThinking) {
-            isThinking = true;
-            process.stdout.write('\x1b[90m💭 思考过程:\n');
-          }
-          process.stdout.write(`\x1b[90m${event.thinking}\x1b[0m`);
-        } else if (event.type === 'text_delta') {
-          if (isThinking) {
-            isThinking = false;
-            process.stdout.write('\x1b[0m\n\n');
-          }
-          if (isFirstText) {
-            isFirstText = false;
-          }
-          process.stdout.write(event.text);
-        } else if (event.type === 'tool_start') {
-          if (isThinking) {
-            isThinking = false;
-            process.stdout.write('\x1b[0m\n\n');
-          }
-          const inputPreview = JSON.stringify(event.input).slice(0, 80);
-          process.stdout.write(`\n\x1b[33m⚙ 调用工具 [${event.name}]: ${inputPreview}...\x1b[0m\n`);
-        } else if (event.type === 'tool_finish') {
-          const statusTag = event.isError ? '\x1b[31m[失败]\x1b[0m' : '\x1b[32m[完成]\x1b[0m';
-          const preview = event.result.trim().slice(0, 100).replace(/\n/g, ' ');
-          process.stdout.write(`  ${statusTag} ${preview}...\n\n`);
-        } else if (event.type === 'turn_finish') {
-          const m = event.metrics;
-          const ttftStr = m.ttftMs !== undefined ? `${m.ttftMs}ms` : 'N/A';
-          const totalSec = (m.totalDurationMs / 1000).toFixed(2);
-          process.stdout.write(
-            `\n\x1b[90m📊 耗时: ${totalSec}s | 首Token(TTFT): ${ttftStr} | Token: ${m.totalTokens} (输入 ${m.promptTokens}, 输出 ${m.completionTokens})\x1b[0m\n`,
-          );
-        } else if (event.type === 'error') {
-          process.stdout.write(`\n\x1b[31m❌ 错误: ${event.error.message}\x1b[0m\n`);
-        }
+      const renderer = createEventRenderer({ debug });
+      for await (const event of session.run(input, { signal: controller.signal })) {
+        renderer.render(event);
       }
-
-      if (isThinking) {
-        process.stdout.write('\x1b[0m\n');
-      }
+      renderer.finish();
       process.stdout.write('\n');
     } catch (err: unknown) {
-      if (activeAbortController?.signal.aborted) {
+      if (err instanceof AbortError || controller.signal.aborted) {
         // 已由 SIGINT 处理
       } else {
         console.log(`\n\x1b[31m发生异常: ${(err as Error).message}\x1b[0m\n`);
       }
     } finally {
-      activeAbortController = null;
+      if (activeAbortController === controller) {
+        activeAbortController = null;
+      }
     }
 
     updatePrompt();

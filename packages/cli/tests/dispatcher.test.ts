@@ -34,6 +34,7 @@ describe('CommandDispatcher', () => {
         modelName: 'deepseek-v4-pro',
         baseURL: 'https://api.deepseek.com',
         apiKeyEnv: 'DEEPSEEK_API_KEY',
+        apiKey: 'fixture-key',
       },
     ],
   } as any;

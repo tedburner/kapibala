@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelEvent, ModelProfile, ModelProvider, ModelRequest } from '../src/index.js';
 import { AgentSession } from '../src/session/index.js';
+import { ScriptedProvider, makeEchoToolRegistry } from './helpers/mock.js';
 
 class MockMetricProvider implements ModelProvider {
   readonly name = 'mock-provider';
@@ -70,5 +71,70 @@ describe('Step Logs and TurnMetrics', () => {
     expect(stats.totalTurns).toBe(1);
     expect(stats.totalTokens.totalTokens).toBe(60);
     expect(stats.lastMetrics).toEqual(turnMetrics);
+  });
+
+  it('emits one run_finish that aggregates every internal tool step', async () => {
+    const provider = new ScriptedProvider([
+      [
+        { type: 'tool_call_finish', id: 'call_metrics', name: 'echo', input: { value: 'x' } },
+        {
+          type: 'message_stop',
+          usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+          ttftMs: 15,
+        },
+      ],
+      [
+        { type: 'text_delta', text: 'done' },
+        {
+          type: 'message_stop',
+          usage: { promptTokens: 20, completionTokens: 3, totalTokens: 23 },
+          ttftMs: 5,
+        },
+      ],
+    ]);
+    const session = new AgentSession({ defaultProfile: profile, defaultProvider: provider });
+    for (const tool of makeEchoToolRegistry().list()) session.tools.register(tool);
+
+    const runFinishes: any[] = [];
+    let turnFinishes = 0;
+    for await (const event of session.run('aggregate this request')) {
+      if (event.type === 'turn_finish') turnFinishes++;
+      if (event.type === 'run_finish') runFinishes.push(event.metrics);
+    }
+
+    expect(turnFinishes).toBe(2);
+    expect(runFinishes).toHaveLength(1);
+    expect(runFinishes[0]).toMatchObject({
+      promptTokens: 30,
+      completionTokens: 5,
+      totalTokens: 35,
+      turns: 2,
+      toolCalls: 1,
+      ttftMs: 15,
+      status: 'completed',
+    });
+    expect(session.getStats().lastRunMetrics).toEqual(runFinishes[0]);
+  });
+
+  it('marks run_finish as failed when the loop emits an error event', async () => {
+    const provider = new ScriptedProvider([
+      [
+        { type: 'tool_call_finish', id: 'call_fail', name: 'echo', input: { value: 'x' } },
+        { type: 'message_stop' },
+      ],
+    ]);
+    const session = new AgentSession({
+      defaultProfile: profile,
+      defaultProvider: provider,
+      maxSteps: 1,
+    });
+    for (const tool of makeEchoToolRegistry().list()) session.tools.register(tool);
+
+    let status: string | undefined;
+    for await (const event of session.run('never reaches a final answer')) {
+      if (event.type === 'run_finish') status = event.metrics.status;
+    }
+
+    expect(status).toBe('failed');
   });
 });

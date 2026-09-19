@@ -1,5 +1,14 @@
 import type { ModelProfile } from '@kiturone/kapibala';
-import { detectProviderFamily, resolveApiKey, saveGlobalSettings } from '../settings.js';
+import {
+  API_KEY_ENV_NONE,
+  detectProviderFamily,
+  ensureProfile,
+  loadSettings,
+  resolveApiKey,
+  saveGlobalSettings,
+  updateProfileApiKey,
+} from '../settings.js';
+import { readSecret } from '../ui/secret.js';
 import { type SelectOption, select } from '../ui/select.js';
 import { runSetupWizard } from '../wizard.js';
 import type { CommandHandler } from './dispatcher.js';
@@ -38,6 +47,52 @@ const PROVIDER_METAS: ProviderMeta[] = [
   },
 ];
 
+export interface UpdateModelApiKeyOptions {
+  secretReader?: (prompt: string) => Promise<string>;
+  saveSettings?: typeof saveGlobalSettings;
+  globalSettings?: Parameters<typeof saveGlobalSettings>[0];
+}
+
+export async function updateModelApiKey(
+  profile: ModelProfile,
+  ctx: Parameters<CommandHandler>[1],
+  options: UpdateModelApiKeyOptions = {},
+): Promise<boolean> {
+  const secretReader = options.secretReader ?? ctx.readSecret ?? readSecret;
+  const apiKey = (await secretReader(`请输入 ${profile.name} 的新 API Key: `)).trim();
+  if (!apiKey) {
+    console.log('\x1b[33mAPI Key 为空，已取消更新。\x1b[0m');
+    return false;
+  }
+
+  updateProfileApiKey(ctx.settings, profile.id, apiKey);
+
+  const globalSettings = options.globalSettings ?? loadSettings({ includeProject: false }).settings;
+  const globalProfile = globalSettings.profiles.find((candidate) => candidate.id === profile.id);
+  if (globalProfile) {
+    globalProfile.apiKey = apiKey;
+  } else {
+    globalSettings.profiles.push({ ...profile, apiKey });
+  }
+  const savedPath = (options.saveSettings ?? saveGlobalSettings)(globalSettings);
+  if (ctx.session.getActiveProfile().id === profile.id) {
+    ctx.onModelSwitched(profile.id);
+  }
+  console.log(`\x1b[32m✔ 已更新 '${profile.name}' 的 API Key：${savedPath}\x1b[0m`);
+  return true;
+}
+
+async function ensureApiKey(
+  profile: ModelProfile,
+  ctx: Parameters<CommandHandler>[1],
+): Promise<boolean> {
+  if (profile.apiKeyEnv === API_KEY_ENV_NONE || resolveApiKey(profile)) {
+    return true;
+  }
+  console.log(`\x1b[33m模型 '${profile.name}' 尚未配置 API Key，请先补录。\x1b[0m`);
+  return updateModelApiKey(profile, ctx);
+}
+
 /** 复用 settings 层的厂商族推断，避免两处启发式规则各自漂移 */
 function getProviderCategory(profile: ModelProfile): string {
   const family = detectProviderFamily(profile);
@@ -46,6 +101,22 @@ function getProviderCategory(profile: ModelProfile): string {
 
 export const modelCommand: CommandHandler = async (args, ctx) => {
   const target = args[0];
+
+  // 0. `/model key [profile-id]` 主动更新当前或指定模型的密钥
+  if (target === 'key') {
+    const profileId = args[1] ?? ctx.session.getActiveProfile().id;
+    const profile = ctx.settings.profiles.find((candidate) => candidate.id === profileId);
+    if (!profile) {
+      console.log(`\x1b[31m未找到模型 Profile '${profileId}'。\x1b[0m`);
+      return;
+    }
+    if (profile.apiKeyEnv === API_KEY_ENV_NONE) {
+      console.log(`\x1b[90m模型 '${profile.name}' 不需要 API Key。\x1b[0m`);
+      return;
+    }
+    await updateModelApiKey(profile, ctx);
+    return;
+  }
 
   // 1. 若输入 `/model setup`，直接启动配置向导
   if (target === 'setup') {
@@ -63,7 +134,10 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
       return;
     }
     ctx.settings.defaultModel = defaultId;
-    saveGlobalSettings(ctx.settings);
+    const globalSettings = loadSettings({ includeProject: false }).settings;
+    ensureProfile(globalSettings, found);
+    globalSettings.defaultModel = defaultId;
+    saveGlobalSettings(globalSettings);
     console.log(`\x1b[32m✔ 已将 '${found.name}' 设为全局默认模型。\x1b[0m`);
     return;
   }
@@ -78,12 +152,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
       return;
     }
 
-    const key = resolveApiKey(profile);
-    if (!key && profile.apiKeyEnv !== 'NONE') {
-      console.log(
-        `\x1b[33m警告: 切换到 '${profile.name}' 但未检测到有效密钥 (${profile.apiKeyEnv})。可能无法正常请求。\x1b[0m`,
-      );
-    }
+    if (!(await ensureApiKey(profile, ctx))) return;
 
     ctx.onModelSwitched(profile.id);
     console.log(`\x1b[32m✔ 已切换至模型: ${profile.name} (${profile.modelName})\x1b[0m`);
@@ -120,14 +189,16 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     });
 
     providerOptions.push({
+      label: `🔑 更新当前模型 [${active.name}] 的 API Key`,
+      value: '__action_update_key__',
+    });
+
+    providerOptions.push({
       label: `⭐️ 将当前模型 [${active.name}] 设为全局默认`,
       value: '__action_set_default__',
     });
 
-    const defaultProviderIdx = Math.max(
-      0,
-      providerOptions.findIndex((o) => o.value === currentProviderKey),
-    );
+    const defaultProviderIdx = providerOptions.findIndex((o) => o.value === currentProviderKey);
 
     const chosenProvider = await select({
       message: '第一步：请选择模型提供商 (Provider)',
@@ -148,8 +219,20 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
 
     if (chosenProvider === '__action_set_default__') {
       ctx.settings.defaultModel = active.id;
-      saveGlobalSettings(ctx.settings);
+      const globalSettings = loadSettings({ includeProject: false }).settings;
+      ensureProfile(globalSettings, active);
+      globalSettings.defaultModel = active.id;
+      saveGlobalSettings(globalSettings);
       console.log(`\x1b[32m✔ 已将 '${active.name}' 保存为全局默认模型。\x1b[0m`);
+      return;
+    }
+
+    if (chosenProvider === '__action_update_key__') {
+      if (active.apiKeyEnv === API_KEY_ENV_NONE) {
+        console.log(`\x1b[90m模型 '${active.name}' 不需要 API Key。\x1b[0m`);
+      } else {
+        await updateModelApiKey(active, ctx);
+      }
       return;
     }
 
@@ -213,12 +296,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     // 成功选择具体模型，进行切换
     const targetProfile = ctx.settings.profiles.find((p) => p.id === chosenModel);
     if (targetProfile) {
-      const key = resolveApiKey(targetProfile);
-      if (!key && targetProfile.apiKeyEnv !== 'NONE') {
-        console.log(
-          `\x1b[33m警告: 切换到 '${targetProfile.name}' 但未检测到有效密钥 (${targetProfile.apiKeyEnv})。可能无法正常请求。\x1b[0m`,
-        );
-      }
+      if (!(await ensureApiKey(targetProfile, ctx))) return;
       ctx.onModelSwitched(targetProfile.id);
       console.log(
         `\x1b[32m✔ 已切换至模型: ${targetProfile.name} (${targetProfile.modelName})\x1b[0m`,

@@ -1,4 +1,4 @@
-import { saveGlobalSettings } from '../settings.js';
+import { ensureProfile, loadSettings, saveGlobalSettings } from '../settings.js';
 import { runSetupWizard } from '../wizard.js';
 import type { CommandHandler } from './dispatcher.js';
 
@@ -19,7 +19,10 @@ export const settingsCommand: CommandHandler = async (args, ctx) => {
       return;
     }
     ctx.settings.defaultModel = defaultId;
-    saveGlobalSettings(ctx.settings);
+    const globalSettings = loadSettings({ includeProject: false }).settings;
+    ensureProfile(globalSettings, found);
+    globalSettings.defaultModel = defaultId;
+    saveGlobalSettings(globalSettings);
     console.log(`\x1b[32m✔ 已将 '${found.name}' 设为全局默认模型。\x1b[0m`);
     return;
   }

@@ -83,6 +83,21 @@ export interface TurnMetrics {
   toolCallsCount: number;
 }
 
+export interface RunMetrics {
+  startTime: number;
+  endTime: number;
+  totalDurationMs: number;
+  modelDurationMs: number;
+  toolDurationMs: number;
+  ttftMs?: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  turns: number;
+  toolCalls: number;
+  status: 'completed' | 'failed' | 'aborted';
+}
+
 export type StepLogStage =
   | 'model_request_start'
   | 'first_token'
@@ -122,6 +137,7 @@ export type SessionEvent =
       durationMs?: number;
     }
   | { type: 'turn_finish'; turn: number; usage?: Usage; metrics: TurnMetrics }
+  | { type: 'run_finish'; metrics: RunMetrics }
   | { type: 'error'; error: Error };
 
 // 底层 Provider 吐出的原始事件流
@@ -130,7 +146,14 @@ export type ModelEvent =
   | { type: 'thinking_delta'; thinking: string }
   | { type: 'tool_call_start'; id: string; name: string }
   | { type: 'tool_call_delta'; id: string; argumentChunk: string }
-  | { type: 'tool_call_finish'; id: string; name: string; input: Record<string, unknown> }
+  | {
+      type: 'tool_call_finish';
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+      /** 参数 JSON 解析失败时置位，input 退化为 { _raw: '<原始字符串>' }，便于上游诊断而非静默吞错 */
+      parseError?: boolean;
+    }
   | { type: 'message_stop'; usage?: Usage; ttftMs?: number; durationMs?: number };
 
 export interface ToolDefinition {

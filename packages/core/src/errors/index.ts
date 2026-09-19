@@ -65,3 +65,10 @@ export class FatalError extends KapibalaError {
     this.name = 'FatalError';
   }
 }
+
+export class SessionBusyError extends KapibalaError {
+  constructor(operation: string) {
+    super(`Session is already running; cannot ${operation}`);
+    this.name = 'SessionBusyError';
+  }
+}

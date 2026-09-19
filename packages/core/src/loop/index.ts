@@ -48,6 +48,9 @@ export class AgentLoop {
   async *run(history: CanonicalMessage[]): AsyncIterable<SessionEvent> {
     let step = 0;
     let consecutiveErrors = 0;
+    // 标记循环是否已"有结论"地结束(正常回答/熔断/模型错误)。
+    // while 条件自然退出 = 每一轮都以工具调用收尾直到步数耗尽，需要显式告知消费方。
+    let completed = false;
 
     while (step < this.maxSteps) {
       step++;
@@ -91,6 +94,28 @@ export class AgentLoop {
       let turnTtftMs: number | undefined;
       const modelStartTime = Date.now();
       let firstTokenReceived = false;
+
+      // 统一的 TurnMetrics 构造：保证错误/熔断/正常三条路径的指标结构一致
+      const buildMetrics = (
+        modelDurationMs: number,
+        toolDurationMs: number,
+        toolCallsCount: number,
+      ): TurnMetrics => {
+        const endTime = Date.now();
+        return {
+          turn: step,
+          startTime: turnStartTime,
+          endTime,
+          totalDurationMs: endTime - turnStartTime,
+          ttftMs: turnTtftMs,
+          modelDurationMs,
+          toolDurationMs,
+          promptTokens: turnUsage?.promptTokens ?? 0,
+          completionTokens: turnUsage?.completionTokens ?? 0,
+          totalTokens: turnUsage?.totalTokens ?? 0,
+          toolCallsCount,
+        };
+      };
 
       try {
         for await (const event of this.provider.create(request)) {
@@ -144,6 +169,13 @@ export class AgentLoop {
         const modelError = err instanceof Error ? err : new Error(String(err));
         await this.hooks.emit('error', hookCtx, modelError);
         yield { type: 'error', error: modelError };
+        // 与熔断路径保持一致：turn_start 必须有配对的 turn_finish，消费方(如指标统计)才能正确收口
+        yield {
+          type: 'turn_finish',
+          turn: step,
+          metrics: buildMetrics(Date.now() - modelStartTime, 0, 0),
+        };
+        completed = true;
         break;
       }
 
@@ -179,39 +211,26 @@ export class AgentLoop {
         timestamp: Date.now(),
       };
 
-      history.push(assistantMessage);
-      yield {
-        type: 'message_stop',
-        message: assistantMessage,
-        usage: turnUsage,
-        ttftMs: turnTtftMs,
-        durationMs: modelDurationMs,
-      };
-
       // 触发 model:after hooks
       await this.hooks.emit('model:after', hookCtx, { message: assistantMessage });
 
       // 4. 判断是否需要调用工具
       if (toolCalls.length === 0) {
-        const turnEndTime = Date.now();
-        const metrics: TurnMetrics = {
-          turn: step,
-          startTime: turnStartTime,
-          endTime: turnEndTime,
-          totalDurationMs: turnEndTime - turnStartTime,
+        history.push(assistantMessage);
+        yield {
+          type: 'message_stop',
+          message: assistantMessage,
+          usage: turnUsage,
           ttftMs: turnTtftMs,
-          modelDurationMs,
-          toolDurationMs: 0,
-          promptTokens: turnUsage?.promptTokens ?? 0,
-          completionTokens: turnUsage?.completionTokens ?? 0,
-          totalTokens: turnUsage?.totalTokens ?? 0,
-          toolCallsCount: 0,
+          durationMs: modelDurationMs,
         };
+
+        const metrics = buildMetrics(modelDurationMs, 0, 0);
 
         yield {
           type: 'step_log',
           log: {
-            timestamp: turnEndTime,
+            timestamp: metrics.endTime,
             turn: step,
             stage: 'turn_finish',
             message: `Turn ${step} finished in ${metrics.totalDurationMs}ms (TTFT: ${metrics.ttftMs ?? 0}ms, Tokens: ${metrics.totalTokens})`,
@@ -221,6 +240,7 @@ export class AgentLoop {
         };
 
         yield { type: 'turn_finish', turn: step, usage: turnUsage, metrics };
+        completed = true;
         break; // 没有工具调用，正常回答完毕，结束本轮交互
       }
 
@@ -243,8 +263,24 @@ export class AgentLoop {
       const toolResults = await this.executor.runAll(toolCalls);
       const toolDurationMs = Date.now() - toolStartTime;
 
-      // 检查工具报错并统计连续错误
-      let hasError = false;
+      const hasError = toolResults.some((result) => result.isError);
+      const metrics = buildMetrics(modelDurationMs, toolDurationMs, toolCalls.length);
+
+      // 6. 工具结果回填历史 + 派发落盘事件
+      //    assistant 与所有 tool_result 在同一个同步临界段进入历史，并且发生在下一次 yield 前。
+      //    因此直接消费 AgentLoop 的调用方即使在任意对外事件后停止，也看不到半闭合历史。
+      //    熔断只决定「是否继续循环」，不改变历史的合法性(设计文档 §4.3 / §4.4)。
+      const toolMessages = this.provider.assembleToolResults(toolResults);
+      history.push(assistantMessage, ...toolMessages);
+
+      yield {
+        type: 'message_stop',
+        message: assistantMessage,
+        usage: turnUsage,
+        ttftMs: turnTtftMs,
+        durationMs: modelDurationMs,
+      };
+
       for (const res of toolResults) {
         const matchingCall = toolCalls.find((c) => c.id === res.toolUseId);
         yield {
@@ -254,7 +290,6 @@ export class AgentLoop {
           result: res.content,
           isError: res.isError ?? false,
         };
-        if (res.isError) hasError = true;
       }
 
       yield {
@@ -268,27 +303,6 @@ export class AgentLoop {
         },
       };
 
-      const turnEndTime = Date.now();
-      const metrics: TurnMetrics = {
-        turn: step,
-        startTime: turnStartTime,
-        endTime: turnEndTime,
-        totalDurationMs: turnEndTime - turnStartTime,
-        ttftMs: turnTtftMs,
-        modelDurationMs,
-        toolDurationMs,
-        promptTokens: turnUsage?.promptTokens ?? 0,
-        completionTokens: turnUsage?.completionTokens ?? 0,
-        totalTokens: turnUsage?.totalTokens ?? 0,
-        toolCallsCount: toolCalls.length,
-      };
-
-      // 6. 工具结果回填历史 + 派发落盘事件
-      //    这一步必须发生在任何 break 之前：assistant 的 tool_use 一旦进入历史，
-      //    对应的 tool_result 就必须紧跟其后，否则下一次请求会因上下文非法(400)失败。
-      //    熔断只决定「是否继续循环」，不改变历史的合法性(设计文档 §4.3 / §4.4)。
-      const toolMessages = this.provider.assembleToolResults(toolResults);
-      history.push(...toolMessages);
       yield { type: 'tool_messages', messages: toolMessages };
 
       if (hasError) {
@@ -300,6 +314,7 @@ export class AgentLoop {
           await this.hooks.emit('error', hookCtx, breakerError);
           yield { type: 'error', error: breakerError };
           yield { type: 'turn_finish', turn: step, usage: turnUsage, metrics };
+          completed = true;
           break;
         }
       } else {
@@ -309,7 +324,7 @@ export class AgentLoop {
       yield {
         type: 'step_log',
         log: {
-          timestamp: turnEndTime,
+          timestamp: metrics.endTime,
           turn: step,
           stage: 'turn_finish',
           message: `Turn ${step} completed in ${metrics.totalDurationMs}ms (tool duration: ${toolDurationMs}ms). Continuing loop.`,
@@ -319,6 +334,16 @@ export class AgentLoop {
       };
 
       yield { type: 'turn_finish', turn: step, usage: turnUsage, metrics };
+    }
+
+    // 步数耗尽：显式告知消费方"未产出最终回答"，否则用户只会看到 tool_finish 就回到提示符。
+    if (!completed) {
+      yield {
+        type: 'error',
+        error: new Error(
+          `Reached max steps limit (${this.maxSteps}); loop terminated before a final answer was produced`,
+        ),
+      };
     }
   }
 }

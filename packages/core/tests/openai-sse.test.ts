@@ -148,4 +148,106 @@ describe('OpenAICompatibleProvider', () => {
       }
     }).rejects.toThrow(ModelError);
   });
+
+  it('should throw ModelError for an error frame inside an HTTP 200 SSE stream', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: createReadableStream([
+        'data: {"error":{"message":"Quota exhausted","type":"insufficient_quota","code":"quota"}}\n\n',
+        'data: [DONE]\n\n',
+      ]),
+    } as Response);
+
+    const consume = async () => {
+      for await (const _event of provider.create({
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+      })) {
+        // drive provider
+      }
+    };
+
+    await expect(consume()).rejects.toMatchObject({
+      name: 'ModelError',
+      message: 'Quota exhausted (insufficient_quota, quota)',
+    });
+  });
+
+  it('should keep the caller abort signal connected while reading the response stream', async () => {
+    const controller = new AbortController();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let streamCancelled = false;
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(currentController) {
+        streamController = currentController;
+      },
+      cancel() {
+        streamCancelled = true;
+      },
+    });
+
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init?: RequestInit) => {
+      init?.signal?.addEventListener(
+        'abort',
+        () => {
+          streamCancelled = true;
+          streamController?.error(new DOMException('aborted', 'AbortError'));
+        },
+        { once: true },
+      );
+      return { ok: true, body: stream } as Response;
+    });
+
+    const iterator = provider
+      .create({
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'Hi' }], timestamp: Date.now() },
+        ],
+        signal: controller.signal,
+      })
+      [Symbol.asyncIterator]();
+    const pendingRead = iterator.next().then(
+      () => 'settled',
+      () => 'settled',
+    );
+
+    await Promise.resolve();
+    controller.abort();
+
+    const outcome = await Promise.race([
+      pendingRead,
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 30)),
+    ]);
+
+    if (outcome === 'timeout' && !streamCancelled) {
+      streamController?.close();
+      await pendingRead;
+    }
+    expect(outcome).toBe('settled');
+    expect(streamCancelled).toBe(true);
+  });
+
+  it('should propagate an already-aborted caller signal before starting fetch', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let fetchSignalWasAborted = false;
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init?: RequestInit) => {
+      fetchSignalWasAborted = init?.signal?.aborted ?? false;
+      throw new DOMException('aborted', 'AbortError');
+    });
+
+    const consume = async () => {
+      for await (const _event of provider.create({
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'Hi' }], timestamp: Date.now() },
+        ],
+        signal: controller.signal,
+      })) {
+        // 无事件可消费；该循环仅驱动异步生成器执行。
+      }
+    };
+
+    await expect(consume()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchSignalWasAborted).toBe(true);
+  });
 });

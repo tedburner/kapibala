@@ -15,6 +15,26 @@ export interface UserSettings {
   defaultModel: string;
   modelRouting?: ModelRoutingConfig;
   profiles: ModelProfile[];
+  /** 已由用户永久信任的项目真实绝对路径，仅允许从全局配置加载。 */
+  trustedProjects?: string[];
+}
+
+export interface LoadSettingsOptions {
+  cwd?: string;
+  homeDir?: string;
+  /** 设为 false 时只读取内置与全局层，供全局配置写入流程使用。 */
+  includeProject?: boolean;
+}
+
+export interface PendingProjectSettings {
+  projectPath: string;
+  settingsPath: string;
+}
+
+export interface LoadedSettings {
+  settings: UserSettings;
+  sourcePath?: string;
+  pendingProject?: PendingProjectSettings;
 }
 
 export const BUILTIN_PROFILES: ModelProfile[] = [
@@ -97,17 +117,25 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
 ];
 
-export function getGlobalSettingsPath(): string {
-  return path.join(os.homedir(), '.kapibala', 'settings.json');
+/** 无需密钥的本地端点(如 Ollama)的 apiKeyEnv 约定值 */
+export const API_KEY_ENV_NONE = 'NONE';
+
+export function getGlobalSettingsPath(homeDir = os.homedir()): string {
+  return path.join(homeDir, '.kapibala', 'settings.json');
 }
 
-export function getProjectSettingsPath(): string {
-  return path.join(process.cwd(), '.kapibala', 'settings.json');
+export function getProjectSettingsPath(cwd = process.cwd()): string {
+  return path.join(cwd, '.kapibala', 'settings.json');
 }
 
-export function loadSettings(): { settings: UserSettings; sourcePath?: string } {
-  const projectPath = getProjectSettingsPath();
-  const globalPath = getGlobalSettingsPath();
+/**
+ * 加载全局配置，并仅在当前项目已被永久信任时合并项目配置。
+ * 未信任项目只返回其路径，调用方必须先完成交互确认，不能读取其中内容。
+ */
+export function loadSettings(options: LoadSettingsOptions = {}): LoadedSettings {
+  const cwd = options.cwd ?? process.cwd();
+  const projectSettingsPath = getProjectSettingsPath(cwd);
+  const globalPath = getGlobalSettingsPath(options.homeDir);
 
   let settings: UserSettings = {
     $schema:
@@ -127,30 +155,47 @@ export function loadSettings(): { settings: UserSettings; sourcePath?: string } 
     try {
       const raw = fs.readFileSync(globalPath, 'utf-8');
       const parsed = JSON.parse(raw);
-      settings = mergeSettings(settings, parsed);
+      settings = mergeSettings(settings, parsed, true);
       sourcePath = globalPath;
-    } catch {
-      // 忽略损坏配置
+    } catch (err: unknown) {
+      // 损坏配置不能静默吞掉：用户会以为配置生效了，实际一直在跑默认值
+      console.error(
+        `[kapibala] Failed to parse global settings (${globalPath}): ${(err as Error).message}`,
+      );
     }
   }
 
-  // 2. 项目配置覆盖
-  if (fs.existsSync(projectPath)) {
+  // 2. 项目配置是仓库输入：未获永久信任前只检测文件存在，不读取其内容。
+  if (options.includeProject !== false && fs.existsSync(projectSettingsPath)) {
+    const realProjectPath = normalizeProjectPath(cwd);
+    if (!isProjectTrusted(settings, realProjectPath)) {
+      return {
+        settings,
+        sourcePath,
+        pendingProject: { projectPath: realProjectPath, settingsPath: projectSettingsPath },
+      };
+    }
+
     try {
-      const raw = fs.readFileSync(projectPath, 'utf-8');
+      const raw = fs.readFileSync(projectSettingsPath, 'utf-8');
       const parsed = JSON.parse(raw);
-      settings = mergeSettings(settings, parsed);
-      sourcePath = projectPath;
-    } catch {
-      // 忽略损坏配置
+      settings = mergeSettings(settings, parsed, false);
+      sourcePath = projectSettingsPath;
+    } catch (err: unknown) {
+      console.error(
+        `[kapibala] Failed to parse project settings (${projectSettingsPath}): ${(err as Error).message}`,
+      );
     }
   }
 
   return { settings, sourcePath };
 }
 
-export function saveGlobalSettings(settings: UserSettings): string {
-  const globalPath = getGlobalSettingsPath();
+export function saveGlobalSettings(
+  settings: UserSettings,
+  options: Pick<LoadSettingsOptions, 'homeDir'> = {},
+): string {
+  const globalPath = getGlobalSettingsPath(options.homeDir);
   const dir = path.dirname(globalPath);
 
   if (!fs.existsSync(dir)) {
@@ -159,14 +204,59 @@ export function saveGlobalSettings(settings: UserSettings): string {
 
   const content = JSON.stringify(settings, null, 2);
   fs.writeFileSync(globalPath, content, { encoding: 'utf-8', mode: 0o600 });
+  try {
+    fs.chmodSync(globalPath, 0o600);
+  } catch {
+    // 某些平台不支持 POSIX mode；写入仍成功，CLI 会在保存密钥前明确提示存储位置。
+  }
   return globalPath;
+}
+
+/** 将项目真实路径永久加入全局信任列表并立即持久化。 */
+export function trustProject(
+  settings: UserSettings,
+  projectPath: string,
+  options: Pick<LoadSettingsOptions, 'homeDir'> = {},
+): string {
+  const normalized = normalizeProjectPath(projectPath);
+  const trustedProjects = settings.trustedProjects ?? [];
+  if (!trustedProjects.some((trusted) => pathsEqual(trusted, normalized))) {
+    settings.trustedProjects = [...trustedProjects, normalized];
+  }
+  return saveGlobalSettings(settings, options);
+}
+
+/**
+ * 覆盖指定模型的内联 API Key。
+ * 只更新既有 profile，避免拼写错误时静默创建无法使用的配置。
+ */
+export function updateProfileApiKey(
+  settings: UserSettings,
+  profileId: string,
+  apiKey: string,
+): ModelProfile {
+  const profile = settings.profiles.find((candidate) => candidate.id === profileId);
+  if (!profile) {
+    throw new Error(`Model profile '${profileId}' not found`);
+  }
+  profile.apiKey = apiKey.trim();
+  return profile;
+}
+
+/** 确保 profile 存在于目标配置；已有同 ID 配置保持不变，避免项目覆盖项反写全局。 */
+export function ensureProfile(settings: UserSettings, profile: ModelProfile): ModelProfile {
+  const existing = settings.profiles.find((candidate) => candidate.id === profile.id);
+  if (existing) return existing;
+  const added = { ...profile };
+  settings.profiles.push(added);
+  return added;
 }
 
 export function resolveApiKey(profile: ModelProfile): string | undefined {
   if (profile.apiKey?.trim()) {
     return profile.apiKey.trim();
   }
-  if (profile.apiKeyEnv === 'NONE') {
+  if (profile.apiKeyEnv === API_KEY_ENV_NONE) {
     return 'none';
   }
   const envVal = process.env[profile.apiKeyEnv];
@@ -224,17 +314,46 @@ const FAMILY_BASE_URL_ENV: Partial<Record<ProviderFamily, string>> = {
   deepseek: 'DEEPSEEK_BASE_URL',
 };
 
-function mergeSettings(base: UserSettings, incoming: Partial<UserSettings>): UserSettings {
+function normalizeProjectPath(projectPath: string): string {
+  const absolute = path.resolve(projectPath);
+  return fs.realpathSync.native(absolute);
+}
+
+function pathsEqual(left: string, right: string): boolean {
+  return process.platform === 'win32'
+    ? path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase()
+    : path.normalize(left) === path.normalize(right);
+}
+
+function isProjectTrusted(settings: UserSettings, projectPath: string): boolean {
+  return (settings.trustedProjects ?? []).some((trusted) => pathsEqual(trusted, projectPath));
+}
+
+function mergeSettings(
+  base: UserSettings,
+  incoming: Partial<UserSettings>,
+  allowTrustedProjects: boolean,
+): UserSettings {
   const profilesMap = new Map<string, ModelProfile>();
   for (const p of base.profiles) profilesMap.set(p.id, p);
-  if (incoming.profiles) {
-    for (const p of incoming.profiles) profilesMap.set(p.id, p);
+  if (Array.isArray(incoming.profiles)) {
+    for (const p of incoming.profiles) {
+      const inherited = profilesMap.get(p.id);
+      profilesMap.set(p.id, inherited ? { ...inherited, ...p } : p);
+    }
   }
 
   return {
     $schema: incoming.$schema ?? base.$schema,
     defaultModel: incoming.defaultModel ?? base.defaultModel,
-    modelRouting: incoming.modelRouting ?? base.modelRouting,
+    // 浅合并各路由字段：只配 planning 时不应丢掉 base 里已有的 execution/summary/fast
+    modelRouting: incoming.modelRouting
+      ? { ...base.modelRouting, ...incoming.modelRouting }
+      : base.modelRouting,
     profiles: Array.from(profilesMap.values()),
+    trustedProjects:
+      allowTrustedProjects && Array.isArray(incoming.trustedProjects)
+        ? incoming.trustedProjects.filter((value): value is string => typeof value === 'string')
+        : base.trustedProjects,
   };
 }

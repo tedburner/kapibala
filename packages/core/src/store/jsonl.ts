@@ -77,54 +77,49 @@ export class JSONLMessageStore implements MessageStore {
    */
   private healDanglingToolCalls(messages: CanonicalMessage[]): void {
     const healed: CanonicalMessage[] = [];
-    const declared = new Set<string>();
+    let pending = new Map<string, ToolUseBlock>();
 
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i]!;
-
-      if (msg.role === 'tool') {
-        // 孤儿 tool_result(没有任何 assistant 声明过该 tool_call_id)会让下游直接 400，直接剔除
-        const valid = msg.content.filter(
-          (block): block is ToolResultBlock =>
-            isToolResultBlock(block) && declared.has(block.toolUseId),
-        );
-        if (valid.length === 0) continue;
-        healed.push(valid.length === msg.content.length ? msg : { ...msg, content: valid });
-        continue;
-      }
-
-      healed.push(msg);
-      if (msg.role !== 'assistant') continue;
-
-      const toolUses = msg.content.filter(isToolUseBlock);
-      if (toolUses.length === 0) continue;
-      for (const tu of toolUses) declared.add(tu.id);
-
-      // 统计紧随其后的连续 tool 消息已覆盖了哪些 tool_use
-      const satisfied = new Set<string>();
-      for (let j = i + 1; j < messages.length && messages[j]!.role === 'tool'; j++) {
-        for (const block of messages[j]!.content) {
-          if (isToolResultBlock(block)) satisfied.add(block.toolUseId);
-        }
-      }
-
-      const missing = toolUses.filter((tu) => !satisfied.has(tu.id));
-      if (missing.length === 0) continue;
-
-      // complete-with-error(§4.3)：补齐中断/崩溃遗留的 tool_result，保证历史闭合
+    const closePending = () => {
+      if (pending.size === 0) return;
       healed.push({
         role: 'tool',
-        content: missing.map(
-          (tu: ToolUseBlock): ToolResultBlock => ({
+        content: Array.from(pending.values()).map(
+          (toolUse: ToolUseBlock): ToolResultBlock => ({
             type: 'tool_result',
-            toolUseId: tu.id,
+            toolUseId: toolUse.id,
             content: 'Tool execution was interrupted or crashed in previous session',
             isError: true,
           }),
         ),
         timestamp: Date.now(),
       });
+      pending = new Map();
+    };
+
+    for (const msg of messages) {
+      if (msg.role === 'tool') {
+        // 结果只允许满足紧邻 assistant 打开的调用集合；迟到、重复和孤儿结果全部剔除。
+        const valid = msg.content.filter((block): block is ToolResultBlock => {
+          if (!isToolResultBlock(block) || !pending.has(block.toolUseId)) return false;
+          pending.delete(block.toolUseId);
+          return true;
+        });
+        if (valid.length === 0) continue;
+        healed.push(valid.length === msg.content.length ? msg : { ...msg, content: valid });
+        continue;
+      }
+
+      // 任何非 tool 消息都结束上一组调用；先补齐缺失结果，再接收新消息。
+      closePending();
+      healed.push(msg);
+      if (msg.role !== 'assistant') continue;
+
+      const toolUses = msg.content.filter(isToolUseBlock);
+      if (toolUses.length === 0) continue;
+      pending = new Map(toolUses.map((toolUse) => [toolUse.id, toolUse]));
     }
+
+    closePending();
 
     messages.length = 0;
     messages.push(...healed);

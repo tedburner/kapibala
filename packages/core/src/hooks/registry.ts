@@ -7,13 +7,11 @@ export class HookRegistry {
     if (!this.hooks[point]) {
       this.hooks[point] = [];
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (this.hooks[point] as any).push(handler);
+    (this.hooks[point] as any[]).push(handler);
   }
 
   get<K extends HookPoint>(point: K): Array<NonNullable<HookHandlers[K]>> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this.hooks[point] as any) ?? [];
+    return (this.hooks[point] as any[]) ?? [];
   }
 
   async emit<K extends 'session:start' | 'session:end' | 'model:after' | 'tool:after' | 'error'>(
@@ -23,8 +21,7 @@ export class HookRegistry {
   ): Promise<void> {
     const handlers = this.get(point);
     for (const handler of handlers) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (handler as any)(ctx, ...args);
+      await (handler as (...emitArgs: any[]) => void | Promise<void>)(ctx, ...args);
     }
   }
 }

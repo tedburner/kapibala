@@ -8,6 +8,7 @@ import {
   resolveBaseURL,
   saveGlobalSettings,
 } from './settings.js';
+import { readSecret } from './ui/secret.js';
 
 export interface ProbeResult {
   status: 'ok' | 'auth' | 'unreachable';
@@ -61,7 +62,13 @@ export async function probeEndpoint(profile: ModelProfile, apiKey: string): Prom
   }
 }
 
-export async function runSetupWizard(): Promise<{ profile: ModelProfile; apiKey: string }> {
+export interface SetupWizardOptions {
+  secretReader?: (prompt: string) => Promise<string>;
+}
+
+export async function runSetupWizard(
+  options: SetupWizardOptions = {},
+): Promise<{ profile: ModelProfile; apiKey: string }> {
   const rl = readline.createInterface({ input, output });
 
   console.log('\n🐾 \x1b[36m欢迎使用 Kapibala (kpbl)!\x1b[0m');
@@ -78,23 +85,20 @@ export async function runSetupWizard(): Promise<{ profile: ModelProfile; apiKey:
 
   let selectedProfile: ModelProfile;
   let enteredKey = '';
+  let keyPrompt: string | undefined;
 
   if (choice === '1') {
     selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'deepseek-v4-flash')! };
-    enteredKey = await rl.question('请输入您的 DeepSeek API Key (sk-...): ');
-    enteredKey = enteredKey.trim();
+    keyPrompt = '请输入您的 DeepSeek API Key (sk-...): ';
   } else if (choice === '2') {
     selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'deepseek-v4-pro')! };
-    enteredKey = await rl.question('请输入您的 DeepSeek API Key (sk-...): ');
-    enteredKey = enteredKey.trim();
+    keyPrompt = '请输入您的 DeepSeek API Key (sk-...): ';
   } else if (choice === '3') {
     selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'gpt-4o')! };
-    enteredKey = await rl.question('请输入您的 OpenAI API Key (sk-...): ');
-    enteredKey = enteredKey.trim();
+    keyPrompt = '请输入您的 OpenAI API Key (sk-...): ';
   } else if (choice === '4') {
     selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'qwen-plus')! };
-    enteredKey = await rl.question('请输入您的 DashScope API Key (sk-...): ');
-    enteredKey = enteredKey.trim();
+    keyPrompt = '请输入您的 DashScope API Key (sk-...): ';
   } else if (choice === '5') {
     selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'ollama')! };
     enteredKey = 'ollama';
@@ -106,7 +110,7 @@ export async function runSetupWizard(): Promise<{ profile: ModelProfile; apiKey:
     const name = (await rl.question('请输入服务名称 (如 Custom API): ')).trim() || 'Custom';
     const baseURL = (await rl.question('请输入 BaseURL (如 https://api.example.com/v1): ')).trim();
     const modelName = (await rl.question('请输入 ModelName (如 gpt-4o): ')).trim();
-    enteredKey = (await rl.question('请输入 API Key: ')).trim();
+    keyPrompt = '请输入 API Key: ';
 
     selectedProfile = {
       id: makeCustomProfileId(name, baseURL),
@@ -118,7 +122,24 @@ export async function runSetupWizard(): Promise<{ profile: ModelProfile; apiKey:
     };
   }
 
+  const { settings } = loadSettings({ includeProject: false });
+  const existingProfile = settings.profiles.find((profile) => profile.id === selectedProfile.id);
+  if (keyPrompt && existingProfile?.apiKey?.trim()) {
+    const replace = (await rl.question('该模型已有保存的 API Key，是否更新？[y/N]: '))
+      .trim()
+      .toLowerCase();
+    if (replace !== 'y' && replace !== 'yes') {
+      enteredKey = existingProfile.apiKey.trim();
+      keyPrompt = undefined;
+    }
+  }
+
   rl.close();
+
+  if (keyPrompt) {
+    const secretReader = options.secretReader ?? readSecret;
+    enteredKey = (await secretReader(keyPrompt)).trim();
+  }
 
   selectedProfile.apiKey = enteredKey;
 
@@ -137,7 +158,6 @@ export async function runSetupWizard(): Promise<{ profile: ModelProfile; apiKey:
   }
 
   // 保存到全局 settings.json
-  const { settings } = loadSettings();
   const existingIndex = settings.profiles.findIndex((p) => p.id === selectedProfile.id);
   if (existingIndex >= 0) {
     settings.profiles[existingIndex] = selectedProfile;
@@ -146,8 +166,20 @@ export async function runSetupWizard(): Promise<{ profile: ModelProfile; apiKey:
   }
   settings.defaultModel = selectedProfile.id;
 
+  if (enteredKey && enteredKey !== 'ollama') {
+    console.log(
+      '\x1b[33m⚠ API Key 将保存在全局配置 ~/.kapibala/settings.json，请确保仅当前用户可访问。\x1b[0m',
+    );
+  }
   const savedPath = saveGlobalSettings(settings);
   console.log(`\x1b[32m✔ 配置已成功持久化至全局：${savedPath}\x1b[0m`);
+
+  if (enteredKey && enteredKey !== 'ollama') {
+    console.log(
+      `\x1b[33m⚠ API Key 已保存在 ${savedPath}；Kapibala 已尝试将文件权限限制为当前用户。\x1b[0m`,
+    );
+  }
+
   console.log(
     `\x1b[36m已就绪！当前默认模型：${selectedProfile.name} (${selectedProfile.modelName})\x1b[0m\n`,
   );

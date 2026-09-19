@@ -16,7 +16,11 @@ export interface OpenAIProviderOptions {
   apiKey: string;
   modelName: string;
   supportsThinking?: boolean;
+  /** 建立 HTTP 连接(收到响应头)的超时毫秒数；仅约束建连阶段，不限制流式读取总时长 */
+  connectTimeoutMs?: number;
 }
+
+const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
 
 interface WireToolCall {
   id: string;
@@ -40,12 +44,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
   readonly apiKey: string;
   readonly modelName: string;
   readonly supportsThinking: boolean;
+  readonly connectTimeoutMs: number;
 
   constructor(options: OpenAIProviderOptions) {
     this.baseURL = options.baseURL.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
     this.modelName = options.modelName;
     this.supportsThinking = options.supportsThinking ?? false;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   }
 
   async *create(req: ModelRequest): AsyncIterable<ModelEvent> {
@@ -80,145 +86,182 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
 
     let response: Response;
+    // 建连超时护栏：服务端无响应时不能永久挂起(流式读取阶段不受此限制)。
+    // 手动组合外层 signal 与超时 signal，避免依赖 Node 20.3+ 的 AbortSignal.any。
+    const timeoutController = new AbortController();
+    const timeoutTimer = setTimeout(() => timeoutController.abort(), this.connectTimeoutMs);
+    const onOuterAbort = () => timeoutController.abort();
+    if (req.signal?.aborted) {
+      timeoutController.abort();
+    } else {
+      req.signal?.addEventListener('abort', onOuterAbort, { once: true });
+    }
+
     try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify(payload),
-        signal: req.signal,
-      });
-    } catch (err: unknown) {
-      if (req.signal?.aborted) {
-        throw err;
-      }
-      throw new ModelError(`Failed to connect to ${url}: ${(err as Error).message}`);
-    }
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      let errorMsg = `API request failed with status ${response.status}: ${response.statusText}`;
       try {
-        const errorJson = JSON.parse(errorText);
-        if (errorJson.error?.message) {
-          errorMsg = errorJson.error.message;
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(payload),
+          signal: timeoutController.signal,
+        });
+      } catch (err: unknown) {
+        if (req.signal?.aborted) {
+          throw err;
         }
-      } catch {
-        if (errorText) errorMsg += ` - ${errorText.slice(0, 300)}`;
-      }
-      throw new ModelError(errorMsg, { status: response.status });
-    }
-
-    if (!response.body) {
-      throw new ModelError('Response body is null');
-    }
-
-    // 状态机收集分片 tool_calls
-    const pendingToolCalls = new Map<
-      number,
-      { id: string; name: string; argumentChunks: string[] }
-    >();
-    let usage: Usage | undefined;
-    const requestStartTime = Date.now();
-    let ttftMs: number | undefined;
-
-    for await (const chunk of parseSSEStream(response.body)) {
-      if (req.signal?.aborted) return;
-      if (!chunk) continue;
-
-      let json: any;
-      try {
-        json = JSON.parse(chunk);
-      } catch {
-        continue;
+        if (timeoutController.signal.aborted) {
+          throw new ModelError(`Connection to ${url} timed out after ${this.connectTimeoutMs}ms`, {
+            status: 408,
+            retryable: true,
+          });
+        }
+        throw new ModelError(`Failed to connect to ${url}: ${(err as Error).message}`);
+      } finally {
+        // 只停止建连计时；外层 signal 的联动必须保留到响应流消费结束。
+        clearTimeout(timeoutTimer);
       }
 
-      if (json.usage) {
-        usage = {
-          promptTokens: json.usage.prompt_tokens ?? 0,
-          completionTokens: json.usage.completion_tokens ?? 0,
-          totalTokens: json.usage.total_tokens ?? 0,
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMsg = `API request failed with status ${response.status}: ${response.statusText}`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          if (errorJson.error?.message) {
+            errorMsg = errorJson.error.message;
+          }
+        } catch {
+          if (errorText) errorMsg += ` - ${errorText.slice(0, 300)}`;
+        }
+        throw new ModelError(errorMsg, { status: response.status });
+      }
+
+      if (!response.body) {
+        throw new ModelError('Response body is null');
+      }
+
+      // 状态机收集分片 tool_calls
+      const pendingToolCalls = new Map<
+        number,
+        { id: string; name: string; argumentChunks: string[] }
+      >();
+      let usage: Usage | undefined;
+      const requestStartTime = Date.now();
+      let ttftMs: number | undefined;
+
+      for await (const chunk of parseSSEStream(response.body)) {
+        if (req.signal?.aborted) return;
+        if (!chunk) continue;
+
+        let json: any;
+        try {
+          json = JSON.parse(chunk);
+        } catch {
+          continue;
+        }
+
+        if (json.error) {
+          const message =
+            typeof json.error.message === 'string' ? json.error.message : 'Model API stream error';
+          const details = [json.error.type, json.error.code]
+            .filter((value) => typeof value === 'string' && value.length > 0)
+            .join(', ');
+          throw new ModelError(details ? `${message} (${details})` : message);
+        }
+
+        if (json.usage) {
+          usage = {
+            promptTokens: json.usage.prompt_tokens ?? 0,
+            completionTokens: json.usage.completion_tokens ?? 0,
+            totalTokens: json.usage.total_tokens ?? 0,
+          };
+        }
+
+        const choice = json.choices?.[0];
+        if (!choice) continue;
+
+        const delta = choice.delta;
+        if (!delta) continue;
+
+        if (
+          (delta.content ||
+            delta.reasoning_content ||
+            (delta.tool_calls && delta.tool_calls.length > 0)) &&
+          ttftMs === undefined
+        ) {
+          ttftMs = Date.now() - requestStartTime;
+        }
+
+        // 1. 普通文本增量
+        if (delta.content) {
+          yield { type: 'text_delta', text: delta.content };
+        }
+
+        // 2. 深度思考增量 (DeepSeek reasoning_content)
+        if (delta.reasoning_content) {
+          yield { type: 'thinking_delta', thinking: delta.reasoning_content };
+        }
+
+        // 3. 工具调用增量
+        if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            const index = tc.index ?? 0;
+            let entry = pendingToolCalls.get(index);
+            if (!entry) {
+              entry = {
+                id: tc.id ?? `call_${Date.now()}_${index}`,
+                name: tc.function?.name ?? '',
+                argumentChunks: [],
+              };
+              pendingToolCalls.set(index, entry);
+              yield { type: 'tool_call_start', id: entry.id, name: entry.name };
+            }
+
+            if (tc.function?.name && !entry.name) {
+              entry.name = tc.function.name;
+            }
+
+            if (tc.function?.arguments) {
+              entry.argumentChunks.push(tc.function.arguments);
+              yield {
+                type: 'tool_call_delta',
+                id: entry.id,
+                argumentChunk: tc.function.arguments,
+              };
+            }
+          }
+        }
+      }
+
+      // 触发所有已收集完整的 tool_calls
+      for (const [, tc] of pendingToolCalls.entries()) {
+        const fullArgs = tc.argumentChunks.join('');
+        let parsedInput: Record<string, unknown> = {};
+        let parseError: boolean | undefined;
+        try {
+          parsedInput = fullArgs.trim() ? JSON.parse(fullArgs) : {};
+        } catch {
+          // 解析失败不静默吞掉：input 退化为 _raw 并显式标记，工具端报错时可定位根因
+          parsedInput = { _raw: fullArgs };
+          parseError = true;
+        }
+
+        yield {
+          type: 'tool_call_finish',
+          id: tc.id,
+          name: tc.name,
+          input: parsedInput,
+          parseError,
         };
       }
 
-      const choice = json.choices?.[0];
-      if (!choice) continue;
-
-      const delta = choice.delta;
-      if (!delta) continue;
-
-      if (
-        (delta.content ||
-          delta.reasoning_content ||
-          (delta.tool_calls && delta.tool_calls.length > 0)) &&
-        ttftMs === undefined
-      ) {
-        ttftMs = Date.now() - requestStartTime;
-      }
-
-      // 1. 普通文本增量
-      if (delta.content) {
-        yield { type: 'text_delta', text: delta.content };
-      }
-
-      // 2. 深度思考增量 (DeepSeek reasoning_content)
-      if (delta.reasoning_content) {
-        yield { type: 'thinking_delta', thinking: delta.reasoning_content };
-      }
-
-      // 3. 工具调用增量
-      if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-        for (const tc of delta.tool_calls) {
-          const index = tc.index ?? 0;
-          let entry = pendingToolCalls.get(index);
-          if (!entry) {
-            entry = {
-              id: tc.id ?? `call_${Date.now()}_${index}`,
-              name: tc.function?.name ?? '',
-              argumentChunks: [],
-            };
-            pendingToolCalls.set(index, entry);
-            yield { type: 'tool_call_start', id: entry.id, name: entry.name };
-          }
-
-          if (tc.function?.name && !entry.name) {
-            entry.name = tc.function.name;
-          }
-
-          if (tc.function?.arguments) {
-            entry.argumentChunks.push(tc.function.arguments);
-            yield {
-              type: 'tool_call_delta',
-              id: entry.id,
-              argumentChunk: tc.function.arguments,
-            };
-          }
-        }
-      }
+      const durationMs = Date.now() - requestStartTime;
+      yield { type: 'message_stop', usage, ttftMs, durationMs };
+    } finally {
+      req.signal?.removeEventListener('abort', onOuterAbort);
     }
-
-    // 触发所有已收集完整的 tool_calls
-    for (const [, tc] of pendingToolCalls.entries()) {
-      const fullArgs = tc.argumentChunks.join('');
-      let parsedInput: Record<string, unknown> = {};
-      try {
-        parsedInput = fullArgs.trim() ? JSON.parse(fullArgs) : {};
-      } catch {
-        parsedInput = { _raw: fullArgs };
-      }
-
-      yield {
-        type: 'tool_call_finish',
-        id: tc.id,
-        name: tc.name,
-        input: parsedInput,
-      };
-    }
-
-    const durationMs = Date.now() - requestStartTime;
-    yield { type: 'message_stop', usage, ttftMs, durationMs };
   }
 
   assembleToolResults(results: ToolResultBlock[]): CanonicalMessage[] {
