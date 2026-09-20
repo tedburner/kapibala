@@ -19,6 +19,8 @@
     "lint": "pnpm check-secrets && biome check .",
     "format": "biome format --write .",
     "verify": "pnpm typecheck && pnpm test && pnpm lint",
+    "dev": "node scripts/dev.mjs",
+    "dev:build": "node scripts/dev.mjs --no-start",
     "dev:cli": "pnpm --filter \"@kiturone/kapibala-cli\" dev",
     "link:cli": "cd packages/cli && npm link --force"
   },

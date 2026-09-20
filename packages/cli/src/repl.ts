@@ -3,6 +3,7 @@ import { AbortError, type AgentSession } from '@kiturone/kapibala';
 import type { CommandContext, CommandDispatcher } from './commands/dispatcher.js';
 import { createEventRenderer } from './ui/events.js';
 import { readSecret } from './ui/secret.js';
+import { fitVisible } from './ui/width.js';
 
 export interface REPLOptions {
   session: AgentSession;
@@ -97,34 +98,31 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   const printWelcome = () => {
     const active = session.getActiveProfile();
     const cwd = process.cwd();
+
+    // 边框整体宽度 64 列 = 左右竖线各 1 列 + 内容区 62 列。
+    // 内容区补白一律走 fitVisible 按「显示宽度」计算（CJK/emoji 记 2 列），
+    // 不要手写空格 —— 手写极易按「汉字=1 列」估错，导致右边框凸出或错位。
+    const BOX_INNER = 62;
+    const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
+    const row = (content: string): string =>
+      `${cyan('│')}${fitVisible(content, BOX_INNER)}${cyan('│')}`;
+
     console.log(
-      '\n\x1b[36m╭──────────────────────────────────────────────────────────────╮\x1b[0m',
-    );
-    console.log(
-      '\x1b[36m│\x1b[0m  🐾 \x1b[1m\x1b[37mKapibala (kpbl) v0.0.1\x1b[0m                                    \x1b[36m│\x1b[0m',
-    );
-    console.log(`\x1b[36m│\x1b[0m  活跃模型: \x1b[32m${active.name}\x1b[0m (${active.modelName})`);
-    console.log(`\x1b[36m│\x1b[0m  工作目录: \x1b[90m${cwd}\x1b[0m`);
-    console.log(
-      '\x1b[36m│\x1b[0m                                                              \x1b[36m│\x1b[0m',
-    );
-    console.log(
-      '\x1b[36m│\x1b[0m  \x1b[1m快捷指令:\x1b[0m                                                   \x1b[36m│\x1b[0m',
-    );
-    console.log(
-      '\x1b[36m│\x1b[0m  • \x1b[33m/model\x1b[0m   交互式切换模型与配置向导                          \x1b[36m│\x1b[0m',
-    );
-    console.log(
-      '\x1b[36m│\x1b[0m  • \x1b[33m/clear\x1b[0m   清空上下文，开启新会话                            \x1b[36m│\x1b[0m',
-    );
-    console.log(
-      '\x1b[36m│\x1b[0m  • \x1b[33m/help\x1b[0m    查看所有指令与用量状态                            \x1b[36m│\x1b[0m',
-    );
-    console.log(
-      '\x1b[36m│\x1b[0m  • \x1b[33mCtrl+C\x1b[0m   生成中按 1 次中止当前回答；空闲连按 2 次退出程序 \x1b[36m│\x1b[0m',
-    );
-    console.log(
-      '\x1b[36m╰──────────────────────────────────────────────────────────────╯\x1b[0m\n',
+      [
+        '',
+        cyan(`╭${'─'.repeat(BOX_INNER)}╮`),
+        row('  🐾 \x1b[1m\x1b[37mKapibala (kpbl) v0.0.1\x1b[0m'),
+        row(`  活跃模型: \x1b[32m${active.name}\x1b[0m (${active.modelName})`),
+        row(`  工作目录: \x1b[90m${cwd}\x1b[0m`),
+        row(''),
+        row('  \x1b[1m快捷指令:\x1b[0m'),
+        row('  • \x1b[33m/model\x1b[0m   交互式切换模型与配置向导'),
+        row('  • \x1b[33m/clear\x1b[0m   清空上下文，开启新会话'),
+        row('  • \x1b[33m/help\x1b[0m    查看所有指令与用量状态'),
+        row('  • \x1b[33mCtrl+C\x1b[0m   生成中按 1 次中止当前回答；空闲连按 2 次退出程序'),
+        cyan(`╰${'─'.repeat(BOX_INNER)}╯`),
+        '',
+      ].join('\n'),
     );
   };
 

@@ -11,6 +11,9 @@ export const helpCommand: CommandHandler = () => {
   console.log('  \x1b[33m/clear\x1b[0m                   清空当前对话历史上下文');
   console.log('  \x1b[33m/status\x1b[0m                  查看 Token 消耗统计与工具状态');
   console.log('  \x1b[33m/help\x1b[0m                    打印本命令帮助信息');
-  console.log('  \x1b[33m/exit\x1b[0m 或 \x1b[33m/quit\x1b[0m           优雅退出当前终端\n');
+  console.log('  \x1b[33m/exit\x1b[0m 或 \x1b[33m/quit\x1b[0m           优雅退出当前终端');
+  console.log(
+    '                              \x1b[90m（直接输入 exit / quit 亦可，无需斜杠）\x1b[0m',
+  );
   console.log('提示: 输入普通自然语言直接与 Agent 开始交互。\n');
 };
