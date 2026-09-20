@@ -4,9 +4,16 @@ import type { CommandContext } from '../src/commands/dispatcher.js';
 import { updateModelApiKey } from '../src/commands/model.js';
 import { BUILTIN_PROFILES, type UserSettings } from '../src/settings.js';
 
+/** 取一个现役内置 profile 做夹具。id 随内置清单换代，别在断言里写死。 */
+function builtinProfile(id: string) {
+  const found = BUILTIN_PROFILES.find((candidate) => candidate.id === id);
+  if (!found) throw new Error(`builtin profile '${id}' missing from catalog`);
+  return { ...found };
+}
+
 describe('updateModelApiKey', () => {
   it('replaces an existing key, persists it, and refreshes the active provider', async () => {
-    const profile = { ...BUILTIN_PROFILES.find((candidate) => candidate.id === 'gpt-4o')! };
+    const profile = builtinProfile('gpt-5.6-terra');
     profile.apiKey = 'sk-old';
     const settings: UserSettings = { defaultModel: profile.id, profiles: [profile] };
     const onModelSwitched = vi.fn();
@@ -26,12 +33,12 @@ describe('updateModelApiKey', () => {
 
     expect(updated).toBe(true);
     expect(profile.apiKey).toBe('sk-new');
-    expect(saveSettings).toHaveBeenCalledWith(settings);
+    expect(saveSettings).toHaveBeenCalledWith(settings, { homeDir: undefined });
     expect(onModelSwitched).toHaveBeenCalledWith(profile.id);
   });
 
   it('does not erase an existing key when empty input is submitted', async () => {
-    const profile = { ...BUILTIN_PROFILES.find((candidate) => candidate.id === 'gpt-4o')! };
+    const profile = builtinProfile('gpt-5.6-terra');
     profile.apiKey = 'sk-existing';
     const settings: UserSettings = { defaultModel: profile.id, profiles: [profile] };
     const saveSettings = vi.fn(() => 'unused');
@@ -55,7 +62,7 @@ describe('updateModelApiKey', () => {
 
   it('updates only the global layer instead of persisting merged project overrides', async () => {
     const globalProfile = {
-      ...BUILTIN_PROFILES.find((candidate) => candidate.id === 'gpt-4o')!,
+      ...builtinProfile('gpt-5.6-terra'),
       baseURL: 'https://global.example/v1',
     };
     const runtimeProfile = { ...globalProfile, baseURL: 'https://project.example/v1' };
@@ -81,7 +88,7 @@ describe('updateModelApiKey', () => {
       globalSettings,
     });
 
-    expect(saveSettings).toHaveBeenCalledWith(globalSettings);
+    expect(saveSettings).toHaveBeenCalledWith(globalSettings, { homeDir: undefined });
     expect(globalSettings.profiles[0]).toMatchObject({
       baseURL: 'https://global.example/v1',
       apiKey: 'new-key',

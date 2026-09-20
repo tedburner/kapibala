@@ -1,10 +1,13 @@
 import { stdin as input, stdout as output } from 'node:process';
 import readline from 'node:readline/promises';
 import type { ModelProfile } from '@kiturone/kapibala';
+import { type ProviderMeta, listBuiltinProviders } from './providers.js';
 import {
-  BUILTIN_PROFILES,
   type UserSettings,
-  loadSettings,
+  createUserSettingsSkeleton,
+  describeCredentialGroup,
+  readRawGlobalSettings,
+  resolveApiKeyDetailed,
   resolveBaseURL,
   saveGlobalSettings,
 } from './settings.js';
@@ -72,44 +75,65 @@ export async function runSetupWizard(
   const rl = readline.createInterface({ input, output });
 
   console.log('\n🐾 \x1b[36m欢迎使用 Kapibala (kpbl)!\x1b[0m');
-  console.log('检测到当前尚未配置可用的模型服务。请选择您要使用的默认提供商：\n');
-  console.log('  1) \x1b[32mDeepSeek V4 Flash\x1b[0m (推荐默认，极速响应、通用能力)');
-  console.log('  2) \x1b[32mDeepSeek V4 Pro\x1b[0m (深度推理与旗舰思考链)');
-  console.log('  3) \x1b[34mOpenAI GPT-4o\x1b[0m (官方最新旗舰)');
-  console.log('  4) \x1b[33m通义千问 Qwen Plus\x1b[0m (阿里云官方兼容端点)');
-  console.log('  5) \x1b[36m本地 Ollama\x1b[0m (完全本地运行，无需 API Key)');
-  console.log('  6) \x1b[35m自定义 OpenAI 兼容接口\x1b[0m (OneAPI / vLLM / 代理)\n');
+  console.log('检测到当前尚未配置可用的模型服务。请选择您要使用的提供商：\n');
 
-  let choice = await rl.question('请输入选项 [1-6] (默认 1): ');
-  choice = choice.trim() || '1';
+  // 厂商与模型清单全部来自内置目录，不再在这里硬编码 id ——
+  // 硬编码会在模型换代后变成一句 `BUILTIN_PROFILES.find(...)!` 的运行时崩溃。
+  const providerEntries = listBuiltinProviders();
+  providerEntries.forEach((entry, index) => {
+    const recommended = entry.meta.key === 'deepseek' ? ' \x1b[32m(推荐默认)\x1b[0m' : '';
+    console.log(
+      `  ${index + 1}) \x1b[36m${entry.meta.name}\x1b[0m${recommended} —— ${entry.meta.desc} (${entry.models.length}个模型)`,
+    );
+  });
+  const customChoice = providerEntries.length + 1;
+  console.log(`  ${customChoice}) \x1b[35m自定义 OpenAI 兼容接口\x1b[0m —— OneAPI / vLLM / 代理\n`);
+
+  const choice = (await rl.question(`请输入选项 [1-${customChoice}] (默认 1): `)).trim() || '1';
 
   let selectedProfile: ModelProfile;
   let enteredKey = '';
   let keyPrompt: string | undefined;
 
-  if (choice === '1') {
-    selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'deepseek-v4-flash')! };
-    keyPrompt = '请输入您的 DeepSeek API Key (sk-...): ';
-  } else if (choice === '2') {
-    selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'deepseek-v4-pro')! };
-    keyPrompt = '请输入您的 DeepSeek API Key (sk-...): ';
-  } else if (choice === '3') {
-    selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'gpt-4o')! };
-    keyPrompt = '请输入您的 OpenAI API Key (sk-...): ';
-  } else if (choice === '4') {
-    selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'qwen-plus')! };
-    keyPrompt = '请输入您的 DashScope API Key (sk-...): ';
-  } else if (choice === '5') {
-    selectedProfile = { ...BUILTIN_PROFILES.find((p) => p.id === 'ollama')! };
-    enteredKey = 'ollama';
-    const customUrl = await rl.question('请输入 Ollama 地址 (默认 http://localhost:11434/v1): ');
-    if (customUrl.trim()) {
-      selectedProfile.baseURL = customUrl.trim();
+  const parsedChoice = Number.parseInt(choice, 10);
+  const isCustom = parsedChoice === customChoice;
+  const entry: { meta: ProviderMeta; models: ModelProfile[] } | undefined = isCustom
+    ? undefined
+    : (providerEntries[parsedChoice - 1] ?? providerEntries[0]);
+
+  if (entry) {
+    let chosen = entry.models[0]!;
+    if (entry.models.length > 1) {
+      console.log('');
+      entry.models.forEach((candidate, index) => {
+        const context = candidate.contextWindow
+          ? ` | ${Math.round(candidate.contextWindow / 1000)}k`
+          : '';
+        const thinking = candidate.supportsThinking ? ' | 深度思考' : '';
+        console.log(
+          `  ${index + 1}) ${candidate.name} —— ${candidate.modelName}${context}${thinking}`,
+        );
+      });
+      const modelChoice =
+        (await rl.question(`请选择具体模型 [1-${entry.models.length}] (默认 1): `)).trim() || '1';
+      chosen = entry.models[Number.parseInt(modelChoice, 10) - 1] ?? chosen;
+    }
+    console.log('');
+
+    selectedProfile = { ...chosen };
+    if (entry.meta.key === 'ollama') {
+      enteredKey = 'ollama';
+      const customUrl = await rl.question('请输入 Ollama 地址 (默认 http://localhost:11434/v1): ');
+      if (customUrl.trim()) {
+        selectedProfile.baseURL = customUrl.trim();
+      }
+    } else {
+      keyPrompt = entry.meta.keyPrompt;
     }
   } else {
     const name = (await rl.question('请输入服务名称 (如 Custom API): ')).trim() || 'Custom';
     const baseURL = (await rl.question('请输入 BaseURL (如 https://api.example.com/v1): ')).trim();
-    const modelName = (await rl.question('请输入 ModelName (如 gpt-4o): ')).trim();
+    const modelName = (await rl.question('请输入 ModelName (如 gpt-5.6-terra): ')).trim();
     keyPrompt = '请输入 API Key: ';
 
     selectedProfile = {
@@ -122,7 +146,8 @@ export async function runSetupWizard(
     };
   }
 
-  const { settings } = loadSettings({ includeProject: false });
+  // 只读磁盘原始配置：合并版配置里含全部内置 profile，回写会把用户从未启用的模型物化进文件。
+  const settings: UserSettings = readRawGlobalSettings() ?? createUserSettingsSkeleton();
   const existingProfile = settings.profiles.find((profile) => profile.id === selectedProfile.id);
   if (keyPrompt && existingProfile?.apiKey?.trim()) {
     const replace = (await rl.question('该模型已有保存的 API Key，是否更新？[y/N]: '))
@@ -131,6 +156,26 @@ export async function runSetupWizard(
     if (replace !== 'y' && replace !== 'yes') {
       enteredKey = existingProfile.apiKey.trim();
       keyPrompt = undefined;
+    }
+  } else if (keyPrompt) {
+    // 该模型自己没有密钥，但同厂商族已有可用密钥 —— 默认复用，别让用户为同一把 key 反复输入
+    const available = resolveApiKeyDetailed(selectedProfile, settings);
+    if (available) {
+      const origin =
+        available.source === 'shared'
+          ? `来自同厂商模型 '${available.fromProfileId}'`
+          : '来自环境变量';
+      const reuse = (
+        await rl.question(
+          `检测到 ${describeCredentialGroup(selectedProfile)} 的可用 API Key（${origin}）。直接复用？[Y/n]: `,
+        )
+      )
+        .trim()
+        .toLowerCase();
+      if (reuse !== 'n' && reuse !== 'no') {
+        enteredKey = available.key;
+        keyPrompt = undefined;
+      }
     }
   }
 

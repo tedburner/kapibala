@@ -4,11 +4,19 @@ import path from 'node:path';
 import type { ModelProfile } from '@kiturone/kapibala';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  BUILTIN_CATALOG_VERSION,
+  BUILTIN_PROFILES,
   type UserSettings,
+  credentialGroup,
   detectProviderFamily,
   ensureProfile,
   loadSettings,
+  migrateBuiltinCatalog,
+  migrateGlobalSettingsCatalog,
+  normalizeGroupApiKeys,
+  readRawGlobalSettings,
   resolveApiKey,
+  resolveApiKeyDetailed,
   resolveBaseURL,
   trustProject,
   updateProfileApiKey,
@@ -16,21 +24,21 @@ import {
 import { makeCustomProfileId } from '../src/wizard.js';
 
 const DEEPSEEK_PROFILE: ModelProfile = {
-  id: 'deepseek-v4-flash',
+  id: 'deepseek-flash',
   name: 'DeepSeek V4 Flash',
   provider: 'openai-compatible',
   baseURL: 'https://api.deepseek.com/v1',
   apiKeyEnv: 'DEEPSEEK_API_KEY',
-  modelName: 'deepseek-v4-flash',
+  modelName: 'deepseek-flash',
 };
 
 const OPENAI_PROFILE: ModelProfile = {
-  id: 'gpt-4o',
+  id: 'gpt-5.6-terra',
   name: 'OpenAI GPT-4o',
   provider: 'openai-compatible',
   baseURL: 'https://api.openai.com/v1',
   apiKeyEnv: 'OPENAI_API_KEY',
-  modelName: 'gpt-4o',
+  modelName: 'gpt-5.6-terra',
 };
 
 const TRACKED_ENV = [
@@ -112,7 +120,7 @@ describe('project settings trust', () => {
     );
     fs.writeFileSync(
       path.join(projectDir, '.kapibala', 'settings.json'),
-      JSON.stringify({ defaultModel: 'gpt-4o' }),
+      JSON.stringify({ defaultModel: 'gpt-5.6-terra' }),
     );
 
     const loaded = loadSettings({ homeDir, cwd: projectDir });
@@ -125,14 +133,14 @@ describe('project settings trust', () => {
     fs.writeFileSync(
       path.join(homeDir, '.kapibala', 'settings.json'),
       JSON.stringify({
-        defaultModel: 'gpt-4o',
+        defaultModel: 'gpt-5.6-terra',
         profiles: [{ ...OPENAI_PROFILE, apiKey: 'saved-global-key' }],
       }),
     );
     fs.writeFileSync(
       path.join(projectDir, '.kapibala', 'settings.json'),
       JSON.stringify({
-        defaultModel: 'gpt-4o',
+        defaultModel: 'gpt-5.6-terra',
         trustedProjects: ['C:/forged'],
         profiles: [{ ...OPENAI_PROFILE, baseURL: 'https://project.example/v1' }],
       }),
@@ -143,9 +151,11 @@ describe('project settings trust', () => {
     const loaded = loadSettings({ homeDir, cwd: projectDir });
 
     expect(loaded.pendingProject).toBeUndefined();
-    expect(loaded.settings.defaultModel).toBe('gpt-4o');
+    expect(loaded.settings.defaultModel).toBe('gpt-5.6-terra');
     expect(loaded.settings.trustedProjects).toEqual([fs.realpathSync.native(projectDir)]);
-    expect(loaded.settings.profiles.find((profile) => profile.id === 'gpt-4o')).toMatchObject({
+    expect(
+      loaded.settings.profiles.find((profile) => profile.id === 'gpt-5.6-terra'),
+    ).toMatchObject({
       baseURL: 'https://project.example/v1',
       apiKey: 'saved-global-key',
     });
@@ -188,17 +198,233 @@ describe('resolveApiKey', () => {
   });
 });
 
+function deepseekVariant(id: string, modelName: string): ModelProfile {
+  return { ...DEEPSEEK_PROFILE, id, name: id, modelName };
+}
+
+function customGateway(id: string, baseURL: string, modelName = 'gpt-5.6-terra'): ModelProfile {
+  return {
+    id,
+    name: id,
+    provider: 'openai-compatible',
+    baseURL,
+    apiKeyEnv: 'CUSTOM_API_KEY',
+    modelName,
+  };
+}
+
+describe('credentialGroup', () => {
+  it('同一厂商族归为一组 —— 一个厂商只需配置一次密钥', () => {
+    expect(credentialGroup(DEEPSEEK_PROFILE)).toBe(
+      credentialGroup(deepseekVariant('deepseek-v4-pro', 'deepseek-v4-pro')),
+    );
+    expect(credentialGroup(OPENAI_PROFILE)).toBe(
+      credentialGroup({ ...OPENAI_PROFILE, id: 'o3-mini', modelName: 'o3-mini' }),
+    );
+  });
+
+  it('不同厂商不会归为一组', () => {
+    expect(credentialGroup(DEEPSEEK_PROFILE)).not.toBe(credentialGroup(OPENAI_PROFILE));
+  });
+
+  it('自定义端点按 host 隔离 —— 两个不同网关不共用密钥', () => {
+    const gatewayA = customGateway('custom-gw-a', 'https://gw-a.example.com/v1');
+    const sameGatewayOtherModel = customGateway(
+      'custom-gw-a-2',
+      'https://gw-a.example.com/v1',
+      'claude-3-5',
+    );
+    const gatewayB = customGateway('custom-gw-b', 'https://gw-b.example.com/v1');
+
+    expect(credentialGroup(gatewayA)).toBe(credentialGroup(sameGatewayOtherModel));
+    expect(credentialGroup(gatewayA)).not.toBe(credentialGroup(gatewayB));
+  });
+});
+
+describe('resolveApiKeyDetailed 同厂商族复用', () => {
+  it('复用同厂商族已配置的密钥，而不是要求重新输入', () => {
+    clearTrackedEnv();
+    const settings: UserSettings = {
+      defaultModel: 'deepseek-flash',
+      profiles: [
+        { ...DEEPSEEK_PROFILE, apiKey: 'sk-deepseek' },
+        deepseekVariant('deepseek-v4-pro', 'deepseek-v4-pro'),
+      ],
+    };
+
+    expect(resolveApiKeyDetailed(settings.profiles[1]!, settings)).toEqual({
+      key: 'sk-deepseek',
+      source: 'shared',
+      fromProfileId: 'deepseek-flash',
+    });
+  });
+
+  it('自己的内联密钥优先于同厂商族其它模型的密钥', () => {
+    clearTrackedEnv();
+    const settings: UserSettings = {
+      defaultModel: 'deepseek-flash',
+      profiles: [
+        { ...DEEPSEEK_PROFILE, apiKey: 'sk-flash' },
+        { ...deepseekVariant('deepseek-v4-pro', 'deepseek-v4-pro'), apiKey: 'sk-pro' },
+      ],
+    };
+
+    expect(resolveApiKeyDetailed(settings.profiles[1]!, settings)).toEqual({
+      key: 'sk-pro',
+      source: 'inline',
+    });
+  });
+
+  it('不跨厂商复用：DeepSeek 模型不会借到 OpenAI 的密钥', () => {
+    clearTrackedEnv();
+    const settings: UserSettings = {
+      defaultModel: 'gpt-5.6-terra',
+      profiles: [{ ...OPENAI_PROFILE, apiKey: 'sk-openai' }, { ...DEEPSEEK_PROFILE }],
+    };
+
+    expect(resolveApiKeyDetailed(settings.profiles[1]!, settings)).toBeUndefined();
+  });
+
+  it('自定义端点之间不互相借用密钥', () => {
+    clearTrackedEnv();
+    const settings: UserSettings = {
+      defaultModel: 'custom-gw-a',
+      profiles: [
+        { ...customGateway('custom-gw-a', 'https://gw-a.example.com/v1'), apiKey: 'sk-a' },
+        customGateway('custom-gw-b', 'https://gw-b.example.com/v1'),
+      ],
+    };
+
+    expect(resolveApiKeyDetailed(settings.profiles[1]!, settings)).toBeUndefined();
+  });
+
+  it('同厂商族已存密钥优先于环境变量 —— 交互输入的意图更明确', () => {
+    clearTrackedEnv();
+    process.env.DEEPSEEK_API_KEY = 'sk-env';
+    const settings: UserSettings = {
+      defaultModel: 'deepseek-flash',
+      profiles: [
+        { ...DEEPSEEK_PROFILE, apiKey: 'sk-stored' },
+        deepseekVariant('deepseek-v4-pro', 'deepseek-v4-pro'),
+      ],
+    };
+
+    expect(resolveApiKeyDetailed(settings.profiles[1]!, settings)).toEqual({
+      key: 'sk-stored',
+      source: 'shared',
+      fromProfileId: 'deepseek-flash',
+    });
+  });
+
+  it('不传 settings 时保持只读单 profile 的旧行为', () => {
+    clearTrackedEnv();
+    process.env.DEEPSEEK_API_KEY = 'sk-env';
+    expect(resolveApiKey(DEEPSEEK_PROFILE)).toBe('sk-env');
+    expect(resolveApiKeyDetailed(DEEPSEEK_PROFILE)).toEqual({ key: 'sk-env', source: 'env' });
+  });
+});
+
+describe('密钥组内归一', () => {
+  it('updateProfileApiKey 清掉同厂商族的冗余副本，不影响其它厂商', () => {
+    const settings: UserSettings = {
+      defaultModel: 'deepseek-flash',
+      profiles: [
+        { ...DEEPSEEK_PROFILE, apiKey: 'sk-old' },
+        { ...deepseekVariant('deepseek-chat', 'deepseek-chat'), apiKey: 'sk-old' },
+        deepseekVariant('deepseek-v4-pro', 'deepseek-v4-pro'),
+        { ...OPENAI_PROFILE, apiKey: 'sk-openai' },
+      ],
+    };
+
+    updateProfileApiKey(settings, 'deepseek-v4-pro', 'sk-new');
+
+    const byId = (id: string) => settings.profiles.find((profile) => profile.id === id);
+    expect(byId('deepseek-v4-pro')?.apiKey).toBe('sk-new');
+    expect(byId('deepseek-flash')?.apiKey).toBeUndefined();
+    expect(byId('deepseek-chat')?.apiKey).toBeUndefined();
+    expect(byId('gpt-5.6-terra')?.apiKey).toBe('sk-openai');
+  });
+
+  it('归一后同厂商族仍能解析出密钥 —— 清副本不丢密钥', () => {
+    clearTrackedEnv();
+    const settings: UserSettings = {
+      defaultModel: 'deepseek-flash',
+      profiles: [
+        { ...DEEPSEEK_PROFILE, apiKey: 'sk-old' },
+        { ...deepseekVariant('deepseek-chat', 'deepseek-chat'), apiKey: 'sk-old' },
+      ],
+    };
+
+    updateProfileApiKey(settings, 'deepseek-flash', 'sk-fresh');
+
+    expect(resolveApiKey(settings.profiles[0]!, settings)).toBe('sk-fresh');
+    expect(resolveApiKey(settings.profiles[1]!, settings)).toBe('sk-fresh');
+  });
+
+  it('normalizeGroupApiKeys 保留 defaultModel 指向的 profile', () => {
+    const settings: UserSettings = {
+      defaultModel: 'deepseek-flash',
+      profiles: [
+        { ...deepseekVariant('deepseek-chat', 'deepseek-chat'), apiKey: 'sk-a' },
+        { ...DEEPSEEK_PROFILE, apiKey: 'sk-a' },
+      ],
+    };
+
+    const result = normalizeGroupApiKeys(settings);
+
+    expect(result.cleared).toEqual(['deepseek-chat']);
+    expect(result.kept).toEqual(['deepseek-flash']);
+    expect(settings.profiles[0]!.apiKey).toBeUndefined();
+    expect(settings.profiles[1]!.apiKey).toBe('sk-a');
+  });
+
+  it('显式指定的 profile 优先保留，高于 defaultModel', () => {
+    const settings: UserSettings = {
+      defaultModel: 'deepseek-flash',
+      profiles: [
+        { ...DEEPSEEK_PROFILE, apiKey: 'sk-a' },
+        { ...deepseekVariant('deepseek-chat', 'deepseek-chat'), apiKey: 'sk-a' },
+      ],
+    };
+
+    const result = normalizeGroupApiKeys(settings, 'deepseek-chat');
+
+    expect(result.kept).toEqual(['deepseek-chat']);
+    expect(settings.profiles[0]!.apiKey).toBeUndefined();
+    expect(settings.profiles[1]!.apiKey).toBe('sk-a');
+  });
+
+  it('没有重复副本时不做任何改动', () => {
+    const settings: UserSettings = {
+      defaultModel: 'deepseek-flash',
+      profiles: [
+        { ...DEEPSEEK_PROFILE, apiKey: 'sk-a' },
+        { ...OPENAI_PROFILE, apiKey: 'sk-b' },
+      ],
+    };
+
+    const result = normalizeGroupApiKeys(settings);
+
+    expect(result.cleared).toEqual([]);
+    expect(result.kept).toEqual([]);
+    expect(settings.profiles[0]!.apiKey).toBe('sk-a');
+    expect(settings.profiles[1]!.apiKey).toBe('sk-b');
+  });
+});
+
 describe('updateProfileApiKey', () => {
   it('replaces only the selected existing profile key', () => {
     const settings = loadSettings({
       homeDir: path.join(os.tmpdir(), 'kapibala-no-settings'),
     }).settings;
-    const originalOpenAIKey = settings.profiles.find((profile) => profile.id === 'gpt-4o')?.apiKey;
+    const originalOpenAIKey = settings.profiles.find(
+      (profile) => profile.id === 'gpt-5.6-terra',
+    )?.apiKey;
 
-    const updated = updateProfileApiKey(settings, 'deepseek-v4-flash', ' sk-replaced ');
+    const updated = updateProfileApiKey(settings, 'deepseek-flash', ' sk-replaced ');
 
     expect(updated.apiKey).toBe('sk-replaced');
-    expect(settings.profiles.find((profile) => profile.id === 'gpt-4o')?.apiKey).toBe(
+    expect(settings.profiles.find((profile) => profile.id === 'gpt-5.6-terra')?.apiKey).toBe(
       originalOpenAIKey,
     );
   });
@@ -216,14 +442,14 @@ describe('updateProfileApiKey', () => {
 describe('ensureProfile', () => {
   it('adds a project-only profile without overwriting an existing global profile', () => {
     const settings: UserSettings = {
-      defaultModel: 'gpt-4o',
+      defaultModel: 'gpt-5.6-terra',
       profiles: [{ ...OPENAI_PROFILE, baseURL: 'https://global.example/v1' }],
     };
 
     ensureProfile(settings, { ...OPENAI_PROFILE, baseURL: 'https://project.example/v1' });
     ensureProfile(settings, { ...DEEPSEEK_PROFILE, id: 'project-only' });
 
-    expect(settings.profiles.find((profile) => profile.id === 'gpt-4o')?.baseURL).toBe(
+    expect(settings.profiles.find((profile) => profile.id === 'gpt-5.6-terra')?.baseURL).toBe(
       'https://global.example/v1',
     );
     expect(settings.profiles.some((profile) => profile.id === 'project-only')).toBe(true);
@@ -291,5 +517,173 @@ describe('makeCustomProfileId', () => {
     const id = makeCustomProfileId('我的网关', 'https://a.example.com/v1');
     expect(id.startsWith('custom-')).toBe(true);
     expect(id).toMatch(/^[a-z0-9-]+$/);
+  });
+});
+
+/** 拿一个退役 id 造存量配置：模拟用户在旧版本里存下的那份 profile。 */
+function legacyProfile(id: string, overrides: Partial<ModelProfile> = {}): ModelProfile {
+  return {
+    id,
+    name: id,
+    provider: 'openai-compatible',
+    baseURL: 'https://api.deepseek.com/v1',
+    apiKeyEnv: 'DEEPSEEK_API_KEY',
+    modelName: id,
+    contextWindow: 128000,
+    ...overrides,
+  };
+}
+
+describe('migrateBuiltinCatalog 存量配置升级', () => {
+  it('退役 id 重定向到现役模型，并把密钥带过去', () => {
+    const raw: UserSettings = {
+      defaultModel: 'deepseek-v4-flash',
+      profiles: [legacyProfile('deepseek-v4-flash', { apiKey: 'sk-live' })],
+    };
+
+    const { settings, changed } = migrateBuiltinCatalog(raw);
+
+    expect(changed).toBe(true);
+    expect(settings.profiles.some((p) => p.id === 'deepseek-v4-flash')).toBe(false);
+    const migrated = settings.profiles.find((p) => p.id === 'deepseek-flash');
+    // 密钥不能丢：它往往是用户唯一一份 DeepSeek key，删掉是不可逆损失
+    expect(migrated?.apiKey).toBe('sk-live');
+    expect(settings.defaultModel).toBe('deepseek-flash');
+    expect(settings.builtinCatalogVersion).toBe(BUILTIN_CATALOG_VERSION);
+  });
+
+  it('同步过期的目录字段，但原样保留 apiKey 与自定义 baseURL', () => {
+    const raw: UserSettings = {
+      defaultModel: 'deepseek-v4-pro',
+      profiles: [
+        legacyProfile('deepseek-v4-pro', {
+          apiKey: 'sk-pro',
+          baseURL: 'https://my-proxy.example.com/v1',
+        }),
+      ],
+    };
+
+    const { settings } = migrateBuiltinCatalog(raw);
+    const migrated = settings.profiles.find((p) => p.id === 'deepseek-v4-pro');
+    const builtin = BUILTIN_PROFILES.find((p) => p.id === 'deepseek-v4-pro');
+
+    expect(migrated?.contextWindow).toBe(builtin?.contextWindow);
+    expect(migrated?.modelName).toBe(builtin?.modelName);
+    expect(migrated?.apiKey).toBe('sk-pro');
+    // baseURL 属于目录持有字段，会被内置值覆盖；这里断言覆盖确实发生了，
+    // 避免以后有人误以为代理地址会被保留。
+    expect(migrated?.baseURL).toBe(builtin?.baseURL);
+  });
+
+  it('目标 profile 已存在时合并，密钥补给无密钥的一方', () => {
+    const raw: UserSettings = {
+      defaultModel: 'deepseek-v4-flash',
+      profiles: [
+        legacyProfile('deepseek-v4-flash', { apiKey: 'sk-live' }),
+        legacyProfile('deepseek-flash'),
+      ],
+    };
+
+    const { settings } = migrateBuiltinCatalog(raw);
+
+    expect(settings.profiles.filter((p) => p.id === 'deepseek-flash')).toHaveLength(1);
+    expect(settings.profiles.find((p) => p.id === 'deepseek-flash')?.apiKey).toBe('sk-live');
+    expect(settings.profiles).toHaveLength(1);
+  });
+
+  it('用户自建 profile 一个不丢，且不会把内置模型物化进配置', () => {
+    const raw: UserSettings = {
+      defaultModel: 'custom-my-gateway',
+      profiles: [
+        legacyProfile('deepseek-v4-flash', { apiKey: 'sk-live' }),
+        {
+          id: 'custom-my-gateway',
+          name: 'My Gateway',
+          provider: 'openai-compatible',
+          baseURL: 'https://gw.example.com/v1',
+          apiKeyEnv: 'CUSTOM_API_KEY',
+          modelName: 'whatever',
+          apiKey: 'sk-gw',
+        },
+      ],
+    };
+
+    const { settings } = migrateBuiltinCatalog(raw);
+
+    expect(settings.profiles.find((p) => p.id === 'custom-my-gateway')?.apiKey).toBe('sk-gw');
+    expect(settings.profiles.find((p) => p.id === 'custom-my-gateway')?.modelName).toBe('whatever');
+    expect(settings.profiles).toHaveLength(2);
+    // 内置模型由 loadSettings 从代码侧合并，写进用户文件只会制造一份冗余快照
+    expect(settings.profiles.some((p) => p.id === 'claude-opus-5')).toBe(false);
+  });
+
+  it('版本已是最新时不产生任何变更（幂等）', () => {
+    const raw: UserSettings = {
+      defaultModel: 'deepseek-flash',
+      profiles: [legacyProfile('deepseek-flash', { apiKey: 'sk-live' })],
+      builtinCatalogVersion: BUILTIN_CATALOG_VERSION,
+    };
+
+    const { changed, changes } = migrateBuiltinCatalog(raw);
+
+    expect(changed).toBe(false);
+    expect(changes).toEqual([]);
+  });
+
+  it('配置里没有旧 id 时不产生多余变更说明', () => {
+    const raw: UserSettings = { defaultModel: 'deepseek-flash', profiles: [] };
+
+    const { settings, changes } = migrateBuiltinCatalog(raw);
+
+    expect(changes).toEqual([]);
+    expect(settings.profiles).toEqual([]);
+    expect(settings.builtinCatalogVersion).toBe(BUILTIN_CATALOG_VERSION);
+  });
+});
+
+describe('migrateGlobalSettingsCatalog 落盘', () => {
+  it('读磁盘原始配置、升级后写回，且不物化用户从未启用的内置模型', () => {
+    const { homeDir } = createSettingsWorkspace();
+    const settingsPath = path.join(homeDir, '.kapibala', 'settings.json');
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        defaultModel: 'deepseek-v4-flash',
+        profiles: [legacyProfile('deepseek-v4-flash', { apiKey: 'sk-live' })],
+      }),
+    );
+
+    const changes = migrateGlobalSettingsCatalog({ homeDir });
+
+    expect(changes.length).toBeGreaterThan(0);
+    const persisted = readRawGlobalSettings({ homeDir });
+    expect(persisted?.defaultModel).toBe('deepseek-flash');
+    expect(persisted?.builtinCatalogVersion).toBe(BUILTIN_CATALOG_VERSION);
+    const flash = persisted?.profiles.find((p) => p.id === 'deepseek-flash');
+    expect(flash?.apiKey).toBe('sk-live');
+    // 关键：只写用户真正拥有的 profile，不把 19 个内置模型全灌进配置文件
+    expect(persisted?.profiles).toHaveLength(1);
+  });
+
+  it('没有配置文件时直接跳过，不创建文件', () => {
+    const { homeDir } = createSettingsWorkspace();
+    const settingsPath = path.join(homeDir, '.kapibala', 'settings.json');
+
+    expect(migrateGlobalSettingsCatalog({ homeDir })).toEqual([]);
+    expect(fs.existsSync(settingsPath)).toBe(false);
+  });
+
+  it('二次执行不再产生变更', () => {
+    const { homeDir } = createSettingsWorkspace();
+    fs.writeFileSync(
+      path.join(homeDir, '.kapibala', 'settings.json'),
+      JSON.stringify({
+        defaultModel: 'deepseek-v4-flash',
+        profiles: [legacyProfile('deepseek-v4-flash', { apiKey: 'sk-live' })],
+      }),
+    );
+
+    expect(migrateGlobalSettingsCatalog({ homeDir }).length).toBeGreaterThan(0);
+    expect(migrateGlobalSettingsCatalog({ homeDir })).toEqual([]);
   });
 });

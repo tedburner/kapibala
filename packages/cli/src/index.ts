@@ -20,6 +20,7 @@ import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
   loadSettings,
+  migrateGlobalSettingsCatalog,
   resolveApiKey,
   resolveBaseURL,
 } from './settings.js';
@@ -45,13 +46,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   kpbl -m deepseek-v4-pro          # 指定深度推理模型启动终端
 
 选项:
-  -m, --model <id>       指定要使用的模型 profile id (如 deepseek-v4-flash, gpt-4o)
+  -m, --model <id>       指定要使用的模型 profile id (如 deepseek-flash, claude-opus-5)
   -p, --prompt <text>    直接执行问答并输出结果 (单次模式)
   --base-url <url>       临时覆盖模型 API 端点
   --api-key <key>        临时指定 API 密钥
   --debug                输出调试日志与事件追踪
   -v, --version          查看当前版本
   -h, --help             查看帮助信息
+
+提示:
+  输入 /model 可浏览全部内置模型（DeepSeek / OpenAI / Claude / Gemini / Qwen / Kimi / GLM / Ollama）。
 `);
     process.exit(0);
   }
@@ -59,6 +63,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (args.version) {
     console.log('kpbl v0.0.1');
     process.exit(0);
+  }
+
+  // 0. 内置模型清单升级
+  // 厂商换代后老配置里的 modelName 会指向已退役模型（如 deepseek-chat 已不可访问）。
+  // 这里只动全局配置文件，且仅在版本落后时写回；失败不能挡住启动。
+  try {
+    const catalogChanges = migrateGlobalSettingsCatalog();
+    if (catalogChanges.length > 0) {
+      console.log(`\x1b[36m⬆ 内置模型清单已更新（${catalogChanges.length} 项）：\x1b[0m`);
+      for (const change of catalogChanges) {
+        console.log(`\x1b[90m  · ${change}\x1b[0m`);
+      }
+    }
+  } catch (err: unknown) {
+    console.error(`\x1b[33m[kapibala] 内置模型清单升级失败：${(err as Error).message}\x1b[0m`);
   }
 
   // 1. 加载 settings
@@ -95,7 +114,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // 2. 检测可用性，若完全无配置则唤起初次向导
-  let activeApiKey = resolveApiKey(activeProfile);
+  // 传入 settings 才能复用同厂商族已配置的密钥，避免同厂换个模型就要求重新输入。
+  let activeApiKey = resolveApiKey(activeProfile, settings);
 
   if (!activeApiKey && activeProfile.apiKeyEnv !== API_KEY_ENV_NONE) {
     const { profile, apiKey } = await runSetupWizard();
@@ -172,7 +192,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         return;
       }
 
-      const key = resolveApiKey(profile) || 'none';
+      const key = resolveApiKey(profile, settings) || 'none';
       currentProvider = createProvider(profile, key);
       session.switchModel(profile, 'default', currentProvider);
     },

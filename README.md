@@ -14,9 +14,10 @@
     <a href="#-核心特性">核心特性</a> •
     <a href="#-极速测试与启动-one-minute-quickstart">极简快速测试</a> •
     <a href="#-cli-使用指南-kpbl">CLI 使用指南</a> •
-    <a href="#-sdk-使用指南-self-agentcore">SDK 使用指南</a> •
+    <a href="#-sdk-使用指南-kituronekapibala">SDK 使用指南</a> •
     <a href="#-架构设计">架构设计</a> •
     <a href="#-配置系统">配置系统</a> •
+    <a href="#-开发与本地测试">开发与测试</a> •
     <a href="#-版本路线图">路线图</a>
   </p>
 
@@ -31,7 +32,7 @@
 正如卡皮巴拉在自然界中以“情绪极其稳定、友善包容万物”著称，**Kapibala** 致力于为大模型 Agent 提供一个：
 - **心如止水**：面对工具执行报错、网络抖动、模型幻觉，具备自动重试、熔断与上下文自愈能力，杜绝坏历史导致 API 400 报错；
 - **连接万物**：规范消息模型（Canonical Message）与可插拔扩展架构（Plugin & Hook），解耦厂商差异，轻松串联各种工具与模型生态；
-- **开箱即用**：第一期以 **OpenAI API 兼容协议为主打**，深度覆盖 DeepSeek（含原生思考推理链折叠解析）、OpenAI 官方（GPT-4o）、本地 Ollama 及中转代理，提供极度舒适的交互式 CLI 终端。
+- **开箱即用**：以 **OpenAI API 兼容协议为主打**，内置 **8 家厂商 / 20 个模型**（DeepSeek、OpenAI、Anthropic、Google Gemini、通义千问、Kimi、智谱 GLM、本地 Ollama），深度覆盖 DeepSeek 原生思考推理链折叠解析，并提供极度舒适的交互式 CLI 终端。
 
 ---
 
@@ -39,13 +40,13 @@
 
 - 🌐 **OpenAI 兼容协议为主（零外部模型 SDK 依赖）**
   - 基于 Node.js 原生 `fetch` 与轻量级原生 SSE（Server-Sent Events）行解析器，不依赖臃肿的第三方 SDK。
-  - 原生支持 **DeepSeek**（含 `reasoning_content` 深度思考链流式分发与折叠展示）、**OpenAI (GPT-4o)**、**本地 Ollama** 及 OneAPI / vLLM / 兼容代理。
+  - 原生支持 **DeepSeek**（含 `reasoning_content` 深度思考链流式分发与折叠展示）、**OpenAI**、**Anthropic**、**Google Gemini**、**通义千问**、**Kimi**、**智谱 GLM**、**本地 Ollama**，以及 OneAPI / vLLM / 任意兼容代理。
   - **流式多分片 Tool Call 拼接还原**：自动按序号组装切片的工具参数，在流结束时反序列化为合法 JSON 并触发执行。
 
 - 🎮 **流畅交互式 CLI 与 Slash 命令系统**
   - 单一命令 `kpbl` 启动交互终端，支持打字机流式输出与思考链高亮展示。
   - 内置斜杠控制命令：`/model`（查看/热切换）、`/model setup`（重新配置）、`/settings`（查看配置）、`/clear`（重置会话）、`/status`（查看用量与已载工具）、`/help` 等。
-  - 智能信号处理：生成中按下 `Ctrl+C` 触发 `AbortController` 优雅中断模型生成并修补历史，空闲时双击或 `/exit` 退出。
+  - 智能信号处理：生成中按下 `Ctrl+C` 触发 `AbortController` 优雅中断模型生成并修补历史，空闲时双击、`/exit` 或直接输入 `exit` 退出。
 
 - 🧙 **首次冷启动向导 (First-Run Setup Wizard)**
   - 全新环境无配置时，启动自动引导用户选择提供商、输入 API Key 或端点。
@@ -70,13 +71,30 @@
   - `.gitignore` 深度过滤所有环境密钥、局部配置文件与历史数据，严禁真实 API Key 被意外提交。
 
 - 🧭 **场景模型路由预留 (Role-based Model Routing)**
-  - 配置与核心接口原生支持 `default`、`planning`、`execution`、`summary`、`fast` 角色路由，默认配置内置 **`deepseek-v4-pro`（深度规划推理）** + **`deepseek-v4-flash`（高效代码执行）** 的官方旗舰级双模型分工（v0.0.1 仅持久化契约，运行时统一回退到 `defaultModel`）。
+  - 配置与核心接口原生支持 `default`、`planning`、`execution`、`summary`、`fast` 角色路由，内置默认分工为 **`deepseek-v4-pro`（深度规划推理）** + **`deepseek-flash`（高效代码执行）**（v0.0.1 仅持久化契约，运行时统一回退到 `defaultModel`）。
 
 ---
 
 ## 🚀 极速测试与启动 (One-Minute Quickstart)
 
-如果你刚刚克隆了本项目，只需以下 3 条最简命令即可完成环境验证与交互测试：
+如果你刚刚克隆了本项目，**一条命令**即可完成依赖安装、编译、全量校验并直接进入交互会话：
+
+```bash
+# 跨平台一键启动（Windows / macOS / Linux 通用）
+pnpm dev
+
+# 等价写法：Windows 可双击 scripts/dev.cmd，macOS / Git Bash 用 bash scripts/dev.sh
+# 详细参数见：node scripts/dev.mjs --help
+```
+
+该脚本的内部流程为：**环境预检 → 依赖安装(按需) → 工作区链接自愈 → 编译 → 校验 → 启动**，
+校验（typecheck + test + lint）不通过会直接中断，避免带着红灯进入对话。
+
+常用开关：`--no-start`（构建+校验后不启动）、`--verify-only`（只跑校验）、`--no-build`（复用上次产物）、
+`--no-verify`（跳过校验）、`--clean`（从零重建）、`--skip-install`、`--global`（注册全局 `kpbl`）。
+完整清单以 `node scripts/dev.mjs --help` 为准。
+
+如需逐步手动执行，对应命令如下：
 
 ```bash
 # 1. 安装依赖并编译构建
@@ -89,17 +107,23 @@ pnpm test
 # 2.1 运行全量类型检查（src + tests + examples 一起检，避免类型错误被 tsup 静默放过）
 pnpm typecheck
 
-# 3. 免全局安装，直接启动 CLI 交互体验
-pnpm dev:cli
+# 3. 免全局安装，直接运行打包产物启动 CLI 交互体验
+node packages/cli/dist/bin.js
 ```
 
 ### ⚡ 常用测试命令速查表
 
 | 测试场景 | 最简命令 | 说明 |
 |---|---|---|
-| **交互式终端测试** | `pnpm dev:cli` | 开发模式直接进入 REPL 交互会话 |
-| **带 Key 临时体验** | `pnpm dev:cli -- -m deepseek-v4-flash --api-key "sk-xxx"` | 不修改本地配置，临时指定密钥运行一次 |
-| **测试指定推理模型** | `pnpm dev:cli -- -m deepseek-v4-pro` | 体验 DeepSeek V4 Pro 思考过程与推理流式输出 |
+| **一键编译 + 校验 + 启动** | `pnpm dev` | 跨平台（Win/mac/Linux），等价于 install → build → verify → REPL |
+| **编译 + 校验，但不启动** | `pnpm dev:build` | 等价于 `node scripts/dev.mjs --no-start`：依赖 → 链接自愈 → 编译 → 校验后停在启动前 |
+| **只跑校验（不编译、不启动）** | `node scripts/dev.mjs --verify-only` | 完整门禁 typecheck + test + lint（含密钥扫描），与 `pnpm verify` 同源 |
+| **快速进入 REPL（跳过校验）** | `node scripts/dev.mjs --no-verify` | 跳过 typecheck / test / lint，调试时最快 |
+| **单次问答（不进入 REPL）** | `node scripts/dev.mjs -p "看看当前目录"` | 一次性提问并输出结果后退出 |
+| **从零重新构建** | `node scripts/dev.mjs --clean` | 清理 dist 与 .tsup 缓存后重新编译 |
+| **监听见效模式（只重建不启动）** | `pnpm dev:cli` | `tsup --watch` 监听源码并重建，需另开终端运行产物 |
+| **带 Key 临时体验** | `node scripts/dev.mjs -m deepseek-flash --api-key "sk-xxx"` | 不修改本地配置，临时指定密钥运行一次 |
+| **测试指定推理模型** | `node scripts/dev.mjs -m deepseek-v4-pro` | 体验 DeepSeek V4 Pro 思考过程与推理流式输出 |
 | **全局链接后测试** | `pnpm link:cli` ➡️ 任意终端直接输入 `kpbl` | 一键全局注册系统命令 |
 | **自动化测试套件** | `pnpm test` | 运行 Vitest 自动化单元测试（全部通过） |
 | **全量类型检查** | `pnpm typecheck` | 覆盖 `src` / `tests` / `examples`，防止类型错误被 tsup 静默放过 |
@@ -126,12 +150,26 @@ pnpm link:cli
 kpbl
 ```
 
-#### 方式二：开发模式启动
+#### 方式二：一键开发脚本（推荐，跨平台）
 ```bash
-# 在项目根目录下
-pnpm dev:cli
+# 在项目根目录下：自动完成 依赖安装 → 编译 → 校验 → 启动
+pnpm dev
 
-# 或直接运行打包产物
+# Windows 也可直接双击 scripts/dev.cmd；
+# macOS / Git Bash 用 bash scripts/dev.sh
+# 常用参数：--no-verify（跳过校验）、--clean（从零重建）、-p "问题"（单次问答）
+```
+
+#### 方式三：只重建不启动（源码监听）
+```bash
+# tsup --watch：监听源码变更并重新打包，不会启动 REPL，
+# 需另开一个终端运行产物：
+pnpm dev:cli
+node packages/cli/dist/bin.js
+```
+
+#### 方式四：直接运行打包产物
+```bash
 node packages/cli/dist/bin.js
 ```
 
@@ -151,7 +189,7 @@ node packages/cli/dist/bin.js
   kpbl -m deepseek-v4-pro          # 指定深度推理模型启动终端
 
 选项:
-  -m, --model <id>       指定要使用的模型 profile id (如 deepseek-v4-flash, gpt-4o)
+  -m, --model <id>       指定要使用的模型 profile id (如 deepseek-flash, claude-opus-5)
   -p, --prompt <text>    直接执行单次问答并输出结果 (免进入 REPL)
   --base-url <url>       临时覆盖模型 API 端点 (例如使用自建代理/中转)
   --api-key <key>        临时指定 API 密钥
@@ -172,39 +210,50 @@ kpbl
 kpbl -m deepseek-v4-pro
 
 # 场景 4：临时传入 Key 快速测试（不修改本地配置文件）
-kpbl -m deepseek-v4-flash --api-key "sk-xxxxxxxx"
+kpbl -m deepseek-flash --api-key "sk-xxxxxxxx"
 ```
 
 ---
 
 ### 3. 初次冷启动向导体验 (Setup Wizard)
 
-初次使用且本机尚未配置任何 API Key 时，系统将自动弹出交互向导：
+初次使用且本机尚未配置任何 API Key 时，系统将自动弹出交互向导。厂商清单取自内置目录，**2 步选择**（先选厂商、再选档位）：
 
 ```text
 🐾 欢迎使用 Kapibala (kpbl)!
-检测到当前尚未配置可用的模型服务。请选择您要使用的默认提供商：
+检测到当前尚未配置可用的模型服务。请选择您要使用的提供商：
 
-  1) DeepSeek V4 Flash (推荐默认，极速响应、通用能力)
-  2) DeepSeek V4 Pro (深度推理与旗舰思考链)
-  3) OpenAI GPT-4o (官方最新旗舰)
-  4) 通义千问 Qwen Plus (阿里云官方兼容端点)
-  5) 本地 Ollama (完全本地运行，无需 API Key)
-  6) 自定义 OpenAI 兼容接口 (OneAPI / vLLM / 代理)
+  1) DeepSeek (推荐默认) —— 国内直连、极速响应与旗舰推理能力 (2个模型)
+  2) OpenAI —— GPT-6 Astra / GPT-5.6 Sol·Terra·Luna (4个模型)
+  3) Anthropic Claude —— Fable 5.1 / Opus 5 / Sonnet 5 / Haiku 4.5 (4个模型)
+  4) Google Gemini —— Gemini 3.1 Pro / Gemini 3 Flash (2个模型)
+  5) 通义千问 (Qwen) —— 阿里云官方 DashScope 兼容模式 (3个模型)
+  6) Kimi (月之暗面) —— Kimi K3 / K2.7 Code (2个模型)
+  7) 智谱 GLM —— GLM-5.3 / GLM-5.3-Flash (2个模型)
+  8) 本地 Ollama —— 完全本地运行开源模型，无须 API Key (1个模型)
+  9) 自定义 OpenAI 兼容接口 —— OneAPI / vLLM / 代理
 
-请输入选项 [1-6] (默认 1): 1
+请输入选项 [1-9] (默认 1): 1
+
+  1) DeepSeek Flash (V4.1-Flash) —— deepseek-flash | 1000k | 深度思考
+  2) DeepSeek V4 Pro (深度推理) —— deepseek-v4-pro | 1000k | 深度思考
+请选择具体模型 [1-2] (默认 1): 1
+
 请输入您的 DeepSeek API Key (sk-...): sk-********************
 
 ⏳ 正在验证连接与可用性...
 ✔ 连接验证成功 (HTTP 200)
 ✔ 配置已成功持久化至全局：~/.kapibala/settings.json
-已就绪！当前默认模型：DeepSeek V4 Flash (deepseek-v4-flash)
+已就绪！当前默认模型：DeepSeek Flash (V4.1-Flash) (deepseek-flash)
 
-kpbl (deepseek-v4-flash) ❯ 
+kpbl (deepseek-flash) ❯ 
 ```
 
 > 若探测返回 401/403，会提示「端点可达但密钥被拒绝」；若端点不可达或未实现 `GET /models`，会提示「未能验证连通性」。
 > 两种情况都只告警、不阻断 —— 配置照常保存，避免私有网关被误挡在门外。
+>
+> 若该厂商族已有可用密钥，向导不会让你重新粘贴，而是先问一句：
+> `检测到 DeepSeek 的可用 API Key（来自同厂商模型 'deepseek-flash'）。直接复用？[Y/n]:` —— 默认直接复用。
 
 ---
 
@@ -218,25 +267,53 @@ kpbl (deepseek-v4-flash) ❯
 **第一步：选择模型提供商 (Provider)**
 ```text
 ? 第一步：请选择模型提供商 (Provider) (按 ↑/↓ 移动，回车确认，Esc 取消)
-  ❯ ● 1) DeepSeek [当前提供商] - 国内直连、极速响应与旗舰推理能力 (4个模型)
-    ○ 2) OpenAI - 官方最新 GPT-4o / o3-mini (3个模型)
-    ○ 3) 通义千问 (Qwen) - 阿里云官方 DashScope 兼容模式 (1个模型)
-    ○ 4) 本地 Ollama - 完全本地运行开源模型，无须 API Key (1个模型)
-    ○ 5) ⚙️ 运行配置向导添加/配置新模型 (/model setup)
-    ○ 6) ⭐️ 将当前模型 [DeepSeek V4 Flash] 设为全局默认
+  ❯ ● 1) DeepSeek [当前提供商] - 国内直连、极速响应与旗舰推理能力 · 2个模型 · 🔑 已配置密钥
+    ○ 2) OpenAI - GPT-6 Astra / GPT-5.6 Sol·Terra·Luna · 4个模型 · ⚠️ 未配置密钥
+    ○ 3) Anthropic Claude - Fable 5.1 / Opus 5 / Sonnet 5 / Haiku 4.5 · 4个模型 · ⚠️ 未配置密钥
+    ○ 4) Google Gemini - Gemini 3.1 Pro / Gemini 3 Flash · 2个模型 · ⚠️ 未配置密钥
+    ○ 5) 通义千问 (Qwen) - 阿里云官方 DashScope 兼容模式 · 3个模型 · ⚠️ 未配置密钥
+    ○ 6) Kimi (月之暗面) - Kimi K3 / K2.7 Code · 2个模型 · ⚠️ 未配置密钥
+    ○ 7) 智谱 GLM - GLM-5.3 / GLM-5.3-Flash · 2个模型 · ⚠️ 未配置密钥
+    ○ 8) 本地 Ollama - 完全本地运行开源模型，无须 API Key · 1个模型 · 免密钥
+    ○ 9) ⚙️ 运行配置向导添加/配置新模型 (/model setup)
+    ○ 10) 🔑 更新当前模型 [DeepSeek Flash (V4.1-Flash)] 的 API Key
+    ○ 11) ⭐️ 将当前模型 [DeepSeek Flash (V4.1-Flash)] 设为全局默认
 ```
+
+> 每个厂商直接标注密钥就绪状态（`🔑 已配置密钥` / `⚠️ 未配置密钥` / `免密钥`），
+> 不必等切过去才发现还要补录。
+>
+> 注意厂商行的**序号是动态的**：只列「该分类下确实存在模型」的厂商（所以没配过自建端点就不会出现「自定义端点 / 其它」那一行），
+> 末尾的向导 / 更新密钥 / 设为默认三项恒定收尾。
 
 **第二步：选择该提供商下的具体模型**
 ```text
 ? 第二步：请选择【DeepSeek】的具体模型 (按 ↑/↓ 移动，回车确认，Esc 取消)
-  ❯ ● 1) DeepSeek V4 Flash [当前使用] [默认] - deepseek-v4-flash | 128k
-    ○ 2) DeepSeek Flash - deepseek-flash | 128k
-    ○ 3) DeepSeek V4 Pro (深度推理) - deepseek-v4-pro | 128k | 深度思考
-    ○ 4) ⬅️ 返回上一级 (重新选择提供商)
+  ❯ ● 1) DeepSeek Flash (V4.1-Flash) [当前使用] - deepseek-flash | 1000k | 深度思考 · 🔑 已配置密钥
+    ○ 2) DeepSeek V4 Pro (深度推理) - deepseek-v4-pro | 1000k | 深度思考 · 🔑 已配置密钥
+    ○ 3) ⬅️ 返回上一级 (重新选择提供商)
 ```
+> `deepseek-v4-pro` 自身并没有单独保存密钥 —— 它直接复用同厂商族的密钥，所以同样标注 `🔑 已配置密钥`。
+>
+> 徽章 `[当前使用]`（正在用的模型）与 `[默认]`（全局默认模型）是**互斥**的：当前模型同时也是默认模型时，只显示前者。
+
 - 按键盘 **`↑` / `↓`** 移动高亮光标，按 **`Enter`** 即可选中并热切换；
 - 支持数字键 **`1`-`9`** 极速盲按直选；
 - 随时支持选 `⬅️ 返回上一级` 重新选择厂商，按 **`Esc`** 随时退出取消。
+
+#### 🔑 API Key 按厂商族共用（一个厂商只需配置一次）
+
+同一厂商的多个模型**共用同一份密钥**，不需要为每个模型重复输入：
+
+| 行为 | 说明 |
+|---|---|
+| **复用** | 为 `gpt-5.6-terra` 填过 Key 后，切到 `gpt-6-astra` / `gpt-5.6-luna` 会自动复用，不再询问 |
+| **可见** | 切换时打印 `🔑 复用 OpenAI 的 API Key（来自 'gpt-5.6-terra'）`，菜单里也直接标注各厂商的密钥状态 |
+| **唯一** | 更新密钥时同厂商族的冗余副本会被自动清理，配置文件里始终只保留一份 |
+| **隔离** | 8 家可识别厂商（DeepSeek / OpenAI / Anthropic / Google / 通义千问 / Kimi / 智谱 / Ollama）按厂商归组；**自定义端点按 host 隔离**，两个不同的自建网关不会串用密钥 |
+| **不跨厂商** | 绝不做跨厂商兜底 —— 拿 OpenAI 的 Key 去打 DeepSeek 端点只会得到一条没头没尾的 401，排障成本极高 |
+
+解析优先级：**本模型内联密钥 → 同厂商族已存密钥 → 本模型声明的环境变量 → 同族环境变量回退**。
 
 #### 常用 Slash 指令一览表：
 
@@ -245,12 +322,13 @@ kpbl (deepseek-v4-flash) ❯
 | `/model` | **呼出交互式模型选择菜单** (支持上下键/数字键直选) | `/model` |
 | `/model <id>` | 命令行快速切换模型 (高级快捷方式) | `/model deepseek-v4-pro` |
 | `/model setup` | 重新唤出终端交互配置向导 | `/model setup` |
-| `/model set-default <id>` | 将指定模型持久化为全局默认模型 | `/model set-default gpt-4o` |
+| `/model key [id]` | 更新指定模型（或其所属厂商族）的 API Key | `/model key gpt-5.6-terra` |
+| `/model set-default <id>` | 将指定模型持久化为全局默认模型 | `/model set-default gpt-5.6-terra` |
 | `/settings` | 查看当前生效的配置信息与加载路径 | `/settings` |
 | `/clear` | 清空当前对话上下文历史，开启全新会话 | `/clear` |
 | `/status` | 打印当前会话已载入工具列表及运行状态 | `/status` |
 | `/help` | 打印可用 Slash 命令说明 | `/help` |
-| `/exit` 或 `/quit` | 退出交互终端 | `/exit` |
+| `/exit` 或 `/quit` | 退出交互终端（**裸输入 `exit` / `quit` 亦可，无需斜杠**） | `/exit` |
 
 #### ⌨️ 快捷键规范 (Claude Code 风格状态机)：
 - **`Ctrl + C`（模型回答生成中）**：**单次按下立即中止当前回答**，已生成的历史自动修复闭合，会话上下文完好保留；
@@ -276,13 +354,13 @@ import {
 
 // 1. 定义模型配置
 const profile: ModelProfile = {
-  id: 'deepseek-v4-flash',
-  name: 'DeepSeek V4 Flash',
+  id: 'deepseek-flash',
+  name: 'DeepSeek Flash (V4.1-Flash)',
   provider: 'openai-compatible',
   baseURL: 'https://api.deepseek.com/v1',
   apiKeyEnv: 'DEEPSEEK_API_KEY',
-  modelName: 'deepseek-v4-flash',
-  supportsThinking: false,
+  modelName: 'deepseek-flash',
+  supportsThinking: true,
 };
 
 // 2. 创建 OpenAI 兼容 Provider（原生 fetch + SSE 解析）
@@ -404,12 +482,12 @@ session.hooks.on('tool:after', async (ctx, tool, result) => {
 
 ### 5. 场景模型路由 (Role-based Routing)
 
-Kapibala 内置支持将不同职责分配给不同模型（如规划用 GPT-4o，编码执行用 DeepSeek）：
+Kapibala 内置支持将不同职责分配给不同模型（如规划用旗舰推理档，编码执行用快速档）：
 
 ```typescript
 // 动态切换指定角色的模型
-session.switchModel(gpt4oProfile, 'planning', gpt4oProvider);
-session.switchModel(deepseekProfile, 'execution', deepseekProvider);
+session.switchModel(plannerProfile, 'planning', plannerProvider);
+session.switchModel(executorProfile, 'execution', executorProvider);
 
 // 查看当前路由状态
 console.log('默认模型:', session.getActiveProfile('default').name);
@@ -477,63 +555,75 @@ Kapibala 采用统一规范的 `.kapibala` 目录与 `settings.json` 命名。
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/tedburner/kapibala/main/schemas/settings.schema.json",
-  "defaultModel": "deepseek-v4-flash",
+  "defaultModel": "deepseek-flash",
   "modelRouting": {
     "planning": "deepseek-v4-pro",
-    "execution": "deepseek-v4-flash"
+    "execution": "deepseek-flash"
   },
+  "builtinCatalogVersion": 2,
   "profiles": [
     {
-      "id": "deepseek-v4-flash",
-      "name": "DeepSeek V4 Flash",
+      "id": "deepseek-flash",
+      "name": "DeepSeek Flash (V4.1-Flash)",
       "provider": "openai-compatible",
       "baseURL": "https://api.deepseek.com/v1",
       "apiKeyEnv": "DEEPSEEK_API_KEY",
-      "modelName": "deepseek-v4-flash",
-      "supportsThinking": false
-    },
-    {
-      "id": "deepseek-v4-pro",
-      "name": "DeepSeek V4 Pro",
-      "provider": "openai-compatible",
-      "baseURL": "https://api.deepseek.com/v1",
-      "apiKeyEnv": "DEEPSEEK_API_KEY",
-      "modelName": "deepseek-v4-pro",
+      "modelName": "deepseek-flash",
+      "contextWindow": 1000000,
       "supportsThinking": true
     },
     {
-      "id": "gpt-4o",
-      "name": "OpenAI GPT-4o",
+      "id": "custom-my-gateway-https-gw-example-com-v1",
+      "name": "My Gateway",
       "provider": "openai-compatible",
-      "baseURL": "https://api.openai.com/v1",
-      "apiKeyEnv": "OPENAI_API_KEY",
-      "modelName": "gpt-4o"
-    },
-    {
-      "id": "qwen-plus",
-      "name": "Qwen Plus (通义千问)",
-      "provider": "openai-compatible",
-      "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "apiKeyEnv": "DASHSCOPE_API_KEY",
-      "modelName": "qwen-plus"
-    },
-    {
-      "id": "ollama",
-      "name": "Local Ollama",
-      "provider": "openai-compatible",
-      "baseURL": "http://localhost:11434/v1",
-      "apiKeyEnv": "NONE",
-      "modelName": "llama3.3"
+      "baseURL": "https://gw.example.com/v1",
+      "apiKeyEnv": "CUSTOM_API_KEY",
+      "modelName": "gpt-5.6-terra"
     }
   ]
 }
 ```
 
+> **`profiles` 只需要写你自己关心或自建的模型。** 内置清单由程序侧提供（见下节），
+> 缺哪家就在运行时从代码里补哪家；重复抄一份进配置只会得到一份会过期的快照 ——
+> 厂商换代的第二天，它还指着已经 404 的 `modelName`。
+> 因此这个数组**允许为空**，`~/.kapibala/settings.json` 里通常只有你填过密钥的那几条。
+
+### 内置模型清单与自动升级
+
+内置清单共 **8 家厂商 / 20 个模型**，默认模型为 `deepseek-flash`：
+
+| 厂商 | 模型 id | 上下文 | 深度思考 |
+|---|---|--:|:--:|
+| **DeepSeek** | `deepseek-flash`（V4.1-Flash，默认）<br>`deepseek-v4-pro`（深度推理） | 1000k | ✅ |
+| **OpenAI** | `gpt-6-astra`（旗舰）<br>`gpt-5.6-sol`（复杂推理与编码）<br>`gpt-5.6-terra`（日常均衡）<br>`gpt-5.6-luna`（高吞吐低价） | 1050k | ✅ |
+| **Anthropic** | `claude-fable-5-1`（最强推理）<br>`claude-opus-5`（复杂 Agent 与编码）<br>`claude-sonnet-5`（日常主力）<br>`claude-haiku-4-5`（最快最省） | 1000k<br>200k | ✅ |
+| **Google** | `gemini-3.1-pro-preview`<br>`gemini-3-flash-preview` | 1000k | ✅ |
+| **通义千问** | `qwen3.8-max`<br>`qwen3.8-flash`<br>`qwen3.7-plus` | 1000k | ✅ |
+| **Kimi** | `kimi-k3`<br>`kimi-k2.7-code` | 1000k<br>256k | ✅ |
+| **智谱 GLM** | `glm-5.3`<br>`glm-5.3-flash` | 1000k | ✅ |
+| **本地 Ollama** | `ollama`（`gpt-oss:20b`，免密钥） | 131k | — |
+
+清单版本号记录在 `settings.json` 的 `builtinCatalogVersion` 字段（由程序写入，无需手改）。
+启动时若发现它落后于当前版本，会**自动做一次目录升级**：
+
+- 已退役的模型 id 被**重定向**到现役档位，**密钥一并带过去**（密钥丢失不可逆，绝不能直接删）；
+- 仍在内置清单里的 profile 会**同步**过期的 `baseURL` / `modelName` / 上下文窗口（`apiKey` 原样保留）；
+- `defaultModel` 与 `modelRouting` 里指向旧 id 的引用被改写；
+- **不写入任何你从未启用过的内置模型** —— 升级只整理你已有的配置，不会替你「扩充」清单。
+
+历史退役 id 的重定向关系：`deepseek-chat` → `deepseek-flash`、`deepseek-reasoner` → `deepseek-v4-pro`、
+`deepseek-v4-flash` → `deepseek-flash`、`gpt-4o` → `gpt-5.6-terra`、`gpt-4o-mini` → `gpt-5.6-luna`、
+`o3-mini` → `gpt-5.6-sol`、`qwen-plus` → `qwen3.8-flash`。
+（**从内置清单删掉任何 id 都必须在此补一条重定向**，否则它会在老用户配置里变成孤儿。）
+
 ---
 
 ## 🧪 开发与本地测试
 
-Kapibala 拥有极高的代码质量与工程自洽性，包含全套单元测试与自动化规范检查：
+Kapibala 拥有极高的代码质量与工程自洽性，包含全套单元测试与自动化规范检查。
+
+日常开发只需一条 `pnpm dev`（编译 → 校验 → 进 REPL）；若只想要做完构建与校验、不启动会话，用 `pnpm dev:build`。以下为逐条手动命令：
 
 ```bash
 # 1. 运行 API Key 凭证防泄露安全扫描 (禁止提交任何真实 Key)

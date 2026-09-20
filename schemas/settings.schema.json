@@ -40,9 +40,18 @@
     },
     "profiles": {
       "type": "array",
-      "description": "模型画像列表，每个条目绑定端点、密钥来源与协议特性。",
-      "minItems": 1,
+      "description": "模型画像列表，每个条目绑定端点、密钥来源与协议特性。这里只需写用户自己关心或自建的模型：内置清单由程序侧提供，缺什么就用代码里的那份补什么，重复声明只会制造一份会过期的快照。",
       "items": { "$ref": "#/definitions/modelProfile" }
+    },
+    "trustedProjects": {
+      "type": "array",
+      "description": "已由用户永久信任的项目真实绝对路径。仅允许出现在全局配置中，项目级配置里的该字段会被忽略——否则任何仓库都能通过自行声明信任来绕过确认。",
+      "items": { "type": "string" }
+    },
+    "builtinCatalogVersion": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "本配置所依据的内置模型清单版本，写入时由程序自动盖章，无需手改。启动时若发现落后于当前版本，会执行一次目录升级：重定向已退役的模型 id、同步过期的端点与上下文窗口、把密钥带到新档位。没有这个字段，配置就永远是首次写入那天的快照，厂商换代后菜单里会一直挂着已退役的模型。"
     }
   },
   "definitions": {
@@ -74,7 +83,7 @@
         },
         "apiKey": {
           "type": "string",
-          "description": "内联密钥。不推荐：优先使用环境变量，避免凭据落入配置文件。"
+          "description": "内联密钥。不推荐：优先使用环境变量，避免凭据落入配置文件。同一厂商族的模型共用一份密钥——只需为其中任意一个填写，同族其余模型自动复用；更新密钥时会清理同族冗余副本，保证只保留一份。可识别厂商（DeepSeek / OpenAI / Anthropic / Google / 通义千问 / Kimi / 智谱 / Ollama）按厂商归组；自建端点按 host 隔离，不同网关不会串用密钥；绝不做跨厂商兜底。"
         },
         "modelName": {
           "type": "string",

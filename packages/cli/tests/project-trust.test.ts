@@ -16,7 +16,7 @@ function createWorkspace(): { homeDir: string; projectDir: string } {
   fs.mkdirSync(path.join(projectDir, '.kapibala'), { recursive: true });
   fs.writeFileSync(
     path.join(projectDir, '.kapibala', 'settings.json'),
-    JSON.stringify({ defaultModel: 'gpt-4o' }),
+    JSON.stringify({ defaultModel: 'deepseek-v4-pro' }),
   );
   return { homeDir, projectDir };
 }
@@ -42,7 +42,7 @@ describe('resolveProjectTrust', () => {
     expect(choose).toHaveBeenCalledOnce();
     expect(result.status).toBe('trusted');
     if (result.status !== 'trusted') throw new Error('expected trusted result');
-    expect(result.loaded.settings.defaultModel).toBe('gpt-4o');
+    expect(result.loaded.settings.defaultModel).toBe('deepseek-v4-pro');
   });
 
   it('rejects without persisting trust when the user declines', async () => {
