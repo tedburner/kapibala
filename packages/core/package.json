@@ -1,7 +1,7 @@
 {
   "name": "@kiturone/kapibala",
   "version": "0.0.1",
-  "description": "Core engine and abstractions for Kapibala agent harness",
+  "description": "Headless core engine and abstractions for the Kapibala agent harness",
   "license": "MIT",
   "author": "tedburner",
   "repository": {

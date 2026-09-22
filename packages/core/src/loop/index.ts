@@ -289,6 +289,7 @@ export class AgentLoop {
           name: matchingCall?.name ?? 'unknown',
           result: res.content,
           isError: res.isError ?? false,
+          durationMs: res.durationMs,
         };
       }
 

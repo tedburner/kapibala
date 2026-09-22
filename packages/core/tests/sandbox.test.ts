@@ -86,6 +86,11 @@ describe('PathSandbox (词法校验)', () => {
     expect(() => sandbox.resolveSafePath('sub/../../outside.txt')).toThrow(ToolError);
   });
 
+  it('should reject a sibling directory whose name only shares the root prefix', () => {
+    const sibling = `${tempDir}-outside`;
+    expect(() => sandbox.resolveSafePath(path.join(sibling, 'secret.txt'))).toThrow(ToolError);
+  });
+
   it('should throw ToolError for empty path', () => {
     expect(() => sandbox.resolveSafePath('')).toThrow(ToolError);
   });

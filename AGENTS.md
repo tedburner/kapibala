@@ -29,6 +29,7 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 
 - **历史必须闭合**：assistant 的 `tool_use` 一旦进入历史，对应 `tool_result` 必须紧跟其后（设计文档 §4.3 / §4.4）。loop 内任何 `break` / `throw` 必须发生在该不变量满足之后。
 - 落盘是**消息级**：user / assistant / tool_result 三类消息都要经 `MessageStore.append` 落盘。
+- **Core 必须保持 Headless**：`packages/core/src` 不得依赖 CLI、直接读写终端或包含 ANSI/UI 渲染；所有宿主通过 `AgentSession` / `SessionEvent` 复用同一 Agent Harness。`pnpm check-architecture` 已并入 lint，新增宿主能力不得绕过该门禁。
 
 ## 约定
 
@@ -48,9 +49,9 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
   2. 每个被删掉的 id 都要在 `LEGACY_PROFILE_REDIRECT` 里补一条重定向。
 - ⚠️ `loadSettings` 是「**全局覆盖内置**」的浅合并：只改 `BUILTIN_PROFILES` **不会影响**已经落盘的 `~/.kapibala/settings.json`。
   存量配置靠启动时的 `migrateGlobalSettingsCatalog()` 升级（见 `packages/cli/src/index.ts` 步骤 0，失败不阻断启动）。
-- ⚠️ **「读全局 → 改一处 → 写回」必须用 `readRawGlobalSettings()`，不能用 `loadSettings()`**。
+- ⚠️ **「读全局 → 改一处 → 写回」必须用 `loadGlobalSettingsForWrite()`，不能用 `loadSettings()`**。
   `loadSettings` 的返回值已与内置清单合并，整份写回会把用户从未启用过的内置模型物化进配置文件（实测 profile 数 9 → 10）。
-  写盘起点用 `createUserSettingsSkeleton()`（不含任何内置 profile）。
+  `loadGlobalSettingsForWrite()` 在文件不存在时使用不含内置 profile 的 `createUserSettingsSkeleton()`，文件损坏或非法时中止写入；`readRawGlobalSettings()` 仅用于迁移等允许自行处理缺失/非法状态的只读流程。
 - `migrateBuiltinCatalog()` 是纯函数，只做三件事：**重定向**旧 id（密钥一并带过去，绝不丢）、**同步**已存 profile 的目录字段（`apiKey` 原样保留）、
   **重映射** `defaultModel` / `modelRouting` 里的旧引用。它**刻意不新增**内置 profile —— 内置模型由代码侧提供，写进用户文件只会得到一份过期的快照。
 
@@ -60,12 +61,14 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - 造型铁律：口鼻必须是"上窄下宽"的钝形深色块（水豚最关键辨识特征）；不要大面积奶油色口鼻斑（会读成泰迪熊）；头不要撑满画面（会读成河马）。
 - README 抬头 `<picture>` + `prefers-color-scheme` 双主题（dark 版仅字标换暖白 `#F0E4D6`）；tagline 固定：**心如止水，稳定如初 —— AI Agent Harness**。
 
-## 当前状态（2026-09-20）
+## 当前状态（2026-09-22）
 
-- v0.0.1 已完成：核心骨架 + 交互 CLI + 冷启动向导 + PathSandbox 沙箱 + 崩溃历史自愈 + 场景模型路由契约；**14 test files / 139 passed | 2 skipped**。
+- 版本号采用十进制位进位：补丁位只使用 `0–9`，`v0.0.9` 之后为 `v0.1.0`（不使用 `v0.0.10`）；后续同理。
+- v0.0.1 已完成：核心骨架 + 交互 CLI + 冷启动向导 + PathSandbox 沙箱 + 崩溃历史自愈 + 场景模型路由契约；**20 test files / 184 passed | 2 skipped**。
 - 已落地增量：跨平台一键开发脚本（`pnpm dev`）、**同一厂商族共用一份 API Key**（读取层复用 + 写入层归一）、
   REPL 横幅按显示宽度动态补白（`src/ui/width.ts`）、裸 `exit` / `quit` 识别为退出命令、
-  **内置模型清单扩展到 8 家厂商 / 20 个模型 + 带版本号的存量配置自动升级**（`migrateGlobalSettingsCatalog`）。
-- 路线图 v0.2+：Anthropic 原生协议、路由落地、Skills / MCP / 记忆压缩 / 子代理（详见 README 路线图表）。
-- v0.2 待办（实测发现）：接 Anthropic 原生协议前需处理**连续同角色消息**（孤儿 user、空 content 的 assistant）
+  **内置模型清单扩展到 8 家厂商 / 20 个模型 + 带版本号的存量配置自动升级**（`migrateGlobalSettingsCatalog`）、
+  **上下文窗口整数与 `K/M` 简写配置（缺省按 `1M` 估算）+ 最近请求上下文占用展示 + 工具耗时与敏感参数脱敏展示 + 每轮底栏首位展示当前 Git 分支**。
+- 路线图 v0.0.2+：权限与 AGENTS.md、记忆压缩、Anthropic 原生协议与路由落地、Skills / MCP / 子代理（详见 README 路线图表）。
+- v0.0.4 待办（实测发现）：接 Anthropic 原生协议前需处理**连续同角色消息**（孤儿 user、空 content 的 assistant）
   —— 该协议要求 user/assistant 严格交替，否则 400。

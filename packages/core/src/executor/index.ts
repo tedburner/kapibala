@@ -51,6 +51,7 @@ export class ToolExecutor {
   }
 
   async executeOne(call: ToolUseBlock): Promise<ToolResultBlock> {
+    const startedAt = Date.now();
     const hookCtx = { signal: this.signal, logger: this.logger };
     let currentInput = call.input;
 
@@ -64,6 +65,7 @@ export class ToolExecutor {
           toolUseId: call.id,
           content: decision.result,
           isError: decision.isError ?? false,
+          durationMs: Math.max(0, Date.now() - startedAt),
         };
       }
       if (decision.action === 'modify') {
@@ -121,6 +123,8 @@ export class ToolExecutor {
         { output: outputStr, isError },
       );
     }
+
+    resultBlock.durationMs = Math.max(0, Date.now() - startedAt);
 
     return resultBlock;
   }

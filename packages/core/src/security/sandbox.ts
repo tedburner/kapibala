@@ -6,7 +6,7 @@ export interface SandboxConfig {
   rootDir: string;
   /**
    * v0.0.1 恒为严格模式：任何解析后落在 rootDir 之外的物理路径一律拒绝，
-   * 不存在 fail-open 开关。该字段为 v0.2 权限引擎预留，当前不改变校验行为。
+   * 不存在 fail-open 开关。该字段为 v0.0.2 权限引擎预留，当前不改变校验行为。
    */
   allowSymlinks?: boolean;
 }

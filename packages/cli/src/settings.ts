@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ModelProfile } from '@kiturone/kapibala';
+import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
 
 export interface ModelRoutingConfig {
   planning?: string;
@@ -321,11 +321,15 @@ export function getProjectSettingsPath(cwd = process.cwd()): string {
 }
 
 /**
- * 读取**磁盘上原始**的全局配置，不做内置清单合并。
+ * 读取**磁盘上原始**的全局配置，不做内置清单合并，也不做值校验。
  *
  * 所有「读全局 → 改一处 → 写回」的路径都必须用它，不能用 loadSettings()：
  * loadSettings 的返回值已经和 BUILTIN_PROFILES 合并过，整份写回会把用户从未启用的内置
  * 模型全部物化进配置文件（实测 profile 数 9 → 10，凭空多出一个 deepseek-flash）。
+ *
+ * 注意：本函数可能返回含非法 `contextWindow` 的配置（原样透传）。
+ * 写回路径不要直接用它的返回值落盘 —— 应改用 {@link loadGlobalSettingsForWrite}，
+ * 由 saveGlobalSettings 的写前校验兜底，避免坏值进入运行时。
  */
 export function readRawGlobalSettings(
   options: Pick<LoadSettingsOptions, 'homeDir'> = {},
@@ -370,6 +374,34 @@ export function createUserSettingsSkeleton(): UserSettings {
     defaultModel: DEFAULT_MODEL_ID,
     profiles: [],
   };
+}
+
+/**
+ * 为「读全局 → 写回」路径加载磁盘原始全局配置。
+ *
+ * 与 {@link readRawGlobalSettings} 的区别在于失败语义：
+ * 文件不存在时返回空骨架（首次配置是合法场景）；但**文件存在却无法安全使用**
+ * （JSON 损坏、profiles 缺失、任一 profile 的 contextWindow 非法）时直接抛错。
+ * 这些路径的返回值会被整体写回 —— 若此时静默回退空骨架，用户的全部 profile
+ * （含内联 apiKey）会在下一次写盘时被无声清空，宁可中止也要保住数据。
+ */
+export function loadGlobalSettingsForWrite(
+  options: Pick<LoadSettingsOptions, 'homeDir'> = {},
+): UserSettings {
+  const globalPath = getGlobalSettingsPath(options.homeDir);
+  if (!fs.existsSync(globalPath)) return createUserSettingsSkeleton();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(globalPath, 'utf-8')) as UserSettings;
+    if (!Array.isArray(parsed?.profiles)) {
+      throw new Error('profiles 字段缺失或不是数组');
+    }
+    validateProfileContextWindows(parsed.profiles);
+    return parsed;
+  } catch (err: unknown) {
+    throw new Error(
+      `[kapibala] 全局配置存在但无法安全读取 (${globalPath})：${(err as Error).message}。为避免覆盖丢失已有 profiles，已中止本次写入；请先修复该文件后重试。`,
+    );
+  }
 }
 
 /**
@@ -573,6 +605,7 @@ export function saveGlobalSettings(
   settings: UserSettings,
   options: Pick<LoadSettingsOptions, 'homeDir'> = {},
 ): string {
+  validateProfileContextWindows(settings.profiles);
   const globalPath = getGlobalSettingsPath(options.homeDir);
   const dir = path.dirname(globalPath);
 
@@ -888,6 +921,15 @@ function mergeSettings(
   for (const p of base.profiles) profilesMap.set(p.id, p);
   if (Array.isArray(incoming.profiles)) {
     for (const p of incoming.profiles) {
+      // 校验失败只剔除该 profile，不拖垮整个配置文件：用户其余的好配置必须继续生效。
+      try {
+        resolveContextWindow(p.contextWindow);
+      } catch (error: unknown) {
+        console.warn(
+          `[kapibala] Ignoring model profile '${p.id}' with invalid contextWindow: ${(error as Error).message}`,
+        );
+        continue;
+      }
       const inherited = profilesMap.get(p.id);
       profilesMap.set(p.id, inherited ? { ...inherited, ...p } : p);
     }
@@ -909,4 +951,17 @@ function mergeSettings(
         ? incoming.trustedProjects.filter((value): value is string => typeof value === 'string')
         : base.trustedProjects,
   };
+}
+
+/** 配置进入运行时前统一校验上下文窗口，避免直到展示指标或压缩时才暴露坏值。 */
+function validateProfileContextWindows(profiles: ModelProfile[]): void {
+  for (const profile of profiles) {
+    try {
+      resolveContextWindow(profile.contextWindow);
+    } catch (error: unknown) {
+      throw new Error(
+        `Invalid contextWindow for model profile '${profile.id}': ${(error as Error).message}`,
+      );
+    }
+  }
 }

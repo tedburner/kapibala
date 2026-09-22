@@ -1,16 +1,16 @@
 import { stdin as input, stdout as output } from 'node:process';
-import readline from 'node:readline/promises';
-import type { ModelProfile } from '@kiturone/kapibala';
+import readline, { type Interface as ReadlineInterface } from 'node:readline/promises';
+import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
 import { type ProviderMeta, listBuiltinProviders } from './providers.js';
 import {
   type UserSettings,
-  createUserSettingsSkeleton,
   describeCredentialGroup,
-  readRawGlobalSettings,
+  loadGlobalSettingsForWrite,
   resolveApiKeyDetailed,
   resolveBaseURL,
   saveGlobalSettings,
 } from './settings.js';
+import { formatTokenCount } from './ui/metrics.js';
 import { readSecret } from './ui/secret.js';
 
 export interface ProbeResult {
@@ -73,7 +73,25 @@ export async function runSetupWizard(
   options: SetupWizardOptions = {},
 ): Promise<{ profile: ModelProfile; apiKey: string }> {
   const rl = readline.createInterface({ input, output });
+  let readlineClosed = false;
+  const closeReadline = (): void => {
+    if (readlineClosed) return;
+    readlineClosed = true;
+    rl.close();
+  };
 
+  try {
+    return await executeSetupWizard(rl, closeReadline, options);
+  } finally {
+    closeReadline();
+  }
+}
+
+async function executeSetupWizard(
+  rl: ReadlineInterface,
+  closeReadline: () => void,
+  options: SetupWizardOptions,
+): Promise<{ profile: ModelProfile; apiKey: string }> {
   console.log('\n🐾 \x1b[36m欢迎使用 Kapibala (kpbl)!\x1b[0m');
   console.log('检测到当前尚未配置可用的模型服务。请选择您要使用的提供商：\n');
 
@@ -106,9 +124,8 @@ export async function runSetupWizard(
     if (entry.models.length > 1) {
       console.log('');
       entry.models.forEach((candidate, index) => {
-        const context = candidate.contextWindow
-          ? ` | ${Math.round(candidate.contextWindow / 1000)}k`
-          : '';
+        const contextWindow = resolveContextWindow(candidate.contextWindow);
+        const context = ` | ${contextWindow.estimated ? '≈' : ''}${formatTokenCount(contextWindow.tokens)}`;
         const thinking = candidate.supportsThinking ? ' | 深度思考' : '';
         console.log(
           `  ${index + 1}) ${candidate.name} —— ${candidate.modelName}${context}${thinking}`,
@@ -147,7 +164,9 @@ export async function runSetupWizard(
   }
 
   // 只读磁盘原始配置：合并版配置里含全部内置 profile，回写会把用户从未启用的模型物化进文件。
-  const settings: UserSettings = readRawGlobalSettings() ?? createUserSettingsSkeleton();
+  // 文件存在但损坏/含非法值时 loadGlobalSettingsForWrite 直接抛错 —— 静默回退空骨架会把
+  // 用户已有 profile（含内联 apiKey）在下一次写盘时全部清空。
+  const settings: UserSettings = loadGlobalSettingsForWrite();
   const existingProfile = settings.profiles.find((profile) => profile.id === selectedProfile.id);
   if (keyPrompt && existingProfile?.apiKey?.trim()) {
     const replace = (await rl.question('该模型已有保存的 API Key，是否更新？[y/N]: '))
@@ -179,7 +198,7 @@ export async function runSetupWizard(
     }
   }
 
-  rl.close();
+  closeReadline();
 
   if (keyPrompt) {
     const secretReader = options.secretReader ?? readSecret;

@@ -1,17 +1,18 @@
 # 001 — Agent Harness 技术方案(v0.0.1)
 
-> 状态:待评审 · 2026-09-13(v0.0.1 修订版: 规范版本号 & 引入场景模型路由设计)
+> 状态:已实现 · 2026-09-22(v0.0.1 收尾增强与后续路线重排)
 > 范围:本篇定义 self-agent harness 的核心抽象、可插拔扩展架构、循环执行语义、安全模型与交付边界,是后续所有迭代的基线。
 >
 > **v0.0.1 核心变更记录**:
-> 1. **版本号规范为 v0.0.1**: 遵循 SemVer 规范,作为初始极简可用交付的基线版本。
+> 1. **版本号规范为 v0.0.1**: 遵循 SemVer 结构并采用项目十进制进位约定,作为初始极简可用交付的基线版本;补丁位只使用 0–9,`v0.0.9` 之后为 `v0.1.0`,不使用 `v0.0.10`。
 > 2. **新增场景感知模型路由设计(Role-based Model Routing)**: 为解决"规划重推演、执行重吞吐与成本"的矛盾,在架构与配置契约层引入角色路由蓝图(如规划用 GPT-4o,循环执行用 DeepSeek),v0.0.1 预留契约与配置槽位。
-> 3. **模型协议收敛至 OpenAI 兼容协议为主**: 第一期全力打磨 **OpenAI API 兼容协议**(涵盖原生 OpenAI、DeepSeek 原生与推理、Ollama 本地模型及兼容中转平台),统一验证流式 SSE、多工具回填与思考块;Canonical 消息模型保持双向解耦,Anthropic 协议规范保留在契约层,具体实现下沉至 v0.2。
+> 3. **模型协议收敛至 OpenAI 兼容协议为主**: 第一期全力打磨 **OpenAI API 兼容协议**(涵盖原生 OpenAI、DeepSeek 原生与推理、Ollama 本地模型及兼容中转平台),统一验证流式 SSE、多工具回填与思考块;Canonical 消息模型保持双向解耦,Anthropic 协议规范保留在契约层,具体实现下沉至 v0.0.4。
 > 4. **CLI 引入内建 Slash Command 控制体系**: REPL 不仅支持对话,还内建命令拦截器,首期支持 `/model [name]`(查看/热切换模型)、`/settings`、`/clear`(重置上下文)、`/status`(查看统计与配置)、`/help` 与 `/exit`。
 > 5. **配置体系统一与首启向导**: 统一采用 `.kapibala` 目录与 `settings.json` 文件名,增加带 `$schema` 智能校验、首启交互式向导(Setup Wizard)与全局 `~/.kapibala/settings.json` 持久化机制。
 > 6. **新增 §3 可插拔扩展架构**: 把 Plugin / Hook / Registry 契约前置,使 MCP、skill、权限后续都以**挂载**方式接入,不改 loop 代码。
 > 7. **新增 §4 循环执行语义**: 补齐多工具调度、错误分类、中断恢复(双击 Ctrl+C / 单次 Abort)、落盘粒度四项必答问题。
 > 8. **修正模块依赖与沙箱归属**: 厘清 `ToolExecutor` 归属执行流,消除 `tools/` 模块的循环依赖隐患。
+> 9. **明确 v0.0.1 收尾增强边界**: 请求指标、工具调用展示、上下文窗口配置简写、跨平台启动与 PathSandbox/Hook 加固均继续归入 v0.0.1;权限审批、AGENTS.md、压缩、模型路由等新增子系统从 v0.0.2 起分版本交付。
 
 ## 1. 背景与定位
 
@@ -19,7 +20,7 @@
 - **形态**:v0.0.1 即提供**可用 CLI**——通过命令行完成 agent 对话、任务处理与**命令控制(如 `/model` 热切换)**,不做图形界面。CLI 是框架的第一个消费者,也是用户接触框架的门面。
 - **技术栈**:TypeScript / Node.js ≥ 20,pnpm workspace monorepo。
 - **核心决策**:
-  - **框架与具体模型/工具解耦(v0.0.1 OpenAI 优先)**:核心抽象建立在规范消息模型之上。v0.0.1 重点实现并打磨 **OpenAI 兼容协议**(覆盖 OpenAI 官方、DeepSeek 原生及 reasoning 模式、Ollama、vLLM 及各类兼容中转),验证核心循环与工具调度。Anthropic 协议保留标准契约,实现延后至 v0.2。
+  - **框架与具体模型/工具解耦(v0.0.1 OpenAI 优先)**:核心抽象建立在规范消息模型之上。v0.0.1 重点实现并打磨 **OpenAI 兼容协议**(覆盖 OpenAI 官方、DeepSeek 原生及 reasoning 模式、Ollama、vLLM 及各类兼容中转),验证核心循环与工具调度。Anthropic 协议保留标准契约,实现延后至 v0.0.4。
   - **交互控制与会话状态自洽**:CLI 具备 Slash 命令分发能力,用户可在 REPL 内动态调整模型与配置(`/model`),Session 提供状态变更与重置 API。
   - **扩展靠挂载,不靠改代码**(见 §3):所有后续能力(MCP、skill、权限、压缩、sub-agent)都通过 Plugin + Hook 契约接入,核心循环对它们无感知。
   - 提示词分层组装,不做单块硬编码文本(见 §7)。
@@ -33,8 +34,23 @@
 ```
 OpenAI-compatible wire (OpenAI / DeepSeek / Ollama 等) ──┐
                                                          ├── core(canonical) ◄── loop ──► session
-Anthropic wire (v0.2+ 契约预留) ────────────────────────┘
+Anthropic wire (v0.0.4+ 契约预留) ──────────────────────┘
 ```
+
+**Headless Core / Host Adapter 边界**:
+
+```text
+CLI / TUI ─────────┐
+桌面 GUI ──────────┼── Host Adapter ── AgentSession / SessionEvent ── Agent Harness Core
+Web / 移动客户端 ──┘
+```
+
+- Core 只处理模型、循环、工具、历史、Hook、沙箱与语义事件,不包含终端控制码、交互输入或 UI 组件。
+- `AgentSession.run()` 返回宿主无关的 `AsyncIterable<SessionEvent>`;文本、思考、工具、错误与指标都通过该事件流交付。
+- CLI/TUI 可在同一进程直接消费事件;桌面渲染进程、Web 与移动客户端由守护进程或服务端托管 Core,再通过宿主传输层连接。
+- v0.0.1 CLI 在每轮 `run_finish` 时由 Host Adapter 即时探测当前 Git 分支并置于底栏首位,其后按总耗时、上下文、Token、模型、工具、TTFT、步骤排列,Token 使用 `K/M` 简写。Git 信息不得写入 canonical 消息或让 Core 依赖 Git;非 Git 目录、detached HEAD 或探测失败时省略该字段,不能阻断对话。更丰富的工作区状态栏仍归入 v0.0.8。
+- v0.0.1 的 `SessionEvent` 是**进程内契约**,不是可直接长期兼容的网络协议。可序列化且带版本的 wire DTO、IPC/SSE/WebSocket 与本地守护进程归入 v0.0.9。
+- `pnpm check-architecture` 扫描 `packages/core/src`,禁止 Core 反向依赖 CLI、直接读写终端或包含 ANSI 渲染;它随 `pnpm lint` 和 `pnpm verify` 执行。
 
 - **入方向**(模型响应 → canonical):Provider 把自家流式响应(SSE)翻译为规范事件流。
   - **OpenAI 兼容协议**:解析 `choices[0].delta` 中的 `content`、`tool_calls` 以及 DeepSeek 特有的 `reasoning_content`(转为 canonical `thinking` 块)。
@@ -66,11 +82,11 @@ Anthropic wire (v0.2+ 契约预留) ──────────────�
 3. **ModelProvider & ModelRouter**(`models/`)— 
    - **ModelProvider 接口**:负责将 canonical 请求转 wire 并返回事件流。
      - **v0.0.1 主打实现**: `openai-compatible/`(全面支持原生 OpenAI、DeepSeek、Ollama、vLLM 等)。
-     - **v0.0.1 契约预留**: `anthropic/` 接口规范(具体适配实现定于 v0.2 交付)。
+     - **v0.0.1 契约预留**: `anthropic/` 接口规范(具体适配实现定于 v0.0.4 交付)。
    - **ModelRouter 场景路由**:解耦执行与规划模型。定义 `resolve(role?: ModelRole): ModelProvider`,支持 planning(规划如 GPT-4o)与 execution(执行如 DeepSeek)多角色分发(v0.0.1 预留契约,默认退化为单一 defaultModel)。
 4. **ToolExecutor**(`executor/` 或 `tools/executor.ts`)— 负责工具调用调度、超时控制、沙箱边界校验与 Hook 拦截。
 5. **Tool**(`tools/`)— `{ name, description, parameters(JSON Schema), execute(input, ctx) }`。
-6. **Event 流**(`events/`)— `SessionEvent` 统一枚举。上层一切(CLI/TUI/Web/日志)只消费这个流。
+6. **Event 流**(`events/`)— `SessionEvent` 统一枚举。上层一切(CLI/TUI/GUI/SDK/日志)只消费这个流;远程客户端由 Host Adapter 转为 v0.0.9 的 wire DTO。
 7. **MessageStore**(`store/`)— 会话历史持久化,**消息级**落盘(见 §4.4)。
 8. **Prompt**(`prompt/`)— 系统提示词分层组装器,见 §7。
 9. **Hooks**(`hooks/`)— 扩展底座,见 §3.3。
@@ -307,7 +323,7 @@ export interface Skill {
 | | 回填形态 | 时序与结构约束 |
 |---|---|---|
 | **OpenAI 兼容 (v0.0.1 核心)** | 每个 `tool_call` 对应**一条独立 message** (`role: "tool"`, `tool_call_id`) | 所有 tool message 必须**连续紧跟**在触发它的 assistant 消息之后,不可插入其他角色消息 |
-| Anthropic (v0.2+) | 多个 `tool_result` block 可合并进**一条** user message | 放在单个 user 消息的 content 数组中 |
+| Anthropic (v0.0.4+) | 多个 `tool_result` block 可合并进**一条** user message | 放在单个 user 消息的 content 数组中 |
 
 **解法:把回填形态交给 Provider,loop 只产出 canonical 结果。**
 
@@ -385,10 +401,18 @@ v0 写"run 中逐事件落盘"是**错的**——事件是 `text_delta` 流式�
 - **崩溃恢复**:`store.load()` 时检查末尾——若最后一条是含未完成 `tool_use` 的 assistant message,按 `AbortPolicy` 修复后再继续;脏行(半截 JSON)直接丢弃到最后一个完整换行。
 - `usage` 累加可选落盘,供 token 统计。
 
+**v0.0.3 消息生命周期与压缩约束(规划)**:
+
+1. canonical 消息拥有稳定 ID;发送、完成、中断、压缩覆盖等生命周期状态与消息正文分层维护,用于落盘恢复、去重与摘要覆盖追踪,不得靠改写正文暗示状态。
+2. 压缩由上下文预算触发,只能在完整消息/完整工具事务边界切分。至少保留最近一个完整的 user → assistant 交互轮次;assistant 的 `tool_use` 与对应 `tool_result` 必须作为不可拆分事务保留或一起进入摘要。
+3. 更早历史交给 `summary` 角色生成结构化摘要检查点,记录覆盖的消息 ID 范围;摘要失败时继续保留原始历史,不得以不完整摘要替换 canonical 数据。
+4. 为提高 Provider prompt cache 命中率,系统提示词、工具声明和已确认摘要采用稳定、确定性的序列化;新消息只追加在稳定前缀之后,仅在摘要检查点或项目指令快照真正变化时使对应前缀失效。
+5. 压缩次数、摘要覆盖范围、最近压缩时间与压缩前后 Token 数通过结构化事件提供给宿主展示,避免 UI 根据消息条数猜测。
+
 ## 5. 配置系统
 
 > 配置解决两件事:**值从哪来**(分层与优先级),以及**谁有权改**(收紧与信任)。
-> 为避免初期过度设计,框架将配置演进拆分为 **v0.0.1 最小实用配置** 与 **v0.2+ 企业级多层蓝图**。
+> 为避免初期过度设计,框架将配置演进拆分为 **v0.0.1 最小实用配置** 与 **v0.0.2+ 权限/作用域配置蓝图**。
 
 ### 5.1 v0.0.1 最小实用配置体系(本次交付)
 
@@ -399,23 +423,25 @@ v0.0.1 的配置聚焦于驱动 **OpenAI 兼容协议的多模型自由切换**�
 每个模型抽象为一个 `ModelProfile`,使得用户输入 `/model deepseek` 即可同时完成端点、密钥与协议特性的绑定:
 
 ```ts
+export type ContextWindowValue = number | `${number}K` | `${number}M`
+
 export interface ModelProfile {
-  id: string                   // 唯一标识,如 'deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-4o'
+  id: string                   // 唯一标识,如 'deepseek-flash', 'deepseek-v4-pro', 'gpt-5.6-sol'
   name: string                 // 友好显示名称
   provider: 'openai-compatible'// v0.0.1 固定走 OpenAI 兼容协议
   baseURL: string              // API 端点,如 'https://api.deepseek.com/v1'
   apiKeyEnv: string            // 环境变量名,如 'DEEPSEEK_API_KEY'
   apiKey?: string              // 配置文件中指定的密钥(可选,推荐走环境变量)
   modelName: string            // 发给 API 的实际 model 参数
-  contextWindow?: number       // 上下文窗口限制(默认 128k)
+  contextWindow?: ContextWindowValue // 上下文窗口 Token 数;未配置时按 1M 作为默认估算
   supportsThinking?: boolean   // 是否解析 reasoning_content 思考块
 }
 
 export type ModelRole = 'default' | 'planning' | 'execution' | 'summary' | 'fast'
 
 export interface ModelRoutingConfig {
-  planning?: string   // 规划/架构拆解, 如 'gpt-4o' 或 'deepseek-v4-pro'
-  execution?: string  // 频繁工具循环执行, 如 'deepseek-v4-flash'
+  planning?: string   // 规划/架构拆解, 如 'gpt-5.6-sol' 或 'deepseek-v4-pro'
+  execution?: string  // 频繁工具循环执行, 如 'deepseek-flash'
   summary?: string    // 上下文压缩与会话总结
   fast?: string       // 快速分类/意图识别
 }
@@ -428,18 +454,27 @@ export interface UserSettings {
 }
 ```
 
-框架内置常见 profiles(如 `deepseek-flash`, `deepseek-v4-flash`, `deepseek-v4-pro`, `gpt-4o`, `ollama`),用户无需额外繁琐配置即可通过对应的环境变量直接使用。
+`contextWindow` 的 v0.0.1 收尾增强规则如下:
+
+1. 同时接受正整数与带单位字符串,例如 `1000000`、`"1M"`、`"256K"`、`"1.05M"`。
+2. `K/M` 按十进制换算(`1K = 1,000`,`1M = 1,000,000`),大小写不敏感;`K` 最多 3 位小数、`M` 最多 6 位小数,换算结果必须是正整数 Token;不接受容易与字节单位混淆的 `KB/MB`。
+3. 加载配置时立即归一化为正整数 Token 数;零、负数、未知单位、非有限值与无法整除为整数的结果都作为配置错误报告。
+4. 内置 profile 始终携带目录中的明确窗口;自定义 profile 未配置时使用 `1M` 默认估算,CLI 必须标记为“默认估算”,不能伪装成模型官方值。
+5. 上下文占用率使用**最近一次内部模型请求**的 `promptTokens / contextWindow`;禁止使用会话累计 Token 或一次 run 内多个步骤的累计输入 Token,后两者会重复计算被反复发送的历史。
+6. v0.0.1 只展示窗口占用,不伪造压缩状态;真实压缩次数、摘要覆盖范围与最近压缩时间由 v0.0.3 的上下文管理模块提供。
+
+框架内置 profiles 以 `packages/cli/src/settings.ts` 的 `BUILTIN_PROFILES` 为唯一真源,用户无需把完整目录复制进配置文件;用户配置只保存实际启用、覆盖或持有密钥的 profile。
 
 #### 2. 多场景模型路由设计(Role-based Model Routing 蓝图)
 
 > **为什么必须支持场景模型分离(如规划用 GPT,执行用 DeepSeek)?**
 > 1. **能力倾斜与上下文经济学**:
->    - **规划阶段(Planning Phase)**: 任务开始时的全局拆解、依赖分析、架构设计。这一步调用次数极少(1~2次),但对长上下文逻辑推演、复杂指令遵循要求极高。适合配置能力天花板模型(如 GPT-4o / o3-mini / Claude 3.7)。
->    - **执行阶段(Execution Phase)**: 工具调用循环(读写文件、grep、执行命令、修语法报错)。单任务动辄循环 5~15 轮,极度依赖**超低延迟(TTFT)与超高性价比**。若全链路走昂贵大模型,成本与耗时均不可接受;此时切换为 DeepSeek-V3 / Qwen-2.5-Coder / 本地小模型是工业级最优解。
+>    - **规划阶段(Planning Phase)**: 任务开始时的全局拆解、依赖分析、架构设计。这一步调用次数极少(1~2次),但对长上下文逻辑推演、复杂指令遵循要求极高。适合配置当前目录中的高推理档模型。
+>    - **执行阶段(Execution Phase)**: 工具调用循环(读写文件、grep、执行命令、修语法报错)。单任务动辄循环 5~15 轮,极度依赖**低延迟(TTFT)与性价比**。此时适合当前目录中的快速档或本地模型,不在设计文档复制一份会过期的具体型号清单。
 >    - **总结压缩阶段(Summary Phase)**: 历史消息滚动压缩,用轻量快速模型即可胜任。
 > 2. **落地演进节奏**:
 >    - **v0.0.1 (当前)**: 在 `UserSettings` schema 与 `ModelRouter` 抽象层预留 `modelRouting` 契约,底层默认 fallback 回退到 `defaultModel`,不增加第一期执行复杂度。
->    - **v0.2+**: CLI 支持动态绑定角色 `/model planning gpt-4o` 与 `/model execution deepseek`,Loop 引入阶段性路由调用。
+>    - **v0.0.4+**: CLI 支持动态绑定角色 `/model planning <id>` 与 `/model execution <id>`,Loop 引入阶段性路由调用;小模型意图分类保持可选,不作为每次请求的默认前置调用。
 
 #### 3. 配置源与优先级(从高到低)
 
@@ -452,46 +487,31 @@ export interface UserSettings {
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/tedburner/kapibala/main/schemas/settings.schema.json",
-  "defaultModel": "deepseek-v4-flash",
+  "defaultModel": "deepseek-flash",
   "modelRouting": {
-    "planning": "gpt-4o",
-    "execution": "deepseek-v4-flash",
-    "summary": "deepseek-v4-flash"
+    "planning": "gpt-5.6-sol",
+    "execution": "deepseek-flash",
+    "summary": "deepseek-flash"
   },
   "profiles": [
     {
-      "id": "deepseek-v4-flash",
-      "name": "DeepSeek V4 Flash",
+      "id": "deepseek-flash",
+      "name": "DeepSeek Flash (V4.1-Flash)",
       "provider": "openai-compatible",
       "baseURL": "https://api.deepseek.com/v1",
       "apiKey": "sk-***",
-      "modelName": "deepseek-v4-flash",
-      "supportsThinking": false
-    },
-    {
-      "id": "deepseek-v4-pro",
-      "name": "DeepSeek V4 Pro",
-      "provider": "openai-compatible",
-      "baseURL": "https://api.deepseek.com/v1",
-      "apiKey": "sk-***",
-      "modelName": "deepseek-v4-pro",
+      "modelName": "deepseek-flash",
+      "contextWindow": "1M",
       "supportsThinking": true
     },
     {
-      "id": "gpt-4o",
-      "name": "OpenAI GPT-4o",
+      "id": "custom-my-gateway-https-gw-example-com-v1",
+      "name": "My Gateway",
       "provider": "openai-compatible",
-      "baseURL": "https://api.openai.com/v1",
-      "apiKey": "sk-***",
-      "modelName": "gpt-4o"
-    },
-    {
-      "id": "my-local",
-      "name": "Local Ollama Llama3",
-      "provider": "openai-compatible",
-      "baseURL": "http://localhost:11434/v1",
-      "modelName": "llama3.1",
-      "apiKeyEnv": "NONE"
+      "baseURL": "https://gw.example.com/v1",
+      "apiKeyEnv": "CUSTOM_API_KEY",
+      "modelName": "gpt-5.6-terra",
+      "contextWindow": "256K"
     }
   ]
 }
@@ -504,11 +524,9 @@ export interface UserSettings {
 
 当新用户在完全没有配置环境变量、也没有任何本地配置文件的状态下首次启动 `kpbl` 时,CLI 不直接退出报错,而是自动唤起终端**交互式初始化向导**:
 
-1. **选择服务商**:
-   - 1) DeepSeek (推荐,国内直连、性价比高)
-   - 2) OpenAI (官方 GPT-4o / o3-mini)
-   - 3) 本地 Ollama (无须 Key,纯本地)
-   - 4) 自定义 OpenAI 兼容接口 (OneAPI / vLLM / 代理)
+1. **选择服务商与模型**:
+   - 服务商与型号均从 `BUILTIN_PROFILES` 和 provider 展示元数据动态生成,不在向导中维护第二份硬编码清单。
+   - 内置目录之外保留“自定义 OpenAI 兼容接口”,用于 OneAPI / vLLM / 私有网关。
 2. **引导录入**:
    - 引导用户输入 API Key(或检测到已有环境变量时提示直接复用)。
 3. **连通性校验 & 全局持久化**:
@@ -526,9 +544,9 @@ export interface UserSettings {
 
 ---
 
-### 5.2 v0.2+ 远期配置与受管蓝图(架构储备)
+### 5.2 v0.0.2+ 权限与作用域配置蓝图(架构储备)
 
-随 v0.2 权限插件与企业合规特性落地,配置将演进为完整的五层合并机制:
+随 v0.0.2 权限插件与项目指令加载落地,配置将开始演进为完整的五层合并机制:
 
 | 层 | 位置 | 作用域 | 入库 | 可被下级覆盖 |
 |---|---|---|---|---|
@@ -571,8 +589,8 @@ type Capability =
 ```
 
 - **优先用 capability 而非 tool 名**:工具可以被动态注册(MCP 会引入大量未知工具),而 capability 是稳定小集合。用 capability 写规则,新接入的 MCP 工具自动被既有策略覆盖,无需为它单独补规则。
-- 工具通过 `metadata.permissions` 声明其所需 capability(见 §3.4);未声明的工具自 v0.2 起一律走确认门。
-- **元数据必须有真实消费者,否则声明就是装饰**。v0.0.1 中 `metadata.permissions` 的消费者是**沙箱**:ToolExecutor 按工具声明的 capability 应用对应校验(`fs:read` → 读沙箱,`fs:write` → 写沙箱),而不是各工具在 `execute` 内部散落硬编码。这保证"声明 = 行为",v0.2 权限引擎接管时读取同一份声明即可无缝替换;内置工具的标注同时成为 v0.2 引擎的第一批测试 fixture。
+- 工具通过 `metadata.permissions` 声明其所需 capability(见 §3.4);未声明的工具自 v0.0.2 起一律走确认门。
+- **元数据必须有真实消费者,否则声明就是装饰**。v0.0.1 中 `metadata.permissions` 的消费者是**沙箱**:ToolExecutor 按工具声明的 capability 应用对应校验(`fs:read` → 读沙箱,`fs:write` → 写沙箱),而不是各工具在 `execute` 内部散落硬编码。这保证"声明 = 行为",v0.0.2 权限引擎接管时读取同一份声明即可无缝替换;内置工具的标注同时成为 v0.0.2 引擎的第一批测试 fixture。
 
 ### 6.3 求值顺序(deny 绝对优先)
 
@@ -606,8 +624,24 @@ type Capability =
 2. **文件系统沙箱**(`security/sandbox.ts`):路径解析(含 `..` 归一化、符号链接解析)后必须落在允许的 root 内,越界直接 `ToolError`。
 3. **权限决策缓存**:`once`(本次允许)/ `always`(会话内记住)/ `never`(会话内拒绝),避免同一次任务反复打断。
 4. **无网络默认**:工具默认不声明 `net` 权限;需要网络的工具(如未来的 fetch、MCP http transport)须显式声明。
-5. **未挂载权限插件时的语义是 fail-open**(工具直接执行)。这在 v0.0.1 是可接受的——默认工具集不含 bash、全部受路径沙箱约束,危险面已经由上面第 1 条的 bash opt-in 策略压到最小。**v0.2 引入权限插件后应改为 fail-closed**:未声明 `permissions` 的工具一律走确认门。此项需在 v0.2 明确,避免默认放行的语义被后继版本继承。
-6. **v0.0.1 不实现权限规则引擎**(§6.2–6.4 的求值、分层合并、信任策略均属 v0.2,本文档已给出蓝图)。v0.0.1 的防线由两个更简单、可单测的机制承担:**bash opt-in + capability 驱动的沙箱**。判断依据:权限引擎的价值随工具危险面增长——v0.0.1 工具集(文件读写)的危险面已被完全覆盖,此刻实现引擎是死代码;MCP(v0.4)引入任意第三方工具后才是它的主场。但**契约必须现在定**:`ToolMetadata` 声明、`tool:before` 挂载点、内置工具的 capability 标注,这三样是 API 表面,后补意味着改所有工具签名与用户自定义工具的写法。
+5. **未挂载权限插件时的语义是 fail-open**(工具直接执行)。这在 v0.0.1 是可接受的——默认工具集不含 bash、全部受路径沙箱约束,危险面已经由上面第 1 条的 bash opt-in 策略压到最小。**v0.0.2 引入权限插件后应改为 fail-closed**:未声明 `permissions` 的工具一律走确认门。此项需在 v0.0.2 明确,避免默认放行的语义被后继版本继承。
+6. **v0.0.1 不实现权限规则引擎**(§6.2–6.4 的求值、分层合并、信任策略均属 v0.0.2,本文档已给出蓝图)。v0.0.1 的防线由两个更简单、可单测的机制承担:**bash opt-in + capability 驱动的沙箱**。判断依据:权限引擎的价值随工具危险面增长——v0.0.1 工具集(文件读写)的危险面已被完全覆盖,此刻实现引擎是死代码;MCP(v0.0.6)引入任意第三方工具后才是它的主场。但**契约必须现在定**:`ToolMetadata` 声明、`tool:before` 挂载点、内置工具的 capability 标注,这三样是 API 表面,后补意味着改所有工具签名与用户自定义工具的写法。
+
+### 6.6 v0.0.2 四态 SessionMode
+
+四种模式是权限策略与审批交互的统一前端语义,CLI、未来 TUI/Web 与 SDK 不得各自发明一套名称:
+
+| 模式 | 默认行为 | 不变量 |
+|---|---|---|
+| `Approval` | 沙箱内只读默认允许;写入、执行、网络与高危工具逐次询问,可记住本次或本会话决策 | 未经确认不得产生副作用 |
+| `Plan` | 只允许读取与分析;写入、执行、网络直接拒绝,不弹审批 | 适合纯规划,拒绝结果仍闭合工具历史 |
+| `Auto` | 沙箱内读取与写入自动允许;执行、网络与标记为 `dangerous` 的工具仍询问 | 提高日常开发吞吐,不静默扩大高危能力 |
+| `FullAccess` | 自动批准所有**已声明** capability | 只跳过人工审批,仍受 PathSandbox、显式 deny 与宿主硬边界约束 |
+
+- `FullAccess` 不是“关闭所有安全边界”;若未来提供突破工作区或宿主隔离的能力,必须使用独立且更醒目的显式开关,不能复用此模式名称。
+- `ApprovalChannel` 是注入接口;TTY CLI 负责交互,非交互环境对需要询问的操作默认拒绝。
+- 审批拒绝、超时和取消都转为合法的 `is_error` 工具结果,不得破坏 assistant `tool_use` → `tool_result` 闭合不变量。
+- 项目配置与项目指令只能收紧规则;放宽权限必须来自已信任的用户级配置或本次人工批准。
 
 ## 7. 提示词设计(分层组装)
 
@@ -624,6 +658,10 @@ type Capability =
 - 组装顺序 L1 → L2 → L2.5 → L3 → L4,层间固定分隔符连接。
 - **Provider 级微调**:L1 存放模型无关的中性表述;各 Provider 可携带一层模型级微调(如 DeepSeek 与 Anthropic 的指令遵循风格差异),由 Provider 声明、组装器拼接。
 - L2 自动生成意味着**工具的 `description` 直接决定模型调用准确率**——它是可测试资产,应有 snapshot 测试(见 §11)。
+
+v0.0.2 将 L4 扩展为多层 `AGENTS.md` 发现:先加载用户级指令,再从项目根到当前工作目录逐层合并,越靠近当前目录优先级越高。加载器必须限制单文件大小、总注入量和最大层数,并允许诊断命令展示实际来源。`AGENTS.md` 属于知识/行为输入,可以要求更谨慎,但不能注册工具、修改 SessionMode 或扩大权限。
+
+`AGENTS.md` 支持轮次边界热加载:每次开始新的用户轮次前检查适用文件链,有变化时原子生成新的指令快照;同一 active run 始终使用启动时快照,禁止执行途中改变约束。读取或解析失败时保留最后一份有效快照并向宿主发送诊断,不得静默退化为空指令。这样项目约定能在下一轮生效,同时不会让一次工具循环前后遵守不同规则。
 
 ## 8. 仓库结构(monorepo,pnpm)
 
@@ -653,7 +691,7 @@ kapibala/
 │   │       ├── security/     #   sandbox.ts + capability 校验(§6)
 │   │       ├── models/       #   ModelProvider 接口
 │   │       │   ├── openai-compatible/ # v0.0.1 核心实现(OpenAI/DeepSeek/Ollama)
-│   │       │   └── anthropic/         # v0.0.1 接口契约(v0.2 交付实现)
+│   │       │   └── anthropic/         # v0.0.1 接口契约(v0.0.4 交付实现)
 │   │       └── store/        #   MessageStore + jsonl 实现
 │   ├── cli/                  # @kiturone/kapibala-cli — 交互式 CLI(bin 名: kpbl)
 │   │   └── src/
@@ -692,7 +730,7 @@ kapibala/
    - AgentLoop:while 循环 + 最大步数 + 熔断 + **AbortPolicy**
    - **Plugin / Hook / Registry 契约**(接口与注册实现,MCP 等消费方后续接入)
    - **OpenAI 兼容 Provider(v0.0.1 核心主打)**:流式 SSE 深度解析(累加拼接 chunked `tool_calls` 参数、解析 DeepSeek `reasoning_content` 为 thinking 规范块)+ `assembleToolResults`(连续多 tool 严格回填)
-   - **Anthropic Provider(v0.0.1 规范契约)**:定义接口规范,实现定于 v0.2 交付
+   - **Anthropic Provider(v0.0.1 规范契约)**:定义接口规范,实现定于 v0.0.4 交付
    - **ModelRouter 场景路由契约(v0.0.1 规范契约)**:定义角色分发接口,预留规划/执行模型分离槽位
    - **JSONL MessageStore(消息级落盘 + 崩溃恢复)**
    - `security/sandbox.ts`(**由工具声明的 capability 驱动**:`fs:read` → 读沙箱,`fs:write` → 写沙箱)+ 权限策略接口(仅契约,不含求值引擎)
@@ -700,7 +738,7 @@ kapibala/
 
 **v0.0.1 内置工具集与权限标注**(capability 阶梯:只读 < 写入 < 执行,危险面逐级上升):
 
-| 工具 | capability | `dangerous` | v0.0.1 防线(无权限引擎时的实际执行) | v0.2 起的权限语义 |
+| 工具 | capability | `dangerous` | v0.0.1 防线(无权限引擎时的实际执行) | v0.0.2 起的权限语义 |
 |---|---|---|---|---|
 | `read_file` | `fs:read` | — | 读沙箱:路径归一化后必须落在 root 内 | 按 `fs:read` 规则 allow/deny/ask |
 | `glob` | `fs:read` | — | 同上 | 同上 |
@@ -708,7 +746,7 @@ kapibala/
 | `write_file` | `fs:write` | — | 写沙箱:root 内 + 拒绝越界与 symlink 逃逸 | 按 `fs:write` 规则;可对特定路径配 pattern |
 | `edit_file` | `fs:write` | — | 同上(原子替换) | 同上 |
 | `bash` | `exec` + `net:*`(不可判定) | ✅ | **默认不注册**;opt-in 后仍无规则控制,使用即自担 | `exec` 规则 + command 前缀 pattern + 确认门 |
-| ~~`repl`~~(代码执行) | `exec` | ✅ | **v0.0.1 不做**——危险面等同 bash,但实现成本高(持久进程、状态、回收),验证场景用不到;`bash` 已能覆盖"跑一段代码"的需求 | 随 exec 能力一起进 v0.2+ 评估 |
+| ~~`repl`~~(代码执行) | `exec` | ✅ | **v0.0.1 不做**——危险面等同 bash,但实现成本高(持久进程、状态、回收),验证场景用不到;`bash` 已能覆盖"跑一段代码"的需求 | 随 exec 能力一起在 v0.0.2+ 评估 |
 
 - 设计意图:**能力阶梯决定默认策略**——只读工具沙箱内默认放行,写工具沙箱内放行(策略可收紧),执行类工具一律 opt-in。模型拿到的能力集越小,行为越可预测,提示词 L2 层也越干净。
 - `list_files` 从工具集移除:`glob` 可完全覆盖其场景,少一个工具就少一份 L2 提示词成本。
@@ -717,7 +755,7 @@ kapibala/
    - 交互式对话 REPL,启动命令 **`kpbl`**(package.json `bin` 字段注册)。
    - **首次运行向导 (Setup Wizard)**: 当无环境变量且无配置文件时自动触发,引导选择服务商并验证保存至全局 `~/.kapibala/settings.json`。
    - **内建 Slash Command 控制层**:
-     - `/model [name]`: 查看或热切换当前模型(支持预设 `deepseek-v4-flash`, `deepseek-v4-pro`, `gpt-4o`, `ollama` 等 profiles)。
+     - `/model [name]`: 查看或热切换当前模型(具体预设始终取自 `BUILTIN_PROFILES`,命令层不硬编码型号清单)。
      - `/settings`: 查看或修改全局/项目设置(支持 `/settings setup` 呼出向导,`/settings default <id>` 设定默认模型)。
      - `/clear`: 重置当前会话历史上下文。
      - `/status`: 打印当前模型、已消耗 Token 计数与当前激活工具列表。
@@ -730,7 +768,7 @@ kapibala/
 3. **examples/minimal.ts**:最短可用示例(10 行代码通过 OpenAI 兼容协议跑通单次对话)。
 4. **docs/design/001**:本设计文档。
 5. **工程化**:vitest、Biome、tsup、changesets、GitHub Actions CI。
-6. **不做**:Anthropic 协议具体实现(移至 v0.2)、多角色路由运行时自动切换(移至 v0.2)、MCP、skill 加载、权限交互门、多会话、上下文压缩、sub-agent、REPL 类代码执行工具、**完整五层配置合并引擎(移至 v0.2)**。
+6. **不做**:权限交互门与多层 AGENTS.md(移至 v0.0.2)、消息生命周期与上下文压缩(移至 v0.0.3)、Anthropic 协议具体实现与多角色路由运行时切换(移至 v0.0.4)、skill、MCP、多会话、sub-agent、REPL 类代码执行工具、**完整五层配置合并引擎(从 v0.0.2 起按真实消费方渐进落地)**。
    > 但 **§3 的契约与挂载点全部落地**——后续版本只做增量,不改主干。
    > v0.0.1 的配置聚焦于 ModelProfile + 环境变量 + 单文件配置 + `/model` 运行时切换。
 
@@ -761,20 +799,25 @@ kapibala/
 ## 12. 版本路线与扩展点映射
 
 > 每个版本对应 **§3 的一个扩展点**,实现方式是"加插件 + 注册 hook",不重构主干。
+>
+> **编号约定**:版本号按十进制位进位,序列为 `v0.0.8` → `v0.0.9` → `v0.1.0`,不使用 `v0.0.10`;后续同理,`v0.1.9` 之后进入 `v0.2.0`。
 
 | 版本 | 内容 | 依赖的扩展点 | 交付形态 |
 |---|---|---|---|
-| **v0.0.1** | 核心骨架 + OpenAI 兼容全套 + 交互 CLI(含 Slash 命令) + 契约预留(含场景模型路由契约) | Plugin / Hook / Registry / Executor | 本次 |
-| v0.2 | Anthropic 原生 Provider + 场景模型路由(规划/执行模型分离) + 权限与确认门 + 审计日志 | `tool:before` / `tool:after` hook + 新增 Provider | core 内 + CLI 的 `ApprovalChannel` 实现 |
-| v0.3 | skill 机制(渐进式披露 + `load_skill`) | `skills/` + L2.5 层 + `model:before` | core 内 |
-| v0.4 | MCP(stdio → http) | Plugin + `registerSource` 动态上下线 | **独立包 `@kiturone/kapibala-mcp`** |
-| v0.5 | 多会话管理、上下文压缩(Summary 场景模型路由激活) | `model:before` hook 改写历史 | core 内 |
-| v0.6 | sub-agent(多智能体角色模型绑定) | 注册 `spawn_agent` 工具 | core 内 |
-| v0.7 | TUI、流式渲染优化、遥测 | 事件流消费者 | 独立包 |
+| **v0.0.1** | 核心骨架 + OpenAI 兼容全套 + 交互 CLI + 既有能力收尾增强 | Plugin / Hook / Registry / Executor;指标、工具展示、每轮底栏当前 Git 分支、配置、脚本、沙箱与 Headless Core 架构门禁 | 当前版本 |
+| **v0.0.2** | 可信执行与项目指令:四态 SessionMode、权限决策、宿主可注入的 ApprovalChannel、多层 AGENTS.md 与轮次边界热加载 | `tool:before` / `tool:after` + L4 提示词层 + 项目信任 | core + CLI 增量 |
+| **v0.0.3** | 消息生命周期与上下文管理:状态层、上下文预算、完整工具事务、滚动压缩、摘要检查点 | `model:before` 改写历史 + MessageStore 扩展 + Summary 路由回退 | core 内增量 |
+| **v0.0.4** | Anthropic 原生 Provider + 连续同角色消息规范化 + 场景模型路由运行时落地 | Provider 适配 + ModelRouter;小模型意图分类为可选策略 | core + CLI 增量 |
+| **v0.0.5** | skill 机制:SkillRegistry、渐进式披露、`load_skill`、来源与权限约束 | `skills/` + L2.5 层 + `model:before` | core 内增量 |
+| **v0.0.6** | MCP(stdio → http),受项目信任和权限策略约束 | Plugin + `registerSource` 动态上下线 | **独立包 `@kiturone/kapibala-mcp`** |
+| **v0.0.7** | 多会话恢复/检索/归档 + SessionManager + sub-agent + 父子追踪与权限收紧 | MessageStore 索引 + 多会话协调 + 注册 `spawn_agent` 工具 | core 内增量 |
+| **v0.0.8** | 产品化终端体验:TUI、共享前端 ViewModel、多任务状态、可扩展状态栏、流式渲染与交互增强 | `SessionEvent` 消费者 + CLI/TUI Host Adapter | 独立包 + CLI 增量 |
+| **v0.0.9** | 客户端与发布前加固:版本化 wire DTO、守护进程、IPC/SSE/WebSocket、桌面/Web/移动接入、遥测/审计/预算/宿主隔离 | 事件传输适配 + OpenTelemetry + 宿主隔离 + 兼容性测试 | core + 宿主适配 |
+| **v0.1.0** | 阶段性整合:稳定 Core API、事件协议和客户端接入契约,完成迁移验证与发布流程 | 全部已落地扩展点的集成验收 | CLI + Core SDK + 扩展包 |
 
 ## 13. 待定议题:全局与项目的作用域模型(非 v0.0.1 范围)
 
-> 本节只记录问题与初步分类,**不做设计**。完整的作用域模型待权限(v0.2)、skill(v0.3)、MCP(v0.4)落地时再展开——届时才有真实的消费方来验证分类是否成立。若后续展开,预计拆成独立文档(如 002-scope-model)。
+> 本节只记录问题与初步分类,**不做设计**。完整的作用域模型随权限(v0.0.2)、skill(v0.0.5)、MCP(v0.0.6)按真实消费方逐步展开。若后续需要跨模块统一,再拆成独立文档(如 002-scope-model)。
 
 §5/§6 只覆盖了"配置与权限"这一个维度的全局/项目关系。但这个问题会扩散到几乎每个子系统,且方向并不一致:
 
@@ -783,7 +826,7 @@ kapibala/
 | 工具 | 用户安装的内置/MCP 工具 | 项目特有的脚本工具、MCP server | 项目能否**禁用**全局工具?命名空间冲突之外的"可见性"问题 |
 | Skill | 个人积累的知识包 | 团队操作规程 | 项目应**覆盖**全局(项目约定 > 个人习惯)——与权限的"收紧"方向**相反** |
 | 插件/MCP | 个人常用 server | 项目声明依赖 | 项目只能"**声明**",装载需用户确认(同 §6.4 信任模型) |
-| 会话历史 | 全库检索 | 按 cwd 归属 | 归项目,存全局缓存目录(不入库,防泄密);全局检索是 v0.5+ 的索引问题 |
+| 会话历史 | 全库检索 | 按 cwd 归属 | 归项目,存全局缓存目录(不入库,防泄密);全局检索是 v0.0.7+ 的索引问题 |
 | 记忆/上下文 | 个人偏好 | 项目约定 | 提示词 L4 层需拆成 L4a 全局 + L4b 项目 |
 | 缓存/索引 | — | 代码索引、embedding | 放全局缓存目录按项目哈希分桶,避免污染仓库 |
 | 审计 | 集中留存 | — | 合规场景下审计**不能被项目配置关闭**——"只能收紧"的又一个实例 |
@@ -806,4 +849,5 @@ kapibala/
 |---|---|---|
 | v0 | 2026-09-04 | 初版,定义核心抽象与 v0 范围 |
 | v0.1 | 2026-09-04 | 新增 §3 可插拔扩展架构、§4 循环执行语义、§5 配置系统、§6 安全与权限模型(含全局/项目收紧策略);提示词加 L2.5 skill 层;路线图重排为扩展点映射;新增 §13 待定议题(作用域模型,不展开);修正编号错乱与"迁移免费""逐事件落盘"等表述 |
-| **v0.0.1** | 2026-09-13 | **规范版本号为 v0.0.1 & 引入场景模型路由设计**:将版本号对齐为初始可交付版本 v0.0.1;第一期模型协议收敛为以 OpenAI API 兼容协议为主(涵盖原生 OpenAI、DeepSeek 与推理模式、Ollama 等),Anthropic 协议规范保留在契约层、实现延后至 v0.2;架构引入**场景模型路由(Role-based Model Routing)**蓝图(规划用高智力模型如 GPT,执行用高吞吐低成本模型如 DeepSeek),v0.0.1 预留配置与路由契约;CLI REPL 增加内建 Slash 命令分发系统(`/model`, `/settings`, `/clear`, `/status`, `/help`, `/exit`),Session 增加运行时控制 API;配置体系统一采用 `.kapibala` 目录与 `settings.json` 文件名,增加带 `$schema` 智能校验、首启交互式向导(Setup Wizard)与全局 `~/.kapibala/settings.json` 持久化机制;修复 ToolExecutor 与 sandbox 依赖边界;完善终端 Ctrl+C 中断状态机 |
+| **v0.0.1** | 2026-09-13 | **规范版本号为 v0.0.1 & 引入场景模型路由设计**:将版本号对齐为初始可交付版本 v0.0.1;第一期模型协议收敛为以 OpenAI API 兼容协议为主(涵盖原生 OpenAI、DeepSeek 与推理模式、Ollama 等),Anthropic 协议规范保留在契约层、实现现重排至 v0.0.4;架构引入**场景模型路由(Role-based Model Routing)**蓝图(规划用高智力模型,执行用高吞吐低成本模型),v0.0.1 预留配置与路由契约;CLI REPL 增加内建 Slash 命令分发系统(`/model`, `/settings`, `/clear`, `/status`, `/help`, `/exit`),Session 增加运行时控制 API;配置体系统一采用 `.kapibala` 目录与 `settings.json` 文件名,增加带 `$schema` 智能校验、首启交互式向导(Setup Wizard)与全局 `~/.kapibala/settings.json` 持久化机制;修复 ToolExecutor 与 sandbox 依赖边界;完善终端 Ctrl+C 中断状态机 |
+| **v0.0.1 收尾增强** | 2026-09-22 | **既有能力增强与未来路线重排**:已完成请求指标与上下文占用、工具调用耗时/脱敏展示、每轮底栏当前 Git 分支、`contextWindow` 的 `K/M` 简写和默认 `1M` 估算,补齐 PathSandbox/Hook 回归测试,并以自动化门禁固化 Headless Core / Host Adapter 边界;跨平台启动继续保持单一流程真源。后续按依赖拆为 v0.0.2 权限与 AGENTS.md、v0.0.3 消息/压缩、v0.0.4 多协议/模型路由、v0.0.5 Skills、v0.0.6 MCP、v0.0.7 多会话/Sub-Agent、v0.0.8 TUI、v0.0.9 客户端协议与发布加固,再按十进制进位进入 v0.1.0 整合版本。未来规划项不得在实现前作为现成功能宣传。 |

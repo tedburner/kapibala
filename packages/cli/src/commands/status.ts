@@ -1,3 +1,4 @@
+import { formatContextUsage } from '../ui/metrics.js';
 import type { CommandHandler } from './dispatcher.js';
 
 export const statusCommand: CommandHandler = (_args, ctx) => {
@@ -10,6 +11,7 @@ export const statusCommand: CommandHandler = (_args, ctx) => {
   console.log(`  - 提示词 (Prompt):     ${stats.totalTokens.promptTokens}`);
   console.log(`  - 输出生成 (Completion): ${stats.totalTokens.completionTokens}`);
   console.log(`  - 总计消耗 (Total):      ${stats.totalTokens.totalTokens}`);
+  console.log(`  - 最近请求上下文:       ${formatContextUsage(stats.contextUsage, ' / ')}`);
 
   if (stats.lastRunMetrics) {
     const m = stats.lastRunMetrics;

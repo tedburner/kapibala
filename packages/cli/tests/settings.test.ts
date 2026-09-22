@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ModelProfile } from '@kiturone/kapibala';
-import { afterEach, describe, expect, it } from 'vitest';
+import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BUILTIN_CATALOG_VERSION,
   BUILTIN_PROFILES,
@@ -10,6 +10,7 @@ import {
   credentialGroup,
   detectProviderFamily,
   ensureProfile,
+  loadGlobalSettingsForWrite,
   loadSettings,
   migrateBuiltinCatalog,
   migrateGlobalSettingsCatalog,
@@ -164,6 +165,173 @@ describe('project settings trust', () => {
       fs.readFileSync(path.join(homeDir, '.kapibala', 'settings.json'), 'utf8'),
     );
     expect(persisted.trustedProjects).toEqual([fs.realpathSync.native(projectDir)]);
+  });
+});
+
+describe('contextWindow settings', () => {
+  it('loads K/M shorthand from settings.json', () => {
+    const { homeDir, projectDir } = createSettingsWorkspace();
+    fs.writeFileSync(
+      path.join(homeDir, '.kapibala', 'settings.json'),
+      JSON.stringify({
+        defaultModel: 'custom-short-window',
+        profiles: [
+          {
+            id: 'custom-short-window',
+            name: 'Custom Short Window',
+            provider: 'openai-compatible',
+            baseURL: 'https://gateway.example/v1',
+            apiKeyEnv: 'CUSTOM_API_KEY',
+            modelName: 'custom-model',
+            contextWindow: '256K',
+          },
+        ],
+      }),
+    );
+
+    const loaded = loadSettings({ homeDir, cwd: projectDir }).settings;
+    const profile = loaded.profiles.find((item) => item.id === 'custom-short-window');
+
+    expect(resolveContextWindow(profile?.contextWindow)).toEqual({
+      tokens: 256_000,
+      estimated: false,
+    });
+  });
+
+  it('drops only the invalid profile and keeps the rest of the settings file', () => {
+    const { homeDir, projectDir } = createSettingsWorkspace();
+    fs.writeFileSync(
+      path.join(homeDir, '.kapibala', 'settings.json'),
+      JSON.stringify({
+        defaultModel: 'custom-ok',
+        profiles: [
+          {
+            id: 'custom-ok',
+            name: 'Custom OK',
+            provider: 'openai-compatible',
+            baseURL: 'https://gateway.example/v1',
+            apiKeyEnv: 'CUSTOM_API_KEY',
+            modelName: 'custom-model',
+            contextWindow: '256K',
+          },
+          {
+            id: 'invalid-window',
+            name: 'Invalid Window',
+            provider: 'openai-compatible',
+            baseURL: 'https://gateway.example/v1',
+            apiKeyEnv: 'CUSTOM_API_KEY',
+            modelName: 'custom-model',
+            contextWindow: '128MB',
+          },
+        ],
+      }),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const loaded = loadSettings({ homeDir, cwd: projectDir }).settings;
+      expect(loaded.profiles.some((profile) => profile.id === 'invalid-window')).toBe(false);
+      expect(loaded.profiles.some((profile) => profile.id === 'custom-ok')).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/invalid-window.*contextWindow/s));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('declares numeric and K/M shorthand values in the JSON schema', () => {
+    const schema = JSON.parse(
+      fs.readFileSync(path.resolve('schemas/settings.schema.json'), 'utf8'),
+    );
+    const contextWindow = schema.definitions.modelProfile.properties.contextWindow;
+
+    expect(contextWindow.default).toBe('1M');
+    expect(contextWindow.oneOf).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'integer', minimum: 1 }),
+        expect.objectContaining({ type: 'string', pattern: expect.any(String) }),
+      ]),
+    );
+  });
+
+  it('keeps JSON schema shorthand validation compatible with the runtime parser', () => {
+    const schema = JSON.parse(
+      fs.readFileSync(path.resolve('schemas/settings.schema.json'), 'utf8'),
+    );
+    const shorthand = schema.definitions.modelProfile.properties.contextWindow.oneOf.find(
+      (candidate: { type?: string }) => candidate.type === 'string',
+    );
+    const syntax = new RegExp(shorthand.pattern);
+    const excluded = shorthand.not?.pattern ? new RegExp(shorthand.not.pattern) : undefined;
+    const accepts = (value: string): boolean =>
+      syntax.test(value) && !(excluded?.test(value) ?? false);
+
+    for (const value of ['1K', '0.001K', '1M', '1.05M', '0.000001M']) {
+      expect(accepts(value), `${value} should be accepted`).toBe(true);
+      expect(() => resolveContextWindow(value as never)).not.toThrow();
+    }
+    for (const value of ['0K', '0.000M', '0.0001K', '1.0001K', '1.0000001M']) {
+      expect(accepts(value), `${value} should be rejected`).toBe(false);
+      expect(() => resolveContextWindow(value as never)).toThrow(/contextWindow/i);
+    }
+  });
+});
+
+describe('loadGlobalSettingsForWrite', () => {
+  it('returns the disk contents untouched when the file is usable', () => {
+    const { homeDir } = createSettingsWorkspace();
+    const stored = {
+      defaultModel: 'custom-ok',
+      profiles: [
+        {
+          id: 'custom-ok',
+          name: 'Custom OK',
+          provider: 'openai-compatible',
+          baseURL: 'https://gateway.example/v1',
+          apiKeyEnv: 'CUSTOM_API_KEY',
+          modelName: 'custom-model',
+          contextWindow: '256K',
+        },
+      ],
+    };
+    fs.writeFileSync(path.join(homeDir, '.kapibala', 'settings.json'), JSON.stringify(stored));
+
+    expect(loadGlobalSettingsForWrite({ homeDir })).toEqual(stored);
+  });
+
+  it('falls back to an empty skeleton only when the file does not exist', () => {
+    const { homeDir } = createSettingsWorkspace();
+
+    const loaded = loadGlobalSettingsForWrite({ homeDir });
+
+    expect(loaded.profiles).toEqual([]);
+  });
+
+  it('throws instead of silently falling back when the file exists but is unusable', () => {
+    const { homeDir } = createSettingsWorkspace();
+    const settingsPath = path.join(homeDir, '.kapibala', 'settings.json');
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        defaultModel: 'invalid-window',
+        profiles: [
+          {
+            id: 'invalid-window',
+            name: 'Invalid Window',
+            provider: 'openai-compatible',
+            baseURL: 'https://gateway.example/v1',
+            apiKeyEnv: 'CUSTOM_API_KEY',
+            modelName: 'custom-model',
+            contextWindow: '128MB',
+          },
+        ],
+      }),
+    );
+
+    expect(() => loadGlobalSettingsForWrite({ homeDir })).toThrow(/invalid-window.*中止本次写入/s);
+
+    // JSON 损坏同样必须中止写回路径，不能回退成会清空 profiles 的空骨架。
+    fs.writeFileSync(settingsPath, '{ broken json');
+    expect(() => loadGlobalSettingsForWrite({ homeDir })).toThrow(/中止本次写入/);
   });
 });
 

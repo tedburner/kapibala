@@ -26,6 +26,8 @@ export interface ToolResultBlock {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  /** 单次工具调用总耗时，包含 tool hooks 与实际执行。 */
+  durationMs?: number;
 }
 
 export interface ThinkingBlock {
@@ -96,6 +98,15 @@ export interface RunMetrics {
   turns: number;
   toolCalls: number;
   status: 'completed' | 'failed' | 'aborted';
+  /** 最近一次内部模型请求占用的上下文；不使用 run 累计 promptTokens。 */
+  contextUsage?: ContextUsage;
+}
+
+export interface ContextUsage {
+  usedTokens?: number;
+  limitTokens: number;
+  percent?: number;
+  estimatedLimit: boolean;
 }
 
 export type StepLogStage =
@@ -115,14 +126,27 @@ export interface StepLogEntry {
   metadata?: Record<string, unknown>;
 }
 
-// 统一事件流 SessionEvent
+/**
+ * AgentSession 面向宿主输出的统一进程内事件契约。
+ *
+ * 事件只描述 Agent 语义，不携带终端颜色、组件状态或具体 UI 类型，因此 CLI、TUI、
+ * GUI 和 SDK 可以消费同一条事件流。跨进程或网络传输需要由宿主转换为独立的 wire DTO，
+ * 不应直接把本类型当作长期兼容的网络协议。
+ */
 export type SessionEvent =
   | { type: 'turn_start'; turn: number }
   | { type: 'step_log'; log: StepLogEntry }
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; thinking: string }
   | { type: 'tool_start'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_finish'; id: string; name: string; result: string; isError: boolean }
+  | {
+      type: 'tool_finish';
+      id: string;
+      name: string;
+      result: string;
+      isError: boolean;
+      durationMs?: number;
+    }
   /**
    * 工具结果已完成 canonical 装配并写入历史。
    * 消费方(SessionStore)据此落盘 —— 见设计文档 §4.4「tool:after 落一条 tool_result message」。

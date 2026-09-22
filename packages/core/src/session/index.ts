@@ -3,13 +3,14 @@ import { ToolExecutor } from '../executor/index.js';
 import { HookRegistry } from '../hooks/registry.js';
 import { AgentLoop } from '../loop/index.js';
 import type { ModelProfile, ModelProvider, ModelRole } from '../models/index.js';
-import { SimpleModelRouter } from '../models/router.js';
+import { SimpleModelRouter, resolveContextWindow } from '../models/router.js';
 import type { AgentPlugin } from '../plugin/index.js';
 import { PromptAssembler } from '../prompt/index.js';
 import type { MessageStore } from '../store/index.js';
 import { ToolRegistry } from '../tools/registry.js';
 import type {
   CanonicalMessage,
+  ContextUsage,
   RunMetrics,
   SessionEvent,
   TurnMetrics,
@@ -33,6 +34,7 @@ export interface SessionStats {
   loadedToolsCount: number;
   lastMetrics?: TurnMetrics;
   lastRunMetrics?: RunMetrics;
+  contextUsage: ContextUsage;
 }
 
 export class AgentSession {
@@ -56,6 +58,7 @@ export class AgentSession {
   private readonly plugins: AgentPlugin[] = [];
 
   constructor(config: SessionConfig) {
+    resolveContextWindow(config.defaultProfile.contextWindow);
     this.rootDir = config.rootDir ?? process.cwd();
     this.tools = new ToolRegistry();
     this.hooks = new HookRegistry();
@@ -91,6 +94,7 @@ export class AgentSession {
 
   switchModel(profile: ModelProfile, role: ModelRole = 'default', provider?: ModelProvider): void {
     this.assertIdle('switch models');
+    resolveContextWindow(profile.contextWindow);
     if (!provider) {
       // 默认使用当前角色的 provider
       provider = this.router.resolve(role);
@@ -115,6 +119,7 @@ export class AgentSession {
       loadedToolsCount: this.tools.list().length,
       lastMetrics: this.lastMetrics,
       lastRunMetrics: this.lastRunMetrics,
+      contextUsage: this.lastRunMetrics?.contextUsage ?? this.createContextUsage(),
     };
   }
 
@@ -139,8 +144,20 @@ export class AgentSession {
     this.logger?.('Session context cleared');
   }
 
+  /**
+   * 执行一次用户输入，并以宿主无关的语义事件流返回全过程。
+   *
+   * Core 不负责终端或图形界面渲染；CLI、TUI、GUI 与其它宿主应消费同一组
+   * {@link SessionEvent}，分别完成展示、交互和中止控制。
+   *
+   * @param userInput 用户本轮输入。
+   * @param options 可选的中止信号。
+   * @returns 文本、思考、工具、指标和错误等结构化事件的异步流。
+   * @throws {SessionBusyError} 当前会话已有正在执行的 run 时抛出。
+   */
   async *run(userInput: string, options?: { signal?: AbortSignal }): AsyncIterable<SessionEvent> {
     this.assertIdle('start another run');
+    resolveContextWindow(this.router.getProfile('default').contextWindow);
     this.activeRun = true;
     const runStartTime = Date.now();
     const aggregate = {
@@ -153,6 +170,7 @@ export class AgentSession {
       toolCalls: 0,
       ttftMs: undefined as number | undefined,
     };
+    let lastPromptTokens: number | undefined;
     let runStatus: RunMetrics['status'] = 'completed';
     let runFinalized = false;
 
@@ -164,6 +182,7 @@ export class AgentSession {
         totalDurationMs: endTime - runStartTime,
         ...aggregate,
         status,
+        contextUsage: this.createContextUsage(lastPromptTokens),
       };
     };
 
@@ -234,6 +253,7 @@ export class AgentSession {
             aggregate.promptTokens += event.metrics.promptTokens;
             aggregate.completionTokens += event.metrics.completionTokens;
             aggregate.totalTokens += event.metrics.totalTokens;
+            lastPromptTokens = event.usage?.promptTokens;
             aggregate.turns++;
             aggregate.toolCalls += event.metrics.toolCallsCount;
             aggregate.ttftMs ??= event.metrics.ttftMs;
@@ -308,10 +328,10 @@ export class AgentSession {
       yield { type: 'run_finish', metrics };
       throw error;
     } finally {
+      this.activeRun = false;
       if (!runFinalized) {
         this.lastRunMetrics = finalizeRun('aborted');
       }
-      this.activeRun = false;
     }
   }
 
@@ -335,6 +355,20 @@ export class AgentSession {
 
   private assertIdle(operation: string): void {
     if (this.activeRun) throw new SessionBusyError(operation);
+  }
+
+  /**
+   * 计算最近一次内部模型请求的上下文占用。
+   * run 累计 promptTokens 会重复计算每一步都重发的历史，不能用于窗口占用率。
+   */
+  private createContextUsage(usedTokens?: number): ContextUsage {
+    const contextWindow = resolveContextWindow(this.router.getProfile('default').contextWindow);
+    return {
+      usedTokens,
+      limitTokens: contextWindow.tokens,
+      percent: usedTokens === undefined ? undefined : (usedTokens / contextWindow.tokens) * 100,
+      estimatedLimit: contextWindow.estimated,
+    };
   }
 
   private async persistAssistant(

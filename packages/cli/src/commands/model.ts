@@ -1,17 +1,17 @@
-import type { ModelProfile } from '@kiturone/kapibala';
+import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
 import { PROVIDER_METAS, providerCategory } from '../providers.js';
 import {
   API_KEY_ENV_NONE,
   type LoadSettingsOptions,
   type UserSettings,
-  createUserSettingsSkeleton,
   describeCredentialGroup,
   ensureProfile,
-  readRawGlobalSettings,
+  loadGlobalSettingsForWrite,
   resolveApiKeyDetailed,
   saveGlobalSettings,
   updateProfileApiKey,
 } from '../settings.js';
+import { formatTokenCount } from '../ui/metrics.js';
 import { readSecret } from '../ui/secret.js';
 import { type SelectOption, select } from '../ui/select.js';
 import { runSetupWizard } from '../wizard.js';
@@ -28,11 +28,13 @@ export interface UpdateModelApiKeyOptions {
  * 取一份**磁盘原始**的全局配置用于写回。
  *
  * 不能用 loadSettings().settings：它已经和 BUILTIN_PROFILES 合并过，整份写回会把用户
- * 从未启用的内置模型全部物化进配置文件。只在文件不存在时才退回空骨架。
+ * 从未启用的内置模型全部物化进配置文件。文件不存在时由 loadGlobalSettingsForWrite
+ * 退回空骨架；文件存在但损坏/含非法值时直接抛错，绝不能静默回退骨架 ——
+ * 否则下一次写盘会把用户的全部 profile（含内联 apiKey）无声清空。
  */
 function globalSettingsForWrite(options: UpdateModelApiKeyOptions): UserSettings {
   if (options.globalSettings) return options.globalSettings;
-  return readRawGlobalSettings({ homeDir: options.homeDir }) ?? createUserSettingsSkeleton();
+  return loadGlobalSettingsForWrite({ homeDir: options.homeDir });
 }
 
 export async function updateModelApiKey(
@@ -263,7 +265,8 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
       }
 
       const thinkingTag = p.supportsThinking ? ' | 深度思考' : '';
-      const contextTag = p.contextWindow ? ` | ${Math.round(p.contextWindow / 1000)}k` : '';
+      const contextWindow = resolveContextWindow(p.contextWindow);
+      const contextTag = ` | ${contextWindow.estimated ? '≈' : ''}${formatTokenCount(contextWindow.tokens)}`;
 
       return {
         label: p.name,
