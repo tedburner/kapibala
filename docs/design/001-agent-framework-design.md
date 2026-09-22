@@ -48,7 +48,7 @@ Web / 移动客户端 ──┘
 - Core 只处理模型、循环、工具、历史、Hook、沙箱与语义事件,不包含终端控制码、交互输入或 UI 组件。
 - `AgentSession.run()` 返回宿主无关的 `AsyncIterable<SessionEvent>`;文本、思考、工具、错误与指标都通过该事件流交付。
 - CLI/TUI 可在同一进程直接消费事件;桌面渲染进程、Web 与移动客户端由守护进程或服务端托管 Core,再通过宿主传输层连接。
-- v0.0.1 CLI 在每轮 `run_finish` 时由 Host Adapter 即时探测当前 Git 分支并置于底栏首位,其后按总耗时、上下文、Token、模型、工具、TTFT、步骤排列,Token 使用 `K/M` 简写。Git 信息不得写入 canonical 消息或让 Core 依赖 Git;非 Git 目录、detached HEAD 或探测失败时省略该字段,不能阻断对话。更丰富的工作区状态栏仍归入 v0.0.8。
+- v0.0.1 CLI 在每轮 `run_finish` 时由 Host Adapter 即时探测当前 Git 分支并置于底栏首位,默认其后按总耗时、上下文、本轮输入/输出 Token、工具次数/耗时排列,`--debug` 再追加模型耗时与 TTFT,不展示含义模糊的步骤指标,Token 使用 `K/M` 简写。Git 信息不得写入 canonical 消息或让 Core 依赖 Git;非 Git 目录、detached HEAD 或探测失败时省略该字段,不能阻断对话。更丰富的工作区状态栏仍归入 v0.0.8。
 - v0.0.1 的 `SessionEvent` 是**进程内契约**,不是可直接长期兼容的网络协议。可序列化且带版本的 wire DTO、IPC/SSE/WebSocket 与本地守护进程归入 v0.0.9。
 - `pnpm check-architecture` 扫描 `packages/core/src`,禁止 Core 反向依赖 CLI、直接读写终端或包含 ANSI 渲染;它随 `pnpm lint` 和 `pnpm verify` 执行。
 
@@ -366,6 +366,7 @@ v0 把所有异常塞进一个 `error` 事件,是不可用的。v0.0.1 明确分
 - **关键原则:工具失败不终止循环**。错误作为 `is_error` 结果回喂模型,让模型自行纠正——这是 agent 相比普通 API 调用的核心价值。
 - **熔断**:连续工具错误达上限(默认 3 次)则终止,避免死循环烧 token。
 - 重试只对 `ModelError(retryable)` 生效,且**重试前不得把半成品 assistant 消息写入历史**。
+- **v0.0.2 结构化工具错误**:`KapibalaError` 增加稳定错误码与 `retryPolicy`(`never` / `immediate` / `backoff` / `after_user_action`),适配器只向模型发送脱敏后的安全错误信息。容器已删除、SSH 重试耗尽等终态错误标记为 `never`,AgentLoop 不得再次发起同类调用;权限、登录或配置缺失标记为 `after_user_action`,等待用户处理后再继续。
 
 ### 4.3 中断与历史修复(含 CLI 交互语义)
 
@@ -745,7 +746,7 @@ kapibala/
 | `grep` | `fs:read` | — | 同上 | 同上 |
 | `write_file` | `fs:write` | — | 写沙箱:root 内 + 拒绝越界与 symlink 逃逸 | 按 `fs:write` 规则;可对特定路径配 pattern |
 | `edit_file` | `fs:write` | — | 同上(原子替换) | 同上 |
-| `bash` | `exec` + `net:*`(不可判定) | ✅ | **默认不注册**;opt-in 后仍无规则控制,使用即自担 | `exec` 规则 + command 前缀 pattern + 确认门 |
+| `bash` | `exec` + `net:*`(不可判定) | ✅ | **v0.0.1 不实现、不注册** | v0.0.2 在 SessionMode、`exec` 规则、command 前缀 pattern 与确认门就绪后以 opt-in 方式接入 |
 | ~~`repl`~~(代码执行) | `exec` | ✅ | **v0.0.1 不做**——危险面等同 bash,但实现成本高(持久进程、状态、回收),验证场景用不到;`bash` 已能覆盖"跑一段代码"的需求 | 随 exec 能力一起在 v0.0.2+ 评估 |
 
 - 设计意图:**能力阶梯决定默认策略**——只读工具沙箱内默认放行,写工具沙箱内放行(策略可收紧),执行类工具一律 opt-in。模型拿到的能力集越小,行为越可预测,提示词 L2 层也越干净。
@@ -761,6 +762,11 @@ kapibala/
      - `/status`: 打印当前模型、已消耗 Token 计数与当前激活工具列表。
      - `/help`: 打印支持的命令清单。
      - `/exit` / `/quit`: 退出终端。
+   - **v0.0.8 统一命令面板（未来规划）**:
+     - `CommandDispatcher`、`SkillRegistry` 与 MCP Prompt Registry 统一提供候选元数据：稳定 ID、展示名、一行描述、来源类型、参数提示、是否允许用户调用及执行引用；Host 只查询和渲染，不自行扫描 Skill/MCP 文件。
+     - 候选范围仅包含内置 Slash 命令、用户可调用的 Skills 与 MCP Prompt。原始 MCP Tool 仍由模型通过工具协议调用，不进入 `/` 菜单。
+     - 匹配优先级固定为精确匹配 → 前缀匹配 → 子串匹配 → 模糊匹配，同等级保持注册顺序稳定；裸 `/` 使用策划后的稳定顺序，不因运行时 Map 遍历或异步 MCP 返回顺序抖动。
+     - 面板默认显示 3 行，仅限制可见窗口而不截断候选集合；剩余数量显示为 `+N more`，可用上下键滚动浏览。Tab 补全当前候选，Enter 执行，Esc 关闭。
    - **终端交互与中断状态机**:单次 `Ctrl+C` 优雅中止当前 turn 的模型流式生成或工具执行(保持上下文自愈),空闲状态单次 `Ctrl+C` 或任意状态双击 `Ctrl+C` 退出 REPL。
    - `--debug` 参数: dump 原始 SSE 响应数据流。
    - 配置加载: 环境变量优先,项目 `.kapibala/settings.json` 次之,全局 `~/.kapibala/settings.json` 兜底。
@@ -805,13 +811,13 @@ kapibala/
 | 版本 | 内容 | 依赖的扩展点 | 交付形态 |
 |---|---|---|---|
 | **v0.0.1** | 核心骨架 + OpenAI 兼容全套 + 交互 CLI + 既有能力收尾增强 | Plugin / Hook / Registry / Executor;指标、工具展示、每轮底栏当前 Git 分支、配置、脚本、沙箱与 Headless Core 架构门禁 | 当前版本 |
-| **v0.0.2** | 可信执行与项目指令:四态 SessionMode、权限决策、宿主可注入的 ApprovalChannel、多层 AGENTS.md 与轮次边界热加载 | `tool:before` / `tool:after` + L4 提示词层 + 项目信任 | core + CLI 增量 |
+| **v0.0.2** | 可信执行与项目指令:四态 SessionMode、权限决策、宿主可注入的 ApprovalChannel、结构化工具错误与 `retryPolicy`、opt-in Bash、多层 AGENTS.md 与轮次边界热加载 | `tool:before` / `tool:after` + L4 提示词层 + 项目信任 | core + CLI 增量 |
 | **v0.0.3** | 消息生命周期与上下文管理:状态层、上下文预算、完整工具事务、滚动压缩、摘要检查点 | `model:before` 改写历史 + MessageStore 扩展 + Summary 路由回退 | core 内增量 |
 | **v0.0.4** | Anthropic 原生 Provider + 连续同角色消息规范化 + 场景模型路由运行时落地 | Provider 适配 + ModelRouter;小模型意图分类为可选策略 | core + CLI 增量 |
-| **v0.0.5** | skill 机制:SkillRegistry、渐进式披露、`load_skill`、来源与权限约束 | `skills/` + L2.5 层 + `model:before` | core 内增量 |
-| **v0.0.6** | MCP(stdio → http),受项目信任和权限策略约束 | Plugin + `registerSource` 动态上下线 | **独立包 `@kiturone/kapibala-mcp`** |
+| **v0.0.5** | skill 机制:SkillRegistry、渐进式披露、`load_skill`、来源与权限约束;向宿主暴露可搜索的 Skill 名称、描述、来源、参数提示和用户可调用性元数据,CLI 展示当前加载/调用的 Skill 名称 | `skills/` + L2.5 层 + `model:before` | core 内增量 |
+| **v0.0.6** | MCP(stdio → http),受项目信任和权限策略约束;CLI 保留并展示 MCP server/tool 命名空间,MCP Prompt 以名称、描述、来源和参数提示注册为用户命令 | Plugin + `registerSource` 动态上下线 + MCP Prompt Registry | **独立包 `@kiturone/kapibala-mcp`** |
 | **v0.0.7** | 多会话恢复/检索/归档 + SessionManager + sub-agent + 父子追踪与权限收紧 | MessageStore 索引 + 多会话协调 + 注册 `spawn_agent` 工具 | core 内增量 |
-| **v0.0.8** | 产品化终端体验:TUI、共享前端 ViewModel、多任务状态、可扩展状态栏、流式渲染与交互增强 | `SessionEvent` 消费者 + CLI/TUI Host Adapter | 独立包 + CLI 增量 |
+| **v0.0.8** | 产品化终端体验:TUI、共享前端 ViewModel、多任务状态、可扩展状态栏、流式渲染;统一 `/` 命令面板对 Slash 命令、用户可调用的 Skills 与 MCP Prompt 做稳定模糊匹配,展示名称/描述/来源;默认可见 3 条但可滚动浏览全部结果,支持上下键、Enter、Tab 与 Esc,原始 MCP Tool 不进入菜单;思考过程生成时完整展示,完成后折叠且可展开 | `SessionEvent` 消费者 + CommandDispatcher/SkillRegistry/MCP Prompt Registry 查询接口 + CLI/TUI Host Adapter | 独立包 + CLI 增量 |
 | **v0.0.9** | 客户端与发布前加固:版本化 wire DTO、守护进程、IPC/SSE/WebSocket、桌面/Web/移动接入、遥测/审计/预算/宿主隔离 | 事件传输适配 + OpenTelemetry + 宿主隔离 + 兼容性测试 | core + 宿主适配 |
 | **v0.1.0** | 阶段性整合:稳定 Core API、事件协议和客户端接入契约,完成迁移验证与发布流程 | 全部已落地扩展点的集成验收 | CLI + Core SDK + 扩展包 |
 

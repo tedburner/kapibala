@@ -64,11 +64,11 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 ## 当前状态（2026-09-22）
 
 - 版本号采用十进制位进位：补丁位只使用 `0–9`，`v0.0.9` 之后为 `v0.1.0`（不使用 `v0.0.10`）；后续同理。
-- v0.0.1 已完成：核心骨架 + 交互 CLI + 冷启动向导 + PathSandbox 沙箱 + 崩溃历史自愈 + 场景模型路由契约；**20 test files / 184 passed | 2 skipped**。
+- v0.0.1 已完成：核心骨架 + 交互 CLI + 冷启动向导 + PathSandbox 沙箱 + 崩溃历史自愈 + 场景模型路由契约；**22 test files / 199 passed | 2 skipped**。
 - 已落地增量：跨平台一键开发脚本（`pnpm dev`）、**同一厂商族共用一份 API Key**（读取层复用 + 写入层归一）、
   REPL 横幅按显示宽度动态补白（`src/ui/width.ts`）、裸 `exit` / `quit` 识别为退出命令、
   **内置模型清单扩展到 8 家厂商 / 20 个模型 + 带版本号的存量配置自动升级**（`migrateGlobalSettingsCatalog`）、
-  **上下文窗口整数与 `K/M` 简写配置（缺省按 `1M` 估算）+ 最近请求上下文占用展示 + 工具耗时与敏感参数脱敏展示 + 每轮底栏首位展示当前 Git 分支**。
-- 路线图 v0.0.2+：权限与 AGENTS.md、记忆压缩、Anthropic 原生协议与路由落地、Skills / MCP / 子代理（详见 README 路线图表）。
+  **上下文窗口整数与 `K/M` 简写配置（缺省按 `1M` 估算）+ 最近请求上下文占用展示 + 语义化单行工具展示（Read/Search/Write/Edit）与敏感参数脱敏 + 每轮底栏首位展示当前 Git 分支**。
+- 路线图 v0.0.2+：权限与 AGENTS.md、结构化工具错误与 opt-in Bash、记忆压缩、Anthropic 原生协议与路由落地、Skills / MCP / 子代理、完成后可折叠的思考展示（详见 README 路线图表）。
 - v0.0.4 待办（实测发现）：接 Anthropic 原生协议前需处理**连续同角色消息**（孤儿 user、空 content 的 assistant）
   —— 该协议要求 user/assistant 严格交替，否则 400。

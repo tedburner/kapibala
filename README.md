@@ -32,7 +32,7 @@
 正如卡皮巴拉在自然界中以“情绪极其稳定、友善包容万物”著称，**Kapibala** 致力于为大模型 Agent 提供一个：
 - **心如止水**：面对工具执行报错、网络抖动、模型幻觉，具备自动重试、熔断与上下文自愈能力，杜绝坏历史导致 API 400 报错；
 - **连接万物**：规范消息模型（Canonical Message）与可插拔扩展架构（Plugin & Hook），解耦厂商差异，轻松串联各种工具与模型生态；
-- **开箱即用**：以 **OpenAI API 兼容协议为主打**，内置 **8 家厂商 / 20 个模型**（DeepSeek、OpenAI、Anthropic、Google Gemini、通义千问、Kimi、智谱 GLM、本地 Ollama），深度覆盖 DeepSeek 原生思考推理链折叠解析，并提供极度舒适的交互式 CLI 终端。
+- **开箱即用**：以 **OpenAI API 兼容协议为主打**，内置 **8 家厂商 / 20 个模型**（DeepSeek、OpenAI、Anthropic、Google Gemini、通义千问、Kimi、智谱 GLM、本地 Ollama），深度覆盖 DeepSeek 原生思考推理链流式解析，并提供极度舒适的交互式 CLI 终端。
 
 ---
 
@@ -40,7 +40,7 @@
 
 - 🌐 **OpenAI 兼容协议为主（零外部模型 SDK 依赖）**
   - 基于 Node.js 原生 `fetch` 与轻量级原生 SSE（Server-Sent Events）行解析器，不依赖臃肿的第三方 SDK。
-  - 原生支持 **DeepSeek**（含 `reasoning_content` 深度思考链流式分发与折叠展示）、**OpenAI**、**Anthropic**、**Google Gemini**、**通义千问**、**Kimi**、**智谱 GLM**、**本地 Ollama**，以及 OneAPI / vLLM / 任意兼容代理。
+  - 原生支持 **DeepSeek**（含 `reasoning_content` 深度思考链流式分发与高亮展示）、**OpenAI**、**Anthropic**、**Google Gemini**、**通义千问**、**Kimi**、**智谱 GLM**、**本地 Ollama**，以及 OneAPI / vLLM / 任意兼容代理。
   - **流式多分片 Tool Call 拼接还原**：自动按序号组装切片的工具参数，在流结束时反序列化为合法 JSON 并触发执行。
 
 - 🎮 **流畅交互式 CLI 与 Slash 命令系统**
@@ -64,7 +64,7 @@
 
 - 📊 **细粒度步骤日志与关键性能指标 (Step Logs & Metrics)**
   - 核心引擎在每一执行阶段派发结构化日志事件（请求发起、首 Token 到达、流式结束、工具调用起止、单轮结束），方便追踪与性能优化。
-  - **关键指标毫秒级捕获**：实时测量并展示 **首 Token 耗时 (TTFT: Time To First Token)**、模型耗时、工具耗时、单轮总耗时，以及精确的 **Token 消耗量（输入 Token、输出 Token、总 Token）**。
+  - **关键指标毫秒级捕获**：默认底栏优先展示 Git 分支、总耗时、最近请求上下文、本轮输入/输出 Token 与工具耗时；`--debug` 追加 **首 Token 耗时 (TTFT)** 和模型耗时，不再展示含义模糊的“步骤”指标。
 
 - 🧩 **Headless Core 与多宿主复用**
   - `@kiturone/kapibala` 只负责模型、循环、工具、历史、Hook 与结构化 `SessionEvent`，不包含终端颜色、输入控件或 GUI 组件。
@@ -334,6 +334,8 @@ kpbl (deepseek-flash) ❯
 | `/status` | 打印当前会话已载入工具列表及运行状态 | `/status` |
 | `/help` | 打印可用 Slash 命令说明 | `/help` |
 | `/exit` 或 `/quit` | 退出交互终端（**裸输入 `exit` / `quit` 亦可，无需斜杠**） | `/exit` |
+
+> **未来规划（v0.0.8）**：参考 Claude Code 的交互习惯，将 `/` 升级为统一命令面板，聚合内置 Slash 命令、可由用户调用的 Skills 与 MCP Prompt。候选统一展示名称、一行描述和来源类型，默认可见 3 条但不硬性截断结果，其余候选可滚动浏览；支持继续输入过滤、上下键选择、Enter 执行、Tab 补全和 Esc 关闭。原始 MCP Tool 不进入该菜单，避免把模型内部能力与用户命令混在一起。
 
 #### ⌨️ 快捷键规范 (Claude Code 风格状态机)：
 - **`Ctrl + C`（模型回答生成中）**：**单次按下立即中止当前回答**，已生成的历史自动修复闭合，会话上下文完好保留；
@@ -667,10 +669,10 @@ npx tsx examples/minimal.ts
 
 以下工作已经作为 v0.0.1 既有能力增强完成，不占用 v0.0.2 的新增能力范围：
 
-- **请求与会话指标**：统一请求结束底栏与 `/status` 的统计口径，展示总耗时、TTFT、模型耗时、工具耗时、输入/输出 Token、内部步骤数与工具调用数；上下文占用率只使用最近一次内部模型请求的输入 Token，禁止拿会话累计 Token 或多步骤累计 Token 计算。
+- **请求与会话指标**：统一请求结束底栏与 `/status` 的统计口径；默认按 Git 分支、总耗时、最近请求上下文、本轮输入/输出 Token、工具次数/耗时排列，`--debug` 再追加模型耗时与 TTFT。上下文占用率只使用最近一次内部模型请求的输入 Token，禁止拿会话累计 Token 或多步骤累计 Token 计算；已移除含义模糊的“步骤”指标。
 - **上下文窗口配置**：`ModelProfile.contextWindow` 支持整数与 `K/M` 简写，缺省展示估算值为 `1M`；内置模型继续使用目录中明确配置的真实窗口，显式配置永远覆盖默认值。
-- **工具调用展示**：在现有工具名称、参数预览、成功/失败和结果预览基础上，补充单次耗时、稳定截断、敏感字段脱敏和清晰错误摘要。
-- **Git 分支状态**：每轮请求结束时由 CLI 即时探测当前 Git 分支并置于底栏首位；其后按总耗时、上下文、Token、模型、工具、TTFT、步骤排列，Token 使用 `K/M` 简写。非 Git 目录、detached HEAD 或探测失败时静默省略 Git 字段，不影响对话。
+- **工具调用展示**：内置工具在 CLI 映射为面向用户的 `Read` / `Search` / `Write` / `Edit` 动作名，Core 真实名称保持不变；交互终端将执行中状态原地更新为成功/失败与耗时，非 TTY 输出单条无 ANSI 记录。默认只展示结果元数据，不重复回显文件正文；未知与 MCP 工具保留真实名称，所有参数继续脱敏、转义和稳定截断。
+- **Git 分支状态**：每轮请求结束时由 CLI 即时探测当前 Git 分支并置于底栏首位；其后按总耗时、上下文、本轮 Token、工具次数/耗时排列，Token 使用 `K/M` 简写。非 Git 目录、detached HEAD 或探测失败时静默省略 Git 字段，不影响对话。
 - **跨平台开发入口**：继续以 `pnpm dev` / `scripts/dev.mjs` 为唯一流程真源，Windows 与 macOS/Linux 薄壳仅负责转发参数；`--verify-only` 必须始终与 `pnpm verify` 同源。
 - **PathSandbox 与扩展底座加固**：补齐跨平台路径、符号链接、Hook 顺序、异常传播和生命周期测试；本阶段不引入权限审批、Skills 或 MCP 行为。
 - **Headless Core 边界加固**：明确 `AgentSession` / `SessionEvent` 是多宿主共用契约，并加入自动化架构门禁；本阶段不提前实现 TUI、GUI、IPC 或网络客户端。
@@ -688,14 +690,14 @@ npx tsx examples/minimal.ts
 
 | 版本 | 阶段重点 | 核心能力与扩展点 | 交付形态 |
 |:---:|---|---|---|
-| **v0.0.1** | **核心骨架、交互 CLI 与既有能力收尾**（已完成） | OpenAI 兼容协议、Slash 命令、首次配置向导、PathSandbox、崩溃历史自愈、请求级指标与上下文占用、工具调用耗时/脱敏展示、每轮底栏当前 Git 分支、Headless Core 架构门禁、跨平台一键开发脚本 | CLI (`kpbl`) + Core SDK |
-| **v0.0.2** | **可信执行与项目指令** | 四态 `SessionMode`（Approval / Plan / Auto / FullAccess）、`PermissionPolicy`、宿主可注入的 `ApprovalChannel`、审批缓存、多层 `AGENTS.md` 发现与合并、轮次边界热加载；项目指令只能约束行为，不能自行扩大权限 | Core + CLI 增量 |
+| **v0.0.1** | **核心骨架、交互 CLI 与既有能力收尾**（已完成） | OpenAI 兼容协议、Slash 命令、首次配置向导、PathSandbox、崩溃历史自愈、请求级指标与上下文占用、语义化单行工具展示、每轮底栏当前 Git 分支、Headless Core 架构门禁、跨平台一键开发脚本 | CLI (`kpbl`) + Core SDK |
+| **v0.0.2** | **可信执行与项目指令** | 四态 `SessionMode`（Approval / Plan / Auto / FullAccess）、`PermissionPolicy`、宿主可注入的 `ApprovalChannel`、结构化工具错误与 `retryPolicy`、审批缓存、多层 `AGENTS.md` 发现与合并、轮次边界热加载；在权限和审批就绪后接入默认不注册的 opt-in Bash 工具；项目指令只能约束行为，不能自行扩大权限 | Core + CLI 增量 |
 | **v0.0.3** | **消息生命周期与上下文管理** | 消息 ID/状态与 canonical 内容分层、上下文预算、完整工具事务分组、保留最近完整交互轮次、滚动压缩、摘要检查点、稳定 prompt cache 前缀与压缩可观测性；Summary 路由可先回退默认模型 | Core 内增量 |
 | **v0.0.4** | **多协议与场景模型路由** | Anthropic 原生协议、连续同角色消息规范化、`summary` / `fast` / `planning` / `execution` 运行时路由；小模型意图分类保持可选，不作为默认必经调用 | Core + CLI 增量 |
-| **v0.0.5** | **技能体系 (Skills)** | SkillRegistry、L2.5 渐进式披露、按需 `load_skill`、Skill 来源与独立权限约束 | Core 内增量 |
-| **v0.0.6** | **MCP 生态扩展** | 独立包接入 Stdio，再扩展 HTTP；MCP 工具按 source 动态批量上下线，装载受项目信任与权限策略约束 | `@kiturone/kapibala-mcp` |
+| **v0.0.5** | **技能体系 (Skills)** | SkillRegistry、L2.5 渐进式披露、按需 `load_skill`、Skill 来源与独立权限约束；对宿主暴露可搜索的 Skill 名称、描述、来源、参数提示与是否允许用户调用等元数据，CLI 展示当前加载/调用的 Skill 名称 | Core 内增量 |
+| **v0.0.6** | **MCP 生态扩展** | 独立包接入 Stdio，再扩展 HTTP；MCP 工具按 source 动态批量上下线，装载受项目信任与权限策略约束；CLI 保留并展示 MCP server/tool 命名空间，MCP Prompt 以名称、描述、来源和参数提示注册为可搜索的用户命令 | `@kiturone/kapibala-mcp` |
 | **v0.0.7** | **多会话与多智能体** | 会话恢复、检索与归档；多窗口/多任务所需的 SessionManager；`spawn_agent`、父子追踪、角色模型绑定、权限只继承或收紧、工作区隔离 | Core 内增量 |
-| **v0.0.8** | **产品化终端体验** | 现代 TUI、共享前端 ViewModel、多任务状态、可扩展状态栏、流式渲染与交互体验增强；TUI 仍只消费 Core 事件 | 独立包 + CLI 增量 |
+| **v0.0.8** | **产品化终端体验** | 现代 TUI、共享前端 ViewModel、多任务状态、可扩展状态栏与流式渲染；提供统一 `/` 命令面板，对内置 Slash 命令、用户可调用的 Skills 和 MCP Prompt 做稳定的模糊匹配，候选展示名称、一行描述与来源类型；默认可见 3 条但可滚动浏览其余结果，支持上下键、Enter、Tab 和 Esc；原始 MCP Tool 不进入菜单；思考过程生成时完整展示、完成后折叠且可展开；TUI 仍只消费 Core 事件 | 独立包 + CLI 增量 |
 | **v0.0.9** | **客户端与发布前加固** | 可序列化且带版本的 wire DTO、本地守护进程、IPC/SSE/WebSocket 传输、桌面/Web/移动客户端接入；OpenTelemetry、审计、预算与宿主隔离 | Core + 宿主适配 |
 | **v0.1.0** | **阶段性整合版本** | 稳定 Core 公共 API、事件协议和客户端接入契约，整合 v0.0.1–v0.0.9 能力并完成迁移验证与发布流程 | CLI + Core SDK + 扩展包 |
 

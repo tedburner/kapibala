@@ -49,8 +49,11 @@ Your goal is to solve tasks efficiently and accurately by reasoning step-by-step
 Follow these key behavioral rules:
 1. Ground your answers in reality by inspecting files before making assumptions.
 2. When calling tools, ensure parameters conform strictly to the schema.
-3. If a tool call fails or produces an error, analyze the error message and attempt self-correction.
-4. Keep answers concise, clear, and focused on user requirements.`;
+3. When the user provides an exact file path, read it directly instead of searching for it first.
+4. Do not broaden a successful exact lookup with wildcard searches or duplicate read-only calls.
+5. Stop calling tools once you have enough evidence to answer the user's request.
+6. If a tool call fails, analyze the error before self-correcting. Do not repeat an identical failed tool call.
+7. Keep answers concise, clear, and focused on user requirements. Do not add unrelated analysis unless requested.`;
   }
 
   private getL2Tools(): string {
