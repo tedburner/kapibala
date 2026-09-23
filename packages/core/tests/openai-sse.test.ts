@@ -56,6 +56,26 @@ describe('OpenAICompatibleProvider', () => {
     supportsThinking: true,
   });
 
+  it('normalizes failed-turn user messages before sending wire history', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: createReadableStream(['data: [DONE]\n\n']),
+    } as any);
+
+    const messages = [
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'first' }] },
+      { role: 'assistant' as const, content: [] },
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'second' }] },
+    ];
+    for await (const _event of provider.create({ messages })) {
+      // drain
+    }
+
+    const request = vi.mocked(globalThis.fetch).mock.calls[0]?.[1];
+    const body = JSON.parse(String(request?.body));
+    expect(body.messages).toEqual([{ role: 'user', content: 'first\n\nsecond' }]);
+    expect(messages).toHaveLength(3);
+  });
   it('should stream text deltas and reasoning content', async () => {
     const sseData = [
       'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',

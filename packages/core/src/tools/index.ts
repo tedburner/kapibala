@@ -12,6 +12,7 @@ export type Capability =
 export interface ToolMetadata {
   source?: string;
   dangerous?: boolean;
+  /** 所需能力的声明；v0.0.1 不据此授权，v0.0.2 的执行前权限决策才会消费。 */
   permissions?: Capability[];
 }
 

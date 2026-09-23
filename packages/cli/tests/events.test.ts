@@ -42,6 +42,40 @@ afterEach(() => {
 });
 
 describe('createEventRenderer tool output', () => {
+  it('separates the tool icon from a completed Search invocation', () => {
+    const output = renderEvents(
+      [
+        { type: 'tool_start', id: 'search', name: 'glob', input: { pattern: '*' } },
+        {
+          type: 'tool_finish',
+          id: 'search',
+          name: 'glob',
+          result: Array.from({ length: 25 }, (_, index) => `file-${index}`).join('\n'),
+          isError: false,
+          durationMs: 9,
+        },
+      ],
+      { isTTY: false },
+    );
+
+    expect(output).toBe('\n⚙  Search *  ✓ 9ms · 25 个匹配\n');
+  });
+
+  it('filters terminal controls from untrusted model output while keeping line breaks', () => {
+    const output = renderEvents(
+      [
+        { type: 'text_delta', text: 'hello\x1b[2J\x1b]52;c;YWJj\x07\nworld' },
+        { type: 'thinking_delta', thinking: 'thought\x1b[1A' },
+        { type: 'error', error: new Error('bad\x1b[2J') },
+      ],
+      { isTTY: false },
+    );
+    expect(output).toContain('hello\nworld');
+    expect(output).toContain('thought');
+    expect(output).toContain('bad');
+    expect(output).not.toContain('\x1b');
+    expect(output).not.toContain('52;c;');
+  });
   it('rewrites an interactive tool call into one completed terminal line', () => {
     const output = renderEvents(
       [
@@ -63,7 +97,7 @@ describe('createEventRenderer tool output', () => {
       { isTTY: true, columns: 120 },
     );
 
-    expect(output).toContain('⚙ Write packages/cli/src/foo.ts · 1.2KB');
+    expect(output).toContain('⚙  Write packages/cli/src/foo.ts · 1.2KB');
     expect(output).toContain('✓ 4ms');
     expect(output).toContain('\x1b[1A');
     expect(output).not.toContain('{"path"');
@@ -91,7 +125,7 @@ describe('createEventRenderer tool output', () => {
       { isTTY: false },
     );
 
-    expect(output).toBe('\n⚙ Read missing.txt  ✗ 37ms · File not found: missing.txt\n');
+    expect(output).toBe('\n⚙  Read missing.txt  ✗ 37ms · File not found: missing.txt\n');
     expect(output).not.toContain('\x1b');
   });
 
@@ -225,7 +259,7 @@ describe('createEventRenderer tool output', () => {
       { isTTY: true, columns: 120 },
     );
 
-    expect(output).toContain('⚙ read_file');
+    expect(output).toContain('⚙  read_file');
     expect(output).toContain('✓ 9ms');
     expect(output).not.toContain('\x1b[1A');
     expect(output).not.toContain('\x1b[2K');

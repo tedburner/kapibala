@@ -41,6 +41,26 @@ interface FooterSegment {
 }
 
 const ESC = '\x1b';
+const BEL = String.fromCharCode(7);
+const TERMINAL_SEQUENCE = new RegExp(
+  `${ESC}(?:\\[[0-?]*[ -/]*[@-~]|\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\))`,
+  'g',
+);
+
+/** 过滤模型和错误消息中的终端控制序列，保留正文的换行与制表符。 */
+function sanitizeUntrustedOutput(value: string): string {
+  let safe = '';
+  for (const character of value.replace(TERMINAL_SEQUENCE, '')) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (
+      (codePoint < 0x20 && codePoint !== 0x09 && codePoint !== 0x0a) ||
+      (codePoint >= 0x7f && codePoint <= 0x9f)
+    )
+      continue;
+    safe += character;
+  }
+  return safe;
+}
 
 function color(text: string, code: number, enabled: boolean): string {
   return enabled ? `${ESC}[${code}m${text}${ESC}[0m` : text;
@@ -109,7 +129,7 @@ function formatToolLine(
 
   const suffix = `${statusSuffix}${resultSuffix}`;
   const availablePrefix = Math.max(1, maxColumns - displayWidth(suffix));
-  return `${truncateVisibleMiddle(`⚙ ${invocation}`, availablePrefix)}${suffix}`;
+  return `${truncateVisibleMiddle(`⚙  ${invocation}`, availablePrefix)}${suffix}`;
 }
 
 function fitFooter(segments: FooterSegment[], columns: number): string {
@@ -167,7 +187,7 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
           const duration = event.log.durationMs !== undefined ? ` [${event.log.durationMs}ms]` : '';
           markToolLinesStale();
           write(
-            `${color(`⚙ [LOG ${time} | Turn ${event.log.turn} | ${event.log.stage}] ${event.log.message}${duration}`, 90, isTTY)}\n`,
+            `${color(`⚙ [LOG ${time} | Turn ${event.log.turn} | ${event.log.stage}] ${sanitizeUntrustedOutput(event.log.message)}${duration}`, 90, isTTY)}\n`,
           );
         }
       } else if (event.type === 'thinking_delta') {
@@ -177,11 +197,11 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
           write(`${color('💭 思考过程:', 90, isTTY)}\n`);
         }
         markToolLinesStale();
-        write(color(event.thinking, 90, isTTY));
+        write(color(sanitizeUntrustedOutput(event.thinking), 90, isTTY));
       } else if (event.type === 'text_delta') {
         finishThinking();
         markToolLinesStale();
-        write(event.text);
+        write(sanitizeUntrustedOutput(event.text));
       } else if (event.type === 'tool_start') {
         finishThinking();
         const safeToolName = sanitizeToolName(event.name);
@@ -266,7 +286,9 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
         write(`\n${color(footer, 90, isTTY)}\n`);
       } else if (event.type === 'error') {
         finishThinking();
-        write(`\n${color(`❌ 错误: ${event.error.message}`, 31, isTTY)}\n`);
+        write(
+          `\n${color(`❌ 错误: ${sanitizeUntrustedOutput(event.error.message)}`, 31, isTTY)}\n`,
+        );
       }
     },
 

@@ -1,6 +1,6 @@
 # 001 — Agent Harness 技术方案(v0.0.1)
 
-> 状态:已实现 · 2026-09-22(v0.0.1 收尾增强与后续路线重排)
+> 状态:已实现 · 2026-09-23(v0.0.1 审查修复与后续路线收紧)
 > 范围:本篇定义 self-agent harness 的核心抽象、可插拔扩展架构、循环执行语义、安全模型与交付边界,是后续所有迭代的基线。
 >
 > **v0.0.1 核心变更记录**:
@@ -84,7 +84,7 @@ Web / 移动客户端 ──┘
      - **v0.0.1 主打实现**: `openai-compatible/`(全面支持原生 OpenAI、DeepSeek、Ollama、vLLM 等)。
      - **v0.0.1 契约预留**: `anthropic/` 接口规范(具体适配实现定于 v0.0.4 交付)。
    - **ModelRouter 场景路由**:解耦执行与规划模型。定义 `resolve(role?: ModelRole): ModelProvider`,支持 planning(规划如 GPT-4o)与 execution(执行如 DeepSeek)多角色分发(v0.0.1 预留契约,默认退化为单一 defaultModel)。
-4. **ToolExecutor**(`executor/` 或 `tools/executor.ts`)— 负责工具调用调度、超时控制、沙箱边界校验与 Hook 拦截。
+4. **ToolExecutor**(`executor/` 或 `tools/executor.ts`)— 负责工具调用调度、超时控制与 Hook 拦截；v0.0.1 的内置文件工具自行调用 PathSandbox，统一执行前权限决策归入 v0.0.2。
 5. **Tool**(`tools/`)— `{ name, description, parameters(JSON Schema), execute(input, ctx) }`。
 6. **Event 流**(`events/`)— `SessionEvent` 统一枚举。上层一切(CLI/TUI/GUI/SDK/日志)只消费这个流;远程客户端由 Host Adapter 转为 v0.0.9 的 wire DTO。
 7. **MessageStore**(`store/`)— 会话历史持久化,**消息级**落盘(见 §4.4)。
@@ -119,7 +119,7 @@ types/  ────────────────────────
    ├── tools/  skills/  security/  hooks/  plugin/   ──  只依赖 types/
    ├── models/   ──  只依赖 types/
    ▲
-executor/  ──  调度与沙箱拦截(依赖 types/ + tools/ + security/ + hooks/)
+executor/  ──  工具调度、超时与 Hook 拦截(依赖 types/ + tools/ + hooks/)
    ▲
 loop/  ──  核心执行逻辑(依赖 types/ + models/ + hooks/ + executor/)
    ▲
@@ -347,7 +347,7 @@ history.push(...provider.assembleToolResults(results))
   - 完成后产生 canonical 的 `tool_use` 块。
   - 工具执行完成后,`assembleToolResults` 将每个 `ToolResult` 翻译为一条规范的 tool 结果消息,保留 `callId`(即 OpenAI 的 `tool_call_id`),以此向 OpenAI/DeepSeek 接口回填。
 - **v0.0.1 串行执行**(`runAll` 内部 for-await),接口已预留并发位;改为并行时,依赖无关的工具可 `Promise.all`,顺序仍按输入顺序收集以保证结果稳定。
-- **执行器从 loop 剥离**:`ToolExecutor`(`executor/` 或 `tools/executor.ts`)负责调度、超时、沙箱校验与 Hook 触发;loop 只关心"拿到结果"。
+- **执行器从 loop 剥离**:`ToolExecutor`(`executor/` 或 `tools/executor.ts`)负责调度、超时与 Hook 触发;v0.0.1 的内置文件工具自行进行路径沙箱校验,loop 只关心"拿到结果"。
 - **工具执行结果一律是 canonical 的 `tool_result`**,由 Provider 决定 wire 形态。
 
 ### 4.2 错误分类与重试
@@ -404,7 +404,7 @@ v0 写"run 中逐事件落盘"是**错的**——事件是 `text_delta` 流式�
 
 **v0.0.3 消息生命周期与压缩约束(规划)**:
 
-1. canonical 消息拥有稳定 ID;发送、完成、中断、压缩覆盖等生命周期状态与消息正文分层维护,用于落盘恢复、去重与摘要覆盖追踪,不得靠改写正文暗示状态。
+1. 先定义失败轮次、连续同角色消息和完整工具事务的规范化规则,保证各 Provider 接收合法历史;再给 canonical 消息稳定 ID,把发送、完成、中断、压缩覆盖等生命周期状态与正文分层维护,不得靠改写正文暗示状态。
 2. 压缩由上下文预算触发,只能在完整消息/完整工具事务边界切分。至少保留最近一个完整的 user → assistant 交互轮次;assistant 的 `tool_use` 与对应 `tool_result` 必须作为不可拆分事务保留或一起进入摘要。
 3. 更早历史交给 `summary` 角色生成结构化摘要检查点,记录覆盖的消息 ID 范围;摘要失败时继续保留原始历史,不得以不完整摘要替换 canonical 数据。
 4. 为提高 Provider prompt cache 命中率,系统提示词、工具声明和已确认摘要采用稳定、确定性的序列化;新消息只追加在稳定前缀之后,仅在摘要检查点或项目指令快照真正变化时使对应前缀失效。
@@ -591,7 +591,7 @@ type Capability =
 
 - **优先用 capability 而非 tool 名**:工具可以被动态注册(MCP 会引入大量未知工具),而 capability 是稳定小集合。用 capability 写规则,新接入的 MCP 工具自动被既有策略覆盖,无需为它单独补规则。
 - 工具通过 `metadata.permissions` 声明其所需 capability(见 §3.4);未声明的工具自 v0.0.2 起一律走确认门。
-- **元数据必须有真实消费者,否则声明就是装饰**。v0.0.1 中 `metadata.permissions` 的消费者是**沙箱**:ToolExecutor 按工具声明的 capability 应用对应校验(`fs:read` → 读沙箱,`fs:write` → 写沙箱),而不是各工具在 `execute` 内部散落硬编码。这保证"声明 = 行为",v0.0.2 权限引擎接管时读取同一份声明即可无缝替换;内置工具的标注同时成为 v0.0.2 引擎的第一批测试 fixture。
+- **v0.0.1 的 `metadata.permissions` 只是声明,尚未参与授权**。内置文件工具在各自 `execute` 内调用 PathSandbox;ToolExecutor 不读取 capability。v0.0.2 必须先交付统一执行前权限决策,用内置工具的声明做第一批端到端测试,再接入 opt-in Bash。插件代码已在宿主进程运行,工具调用审批不能替代对不可信插件的宿主隔离。
 
 ### 6.3 求值顺序(deny 绝对优先)
 
@@ -621,12 +621,12 @@ type Capability =
 
 ### 6.5 v0.0.1 的具体约束
 
-1. **bash 工具默认不注册**(opt-in)。注册时必须显式声明 `dangerous: true`,并受权限策略约束。
+1. **v0.0.1 不实现、不注册 bash 工具**。v0.0.2 权限决策与审批就绪后,才允许以 opt-in 方式注册,并声明 `dangerous: true`。
 2. **文件系统沙箱**(`security/sandbox.ts`):路径解析(含 `..` 归一化、符号链接解析)后必须落在允许的 root 内,越界直接 `ToolError`。
-3. **权限决策缓存**:`once`(本次允许)/ `always`(会话内记住)/ `never`(会话内拒绝),避免同一次任务反复打断。
-4. **无网络默认**:工具默认不声明 `net` 权限;需要网络的工具(如未来的 fetch、MCP http transport)须显式声明。
+3. **权限决策缓存属 v0.0.2 规划**:`once`(本次允许)/ `always`(会话内记住)/ `never`(会话内拒绝),v0.0.1 尚无审批入口。
+4. **v0.0.1 内置工具无网络能力**;第三方插件代码仍拥有宿主进程权限。`net` 声明在 v0.0.2 权限决策接入前不构成网络隔离。
 5. **未挂载权限插件时的语义是 fail-open**(工具直接执行)。这在 v0.0.1 是可接受的——默认工具集不含 bash、全部受路径沙箱约束,危险面已经由上面第 1 条的 bash opt-in 策略压到最小。**v0.0.2 引入权限插件后应改为 fail-closed**:未声明 `permissions` 的工具一律走确认门。此项需在 v0.0.2 明确,避免默认放行的语义被后继版本继承。
-6. **v0.0.1 不实现权限规则引擎**(§6.2–6.4 的求值、分层合并、信任策略均属 v0.0.2,本文档已给出蓝图)。v0.0.1 的防线由两个更简单、可单测的机制承担:**bash opt-in + capability 驱动的沙箱**。判断依据:权限引擎的价值随工具危险面增长——v0.0.1 工具集(文件读写)的危险面已被完全覆盖,此刻实现引擎是死代码;MCP(v0.0.6)引入任意第三方工具后才是它的主场。但**契约必须现在定**:`ToolMetadata` 声明、`tool:before` 挂载点、内置工具的 capability 标注,这三样是 API 表面,后补意味着改所有工具签名与用户自定义工具的写法。
+6. **v0.0.1 不实现权限规则引擎**(§6.2–6.4 的求值、分层合并、信任策略均属 v0.0.2)。当前防线是**不注册 bash + 内置文件工具逐项调用 PathSandbox**;`ToolMetadata` 声明和 `tool:before` 挂载点仅为后续权限决策预留契约,不能据此声称第三方工具已受沙箱保护。
 
 ### 6.6 v0.0.2 四态 SessionMode
 
@@ -680,7 +680,7 @@ kapibala/
 │   │       ├── index.ts      #   唯一公开导出
 │   │       ├── session/      #   AgentSession(含 switchModel/reset API)
 │   │       ├── loop/         #   AgentLoop(纯逻辑执行循环)
-│   │       ├── executor/     #   ToolExecutor(调度、超时、沙箱与 Hook 驱动)
+│   │       ├── executor/     #   ToolExecutor(调度、超时与 Hook 驱动)
 │   │       ├── events/       #   SessionEvent / ModelEvent
 │   │       ├── message/      #   CanonicalMessage / ContentBlock
 │   │       ├── errors/       #   错误分类(§4.2)
@@ -727,14 +727,14 @@ kapibala/
    - `message/` `events/` `errors/` 规范类型(含 `thinking` 解析消费与规范转换)
    - `defineTool`(JSON Schema 为契约,Zod 为可选糖)
    - **ToolRegistry(命名空间 + source 批量注册/注销 + 冲突策略)**
-   - **ToolExecutor(调度、超时、沙箱 capability 驱动校验与 Hook 拦截)**
+   - **ToolExecutor(调度、超时与 Hook 拦截;统一权限决策归入 v0.0.2)**
    - AgentLoop:while 循环 + 最大步数 + 熔断 + **AbortPolicy**
    - **Plugin / Hook / Registry 契约**(接口与注册实现,MCP 等消费方后续接入)
    - **OpenAI 兼容 Provider(v0.0.1 核心主打)**:流式 SSE 深度解析(累加拼接 chunked `tool_calls` 参数、解析 DeepSeek `reasoning_content` 为 thinking 规范块)+ `assembleToolResults`(连续多 tool 严格回填)
    - **Anthropic Provider(v0.0.1 规范契约)**:定义接口规范,实现定于 v0.0.4 交付
    - **ModelRouter 场景路由契约(v0.0.1 规范契约)**:定义角色分发接口,预留规划/执行模型分离槽位
    - **JSONL MessageStore(消息级落盘 + 崩溃恢复)**
-   - `security/sandbox.ts`(**由工具声明的 capability 驱动**:`fs:read` → 读沙箱,`fs:write` → 写沙箱)+ 权限策略接口(仅契约,不含求值引擎)
+   - `security/sandbox.ts`(由内置文件工具在执行时逐项调用)+ 权限策略接口(仅契约,不含求值引擎)
    - 统一导出入口 `index.ts`
 
 **v0.0.1 内置工具集与权限标注**(capability 阶梯:只读 < 写入 < 执行,危险面逐级上升):
@@ -745,11 +745,11 @@ kapibala/
 | `glob` | `fs:read` | — | 同上 | 同上 |
 | `grep` | `fs:read` | — | 同上 | 同上 |
 | `write_file` | `fs:write` | — | 写沙箱:root 内 + 拒绝越界与 symlink 逃逸 | 按 `fs:write` 规则;可对特定路径配 pattern |
-| `edit_file` | `fs:write` | — | 同上(原子替换) | 同上 |
+| `edit_file` | `fs:write` | — | 同上(唯一目标精确替换) | 同上 |
 | `bash` | `exec` + `net:*`(不可判定) | ✅ | **v0.0.1 不实现、不注册** | v0.0.2 在 SessionMode、`exec` 规则、command 前缀 pattern 与确认门就绪后以 opt-in 方式接入 |
 | ~~`repl`~~(代码执行) | `exec` | ✅ | **v0.0.1 不做**——危险面等同 bash,但实现成本高(持久进程、状态、回收),验证场景用不到;`bash` 已能覆盖"跑一段代码"的需求 | 随 exec 能力一起在 v0.0.2+ 评估 |
 
-- 设计意图:**能力阶梯决定默认策略**——只读工具沙箱内默认放行,写工具沙箱内放行(策略可收紧),执行类工具一律 opt-in。模型拿到的能力集越小,行为越可预测,提示词 L2 层也越干净。
+- v0.0.2 设计意图:**能力阶梯决定默认策略**——只读与写入由权限策略决策,执行类工具一律 opt-in;v0.0.1 的 capability 标注尚不触发策略。模型拿到的能力集越小,行为越可预测,提示词 L2 层也越干净。
 - `list_files` 从工具集移除:`glob` 可完全覆盖其场景,少一个工具就少一份 L2 提示词成本。
 
 2. **packages/cli**:
@@ -811,15 +811,15 @@ kapibala/
 | 版本 | 内容 | 依赖的扩展点 | 交付形态 |
 |---|---|---|---|
 | **v0.0.1** | 核心骨架 + OpenAI 兼容全套 + 交互 CLI + 既有能力收尾增强 | Plugin / Hook / Registry / Executor;指标、工具展示、每轮底栏当前 Git 分支、配置、脚本、沙箱与 Headless Core 架构门禁 | 当前版本 |
-| **v0.0.2** | 可信执行与项目指令:四态 SessionMode、权限决策、宿主可注入的 ApprovalChannel、结构化工具错误与 `retryPolicy`、opt-in Bash、多层 AGENTS.md 与轮次边界热加载 | `tool:before` / `tool:after` + L4 提示词层 + 项目信任 | core + CLI 增量 |
-| **v0.0.3** | 消息生命周期与上下文管理:状态层、上下文预算、完整工具事务、滚动压缩、摘要检查点 | `model:before` 改写历史 + MessageStore 扩展 + Summary 路由回退 | core 内增量 |
-| **v0.0.4** | Anthropic 原生 Provider + 连续同角色消息规范化 + 场景模型路由运行时落地 | Provider 适配 + ModelRouter;小模型意图分类为可选策略 | core + CLI 增量 |
+| **v0.0.2** | 可信执行与项目指令:先验收四态 SessionMode、执行前权限决策与 ApprovalChannel,再交付结构化工具错误、审批缓存、多层 AGENTS.md;权限端到端测试通过后才接入 opt-in Bash | `tool:before` / `tool:after` + L4 提示词层 + 项目信任 | core + CLI 增量 |
+| **v0.0.3** | 消息生命周期与上下文管理:先规范失败轮次、连续同角色消息及完整工具事务,再交付状态层、上下文预算、滚动压缩与摘要检查点 | `model:before` 改写历史 + MessageStore 扩展 + Summary 路由回退 | core 内增量 |
+| **v0.0.4** | Anthropic 原生 Provider 消费 v0.0.3 的合法消息序列 + 场景模型路由运行时落地 | Provider 适配 + ModelRouter;小模型意图分类为可选策略 | core + CLI 增量 |
 | **v0.0.5** | skill 机制:SkillRegistry、渐进式披露、`load_skill`、来源与权限约束;向宿主暴露可搜索的 Skill 名称、描述、来源、参数提示和用户可调用性元数据,CLI 展示当前加载/调用的 Skill 名称 | `skills/` + L2.5 层 + `model:before` | core 内增量 |
 | **v0.0.6** | MCP(stdio → http),受项目信任和权限策略约束;CLI 保留并展示 MCP server/tool 命名空间,MCP Prompt 以名称、描述、来源和参数提示注册为用户命令 | Plugin + `registerSource` 动态上下线 + MCP Prompt Registry | **独立包 `@kiturone/kapibala-mcp`** |
-| **v0.0.7** | 多会话恢复/检索/归档 + SessionManager + sub-agent + 父子追踪与权限收紧 | MessageStore 索引 + 多会话协调 + 注册 `spawn_agent` 工具 | core 内增量 |
+| **v0.0.7** | 先验收多会话恢复/检索/归档与 SessionManager,再交付 sub-agent;权限继承收紧与工作区隔离测试通过后才发布 `spawn_agent` | MessageStore 索引 + 多会话协调 + 注册 `spawn_agent` 工具 | core 内增量 |
 | **v0.0.8** | 产品化终端体验:TUI、共享前端 ViewModel、多任务状态、可扩展状态栏、流式渲染;统一 `/` 命令面板对 Slash 命令、用户可调用的 Skills 与 MCP Prompt 做稳定模糊匹配,展示名称/描述/来源;默认可见 3 条但可滚动浏览全部结果,支持上下键、Enter、Tab 与 Esc,原始 MCP Tool 不进入菜单;思考过程生成时完整展示,完成后折叠且可展开 | `SessionEvent` 消费者 + CommandDispatcher/SkillRegistry/MCP Prompt Registry 查询接口 + CLI/TUI Host Adapter | 独立包 + CLI 增量 |
-| **v0.0.9** | 客户端与发布前加固:版本化 wire DTO、守护进程、IPC/SSE/WebSocket、桌面/Web/移动接入、遥测/审计/预算/宿主隔离 | 事件传输适配 + OpenTelemetry + 宿主隔离 + 兼容性测试 | core + 宿主适配 |
-| **v0.1.0** | 阶段性整合:稳定 Core API、事件协议和客户端接入契约,完成迁移验证与发布流程 | 全部已落地扩展点的集成验收 | CLI + Core SDK + 扩展包 |
+| **v0.0.9** | 本地客户端契约与发布前加固:版本化 wire DTO、本地守护进程和一种受控本地传输;审计、预算、宿主隔离与兼容性测试。桌面/Web/移动及远程接入在契约稳定后推进,远程接入先具备认证与授权 | 事件传输适配 + 宿主隔离 + 兼容性测试 | core + 本地宿主适配 |
+| **v0.1.0** | 阶段性整合:稳定已交付的 Core API、事件协议和本地客户端契约,完成迁移验证与发布流程,不新增运行时子系统 | 全部已落地扩展点的集成验收 | CLI + Core SDK + 扩展包 |
 
 ## 13. 待定议题:全局与项目的作用域模型(非 v0.0.1 范围)
 
@@ -857,3 +857,4 @@ kapibala/
 | v0.1 | 2026-09-04 | 新增 §3 可插拔扩展架构、§4 循环执行语义、§5 配置系统、§6 安全与权限模型(含全局/项目收紧策略);提示词加 L2.5 skill 层;路线图重排为扩展点映射;新增 §13 待定议题(作用域模型,不展开);修正编号错乱与"迁移免费""逐事件落盘"等表述 |
 | **v0.0.1** | 2026-09-13 | **规范版本号为 v0.0.1 & 引入场景模型路由设计**:将版本号对齐为初始可交付版本 v0.0.1;第一期模型协议收敛为以 OpenAI API 兼容协议为主(涵盖原生 OpenAI、DeepSeek 与推理模式、Ollama 等),Anthropic 协议规范保留在契约层、实现现重排至 v0.0.4;架构引入**场景模型路由(Role-based Model Routing)**蓝图(规划用高智力模型,执行用高吞吐低成本模型),v0.0.1 预留配置与路由契约;CLI REPL 增加内建 Slash 命令分发系统(`/model`, `/settings`, `/clear`, `/status`, `/help`, `/exit`),Session 增加运行时控制 API;配置体系统一采用 `.kapibala` 目录与 `settings.json` 文件名,增加带 `$schema` 智能校验、首启交互式向导(Setup Wizard)与全局 `~/.kapibala/settings.json` 持久化机制;修复 ToolExecutor 与 sandbox 依赖边界;完善终端 Ctrl+C 中断状态机 |
 | **v0.0.1 收尾增强** | 2026-09-22 | **既有能力增强与未来路线重排**:已完成请求指标与上下文占用、工具调用耗时/脱敏展示、每轮底栏当前 Git 分支、`contextWindow` 的 `K/M` 简写和默认 `1M` 估算,补齐 PathSandbox/Hook 回归测试,并以自动化门禁固化 Headless Core / Host Adapter 边界;跨平台启动继续保持单一流程真源。后续按依赖拆为 v0.0.2 权限与 AGENTS.md、v0.0.3 消息/压缩、v0.0.4 多协议/模型路由、v0.0.5 Skills、v0.0.6 MCP、v0.0.7 多会话/Sub-Agent、v0.0.8 TUI、v0.0.9 客户端协议与发布加固,再按十进制进位进入 v0.1.0 整合版本。未来规划项不得在实现前作为现成功能宣传。 |
+| **v0.0.1 审查修复** | 2026-09-23 | 递归 grep 跳过符号链接,文件工具增加单行与输出边界并拒绝空替换目标;CLI 过滤模型输出中的终端控制序列;OpenAI 兼容 Provider 在 wire 层规整失败轮次消息。澄清 v0.0.1 capability 仅为声明,统一执行前授权属 v0.0.2;消息规范化前移至 v0.0.3,多会话与子代理分阶段验收, v0.0.9 聚焦本地客户端契约。 |

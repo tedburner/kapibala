@@ -294,7 +294,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
           .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
           .map((b) => b.text)
           .join('\n');
-        wire.push({ role: 'user', content: text });
+        const previous = wire[wire.length - 1];
+        if (previous?.role === 'user' && typeof previous.content === 'string') {
+          previous.content = [previous.content, text].filter(Boolean).join('\n\n');
+        } else {
+          wire.push({ role: 'user', content: text });
+        }
       } else if (msg.role === 'assistant') {
         const text = msg.content
           .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
@@ -315,9 +320,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
           }
         }
 
+        // 失败轮次或中断可能留下空 assistant；不要把它发给要求严格消息序列的端点。
+        if (!text && toolCalls.length === 0) continue;
+
         wire.push({
           role: 'assistant',
-          content: text || (toolCalls.length > 0 ? null : ''),
+          content: text || null,
           tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
         });
       } else if (msg.role === 'tool') {

@@ -82,7 +82,34 @@
 
 ## 🚀 极速测试与启动 (One-Minute Quickstart)
 
-如果你刚刚克隆了本项目，**一条命令**即可完成依赖安装、编译、全量校验并直接进入交互会话：
+需要 Node.js 20 或更高版本。CLI 和 Core SDK 均已发布到 npm；使用已发布版本无需克隆仓库。
+
+### 从 npm 安装使用
+
+临时运行 CLI（首次运行会引导配置模型和 API Key）：
+
+```bash
+npx @kiturone/kapibala-cli@0.0.1
+```
+
+需要在任意目录直接使用 `kpbl` 时，可全局安装 CLI：
+
+```bash
+npm install -g @kiturone/kapibala-cli@0.0.1
+kpbl
+```
+
+在自己的 Node.js / TypeScript 项目中使用 Core SDK：
+
+```bash
+npm install @kiturone/kapibala@0.0.1
+```
+
+CLI 会自动安装所需的 Core SDK。包页面：[CLI](https://www.npmjs.com/package/@kiturone/kapibala-cli) · [Core SDK](https://www.npmjs.com/package/@kiturone/kapibala)。
+
+### 克隆仓库本地调试
+
+如果你刚刚克隆了本项目，**一条命令**即可完成依赖安装、编译、全量校验并直接进入交互会话。这里运行的是当前源码，适合修改和调试：
 
 ```bash
 # 跨平台一键启动（Windows / macOS / Linux 通用）
@@ -142,22 +169,20 @@ node packages/cli/dist/bin.js
 
 ### 1. 安装与启动方式
 
-#### 方式一：本地全局链接为 `kpbl` 命令（推荐）
-在项目根目录下编译后执行一键软链接：
+#### 方式一：npx 临时运行已发布版本
 ```bash
-# 1. 编译构建
-pnpm build
+npx @kiturone/kapibala-cli@0.0.1
+```
 
-# 2. 全局链接 CLI 命令（内部执行 cd packages/cli && npm link）
-pnpm link:cli
-
-# 3. 链接成功后，在系统任意终端均可直接执行：
+#### 方式二：从 npm 全局安装已发布版本
+```bash
+npm install -g @kiturone/kapibala-cli@0.0.1
 kpbl
 ```
 
-#### 方式二：一键开发脚本（推荐，跨平台）
+#### 方式三：克隆源码后本地调试
+在项目根目录运行当前源码，不使用 npm 上的已发布包：
 ```bash
-# 在项目根目录下：自动完成 依赖安装 → 编译 → 校验 → 启动
 pnpm dev
 
 # Windows 也可直接双击 scripts/dev.cmd；
@@ -165,17 +190,27 @@ pnpm dev
 # 常用参数：--no-verify（跳过校验）、--clean（从零重建）、-p "问题"（单次问答）
 ```
 
-#### 方式三：只重建不启动（源码监听）
+#### 方式四：本地构建产物与源码监听
 ```bash
-# tsup --watch：监听源码变更并重新打包，不会启动 REPL，
-# 需另开一个终端运行产物：
-pnpm dev:cli
+# 编译并校验，但不启动 REPL
+pnpm dev:build
+
+# 运行本地构建产物
 node packages/cli/dist/bin.js
 ```
 
-#### 方式四：直接运行打包产物
+需要监听源码变化时，在终端 A 执行下面的重建命令，再在终端 B 运行上面的 `node` 命令；监听命令本身不会启动 REPL。
+
 ```bash
-node packages/cli/dist/bin.js
+pnpm dev:cli
+```
+
+#### 方式五：将本地构建链接为全局 `kpbl`
+需要在其它目录测试当前源码时，在项目根目录执行：
+```bash
+pnpm build
+pnpm link:cli
+kpbl
 ```
 
 ---
@@ -349,6 +384,12 @@ kpbl (deepseek-flash) ❯
 
 `@kiturone/kapibala` 是一个独立的、高内聚低耦合的 Agent 核心引擎包。您可以在任何 Node.js / TypeScript 项目中将其作为底层框架使用。
 
+在使用 SDK 的项目中安装已发布版本：
+
+```bash
+npm install @kiturone/kapibala@0.0.1
+```
+
 ### 1. 基础对话与流式事件监听
 
 ```typescript
@@ -513,7 +554,7 @@ types/  ────────────────────────
    ├── tools/  security/  hooks/  plugin/   ──  仅依赖 types/
    ├── models/   ──  仅依赖 types/ (原生 fetch + SSE 解析，隔离具体协议)
    ▲
-executor/  ──  调度与沙箱拦截 (依赖 types/ + tools/ + security/ + hooks/)
+executor/  ──  工具调度、超时与 Hook 拦截 (依赖 types/ + tools/ + hooks/)
    ▲
 loop/  ──  核心执行逻辑 (依赖 types/ + models/ + hooks/ + executor/)
    ▲
@@ -532,7 +573,7 @@ User Input ──► session.run()
                ModelProvider (OpenAI-compatible)  │ (模型生成 tool_use)
                     │                             │
                     ▼                             │
-               ToolExecutor (沙箱校验 + 调度执行)    │
+               ToolExecutor (超时 + 调度执行)    │
                     │                             │
                     ▼                             │
                回填规范 ToolResults ───────────────┘
@@ -635,6 +676,8 @@ Kapibala 采用统一规范的 `.kapibala` 目录与 `settings.json` 命名。
 
 Kapibala 拥有极高的代码质量与工程自洽性，包含全套单元测试与自动化规范检查。
 
+本节命令需在克隆后的仓库根目录运行，用于测试和调试当前源码；`npx @kiturone/kapibala-cli@0.0.1` 运行的是 npm 上的已发布版本。
+
 日常开发只需一条 `pnpm dev`（编译 → 校验 → 进 REPL）；若只想要做完构建与校验、不启动会话，用 `pnpm dev:build`。以下为逐条手动命令：
 
 ```bash
@@ -691,15 +734,15 @@ npx tsx examples/minimal.ts
 | 版本 | 阶段重点 | 核心能力与扩展点 | 交付形态 |
 |:---:|---|---|---|
 | **v0.0.1** | **核心骨架、交互 CLI 与既有能力收尾**（已完成） | OpenAI 兼容协议、Slash 命令、首次配置向导、PathSandbox、崩溃历史自愈、请求级指标与上下文占用、语义化单行工具展示、每轮底栏当前 Git 分支、Headless Core 架构门禁、跨平台一键开发脚本 | CLI (`kpbl`) + Core SDK |
-| **v0.0.2** | **可信执行与项目指令** | 四态 `SessionMode`（Approval / Plan / Auto / FullAccess）、`PermissionPolicy`、宿主可注入的 `ApprovalChannel`、结构化工具错误与 `retryPolicy`、审批缓存、多层 `AGENTS.md` 发现与合并、轮次边界热加载；在权限和审批就绪后接入默认不注册的 opt-in Bash 工具；项目指令只能约束行为，不能自行扩大权限 | Core + CLI 增量 |
-| **v0.0.3** | **消息生命周期与上下文管理** | 消息 ID/状态与 canonical 内容分层、上下文预算、完整工具事务分组、保留最近完整交互轮次、滚动压缩、摘要检查点、稳定 prompt cache 前缀与压缩可观测性；Summary 路由可先回退默认模型 | Core 内增量 |
-| **v0.0.4** | **多协议与场景模型路由** | Anthropic 原生协议、连续同角色消息规范化、`summary` / `fast` / `planning` / `execution` 运行时路由；小模型意图分类保持可选，不作为默认必经调用 | Core + CLI 增量 |
+| **v0.0.2** | **可信执行与项目指令** | 先交付四态 `SessionMode`（Approval / Plan / Auto / FullAccess）、执行前 `PermissionPolicy` 与宿主可注入的 `ApprovalChannel`，验证未声明能力默认询问、项目指令不能扩大权限；再交付结构化工具错误、审批缓存和多层 `AGENTS.md`；仅在权限端到端测试通过后接入默认不注册的 opt-in Bash | Core + CLI 增量 |
+| **v0.0.3** | **消息生命周期与上下文管理** | 先定义失败轮次、连续同角色消息和完整工具事务的规范化规则，再交付消息 ID/状态、上下文预算、保留最近完整交互轮次、滚动压缩、摘要检查点与压缩可观测性；Summary 路由可先回退默认模型 | Core 内增量 |
+| **v0.0.4** | **多协议与场景模型路由** | Anthropic 原生协议消费 v0.0.3 的合法消息序列，落地 `summary` / `fast` / `planning` / `execution` 运行时路由；小模型意图分类保持可选，不作为默认必经调用 | Core + CLI 增量 |
 | **v0.0.5** | **技能体系 (Skills)** | SkillRegistry、L2.5 渐进式披露、按需 `load_skill`、Skill 来源与独立权限约束；对宿主暴露可搜索的 Skill 名称、描述、来源、参数提示与是否允许用户调用等元数据，CLI 展示当前加载/调用的 Skill 名称 | Core 内增量 |
 | **v0.0.6** | **MCP 生态扩展** | 独立包接入 Stdio，再扩展 HTTP；MCP 工具按 source 动态批量上下线，装载受项目信任与权限策略约束；CLI 保留并展示 MCP server/tool 命名空间，MCP Prompt 以名称、描述、来源和参数提示注册为可搜索的用户命令 | `@kiturone/kapibala-mcp` |
-| **v0.0.7** | **多会话与多智能体** | 会话恢复、检索与归档；多窗口/多任务所需的 SessionManager；`spawn_agent`、父子追踪、角色模型绑定、权限只继承或收紧、工作区隔离 | Core 内增量 |
+| **v0.0.7** | **多会话与多智能体** | 先验收会话恢复、检索、归档与 SessionManager；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理发布以权限只继承或收紧、工作区隔离测试通过为前提 | Core 内增量 |
 | **v0.0.8** | **产品化终端体验** | 现代 TUI、共享前端 ViewModel、多任务状态、可扩展状态栏与流式渲染；提供统一 `/` 命令面板，对内置 Slash 命令、用户可调用的 Skills 和 MCP Prompt 做稳定的模糊匹配，候选展示名称、一行描述与来源类型；默认可见 3 条但可滚动浏览其余结果，支持上下键、Enter、Tab 和 Esc；原始 MCP Tool 不进入菜单；思考过程生成时完整展示、完成后折叠且可展开；TUI 仍只消费 Core 事件 | 独立包 + CLI 增量 |
-| **v0.0.9** | **客户端与发布前加固** | 可序列化且带版本的 wire DTO、本地守护进程、IPC/SSE/WebSocket 传输、桌面/Web/移动客户端接入；OpenTelemetry、审计、预算与宿主隔离 | Core + 宿主适配 |
-| **v0.1.0** | **阶段性整合版本** | 稳定 Core 公共 API、事件协议和客户端接入契约，整合 v0.0.1–v0.0.9 能力并完成迁移验证与发布流程 | CLI + Core SDK + 扩展包 |
+| **v0.0.9** | **本地客户端契约与发布前加固** | 版本化 wire DTO、本地守护进程和一种受控本地传输；完成审计、预算、宿主隔离与兼容性测试。桌面/Web/移动多端及远程传输待契约稳定后逐步交付，远程接入须先具备认证与授权 | Core + 本地宿主适配 |
+| **v0.1.0** | **阶段性整合版本** | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约，完成迁移验证与发布流程；不新增客户端类型或运行时子系统 | CLI + Core SDK + 扩展包 |
 
 ---
 

@@ -61,14 +61,13 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - 造型铁律：口鼻必须是"上窄下宽"的钝形深色块（水豚最关键辨识特征）；不要大面积奶油色口鼻斑（会读成泰迪熊）；头不要撑满画面（会读成河马）。
 - README 抬头 `<picture>` + `prefers-color-scheme` 双主题（dark 版仅字标换暖白 `#F0E4D6`）；tagline 固定：**心如止水，稳定如初 —— AI Agent Harness**。
 
-## 当前状态（2026-09-22）
+## 当前状态（2026-09-23）
 
 - 版本号采用十进制位进位：补丁位只使用 `0–9`，`v0.0.9` 之后为 `v0.1.0`（不使用 `v0.0.10`）；后续同理。
-- v0.0.1 已完成：核心骨架 + 交互 CLI + 冷启动向导 + PathSandbox 沙箱 + 崩溃历史自愈 + 场景模型路由契约；**22 test files / 199 passed | 2 skipped**。
+- v0.0.1 已完成：核心骨架 + 交互 CLI + 冷启动向导 + PathSandbox 沙箱 + 崩溃历史自愈 + 场景模型路由契约；**22 test files / 207 passed | 3 skipped**。
 - 已落地增量：跨平台一键开发脚本（`pnpm dev`）、**同一厂商族共用一份 API Key**（读取层复用 + 写入层归一）、
   REPL 横幅按显示宽度动态补白（`src/ui/width.ts`）、裸 `exit` / `quit` 识别为退出命令、
   **内置模型清单扩展到 8 家厂商 / 20 个模型 + 带版本号的存量配置自动升级**（`migrateGlobalSettingsCatalog`）、
-  **上下文窗口整数与 `K/M` 简写配置（缺省按 `1M` 估算）+ 最近请求上下文占用展示 + 语义化单行工具展示（Read/Search/Write/Edit）与敏感参数脱敏 + 每轮底栏首位展示当前 Git 分支**。
+  **上下文窗口整数与 `K/M` 简写配置（缺省按 `1M` 估算）+ 最近请求上下文占用展示 + 语义化单行工具展示（Read/Search/Write/Edit）与敏感参数脱敏 + 每轮底栏首位展示当前 Git 分支**；已补递归 grep 的符号链接跳过、文件工具单行/输出上限、空替换目标拒绝、终端控制序列过滤，以及兼容 Provider 的失败轮次 wire 消息规整。
 - 路线图 v0.0.2+：权限与 AGENTS.md、结构化工具错误与 opt-in Bash、记忆压缩、Anthropic 原生协议与路由落地、Skills / MCP / 子代理、完成后可折叠的思考展示（详见 README 路线图表）。
-- v0.0.4 待办（实测发现）：接 Anthropic 原生协议前需处理**连续同角色消息**（孤儿 user、空 content 的 assistant）
-  —— 该协议要求 user/assistant 严格交替，否则 400。
+- v0.0.3 前置待办：在压缩历史前定义**失败轮次、连续同角色消息与完整工具事务**的 canonical 规范化规则；当前 OpenAI 兼容 Provider 已在 wire 层合并连续 user 并跳过空 assistant。v0.0.4 Anthropic 原生 Provider 必须消费该合法序列。

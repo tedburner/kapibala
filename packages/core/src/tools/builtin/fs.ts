@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import readline from 'node:readline';
 import { AbortError, ToolError } from '../../errors/index.js';
 import { PathSandbox } from '../../security/sandbox.js';
 import { defineTool } from '../index.js';
@@ -121,6 +120,9 @@ async function readFileLineRange(
       selectedLines.push(line);
       selectedBytes += addedBytes;
     }
+    if (Buffer.byteLength(line, 'utf-8') > maxReadBytes) {
+      throw new ToolError(`File line exceeds ${maxReadBytes} byte limit`);
+    }
     currentLine++;
     reachedEnd = endLine !== undefined && currentLine > endLine;
   };
@@ -134,6 +136,9 @@ async function readFileLineRange(
         pending = pending.slice(newlineIndex + 1);
         if (reachedEnd) break;
         newlineIndex = pending.indexOf('\n');
+      }
+      if (Buffer.byteLength(pending, 'utf-8') > maxReadBytes) {
+        throw new ToolError(`File line exceeds ${maxReadBytes} byte limit`);
       }
       if (reachedEnd) break;
     }
@@ -213,6 +218,10 @@ export const editFileTool = defineTool({
 
     if (!fs.existsSync(safePath)) {
       throw new ToolError(`File not found: ${input.path}`);
+    }
+
+    if (!input.targetContent) {
+      throw new ToolError('Target content must not be empty');
     }
 
     const content = fs.readFileSync(safePath, 'utf-8');
@@ -336,34 +345,64 @@ export const grepTool = defineTool({
     const needle = input.pattern.toLowerCase();
     const matches: string[] = [];
     const maxMatches = 50;
+    let outputBytes = 0;
 
     async function searchFile(filePath: string): Promise<void> {
       if (matches.length >= maxMatches) return;
+      const maxLineBytes = 512 * 1024;
+      const maxOutputBytes = 512 * 1024;
       const stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
-      const lines = readline.createInterface({
-        input: stream,
-        crlfDelay: Number.POSITIVE_INFINITY,
-      });
-      try {
-        const relPath = path.relative(ctx.rootDir, filePath).replace(/\\/g, '/');
-        let lineNumber = 0;
-        for await (const line of lines) {
-          if (ctx.signal?.aborted) throw new AbortError();
-          lineNumber++;
+      const relPath = path.relative(ctx.rootDir, filePath).replace(/\\/g, '/');
+      let lineNumber = 0;
+      let pending = '';
+      let skippingLongLine = false;
+
+      const inspectLine = (line: string): void => {
+        lineNumber++;
+        if (skippingLongLine || Buffer.byteLength(line, 'utf-8') > maxLineBytes) {
+          skippingLongLine = false;
           if (line.toLowerCase().includes(needle)) {
-            matches.push(`${relPath}:${lineNumber}: ${line.trim()}`);
-            if (matches.length >= maxMatches) break;
+            throw new ToolError(`Search line exceeds ${maxLineBytes} byte limit`);
+          }
+          return;
+        }
+        if (!line.toLowerCase().includes(needle)) return;
+        const match = `${relPath}:${lineNumber}: ${line.trim()}`;
+        const bytes = Buffer.byteLength(match, 'utf-8') + (matches.length > 0 ? 1 : 0);
+        if (outputBytes + bytes > maxOutputBytes) {
+          throw new ToolError(`Search results exceed ${maxOutputBytes} byte limit`);
+        }
+        matches.push(match);
+        outputBytes += bytes;
+      };
+
+      try {
+        for await (const chunk of stream) {
+          if (ctx.signal?.aborted) throw new AbortError();
+          pending += chunk;
+          let newlineIndex = pending.indexOf('\n');
+          while (newlineIndex >= 0) {
+            inspectLine(pending.slice(0, newlineIndex).replace(/\r$/, ''));
+            pending = pending.slice(newlineIndex + 1);
+            if (matches.length >= maxMatches) return;
+            newlineIndex = pending.indexOf('\n');
+          }
+          if (Buffer.byteLength(pending, 'utf-8') > maxLineBytes) {
+            if (pending.toLowerCase().includes(needle)) {
+              throw new ToolError(`Search line exceeds ${maxLineBytes} byte limit`);
+            }
+            skippingLongLine = true;
+            pending = needle.length > 1 ? pending.slice(1 - needle.length) : '';
           }
         }
+        if (pending.length > 0) inspectLine(pending.replace(/\r$/, ''));
       } catch (error: unknown) {
-        if (error instanceof AbortError) throw error;
-        // 忽略非文本或读取错误
+        if (error instanceof AbortError || error instanceof ToolError) throw error;
+        // 无法读取的文件不阻断其它搜索结果。
       } finally {
-        lines.close();
         stream.destroy();
       }
     }
-
     async function walk(dirPath: string): Promise<void> {
       if (matches.length >= maxMatches) return;
       const entries = fs.readdirSync(dirPath, { withFileTypes: true });
@@ -372,6 +411,7 @@ export const grepTool = defineTool({
         if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') {
           continue;
         }
+        if (entry.isSymbolicLink()) continue;
         const fullPath = path.join(dirPath, entry.name);
         if (entry.isDirectory()) {
           await walk(fullPath);

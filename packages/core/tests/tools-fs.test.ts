@@ -31,6 +31,12 @@ describe('builtin fs tools', () => {
   });
 
   describe('read_file', () => {
+    it('拒绝超长单行，即使目标行在后面', async () => {
+      fs.writeFileSync(path.join(rootDir, 'long-line.txt'), `${'x'.repeat(600_000)}\ntarget`);
+      await expect(
+        readFileTool.execute({ path: 'long-line.txt', startLine: 2, endLine: 2 }, { rootDir }),
+      ).rejects.toThrow(/line.*limit/i);
+    });
     it('应能读取已存在的文件全文', async () => {
       fs.writeFileSync(path.join(rootDir, 'a.txt'), 'hello\nworld');
       await expect(readFileTool.execute({ path: 'a.txt' }, { rootDir })).resolves.toBe(
@@ -101,6 +107,16 @@ describe('builtin fs tools', () => {
   });
 
   describe('edit_file', () => {
+    it('拒绝空目标文本，避免意外插入内容', async () => {
+      fs.writeFileSync(path.join(rootDir, 'a.txt'), 'x');
+      await expect(
+        editFileTool.execute(
+          { path: 'a.txt', targetContent: '', replacementContent: 'prefix' },
+          { rootDir },
+        ),
+      ).rejects.toThrow(/empty/i);
+      expect(fs.readFileSync(path.join(rootDir, 'a.txt'), 'utf-8')).toBe('x');
+    });
     it('应精确替换唯一目标片段', async () => {
       fs.writeFileSync(path.join(rootDir, 'a.txt'), 'const a = 1;\nconst b = 2;');
       await editFileTool.execute(
@@ -180,6 +196,54 @@ describe('builtin fs tools', () => {
   });
 
   describe('grep', () => {
+    it('跳过未命中的超长行并继续返回后续匹配', async () => {
+      fs.writeFileSync(
+        path.join(rootDir, 'src', 'long-line.txt'),
+        `${'x'.repeat(600_000)}\nneedle on next line`,
+      );
+      await expect(grepTool.execute({ pattern: 'needle' }, { rootDir })).resolves.toContain(
+        'src/long-line.txt:2: needle on next line',
+      );
+    });
+
+    it('拒绝返回超长的匹配行', async () => {
+      fs.writeFileSync(path.join(rootDir, 'src', 'long-line.txt'), `needle${'x'.repeat(600_000)}`);
+      await expect(grepTool.execute({ pattern: 'needle' }, { rootDir })).rejects.toThrow(
+        /line.*limit/i,
+      );
+    });
+
+    it('超长行尾部命中时仍拒绝返回该行', async () => {
+      fs.writeFileSync(path.join(rootDir, 'src', 'long-line.txt'), `${'x'.repeat(600_000)}needle`);
+      await expect(grepTool.execute({ pattern: 'needle' }, { rootDir })).rejects.toThrow(
+        /line.*limit/i,
+      );
+    });
+
+    it('递归搜索不读取指向工作区外部的符号链接文件', async (testContext) => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-grep-outside-'));
+      try {
+        const outsideFile = path.join(outsideDir, 'secret.txt');
+        fs.writeFileSync(outsideFile, 'outside-secret-marker');
+        try {
+          fs.symlinkSync(outsideFile, path.join(rootDir, 'src', 'linked.txt'));
+        } catch (error: unknown) {
+          if (process.platform === 'win32' && (error as NodeJS.ErrnoException).code === 'EPERM') {
+            testContext.skip();
+            return;
+          }
+          throw error;
+        }
+        if (!fs.lstatSync(path.join(rootDir, 'src', 'linked.txt')).isSymbolicLink()) {
+          testContext.skip();
+          return;
+        }
+        const result = await grepTool.execute({ pattern: 'outside-secret-marker' }, { rootDir });
+        expect(result).toBe('No matches found.');
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
     beforeEach(() => {
       fs.mkdirSync(path.join(rootDir, 'src'), { recursive: true });
       fs.writeFileSync(
