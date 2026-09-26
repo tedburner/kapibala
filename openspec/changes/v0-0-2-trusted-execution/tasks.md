@@ -45,7 +45,7 @@
 
 - [x] 7.1 更新设计基线、路线图、README 与 SDK 迁移说明：将默认结构化日志和逐工具审计移入 v0.0.2，澄清 `FullAccess` 本次选择、命令工具默认可用与显式关闭、Windows Git Bash/PowerShell 选择、命令隔离及审计回溯边界、输出文件和 `--debug` 脱敏语义；核对既有章节编号和交叉引用不变。
 - [x] 7.2 在全部能力验收后统一调整 Core/CLI/package 的 v0.0.2 版本与帮助文案；运行 `pnpm dev --no-start` 验证构建、校验和版本显示。
-- [ ] 7.3 运行 `pnpm verify`，并在 Windows 与至少一个 POSIX CI 环境运行真实命令/生命周期检查；在有 Git Bash 的 Windows 环境验证自动与显式选择，仅有 WSL launcher 的环境验证 `wsl` 兜底。复核命令规则、审批指纹、审计崩溃恢复、`Plan` 工具清单、大输出读取和 `FullAccess` 本次选择验收。必需平台命令工具未通过时继续修复，暂缓 v0.0.2 发布。
+- [x] 7.3 运行 `pnpm verify`，并在 Windows 与至少一个 POSIX CI 环境运行真实命令/生命周期检查；在有 Git Bash 的 Windows 环境验证自动与显式选择，仅有 WSL launcher 的环境验证 `wsl` 兜底。复核命令规则、审批指纹、审计崩溃恢复、`Plan` 工具清单、大输出读取和 `FullAccess` 本次选择验收。必需平台命令工具未通过时继续修复，暂缓 v0.0.2 发布。
 
 ## 当前验收记录（2026-09-26）
 
@@ -54,6 +54,7 @@
 - 4.1：自动审批审查拒绝从项目设置合并可执行 `allow` 规则，理由是项目内容即使先被信任，后续仍可变更并扩大权限。当前 CLI 只接受用户级执行规则，项目权限与 Shell 字段拒绝；用户级与项目配置的 `FullAccess` 默认值均单独诊断并回退 `Approval`，旧配置缺失执行字段时安全退回默认值。
 - 6.2：本轮在新的 WSL Ubuntu 隔离副本中使用缓存的官方 Node 24.18.1 与 pnpm 12.4.1，离线安装后 `pnpm dev --no-start` 通过：38 个测试文件、287 个全部通过。POSIX Bash 真实进程执行、超时、中止、孙进程回收、回收确认失败时的结果未知、UTF-8 和受限环境均通过。Windows Git Bash 的全部 21 项真实命令验收通过；修复了 `taskkill /T` 漏掉重挂父进程的 MSYS 后代，采用 MSYS 组信号、Windows launcher 回收及进程组消失确认。以上本地验收仍不能替代远端 CI。
 - 7.2：Core/CLI/根目录 package.json 版本号已统一提升至 `0.0.2`，CLI 帮助及版本命令已更新为 `kpbl v0.0.2`；`pnpm dev --no-start` 构建与校验通过，`kpbl -v` 与 `kpbl -h` 正常显示新版本。
-- 7.3：Windows + Ubuntu CI 工作流和 Git Bash 显式测试已加入，但尚未在远端 CI 运行；package.json 中的 `0.0.2` 是待发布工作区版本，远端 CI 与 Git Bash 验收完成前不宣布 v0.0.2 发布，任务仍未勾选。
+- 7.3：[GitHub Actions 发布验收](https://github.com/tedburner/kapibala/actions/runs/36227445501) 对提交 `382c3b0140f9db1dabd61a5fd56bd96a81c5e18f` 全部成功：Windows 与 Ubuntu 构建、typecheck、test、lint 通过，Windows 的 Git Bash 自动/显式选择与真实命令专项通过。本地 WSL-only launcher 兜底验收亦通过。首轮 Windows CI 测试通过，但 Biome 因 checkout CRLF 失败；已在 `.gitattributes` 固定默认文本 LF，并保留批处理 CRLF 与二进制例外，未降低格式门禁。
+- CI 非阻断提示：`pnpm/setup@v2` 不识别 `require-lockfile` 输入；该提示不影响本轮构建、测试或 lint 结论，后续维护时应清理无效输入。
 - Code review 复盘（2026-09-26）：原实现写死 Git Bash 安装目录并用路径白名单识别，本机 PortableGit 与自定义盘符安装的 Git Bash 均被发现失败。已改为只用 `PATH` 与运行时 `uname` 探针分类，新增 `wsl` 兜底层与显式解释器全路径支持，`auto` 无环境时降级为仅禁用 `run_command`；shell-execution spec、proposal、design、迁移说明与 README 已同步。
 - 发布包验收：Core 与 CLI 的 `0.0.2` tarball 各含 9 个文件，仅包含 dist、package.json、README 与 LICENSE；CLI 的 workspace Core 依赖已转换为精确版本 `0.0.2`。新目录独立安装、ESM/CJS 公共导出、`kpbl --version/--help` 与两包 `npm publish --dry-run --access public` 通过；npm 登录身份为 `kiturone`。
