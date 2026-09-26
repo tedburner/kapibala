@@ -1,5 +1,9 @@
 # Line endings
 #
+# Keep source and configuration files consistent with Biome on every platform.
+# More-specific Windows batch rules below still use CRLF.
+* text=auto eol=lf
+#
 # POSIX shells break on a CRLF shebang (`/bin/bash^M: bad interpreter`), so shell
 # scripts must be checked out with LF regardless of the user's core.autocrlf.
 # Windows batch files are the mirror case: cmd.exe is happiest with CRLF.
