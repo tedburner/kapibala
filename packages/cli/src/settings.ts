@@ -1,7 +1,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
+import {
+  type ModelProfile,
+  type PermissionRule,
+  type SessionMode,
+  type ShellPreference,
+  resolveContextWindow,
+  validatePermissionRules,
+} from '@kiturone/kapibala';
 
 export interface ModelRoutingConfig {
   planning?: string;
@@ -17,6 +24,12 @@ export interface UserSettings {
   profiles: ModelProfile[];
   /** 已由用户永久信任的项目真实绝对路径，仅允许从全局配置加载。 */
   trustedProjects?: string[];
+  /** 只有用户级设置可指定默认模式，FullAccess 仍须本次会话主动选择。 */
+  permissionMode?: SessionMode;
+  /** 只有用户级设置可提供可执行授权规则。 */
+  permissionRules?: PermissionRule[];
+  /** 项目设置不可启用或更换命令解释器。 */
+  shell?: { enabled?: boolean; preference?: ShellPreference };
   /**
    * 该配置所依据的内置模型清单版本。
    * 缺失或落后于 BUILTIN_CATALOG_VERSION 时，启动阶段会执行一次目录升级（见 migrateBuiltinCatalog）。
@@ -564,9 +577,19 @@ export function loadSettings(options: LoadSettingsOptions = {}): LoadedSettings 
     try {
       const raw = fs.readFileSync(globalPath, 'utf-8');
       const parsed = JSON.parse(raw);
-      settings = mergeSettings(settings, parsed, true);
+      if (parsed?.permissionMode === 'FullAccess') {
+        console.error(
+          `[kapibala] User settings cannot default to FullAccess (${globalPath}); using Approval.`,
+        );
+        const { permissionMode: _rejectedMode, ...safeParsed } = parsed;
+        settings = mergeSettings(settings, safeParsed, true);
+        settings.permissionMode = 'Approval';
+      } else {
+        settings = mergeSettings(settings, parsed, true);
+      }
       sourcePath = globalPath;
     } catch (err: unknown) {
+      if (err instanceof InvalidPermissionSettings) throw err;
       // 损坏配置不能静默吞掉：用户会以为配置生效了，实际一直在跑默认值
       console.error(
         `[kapibala] Failed to parse global settings (${globalPath}): ${(err as Error).message}`,
@@ -588,9 +611,19 @@ export function loadSettings(options: LoadSettingsOptions = {}): LoadedSettings 
     try {
       const raw = fs.readFileSync(projectSettingsPath, 'utf-8');
       const parsed = JSON.parse(raw);
-      settings = mergeSettings(settings, parsed, false);
+      if (parsed?.permissionMode === 'FullAccess') {
+        console.error(
+          `[kapibala] Project settings cannot default to FullAccess (${projectSettingsPath}); using Approval.`,
+        );
+        const { permissionMode: _rejectedMode, ...safeProjectSettings } = parsed;
+        settings = mergeSettings(settings, safeProjectSettings, false);
+        settings.permissionMode = 'Approval';
+      } else {
+        settings = mergeSettings(settings, parsed, false);
+      }
       sourcePath = projectSettingsPath;
     } catch (err: unknown) {
+      if (err instanceof InvalidPermissionSettings) throw err;
       console.error(
         `[kapibala] Failed to parse project settings (${projectSettingsPath}): ${(err as Error).message}`,
       );
@@ -917,6 +950,39 @@ function mergeSettings(
   incoming: Partial<UserSettings>,
   allowTrustedProjects: boolean,
 ): UserSettings {
+  if (
+    !allowTrustedProjects &&
+    (incoming.permissionRules !== undefined ||
+      incoming.permissionMode !== undefined ||
+      incoming.shell !== undefined)
+  ) {
+    throw new InvalidPermissionSettings(
+      'Project settings cannot define permission or shell execution fields',
+    );
+  }
+  if (allowTrustedProjects) {
+    if (incoming.permissionRules !== undefined) {
+      if (!Array.isArray(incoming.permissionRules))
+        throw new InvalidPermissionSettings('permissionRules must be an array');
+      try {
+        validatePermissionRules(incoming.permissionRules);
+      } catch (error: unknown) {
+        throw new InvalidPermissionSettings((error as Error).message);
+      }
+    }
+    if (
+      incoming.permissionMode !== undefined &&
+      !['Approval', 'Plan', 'Auto', 'FullAccess'].includes(incoming.permissionMode)
+    ) {
+      throw new InvalidPermissionSettings('Invalid permissionMode');
+    }
+    if (
+      incoming.shell?.preference !== undefined &&
+      !isValidShellPreference(incoming.shell.preference)
+    ) {
+      throw new InvalidPermissionSettings('Invalid shell.preference');
+    }
+  }
   const profilesMap = new Map<string, ModelProfile>();
   for (const p of base.profiles) profilesMap.set(p.id, p);
   if (Array.isArray(incoming.profiles)) {
@@ -950,7 +1016,29 @@ function mergeSettings(
       allowTrustedProjects && Array.isArray(incoming.trustedProjects)
         ? incoming.trustedProjects.filter((value): value is string => typeof value === 'string')
         : base.trustedProjects,
+    permissionMode: allowTrustedProjects
+      ? (incoming.permissionMode ?? base.permissionMode)
+      : base.permissionMode,
+    permissionRules: allowTrustedProjects
+      ? (incoming.permissionRules ?? base.permissionRules)
+      : base.permissionRules,
+    shell: allowTrustedProjects
+      ? incoming.shell || base.shell
+        ? { ...base.shell, ...incoming.shell }
+        : undefined
+      : base.shell,
   };
+}
+
+class InvalidPermissionSettings extends Error {}
+
+/** 具名解释器或用户显式提供的解释器可执行文件全路径。 */
+function isValidShellPreference(value: string): boolean {
+  return (
+    ['auto', 'bash', 'wsl', 'pwsh', 'powershell'].includes(value) ||
+    /[\\/]/.test(value) ||
+    value.toLowerCase().endsWith('.exe')
+  );
 }
 
 /** 配置进入运行时前统一校验上下文窗口，避免直到展示指标或压缩时才暴露坏值。 */

@@ -1,4 +1,6 @@
 import os from 'node:os';
+import type { InstructionSource } from '../instructions/index.js';
+import type { Tool } from '../tools/index.js';
 import type { ToolRegistry } from '../tools/registry.js';
 
 export interface PromptAssemblerOptions {
@@ -6,6 +8,8 @@ export interface PromptAssemblerOptions {
   rootDir: string;
   agentName?: string;
   customInstructions?: string;
+  instructionSources?: readonly InstructionSource[];
+  visibleTools?: readonly Tool[];
 }
 
 export class PromptAssembler {
@@ -13,12 +17,16 @@ export class PromptAssembler {
   private readonly rootDir: string;
   private readonly agentName: string;
   private readonly customInstructions?: string;
+  private readonly instructionSources: readonly InstructionSource[];
+  private readonly visibleTools?: readonly Tool[];
 
   constructor(options: PromptAssemblerOptions) {
     this.tools = options.tools;
     this.rootDir = options.rootDir;
     this.agentName = options.agentName ?? 'Kapibala';
     this.customInstructions = options.customInstructions;
+    this.instructionSources = options.instructionSources ?? [];
+    this.visibleTools = options.visibleTools;
   }
 
   assemble(): string {
@@ -40,6 +48,14 @@ export class PromptAssembler {
       sections.push(this.customInstructions.trim());
     }
 
+    if (this.instructionSources.length > 0) {
+      sections.push(
+        `# L4 Project Instructions\n${this.instructionSources
+          .map((source, index) => `## ${index + 1}. ${source.path}\n${source.content}`)
+          .join('\n\n')}`,
+      );
+    }
+
     return sections.filter(Boolean).join('\n\n---\n\n');
   }
 
@@ -58,7 +74,7 @@ Follow these key behavioral rules:
 
   private getL2Tools(): string {
     if (!this.tools) return '';
-    const tools = this.tools.list();
+    const tools = this.visibleTools ?? this.tools.list();
     if (tools.length === 0) return '';
 
     const lines: string[] = ['# Available Tools:'];

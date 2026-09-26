@@ -3,9 +3,23 @@
  */
 
 export class KapibalaError extends Error {
-  constructor(message: string) {
+  readonly code: string;
+  readonly retryPolicy: 'never' | 'immediate' | 'backoff' | 'after_user_action';
+  readonly safeMessage: string;
+
+  constructor(
+    message: string,
+    options?: {
+      code?: string;
+      retryPolicy?: 'never' | 'immediate' | 'backoff' | 'after_user_action';
+      safeMessage?: string;
+    },
+  ) {
     super(message);
     this.name = 'KapibalaError';
+    this.code = options?.code ?? 'INTERNAL_ERROR';
+    this.retryPolicy = options?.retryPolicy ?? 'never';
+    this.safeMessage = options?.safeMessage ?? 'Operation failed';
   }
 }
 
@@ -35,7 +49,11 @@ export class TransportError extends KapibalaError {
 
 export class ToolError extends KapibalaError {
   constructor(message: string) {
-    super(message);
+    super(message, {
+      code: 'TOOL_ERROR',
+      retryPolicy: 'never',
+      safeMessage: 'Tool execution failed',
+    });
     this.name = 'ToolError';
   }
 }
@@ -45,7 +63,11 @@ export class ToolNotFound extends KapibalaError {
   readonly availableTools: string[];
 
   constructor(toolName: string, availableTools: string[] = []) {
-    super(`Tool '${toolName}' not found. Available tools: ${availableTools.join(', ') || 'none'}`);
+    super(`Tool '${toolName}' not found. Available tools: ${availableTools.join(', ') || 'none'}`, {
+      code: 'TOOL_NOT_FOUND',
+      retryPolicy: 'never',
+      safeMessage: 'Requested tool is unavailable',
+    });
     this.name = 'ToolNotFound';
     this.toolName = toolName;
     this.availableTools = availableTools;
@@ -54,7 +76,11 @@ export class ToolNotFound extends KapibalaError {
 
 export class AbortError extends KapibalaError {
   constructor(message = 'Execution aborted by user') {
-    super(message);
+    super(message, {
+      code: 'ABORTED',
+      retryPolicy: 'after_user_action',
+      safeMessage: 'Operation cancelled',
+    });
     this.name = 'AbortError';
   }
 }

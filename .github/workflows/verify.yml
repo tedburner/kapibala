@@ -1,0 +1,30 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v2
+        with:
+          version: 12.4.1
+          runtime: node@24
+          require-lockfile: true
+      - name: Build and verify
+        run: pnpm dev --no-start
+      - name: Verify Git Bash selection on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          KPBL_REQUIRE_GIT_BASH: '1'
+        run: |
+          export PATH="$(dirname "$(command -v bash)"):$PATH"
+          pnpm exec vitest run packages/core/tests/shell.test.ts

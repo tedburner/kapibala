@@ -7,7 +7,7 @@
 
   **心如止水，稳定如初 —— AI Agent Harness**
 
-  <p><a href="package.json"><img src="https://img.shields.io/badge/version-0.0.1-blue.svg" alt="Version"></a> <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript" alt="TypeScript"></a> <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520.0-green?logo=node.js" alt="Node.js"></a> <a href="https://pnpm.io/"><img src="https://img.shields.io/badge/pnpm-workspace-orange?logo=pnpm" alt="pnpm"></a> <a href="https://vitest.dev/"><img src="https://img.shields.io/badge/tested_with-Vitest-yellow?logo=vitest" alt="Vitest"></a> <a href="https://biomejs.dev/"><img src="https://img.shields.io/badge/code_style-Biome-60a5fa?logo=biome" alt="Code Style"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-purple.svg" alt="License"></a></p>
+  <p><a href="package.json"><img src="https://img.shields.io/badge/version-0.0.2-blue.svg" alt="Version"></a> <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript" alt="TypeScript"></a> <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520.0-green?logo=node.js" alt="Node.js"></a> <a href="https://pnpm.io/"><img src="https://img.shields.io/badge/pnpm-workspace-orange?logo=pnpm" alt="pnpm"></a> <a href="https://vitest.dev/"><img src="https://img.shields.io/badge/tested_with-Vitest-yellow?logo=vitest" alt="Vitest"></a> <a href="https://biomejs.dev/"><img src="https://img.shields.io/badge/code_style-Biome-60a5fa?logo=biome" alt="Code Style"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-purple.svg" alt="License"></a></p>
 
   <p>
     <a href="#-项目介绍">项目介绍</a> •
@@ -18,7 +18,7 @@
     <a href="#-架构设计">架构设计</a> •
     <a href="#-配置系统">配置系统</a> •
     <a href="#-开发与本地测试">开发与测试</a> •
-    <a href="#-版本路线图">路线图</a>
+    <a href="#-版本与路线图">路线图</a>
   </p>
 
 </div>
@@ -38,45 +38,17 @@
 
 ## ⚡ 核心特性
 
-- 🌐 **OpenAI 兼容协议为主（零外部模型 SDK 依赖）**
-  - 基于 Node.js 原生 `fetch` 与轻量级原生 SSE（Server-Sent Events）行解析器，不依赖臃肿的第三方 SDK。
-  - 原生支持 **DeepSeek**（含 `reasoning_content` 深度思考链流式分发与高亮展示）、**OpenAI**、**Anthropic**、**Google Gemini**、**通义千问**、**Kimi**、**智谱 GLM**、**本地 Ollama**，以及 OneAPI / vLLM / 任意兼容代理。
-  - **流式多分片 Tool Call 拼接还原**：自动按序号组装切片的工具参数，在流结束时反序列化为合法 JSON 并触发执行。
-
-- 🎮 **流畅交互式 CLI 与 Slash 命令系统**
-  - 单一命令 `kpbl` 启动交互终端，支持打字机流式输出与思考链高亮展示。
-  - 内置斜杠控制命令：`/model`（查看/热切换）、`/model setup`（重新配置）、`/settings`（查看配置）、`/clear`（重置会话）、`/status`（查看用量与已载工具）、`/help` 等。
-  - 智能信号处理：生成中按下 `Ctrl+C` 触发 `AbortController` 优雅中断模型生成并修补历史，空闲时双击、`/exit` 或直接输入 `exit` 退出。
-
-- 🧙 **首次冷启动向导 (First-Run Setup Wizard)**
-  - 全新环境无配置时，启动自动引导用户选择提供商、输入 API Key 或端点。
-  - 内置**只读**连通性探测（`GET {baseURL}/models`，不产生计费 token）：探测失败或密钥被拒时给出明确提示，但**不阻塞**配置保存 —— 私有网关常常未实现该端点，强行拦截反而会挡住正常配置。
-  - 验证后持久化至用户级全局配置 `~/.kapibala/settings.json`（自动设置 0600 安全权限）。
-
-- 🛡️ **安全沙箱与能力隔离 (PathSandbox)**
-  - 工具能力分层（`fs:read`、`fs:write`、`exec`、`net:outbound` 等）。
-  - 内置沙箱强制校验工作区物理路径，有效防御 `../` 越界逃逸与危险符号链接（Symlink）穿透。
-  - 内置开箱即用工具：`read_file`、`write_file`、`edit_file`、`glob`、`grep`。
-
-- 💾 **原子追加与崩溃历史自愈 (JSONL Message Store)**
-  - 消息级 JSONL Append-only 持久化：user / assistant / **tool_result** 三条链路全部落盘，遇到单行损坏脏数据自动容错跳过。
-  - **崩溃自愈机制**：采用**全历史扫描**而非只看末尾 —— 任意位置悬挂的 `tool_use` 都会就地补上合成的错误响应（Complete-with-error），孤儿 `tool_result` 也会被剔除，保证发往 API 的上下文结构始终合法。
-
-- 📊 **细粒度步骤日志与关键性能指标 (Step Logs & Metrics)**
-  - 核心引擎在每一执行阶段派发结构化日志事件（请求发起、首 Token 到达、流式结束、工具调用起止、单轮结束），方便追踪与性能优化。
-  - **关键指标毫秒级捕获**：默认底栏优先展示 Git 分支、总耗时、最近请求上下文、本轮输入/输出 Token 与工具耗时；`--debug` 追加 **首 Token 耗时 (TTFT)** 和模型耗时，不再展示含义模糊的“步骤”指标。
-
-- 🧩 **Headless Core 与多宿主复用**
-  - `@kiturone/kapibala` 只负责模型、循环、工具、历史、Hook 与结构化 `SessionEvent`，不包含终端颜色、输入控件或 GUI 组件。
-  - 当前 CLI 只是一个宿主适配器；后续 TUI、桌面 GUI、Web 或移动客户端继续消费同一套 `AgentSession` 事件流，不复制 Agent Harness。
-  - `pnpm check-architecture` 已加入 lint 门禁，防止 Core 反向依赖 CLI、直接读写终端或混入 ANSI 渲染。
-
-- 🔒 **代码级凭证防泄漏防护 (Secret Leak Prevention)**
-  - 建立严格的安全凭证防提交防护网，提供独立的自动化密钥特征扫描脚本 `pnpm check-secrets`，并集成进代码检查流程。
-  - `.gitignore` 深度过滤所有环境密钥、局部配置文件与历史数据，严禁真实 API Key 被意外提交。
-
-- 🧭 **场景模型路由预留 (Role-based Model Routing)**
-  - 配置与核心接口原生支持 `default`、`planning`、`execution`、`summary`、`fast` 角色路由，内置默认分工为 **`deepseek-v4-pro`（深度规划推理）** + **`deepseek-flash`（高效代码执行）**（v0.0.1 仅持久化契约，运行时统一回退到 `defaultModel`）。
+- 🌐 **OpenAI 兼容协议为主（零外部模型 SDK 依赖）**：基于 Node.js 原生 `fetch` 与轻量级 SSE 行解析器。原生支持 **DeepSeek**（含 `reasoning_content` 深度思考链流式分发与高亮）、**OpenAI**、**Anthropic**、**Google Gemini**、**通义千问**、**Kimi**、**智谱 GLM**、**本地 Ollama**，以及 OneAPI / vLLM / 任意兼容代理。**流式多分片 Tool Call 拼接还原**：自动按序号组装切片的工具参数，在流结束时反序列化为合法 JSON 并触发执行。
+- 🎮 **流畅交互式 CLI 与 Slash 命令系统**：单一命令 `kpbl` 启动交互终端，支持打字机流式输出与思考链高亮；内置 `/model`、`/settings`、`/clear`、`/status`、`/help` 等斜杠命令；生成中 `Ctrl+C` 触发 `AbortController` 优雅中断并修补历史。
+- 🧙 **首次冷启动向导 (First-Run Setup Wizard)**：全新环境自动引导选择提供商与密钥；内置只读连通性探测（`GET {baseURL}/models`，不产生计费 token），探测失败只告警不阻断 —— 私有网关常常未实现该端点。配置持久化至 `~/.kapibala/settings.json`（自动 0600 权限）。
+- 🛡️ **安全沙箱与能力隔离 (PathSandbox)**：工具能力分层（`fs:read`、`fs:write`、`exec`、`net:outbound` 等）；沙箱强制校验工作区物理路径，防御 `../` 越界与 Symlink 穿透。内置工具：`read_file`、`write_file`、`edit_file`、`glob`、`grep`。
+- 💾 **原子追加与崩溃历史自愈 (JSONL Message Store)**：消息级 JSONL Append-only 持久化，user / assistant / **tool_result** 全链路落盘，单行损坏自动容错跳过。**崩溃自愈**采用全历史扫描：任意位置悬挂的 `tool_use` 就地补合成错误响应，孤儿 `tool_result` 自动剔除，保证发往 API 的上下文结构始终合法。
+- 📊 **细粒度步骤日志与关键性能指标**：每一执行阶段派发结构化日志事件（请求发起、首 Token 到达、流式结束、工具调用起止、单轮结束）。默认底栏展示 Git 分支、总耗时、上下文占用、本轮输入/输出 Token 与工具耗时；`--debug` 追加 **TTFT** 与模型耗时。
+- 🧾 **可信执行（v0.0.2）**：默认写入脱敏的结构化运行日志与逐工具审批审计，记录人工批准、规则或模式自动批准、拒绝及操作结果；`--debug` 仅增加开发诊断。`Approval`、`Plan`、`Auto`、`FullAccess` 共享执行前授权门，`FullAccess` 只能在本次会话显式选择，且仍受显式规则和路径约束。
+- 💻 **跨平台命令工具（v0.0.2）**：`run_command` 默认注册，每条命令仍需按当前模式审批或裁决；解释器发现只用 `PATH` 与运行时探针，Windows 自动按 native Bash → WSL → PowerShell 兜底（不写死安装路径），其他平台使用 Bash，也可用 `--shell` 指定解释器或其全路径、用 `--disable-shell` 关闭。命令进程以当前系统用户权限运行，不受文件工具的 PathSandbox 限制。
+- 🧩 **Headless Core 与多宿主复用**：`@kiturone/kapibala` 只负责模型、循环、工具、历史、Hook 与结构化 `SessionEvent`，不包含任何终端 / GUI 组件；TUI、桌面、Web 等宿主消费同一套事件流。`pnpm check-architecture` 已加入 lint 门禁，防止 Core 反向依赖宿主。
+- 🔒 **代码级凭证防泄漏防护**：独立的自动化密钥特征扫描脚本 `pnpm check-secrets` 并入 lint 流程；`.gitignore` 深度过滤环境密钥与历史数据，严禁真实 API Key 被意外提交。
+- 🧭 **场景模型路由预留 (Role-based Model Routing)**：配置与核心接口原生支持 `default`、`planning`、`execution`、`summary`、`fast` 角色路由，内置默认分工为 **`deepseek-v4-pro`（深度规划推理）** + **`deepseek-flash`（高效代码执行）**（v0.0.1 仅持久化契约，运行时统一回退到 `defaultModel`）。
 
 ---
 
@@ -86,176 +58,72 @@
 
 ### 从 npm 安装使用
 
-临时运行 CLI（首次运行会引导配置模型和 API Key）：
-
 ```bash
-npx @kiturone/kapibala-cli@0.0.1
-```
+# 临时运行 CLI（首次运行会引导配置模型和 API Key）
+npx @kiturone/kapibala-cli@0.0.2
 
-需要在任意目录直接使用 `kpbl` 时，可全局安装 CLI：
-
-```bash
-npm install -g @kiturone/kapibala-cli@0.0.1
+# 全局安装后在任意目录使用 kpbl
+npm install -g @kiturone/kapibala-cli@0.0.2
 kpbl
+
+# 在自己的 Node.js / TypeScript 项目中使用 Core SDK
+npm install @kiturone/kapibala@0.0.2
 ```
 
-在自己的 Node.js / TypeScript 项目中使用 Core SDK：
-
-```bash
-npm install @kiturone/kapibala@0.0.1
-```
-
-CLI 会自动安装所需的 Core SDK。包页面：[CLI](https://www.npmjs.com/package/@kiturone/kapibala-cli) · [Core SDK](https://www.npmjs.com/package/@kiturone/kapibala)。
+包页面：[CLI](https://www.npmjs.com/package/@kiturone/kapibala-cli) · [Core SDK](https://www.npmjs.com/package/@kiturone/kapibala)。
 
 ### 克隆仓库本地调试
 
-如果你刚刚克隆了本项目，**一条命令**即可完成依赖安装、编译、全量校验并直接进入交互会话。这里运行的是当前源码，适合修改和调试：
+如果你刚刚克隆了本项目，**一条命令**即可完成依赖安装、编译、全量校验并直接进入交互会话（运行的是当前源码，适合修改和调试）：
 
 ```bash
 # 跨平台一键启动（Windows / macOS / Linux 通用）
 pnpm dev
-
-# 等价写法：Windows 可双击 scripts/dev.cmd，macOS / Git Bash 用 bash scripts/dev.sh
-# 详细参数见：node scripts/dev.mjs --help
 ```
 
-该脚本的内部流程为：**环境预检 → 依赖安装(按需) → 工作区链接自愈 → 编译 → 校验 → 启动**，
-校验（typecheck + test + lint）不通过会直接中断，避免带着红灯进入对话。
+内部流程：**环境预检 → 依赖安装(按需) → 工作区链接自愈 → 编译 → 校验 → 启动**，校验（typecheck + test + lint）不通过会直接中断。
 
-常用开关：`--no-start`（构建+校验后不启动）、`--verify-only`（只跑校验）、`--no-build`（复用上次产物）、
-`--no-verify`（跳过校验）、`--clean`（从零重建）、`--skip-install`、`--global`（注册全局 `kpbl`）。
-完整清单以 `node scripts/dev.mjs --help` 为准。
-
-如需逐步手动执行，对应命令如下：
-
-```bash
-# 1. 安装依赖并编译构建
-pnpm install
-pnpm build
-
-# 2. 运行全套单元测试（秒级验证沙箱防御/SSE 还原/落盘自愈/循环回填/命令分发）
-pnpm test
-
-# 2.1 运行全量类型检查（src + tests + examples 一起检，避免类型错误被 tsup 静默放过）
-pnpm typecheck
-
-# 3. 免全局安装，直接运行打包产物启动 CLI 交互体验
-node packages/cli/dist/bin.js
-```
-
-### ⚡ 常用测试命令速查表
-
-| 测试场景 | 最简命令 | 说明 |
-|---|---|---|
-| **一键编译 + 校验 + 启动** | `pnpm dev` | 跨平台（Win/mac/Linux），等价于 install → build → verify → REPL |
-| **编译 + 校验，但不启动** | `pnpm dev:build` | 等价于 `node scripts/dev.mjs --no-start`：依赖 → 链接自愈 → 编译 → 校验后停在启动前 |
-| **只跑校验（不编译、不启动）** | `node scripts/dev.mjs --verify-only` | 完整门禁 typecheck + test + lint（含密钥扫描），与 `pnpm verify` 同源 |
-| **快速进入 REPL（跳过校验）** | `node scripts/dev.mjs --no-verify` | 跳过 typecheck / test / lint，调试时最快 |
-| **单次问答（不进入 REPL）** | `node scripts/dev.mjs -p "看看当前目录"` | 一次性提问并输出结果后退出 |
-| **从零重新构建** | `node scripts/dev.mjs --clean` | 清理 dist 与 .tsup 缓存后重新编译 |
-| **监听见效模式（只重建不启动）** | `pnpm dev:cli` | `tsup --watch` 监听源码并重建，需另开终端运行产物 |
-| **带 Key 临时体验** | `node scripts/dev.mjs -m deepseek-flash --api-key "sk-xxx"` | 不修改本地配置，临时指定密钥运行一次 |
-| **测试指定推理模型** | `node scripts/dev.mjs -m deepseek-v4-pro` | 体验 DeepSeek V4 Pro 思考过程与推理流式输出 |
-| **全局链接后测试** | `pnpm link:cli` ➡️ 任意终端直接输入 `kpbl` | 一键全局注册系统命令 |
-| **自动化测试套件** | `pnpm test` | 运行 Vitest 自动化单元测试（全部通过） |
-| **全量类型检查** | `pnpm typecheck` | 覆盖 `src` / `tests` / `examples`，防止类型错误被 tsup 静默放过 |
-| **一键校验** | `pnpm verify` | 依次执行 typecheck → test → lint |
-| **代码规范与格式** | `pnpm lint` | 运行 Biome 极速静态检查 |
-| **SDK 极简代码测试** | `npx tsx examples/minimal.ts` | 运行底层 SDK 基础会话与工具加载示例 |
+常用开关：`--no-start`（构建+校验后不启动，= `pnpm dev:build`）、`--verify-only`（只跑校验）、
+`--no-build`（复用上次产物）、`--no-verify`（跳过校验，调试最快）、`--clean`（从零重建）、
+`-p "问题"`（单次问答）、`--global`（注册全局 `kpbl`）。完整清单以 `node scripts/dev.mjs --help` 为准。
 
 ---
 
 ## 🖥️ CLI 使用指南 (`kpbl`)
 
-### 1. 安装与启动方式
-
-#### 方式一：npx 临时运行已发布版本
-```bash
-npx @kiturone/kapibala-cli@0.0.1
-```
-
-#### 方式二：从 npm 全局安装已发布版本
-```bash
-npm install -g @kiturone/kapibala-cli@0.0.1
-kpbl
-```
-
-#### 方式三：克隆源码后本地调试
-在项目根目录运行当前源码，不使用 npm 上的已发布包：
-```bash
-pnpm dev
-
-# Windows 也可直接双击 scripts/dev.cmd；
-# macOS / Git Bash 用 bash scripts/dev.sh
-# 常用参数：--no-verify（跳过校验）、--clean（从零重建）、-p "问题"（单次问答）
-```
-
-#### 方式四：本地构建产物与源码监听
-```bash
-# 编译并校验，但不启动 REPL
-pnpm dev:build
-
-# 运行本地构建产物
-node packages/cli/dist/bin.js
-```
-
-需要监听源码变化时，在终端 A 执行下面的重建命令，再在终端 B 运行上面的 `node` 命令；监听命令本身不会启动 REPL。
+### 1. 启动方式速览
 
 ```bash
-pnpm dev:cli
-```
+kpbl                             # 启动交互式会话终端 (REPL)
+kpbl "请帮我查看当前目录结构"    # 免交互单次会话模式 (直接问答并退出)
+kpbl -m deepseek-v4-pro          # 指定深度推理模型启动终端
+kpbl -m deepseek-flash --api-key "sk-xxx"   # 临时传入 Key 快速测试（不修改配置文件）
 
-#### 方式五：将本地构建链接为全局 `kpbl`
-需要在其它目录测试当前源码时，在项目根目录执行：
-```bash
-pnpm build
-pnpm link:cli
-kpbl
+# 本地源码调试：pnpm dev 进 REPL；或编译后直接运行产物
+pnpm build && node packages/cli/dist/bin.js
+# 监听源码变化：pnpm dev:cli（tsup --watch，只重建不启动 REPL，需另开终端跑产物）
+# 链接为全局命令：pnpm build && pnpm link:cli，之后任意终端直接输入 kpbl
 ```
-
----
 
 ### 2. 命令行选项 (CLI Options)
 
 ```text
-🐾 Kapibala (kpbl) v0.0.1 - Production-grade TypeScript AI Agent Harness
-
-使用方式:
-  kpbl [选项] [问题/指令]
-
-示例:
-  kpbl                             # 启动交互式会话终端 (REPL)
-  kpbl "请帮我查看当前目录结构"    # 免交互单次会话模式 (直接问答并退出)
-  kpbl -m deepseek-v4-pro          # 指定深度推理模型启动终端
-
 选项:
   -m, --model <id>       指定要使用的模型 profile id (如 deepseek-flash, claude-opus-5)
   -p, --prompt <text>    直接执行单次问答并输出结果 (免进入 REPL)
   --base-url <url>       临时覆盖模型 API 端点 (例如使用自建代理/中转)
   --api-key <key>        临时指定 API 密钥
-  --debug                输出详细调试日志与每步阶段耗时
+  --debug                向 stderr 输出脱敏开发诊断与每步阶段耗时
+  --permission <mode>    本次会话权限: approval|plan|auto|full-access
+  --shell <kind>         命令解释器: auto|bash|pwsh|powershell
+  --disable-shell        关闭默认命令工具
   -v, --version          查看当前版本
   -h, --help             查看帮助信息
 ```
 
-#### 常用命令示例：
-```bash
-# 场景 1：极简单次问答 (类似于 Claude Code `claude "xxx"`)
-kpbl "帮我用 TypeScript 写一个防抖函数 debounce"
+v0.0.2 开发版默认保存脱敏的运行日志和逐工具审计于 `~/.kapibala/logs/`、`~/.kapibala/audit/`；使用 `/logs [count]` 查看最近记录，`/status` 查看路径。审计记录操作 ID、工具调用 ID、审批来源和结果，不保存原始提示词、命令输出、密钥或完整命令；完整命令可能出现在已有会话历史中。`--debug` 增加的诊断也经过脱敏。命令的大输出保存在工作区 `.kapibala/tool-results/`，可用 `read_file` 按行读取；这些文件随工作区权限可见。
 
-# 场景 2：启动交互终端 (REPL)
-kpbl
-
-# 场景 3：指定使用 DeepSeek V4 Pro 深度推理模型
-kpbl -m deepseek-v4-pro
-
-# 场景 4：临时传入 Key 快速测试（不修改本地配置文件）
-kpbl -m deepseek-flash --api-key "sk-xxxxxxxx"
-```
-
----
-
-### 3. 初次冷启动向导体验 (Setup Wizard)
+### 3. 初次冷启动向导 (Setup Wizard)
 
 初次使用且本机尚未配置任何 API Key 时，系统将自动弹出交互向导。厂商清单取自内置目录，**2 步选择**（先选厂商、再选档位）：
 
@@ -265,28 +133,16 @@ kpbl -m deepseek-flash --api-key "sk-xxxxxxxx"
 
   1) DeepSeek (推荐默认) —— 国内直连、极速响应与旗舰推理能力 (2个模型)
   2) OpenAI —— GPT-6 Astra / GPT-5.6 Sol·Terra·Luna (4个模型)
-  3) Anthropic Claude —— Fable 5.1 / Opus 5 / Sonnet 5 / Haiku 4.5 (4个模型)
-  4) Google Gemini —— Gemini 3.1 Pro / Gemini 3 Flash (2个模型)
-  5) 通义千问 (Qwen) —— 阿里云官方 DashScope 兼容模式 (3个模型)
-  6) Kimi (月之暗面) —— Kimi K3 / K2.7 Code (2个模型)
-  7) 智谱 GLM —— GLM-5.3 / GLM-5.3-Flash (2个模型)
-  8) 本地 Ollama —— 完全本地运行开源模型，无须 API Key (1个模型)
-  9) 自定义 OpenAI 兼容接口 —— OneAPI / vLLM / 代理
+  ...（共 8 家内置厂商 + 自定义 OpenAI 兼容接口）
 
 请输入选项 [1-9] (默认 1): 1
-
-  1) DeepSeek Flash (V4.1-Flash) —— deepseek-flash | 1000k | 深度思考
-  2) DeepSeek V4 Pro (深度推理) —— deepseek-v4-pro | 1000k | 深度思考
 请选择具体模型 [1-2] (默认 1): 1
-
 请输入您的 DeepSeek API Key (sk-...): sk-********************
 
 ⏳ 正在验证连接与可用性...
 ✔ 连接验证成功 (HTTP 200)
 ✔ 配置已成功持久化至全局：~/.kapibala/settings.json
 已就绪！当前默认模型：DeepSeek Flash (V4.1-Flash) (deepseek-flash)
-
-kpbl (deepseek-flash) ❯ 
 ```
 
 > 若探测返回 401/403，会提示「端点可达但密钥被拒绝」；若端点不可达或未实现 `GET /models`，会提示「未能验证连通性」。
@@ -295,60 +151,33 @@ kpbl (deepseek-flash) ❯
 > 若该厂商族已有可用密钥，向导不会让你重新粘贴，而是先问一句：
 > `检测到 DeepSeek 的可用 API Key（来自同厂商模型 'deepseek-flash'）。直接复用？[Y/n]:` —— 默认直接复用。
 
----
+### 4. 终端内置 Slash 命令与快捷键
 
-### 4. 终端内置 Slash 命令与快捷键 (参考 Claude Code CLI 体验)
-
-进入交互终端后，提示符将动态展示当前模型 `kpbl (model-id) ❯ `，可随时使用以下操作：
+进入交互终端后，提示符将动态展示当前模型 `kpbl (model-id) ❯ `。
 
 #### 🎮 `/model` 两步分级交互式菜单
-输入 `/model` 将进入清晰的两步分级选择流程（**第一步选提供商，第二步选具体模型**），告别复杂记忆与输入：
 
-**第一步：选择模型提供商 (Provider)**
+输入 `/model` 进入两步选择流程（**第一步选提供商，第二步选具体模型**），按 **`↑`/`↓`** 移动、**`Enter`** 确认、数字键 `1`-`9` 盲按直选、**`Esc`** 取消：
+
 ```text
-? 第一步：请选择模型提供商 (Provider) (按 ↑/↓ 移动，回车确认，Esc 取消)
+? 第一步：请选择模型提供商 (Provider)
   ❯ ● 1) DeepSeek [当前提供商] - 国内直连、极速响应与旗舰推理能力 · 2个模型 · 🔑 已配置密钥
     ○ 2) OpenAI - GPT-6 Astra / GPT-5.6 Sol·Terra·Luna · 4个模型 · ⚠️ 未配置密钥
-    ○ 3) Anthropic Claude - Fable 5.1 / Opus 5 / Sonnet 5 / Haiku 4.5 · 4个模型 · ⚠️ 未配置密钥
-    ○ 4) Google Gemini - Gemini 3.1 Pro / Gemini 3 Flash · 2个模型 · ⚠️ 未配置密钥
-    ○ 5) 通义千问 (Qwen) - 阿里云官方 DashScope 兼容模式 · 3个模型 · ⚠️ 未配置密钥
-    ○ 6) Kimi (月之暗面) - Kimi K3 / K2.7 Code · 2个模型 · ⚠️ 未配置密钥
-    ○ 7) 智谱 GLM - GLM-5.3 / GLM-5.3-Flash · 2个模型 · ⚠️ 未配置密钥
-    ○ 8) 本地 Ollama - 完全本地运行开源模型，无须 API Key · 1个模型 · 免密钥
-    ○ 9) ⚙️ 运行配置向导添加/配置新模型 (/model setup)
-    ○ 10) 🔑 更新当前模型 [DeepSeek Flash (V4.1-Flash)] 的 API Key
-    ○ 11) ⭐️ 将当前模型 [DeepSeek Flash (V4.1-Flash)] 设为全局默认
-```
+    ...（每个厂商直接标注密钥就绪状态；只列有模型的厂商，末尾恒定向导 / 更新密钥 / 设为默认三项）
 
-> 每个厂商直接标注密钥就绪状态（`🔑 已配置密钥` / `⚠️ 未配置密钥` / `免密钥`），
-> 不必等切过去才发现还要补录。
->
-> 注意厂商行的**序号是动态的**：只列「该分类下确实存在模型」的厂商（所以没配过自建端点就不会出现「自定义端点 / 其它」那一行），
-> 末尾的向导 / 更新密钥 / 设为默认三项恒定收尾。
-
-**第二步：选择该提供商下的具体模型**
-```text
-? 第二步：请选择【DeepSeek】的具体模型 (按 ↑/↓ 移动，回车确认，Esc 取消)
+? 第二步：请选择【DeepSeek】的具体模型
   ❯ ● 1) DeepSeek Flash (V4.1-Flash) [当前使用] - deepseek-flash | 1000k | 深度思考 · 🔑 已配置密钥
     ○ 2) DeepSeek V4 Pro (深度推理) - deepseek-v4-pro | 1000k | 深度思考 · 🔑 已配置密钥
     ○ 3) ⬅️ 返回上一级 (重新选择提供商)
 ```
-> `deepseek-v4-pro` 自身并没有单独保存密钥 —— 它直接复用同厂商族的密钥，所以同样标注 `🔑 已配置密钥`。
->
-> 徽章 `[当前使用]`（正在用的模型）与 `[默认]`（全局默认模型）是**互斥**的：当前模型同时也是默认模型时，只显示前者。
 
-- 按键盘 **`↑` / `↓`** 移动高亮光标，按 **`Enter`** 即可选中并热切换；
-- 支持数字键 **`1`-`9`** 极速盲按直选；
-- 随时支持选 `⬅️ 返回上一级` 重新选择厂商，按 **`Esc`** 随时退出取消。
+> 徽章 `[当前使用]`（正在用的模型）与 `[默认]`（全局默认模型）是**互斥**的：当前模型同时也是默认模型时，只显示前者。
 
 #### 🔑 API Key 按厂商族共用（一个厂商只需配置一次）
 
-同一厂商的多个模型**共用同一份密钥**，不需要为每个模型重复输入：
-
 | 行为 | 说明 |
 |---|---|
-| **复用** | 为 `gpt-5.6-terra` 填过 Key 后，切到 `gpt-6-astra` / `gpt-5.6-luna` 会自动复用，不再询问 |
-| **可见** | 切换时打印 `🔑 复用 OpenAI 的 API Key（来自 'gpt-5.6-terra'）`，菜单里也直接标注各厂商的密钥状态 |
+| **复用** | 为 `gpt-5.6-terra` 填过 Key 后，同厂商其它模型自动复用，切换时打印 `🔑 复用 ... 的 API Key（来源）`，菜单里也标注密钥状态 |
 | **唯一** | 更新密钥时同厂商族的冗余副本会被自动清理，配置文件里始终只保留一份 |
 | **隔离** | 8 家可识别厂商（DeepSeek / OpenAI / Anthropic / Google / 通义千问 / Kimi / 智谱 / Ollama）按厂商归组；**自定义端点按 host 隔离**，两个不同的自建网关不会串用密钥 |
 | **不跨厂商** | 绝不做跨厂商兜底 —— 拿 OpenAI 的 Key 去打 DeepSeek 端点只会得到一条没头没尾的 401，排障成本极高 |
@@ -370,24 +199,22 @@ kpbl (deepseek-flash) ❯
 | `/help` | 打印可用 Slash 命令说明 | `/help` |
 | `/exit` 或 `/quit` | 退出交互终端（**裸输入 `exit` / `quit` 亦可，无需斜杠**） | `/exit` |
 
-> **未来规划（v0.0.8）**：参考 Claude Code 的交互习惯，将 `/` 升级为统一命令面板，聚合内置 Slash 命令、可由用户调用的 Skills 与 MCP Prompt。候选统一展示名称、一行描述和来源类型，默认可见 3 条但不硬性截断结果，其余候选可滚动浏览；支持继续输入过滤、上下键选择、Enter 执行、Tab 补全和 Esc 关闭。原始 MCP Tool 不进入该菜单，避免把模型内部能力与用户命令混在一起。
+> **未来规划（v0.0.8）**：将 `/` 升级为统一命令面板，聚合内置 Slash 命令、可调用的 Skills 与 MCP Prompt，支持模糊过滤、Tab 补全与 Esc 关闭；原始 MCP Tool 不进入该菜单。
 
 #### ⌨️ 快捷键规范 (Claude Code 风格状态机)：
-- **`Ctrl + C`（模型回答生成中）**：**单次按下立即中止当前回答**，已生成的历史自动修复闭合，会话上下文完好保留；
+- **`Ctrl + C`（模型回答生成中）**：单次按下立即中止当前回答，已生成的历史自动修复闭合，会话上下文完好保留；
 - **`Ctrl + C`（输入框有内容时）**：单次按下立即**清空当前输入行**并重绘提示符；
-- **`Ctrl + C`（输入框为空时）**：按下第 1 次提示 `(再按一次 Ctrl+C 退出程序)`，**1.5 秒内连按 2 次安全退出程序**；
+- **`Ctrl + C`（输入框为空时）**：第 1 次提示 `(再按一次 Ctrl+C 退出程序)`，**1.5 秒内连按 2 次安全退出**；
 - **`Ctrl + D`**：随时在空行触发 EOF 退出。
 
 ---
 
 ## 🧩 SDK 使用指南 (`@kiturone/kapibala`)
 
-`@kiturone/kapibala` 是一个独立的、高内聚低耦合的 Agent 核心引擎包。您可以在任何 Node.js / TypeScript 项目中将其作为底层框架使用。
-
-在使用 SDK 的项目中安装已发布版本：
+`@kiturone/kapibala` 是一个独立的、高内聚低耦合的 Agent 核心引擎包。在使用 SDK 的项目中安装已发布版本：
 
 ```bash
-npm install @kiturone/kapibala@0.0.1
+npm install @kiturone/kapibala@0.0.2
 ```
 
 ### 1. 基础对话与流式事件监听
@@ -478,12 +305,7 @@ export const weatherTool = defineTool({
     permissions: ['net:outbound'],
   },
   async execute(input: { city: string }, ctx: ToolContext) {
-    // 执行业务逻辑或外部请求
-    return {
-      city: input.city,
-      weather: '晴朗',
-      temperature: '22°C',
-    };
+    return { city: input.city, weather: '晴朗', temperature: '22°C' };
   },
 });
 
@@ -493,51 +315,26 @@ session.tools.register(weatherTool);
 
 ---
 
-### 3. 会话历史持久化与崩溃自愈 (`JSONLMessageStore`)
+### 3. 持久化、Hooks 与模型路由
 
 ```typescript
 import { AgentSession, JSONLMessageStore } from '@kiturone/kapibala';
 
-// 指定 JSONL 消息落盘文件路径
+// 会话持久化：每次输入/输出均原子追加至 JSONL，启动时自动检查悬挂 tool_use 自愈
 const store = new JSONLMessageStore('./.kapibala/messages.jsonl');
+const session = new AgentSession({ defaultProfile: profile, defaultProvider: provider, store });
 
-const session = new AgentSession({
-  defaultProfile: profile,
-  defaultProvider: provider,
-  store, // 会话每次输入/输出均原子追加至 JSONL，且启动时自动检查悬挂 tool_use 自愈
-});
-```
-
----
-
-### 4. 注册生命周期钩子 (Hooks)
-
-通过 Hook 系统可以在不侵入核心循环的前提下对工具执行、提示词装配、模型调用进行拦截与监控：
-
-```typescript
-// 在工具执行前进行日志打印或安全审计
+// 生命周期 Hook：不侵入核心循环即可拦截 / 监控工具执行、提示词装配、模型调用
 session.hooks.on('tool:before', async (ctx, tool, input) => {
   console.log(`[审计] 即将调用工具: ${tool.name}，参数:`, input);
 });
-
-// 在工具执行完成后
 session.hooks.on('tool:after', async (ctx, tool, result) => {
   console.log(`[审计] 工具 ${tool.name} 执行完成`);
 });
-```
 
----
-
-### 5. 场景模型路由 (Role-based Routing)
-
-Kapibala 内置支持将不同职责分配给不同模型（如规划用旗舰推理档，编码执行用快速档）：
-
-```typescript
-// 动态切换指定角色的模型
+// 场景模型路由：不同职责分配给不同模型（规划用旗舰推理档，编码执行用快速档）
 session.switchModel(plannerProfile, 'planning', plannerProvider);
 session.switchModel(executorProfile, 'execution', executorProvider);
-
-// 查看当前路由状态
 console.log('默认模型:', session.getActiveProfile('default').name);
 console.log('规划模型:', session.getActiveProfile('planning').name);
 ```
@@ -619,28 +416,14 @@ Kapibala 采用统一规范的 `.kapibala` 目录与 `settings.json` 命名。
       "modelName": "deepseek-flash",
       "contextWindow": 1000000,
       "supportsThinking": true
-    },
-    {
-      "id": "custom-my-gateway-https-gw-example-com-v1",
-      "name": "My Gateway",
-      "provider": "openai-compatible",
-      "baseURL": "https://gw.example.com/v1",
-      "apiKeyEnv": "CUSTOM_API_KEY",
-      "modelName": "gpt-5.6-terra"
     }
   ]
 }
 ```
 
-> `contextWindow` 同时接受整数与带单位的字符串，例如 `1000000`、`"1M"`、`"256K"`、
-> `"1.05M"`；`K/M` 按十进制换算，大小写不敏感，
-> `K` 最多保留 3 位小数、`M` 最多保留 6 位小数，且换算结果必须是正整数 Token；
-> 不接受容易与字节混淆的 `KB/MB`。未配置时按 `1M` 作为展示估算值，并在 CLI 中明确标记为“默认估算”。
+> `contextWindow` 同时接受整数与带单位的字符串（如 `1000000`、`"1M"`、`"256K"`），`K/M` 按十进制换算、大小写不敏感；不接受容易与字节混淆的 `KB/MB`。未配置时按 `1M` 作为展示估算值。
 
-> **`profiles` 只需要写你自己关心或自建的模型。** 内置清单由程序侧提供（见下节），
-> 缺哪家就在运行时从代码里补哪家；重复抄一份进配置只会得到一份会过期的快照 ——
-> 厂商换代的第二天，它还指着已经 404 的 `modelName`。
-> 因此这个数组**允许为空**，`~/.kapibala/settings.json` 里通常只有你填过密钥的那几条。
+> **`profiles` 只需要写你自己关心或自建的模型。** 内置清单由程序侧提供，缺哪家就在运行时从代码里补哪家；重复抄一份进配置只会得到一份会过期的快照。因此这个数组**允许为空**，`~/.kapibala/settings.json` 里通常只有你填过密钥的那几条。
 
 ### 内置模型清单与自动升级
 
@@ -657,92 +440,32 @@ Kapibala 采用统一规范的 `.kapibala` 目录与 `settings.json` 命名。
 | **智谱 GLM** | `glm-5.3`<br>`glm-5.3-flash` | 1000k | ✅ |
 | **本地 Ollama** | `ollama`（`gpt-oss:20b`，免密钥） | 131k | — |
 
-清单版本号记录在 `settings.json` 的 `builtinCatalogVersion` 字段（由程序写入，无需手改）。
-启动时若发现它落后于当前版本，会**自动做一次目录升级**：
-
-- 已退役的模型 id 被**重定向**到现役档位，**密钥一并带过去**（密钥丢失不可逆，绝不能直接删）；
-- 仍在内置清单里的 profile 会**同步**过期的 `baseURL` / `modelName` / 上下文窗口（`apiKey` 原样保留）；
-- `defaultModel` 与 `modelRouting` 里指向旧 id 的引用被改写；
-- **不写入任何你从未启用过的内置模型** —— 升级只整理你已有的配置，不会替你「扩充」清单。
-
-历史退役 id 的重定向关系：`deepseek-chat` → `deepseek-flash`、`deepseek-reasoner` → `deepseek-v4-pro`、
-`deepseek-v4-flash` → `deepseek-flash`、`gpt-4o` → `gpt-5.6-terra`、`gpt-4o-mini` → `gpt-5.6-luna`、
-`o3-mini` → `gpt-5.6-sol`、`qwen-plus` → `qwen3.8-flash`。
-（**从内置清单删掉任何 id 都必须在此补一条重定向**，否则它会在老用户配置里变成孤儿。）
+清单版本号记录在 `settings.json` 的 `builtinCatalogVersion` 字段（由程序写入，无需手改）。启动时若发现它落后于当前版本，会**自动做一次目录升级**：已退役的模型 id 被**重定向**到现役档位（密钥一并带过去，密钥丢失不可逆，绝不直接删），仍在内置清单里的 profile 会同步过期的 `baseURL` / `modelName` / 上下文窗口，`defaultModel` 与 `modelRouting` 里指向旧 id 的引用被改写 —— 且**不会写入任何你从未启用过的内置模型**，升级只整理你已有的配置。
 
 ---
 
 ## 🧪 开发与本地测试
 
-Kapibala 拥有极高的代码质量与工程自洽性，包含全套单元测试与自动化规范检查。
+本节命令需在克隆后的仓库根目录运行，用于测试和调试当前源码；`npx @kiturone/kapibala-cli@0.0.2` 运行的是 npm 上的已发布版本。日常开发只需一条 `pnpm dev`（编译 → 校验 → 进 REPL），若只想要构建与校验、不启动会话，用 `pnpm dev:build`。
 
-本节命令需在克隆后的仓库根目录运行，用于测试和调试当前源码；`npx @kiturone/kapibala-cli@0.0.1` 运行的是 npm 上的已发布版本。
-
-日常开发只需一条 `pnpm dev`（编译 → 校验 → 进 REPL）；若只想要做完构建与校验、不启动会话，用 `pnpm dev:build`。以下为逐条手动命令：
-
-```bash
-# 1. 运行 API Key 凭证防泄露安全扫描 (禁止提交任何真实 Key)
-pnpm check-secrets
-
-# 2. 运行全部单测 (Vitest：包含沙箱穿透防御、SSE 还原、落盘自愈、循环回填与中断路径、性能指标与步骤日志)
-pnpm test
-
-# 3. 监听模式运行单测
-pnpm test:watch
-
-# 4. 运行安全扫描与 Biome 代码风格检查
-pnpm lint
-
-# 5. 自动格式化与代码修复
-pnpm format
-
-# 6. 编译构建所有包 (Core + CLI)
-pnpm build
-
-# 7. 全量类型检查 (src + tests + examples)
-pnpm typecheck
-
-# 8. 运行最小化 SDK 验证脚本
-npx tsx examples/minimal.ts
-```
+| 命令 | 说明 |
+|---|---|
+| `pnpm dev` | 一键：依赖 → 链接自愈 → 编译 → 校验 → REPL |
+| `pnpm dev:build` | 编译 + 校验，但不启动 REPL |
+| `pnpm verify` | 完整门禁：typecheck → test → lint（含密钥扫描） |
+| `pnpm build` | 编译构建所有包 (Core + CLI) |
+| `pnpm typecheck` | 全量类型检查 (`src` + `tests` + `examples`)，防止类型错误被 tsup 静默放过 |
+| `pnpm test` | 运行 Vitest 全套单元测试（沙箱防御 / SSE 还原 / 落盘自愈 / 循环回填与中断路径等） |
+| `pnpm test:watch` | 监听模式运行单测 |
+| `pnpm check-secrets` | API Key 凭证防泄露安全扫描（禁止提交任何真实 Key） |
+| `pnpm lint` / `pnpm format` | Biome 代码风格检查 / 自动格式化与修复 |
+| `npx tsx examples/minimal.ts` | 运行最小化 SDK 验证脚本 |
 
 ---
 
-## ✅ v0.0.1 收尾增强（已完成）
+## 🗺️ 版本与路线图
 
-以下工作已经作为 v0.0.1 既有能力增强完成，不占用 v0.0.2 的新增能力范围：
-
-- **请求与会话指标**：统一请求结束底栏与 `/status` 的统计口径；默认按 Git 分支、总耗时、最近请求上下文、本轮输入/输出 Token、工具次数/耗时排列，`--debug` 再追加模型耗时与 TTFT。上下文占用率只使用最近一次内部模型请求的输入 Token，禁止拿会话累计 Token 或多步骤累计 Token 计算；已移除含义模糊的“步骤”指标。
-- **上下文窗口配置**：`ModelProfile.contextWindow` 支持整数与 `K/M` 简写，缺省展示估算值为 `1M`；内置模型继续使用目录中明确配置的真实窗口，显式配置永远覆盖默认值。
-- **工具调用展示**：内置工具在 CLI 映射为面向用户的 `Read` / `Search` / `Write` / `Edit` 动作名，Core 真实名称保持不变；交互终端将执行中状态原地更新为成功/失败与耗时，非 TTY 输出单条无 ANSI 记录。默认只展示结果元数据，不重复回显文件正文；未知与 MCP 工具保留真实名称，所有参数继续脱敏、转义和稳定截断。
-- **Git 分支状态**：每轮请求结束时由 CLI 即时探测当前 Git 分支并置于底栏首位；其后按总耗时、上下文、本轮 Token、工具次数/耗时排列，Token 使用 `K/M` 简写。非 Git 目录、detached HEAD 或探测失败时静默省略 Git 字段，不影响对话。
-- **跨平台开发入口**：继续以 `pnpm dev` / `scripts/dev.mjs` 为唯一流程真源，Windows 与 macOS/Linux 薄壳仅负责转发参数；`--verify-only` 必须始终与 `pnpm verify` 同源。
-- **PathSandbox 与扩展底座加固**：补齐跨平台路径、符号链接、Hook 顺序、异常传播和生命周期测试；本阶段不引入权限审批、Skills 或 MCP 行为。
-- **Headless Core 边界加固**：明确 `AgentSession` / `SessionEvent` 是多宿主共用契约，并加入自动化架构门禁；本阶段不提前实现 TUI、GUI、IPC 或网络客户端。
-- **文档状态约束**：明确区分“已实现”“v0.0.1 待增强”和“未来版本”，不得把规划中的压缩、审批或模型路由描述成现成功能。
-
-上下文压缩状态不在 v0.0.1 伪造占位数据；等 v0.0.3 的压缩机制落地后，再由真实的压缩次数、摘要覆盖范围和最近压缩时间驱动展示。
-
----
-
-## 🗺️ 版本路线图
-
-> **版本号规则**：Kapibala 按十进制位进位，小版本补丁位只使用 `0–9`；
-> `v0.0.9` 的下一版本是 `v0.1.0`，不使用 `v0.0.10`。后续同理，
-> `v0.1.9` 之后进入 `v0.2.0`。
-
-| 版本 | 阶段重点 | 核心能力与扩展点 | 交付形态 |
-|:---:|---|---|---|
-| **v0.0.1** | **核心骨架、交互 CLI 与既有能力收尾**（已完成） | OpenAI 兼容协议、Slash 命令、首次配置向导、PathSandbox、崩溃历史自愈、请求级指标与上下文占用、语义化单行工具展示、每轮底栏当前 Git 分支、Headless Core 架构门禁、跨平台一键开发脚本 | CLI (`kpbl`) + Core SDK |
-| **v0.0.2** | **可信执行与项目指令** | 先交付四态 `SessionMode`（Approval / Plan / Auto / FullAccess）、执行前 `PermissionPolicy` 与宿主可注入的 `ApprovalChannel`，验证未声明能力默认询问、项目指令不能扩大权限；再交付结构化工具错误、审批缓存和多层 `AGENTS.md`；仅在权限端到端测试通过后接入默认不注册的 opt-in Bash | Core + CLI 增量 |
-| **v0.0.3** | **消息生命周期与上下文管理** | 先定义失败轮次、连续同角色消息和完整工具事务的规范化规则，再交付消息 ID/状态、上下文预算、保留最近完整交互轮次、滚动压缩、摘要检查点与压缩可观测性；Summary 路由可先回退默认模型 | Core 内增量 |
-| **v0.0.4** | **多协议与场景模型路由** | Anthropic 原生协议消费 v0.0.3 的合法消息序列，落地 `summary` / `fast` / `planning` / `execution` 运行时路由；小模型意图分类保持可选，不作为默认必经调用 | Core + CLI 增量 |
-| **v0.0.5** | **技能体系 (Skills)** | SkillRegistry、L2.5 渐进式披露、按需 `load_skill`、Skill 来源与独立权限约束；对宿主暴露可搜索的 Skill 名称、描述、来源、参数提示与是否允许用户调用等元数据，CLI 展示当前加载/调用的 Skill 名称 | Core 内增量 |
-| **v0.0.6** | **MCP 生态扩展** | 独立包接入 Stdio，再扩展 HTTP；MCP 工具按 source 动态批量上下线，装载受项目信任与权限策略约束；CLI 保留并展示 MCP server/tool 命名空间，MCP Prompt 以名称、描述、来源和参数提示注册为可搜索的用户命令 | `@kiturone/kapibala-mcp` |
-| **v0.0.7** | **多会话与多智能体** | 先验收会话恢复、检索、归档与 SessionManager；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理发布以权限只继承或收紧、工作区隔离测试通过为前提 | Core 内增量 |
-| **v0.0.8** | **产品化终端体验** | 现代 TUI、共享前端 ViewModel、多任务状态、可扩展状态栏与流式渲染；提供统一 `/` 命令面板，对内置 Slash 命令、用户可调用的 Skills 和 MCP Prompt 做稳定的模糊匹配，候选展示名称、一行描述与来源类型；默认可见 3 条但可滚动浏览其余结果，支持上下键、Enter、Tab 和 Esc；原始 MCP Tool 不进入菜单；思考过程生成时完整展示、完成后折叠且可展开；TUI 仍只消费 Core 事件 | 独立包 + CLI 增量 |
-| **v0.0.9** | **本地客户端契约与发布前加固** | 版本化 wire DTO、本地守护进程和一种受控本地传输；完成审计、预算、宿主隔离与兼容性测试。桌面/Web/移动多端及远程传输待契约稳定后逐步交付，远程接入须先具备认证与授权 | Core + 本地宿主适配 |
-| **v0.1.0** | **阶段性整合版本** | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约，完成迁移验证与发布流程；不新增客户端类型或运行时子系统 | CLI + Core SDK + 扩展包 |
+v0.0.1 既有能力增强明细、版本号规则与完整的版本路线图已移至独立文档：**[docs/RELEASES.md](docs/RELEASES.md)**。
 
 ---
 

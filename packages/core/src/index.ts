@@ -5,7 +5,14 @@
 
 export * from './types/index.js';
 export * from './errors/index.js';
+export * from './logging/index.js';
+export * from './logging/file-sink.js';
+export * from './instructions/index.js';
+export * from './shell/detect.js';
+export * from './shell/tool.js';
 export * from './security/sandbox.js';
+export * from './security/permissions.js';
+export * from './security/approval.js';
 export * from './tools/index.js';
 export * from './tools/registry.js';
 export * from './tools/builtin/fs.js';

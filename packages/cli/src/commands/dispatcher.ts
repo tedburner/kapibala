@@ -8,6 +8,7 @@ export interface CommandContext {
   onModelSwitched: (newProfileId: string) => void;
   onExit: () => void;
   readSecret?: (prompt: string) => Promise<string>;
+  confirm?: (prompt: string) => Promise<boolean>;
 }
 
 export type CommandHandler = (args: string[], ctx: CommandContext) => Promise<void> | void;

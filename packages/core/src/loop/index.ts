@@ -1,13 +1,17 @@
 import { AbortError } from '../errors/index.js';
 import type { ToolExecutor } from '../executor/index.js';
 import type { HookRegistry } from '../hooks/registry.js';
+import type { EventLogger } from '../logging/index.js';
 import type { ModelProvider } from '../models/index.js';
+import { type PermissionRule, type SessionMode, visibleTools } from '../security/permissions.js';
+import { toToolDefinition } from '../tools/index.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type {
   CanonicalMessage,
   ContentBlock,
   ModelRequest,
   SessionEvent,
+  ToolResultBlock,
   ToolUseBlock,
   TurnMetrics,
   Usage,
@@ -22,6 +26,11 @@ export interface AgentLoopOptions {
   maxSteps?: number;
   maxConsecutiveErrors?: number;
   signal?: AbortSignal;
+  eventLogger?: EventLogger;
+  sessionId?: string;
+  runId?: string;
+  getMode?: () => SessionMode;
+  permissionRules?: readonly PermissionRule[];
 }
 
 export class AgentLoop {
@@ -33,6 +42,11 @@ export class AgentLoop {
   private readonly maxSteps: number;
   private readonly maxConsecutiveErrors: number;
   private readonly signal?: AbortSignal;
+  private readonly eventLogger?: EventLogger;
+  private readonly sessionId?: string;
+  private readonly runId?: string;
+  private readonly getMode: () => SessionMode;
+  private readonly permissionRules: readonly PermissionRule[];
 
   constructor(options: AgentLoopOptions) {
     this.provider = options.provider;
@@ -43,6 +57,11 @@ export class AgentLoop {
     this.maxSteps = options.maxSteps ?? 20;
     this.maxConsecutiveErrors = options.maxConsecutiveErrors ?? 3;
     this.signal = options.signal;
+    this.eventLogger = options.eventLogger;
+    this.sessionId = options.sessionId;
+    this.runId = options.runId;
+    this.getMode = options.getMode ?? (() => 'Approval');
+    this.permissionRules = options.permissionRules ?? [];
   }
 
   async *run(history: CanonicalMessage[]): AsyncIterable<SessionEvent> {
@@ -65,7 +84,9 @@ export class AgentLoop {
       let request: ModelRequest = {
         systemPrompt: this.systemPrompt,
         messages: history,
-        tools: this.tools.definitions(),
+        tools: visibleTools(this.tools.list(), this.getMode(), this.permissionRules).map(
+          toToolDefinition,
+        ),
         signal: this.signal,
       };
 
@@ -93,6 +114,15 @@ export class AgentLoop {
       let turnUsage: Usage | undefined;
       let turnTtftMs: number | undefined;
       const modelStartTime = Date.now();
+      if (this.eventLogger && this.sessionId) {
+        await this.eventLogger.record({
+          level: 'info',
+          event: 'model.requested',
+          sessionId: this.sessionId,
+          runId: this.runId,
+          fields: { attempt: step, count: request.messages.length },
+        });
+      }
       let firstTokenReceived = false;
 
       // 统一的 TurnMetrics 构造：保证错误/熔断/正常三条路径的指标结构一致
@@ -167,6 +197,15 @@ export class AgentLoop {
           throw new AbortError();
         }
         const modelError = err instanceof Error ? err : new Error(String(err));
+        if (this.eventLogger && this.sessionId) {
+          await this.eventLogger.record({
+            level: 'error',
+            event: 'model.failed',
+            sessionId: this.sessionId,
+            runId: this.runId,
+            fields: { attempt: step, durationMs: Date.now() - modelStartTime },
+          });
+        }
         await this.hooks.emit('error', hookCtx, modelError);
         yield { type: 'error', error: modelError };
         // 与熔断路径保持一致：turn_start 必须有配对的 turn_finish，消费方(如指标统计)才能正确收口
@@ -180,6 +219,20 @@ export class AgentLoop {
       }
 
       const modelDurationMs = Date.now() - modelStartTime;
+      if (this.eventLogger && this.sessionId) {
+        await this.eventLogger.record({
+          level: 'info',
+          event: 'model.finished',
+          sessionId: this.sessionId,
+          runId: this.runId,
+          fields: {
+            attempt: step,
+            durationMs: modelDurationMs,
+            promptTokens: turnUsage?.promptTokens ?? 0,
+            completionTokens: turnUsage?.completionTokens ?? 0,
+          },
+        });
+      }
 
       yield {
         type: 'step_log',
@@ -260,7 +313,42 @@ export class AgentLoop {
       }
 
       const toolStartTime = Date.now();
-      const toolResults = await this.executor.runAll(toolCalls);
+      const progressQueue: SessionEvent[] = [];
+      let progressWake: (() => void) | undefined;
+      let toolsFinished = false;
+      const toolRun = this.executor.runAll(toolCalls, (progress) => {
+        progressQueue.push({ type: 'tool_progress', ...progress });
+        progressWake?.();
+      });
+      void toolRun.then(
+        () => {
+          toolsFinished = true;
+          progressWake?.();
+        },
+        () => {
+          toolsFinished = true;
+          progressWake?.();
+        },
+      );
+      let toolResults: ToolResultBlock[];
+      let toolMessages: CanonicalMessage[];
+      try {
+        while (!toolsFinished || progressQueue.length > 0) {
+          const next = progressQueue.shift();
+          if (next) yield next;
+          else
+            await new Promise<void>((resolve) => {
+              progressWake = resolve;
+            });
+          progressWake = undefined;
+        }
+      } finally {
+        // 消费方 return/throw 时也必须先回收工具并闭合事务；已完成的真实结果原样保留。
+        if (!toolsFinished) this.executor.cancel();
+        toolResults = await toolRun;
+        toolMessages = this.provider.assembleToolResults(toolResults);
+        history.push(assistantMessage, ...toolMessages);
+      }
       const toolDurationMs = Date.now() - toolStartTime;
 
       const hasError = toolResults.some((result) => result.isError);
@@ -270,9 +358,6 @@ export class AgentLoop {
       //    assistant 与所有 tool_result 在同一个同步临界段进入历史，并且发生在下一次 yield 前。
       //    因此直接消费 AgentLoop 的调用方即使在任意对外事件后停止，也看不到半闭合历史。
       //    熔断只决定「是否继续循环」，不改变历史的合法性(设计文档 §4.3 / §4.4)。
-      const toolMessages = this.provider.assembleToolResults(toolResults);
-      history.push(assistantMessage, ...toolMessages);
-
       yield {
         type: 'message_stop',
         message: assistantMessage,
@@ -305,6 +390,20 @@ export class AgentLoop {
       };
 
       yield { type: 'tool_messages', messages: toolMessages };
+
+      if (toolResults.some((result) => result.retryPolicy === 'after_user_action')) {
+        if (this.signal?.aborted) {
+          yield { type: 'turn_finish', turn: step, usage: turnUsage, metrics };
+          throw new AbortError();
+        }
+        yield {
+          type: 'error',
+          error: new Error('Tool execution requires user action before continuing'),
+        };
+        yield { type: 'turn_finish', turn: step, usage: turnUsage, metrics };
+        completed = true;
+        break;
+      }
 
       if (hasError) {
         consecutiveErrors++;

@@ -9,6 +9,8 @@ describe('/status context usage', () => {
     });
     const context = {
       session: {
+        getMode: () => 'Approval',
+        tools: { get: () => undefined },
         getStats: () => ({
           totalTurns: 2,
           totalTokens: { promptTokens: 1_500_000, completionTokens: 100, totalTokens: 1_500_100 },
@@ -31,5 +33,8 @@ describe('/status context usage', () => {
     }
 
     expect(lines.join('\n')).toContain('≈800k / 1M (80.0%)');
+    expect(lines.join('\n')).toContain('权限模式: Approval');
+    expect(lines.join('\n')).toContain('运行日志:');
+    expect(lines.join('\n')).toContain('审批审计:');
   });
 });

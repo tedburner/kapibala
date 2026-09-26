@@ -1,10 +1,13 @@
+import readline from 'node:readline';
 import type { AgentSession } from '@kiturone/kapibala';
+import { type CliApprovalChannel, askWithReadline } from './ui/approval.js';
 import { createEventRenderer } from './ui/events.js';
 
 export interface OneShotOptions {
   session: AgentSession;
   prompt: string;
   debug?: boolean;
+  approvalChannel?: CliApprovalChannel;
 }
 
 /**
@@ -13,6 +16,13 @@ export interface OneShotOptions {
  */
 export async function runOneShot(options: OneShotOptions): Promise<number> {
   const { session, prompt, debug } = options;
+  const approvalInput = process.stdin.isTTY
+    ? readline.createInterface({ input: process.stdin, output: process.stderr })
+    : undefined;
+  if (approvalInput)
+    options.approvalChannel?.bind((request, signal) =>
+      askWithReadline(approvalInput, request, signal),
+    );
 
   const abortController = new AbortController();
   // 只负责中止：退出码与 destroy 统一走主流程的 catch/finally，
@@ -41,6 +51,7 @@ export async function runOneShot(options: OneShotOptions): Promise<number> {
       failed = true;
     }
   } finally {
+    approvalInput?.close();
     process.off('SIGINT', onSigint);
     // 触发 session:end 与插件 teardown(设计文档 §3.2 / §3.3)，确保资源可回收
     await session.destroy();

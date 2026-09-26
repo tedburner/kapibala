@@ -89,6 +89,8 @@ export class JSONLMessageStore implements MessageStore {
             toolUseId: toolUse.id,
             content: 'Tool execution was interrupted or crashed in previous session',
             isError: true,
+            errorCode: 'OUTCOME_UNKNOWN',
+            retryPolicy: 'after_user_action',
           }),
         ),
         timestamp: Date.now(),

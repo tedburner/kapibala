@@ -10,6 +10,8 @@ import { charWidth, displayWidth } from './width.js';
 
 export interface EventRendererOptions {
   debug?: boolean;
+  /** 开发诊断独立写入 stderr，避免污染非 TTY 的答案 stdout。 */
+  debugWrite?: (chunk: string) => void;
   /** 每轮结束时读取当前 Git 分支；返回 undefined 时不展示。 */
   getGitBranch?: () => string | undefined;
   /** 注入输出目标，便于宿主复用与测试；默认写入 stdout。 */
@@ -149,6 +151,9 @@ function fitFooter(segments: FooterSegment[], columns: number): string {
 export function createEventRenderer(options: EventRendererOptions = {}): EventRenderer {
   const {
     debug = false,
+    debugWrite = (chunk: string) => {
+      process.stderr.write(chunk);
+    },
     getGitBranch = getCurrentGitBranch,
     write = (chunk: string) => {
       process.stdout.write(chunk);
@@ -186,8 +191,14 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
           const time = new Date(event.log.timestamp).toLocaleTimeString();
           const duration = event.log.durationMs !== undefined ? ` [${event.log.durationMs}ms]` : '';
           markToolLinesStale();
-          write(
+          debugWrite(
             `${color(`⚙ [LOG ${time} | Turn ${event.log.turn} | ${event.log.stage}] ${sanitizeUntrustedOutput(event.log.message)}${duration}`, 90, isTTY)}\n`,
+          );
+        }
+      } else if (event.type === 'tool_progress') {
+        if (debug) {
+          debugWrite(
+            `⚙ ${sanitizeToolName(event.name)}: ${event.elapsedMs}ms, ${event.outputBytes} bytes\n`,
           );
         }
       } else if (event.type === 'thinking_delta') {

@@ -17,6 +17,7 @@ describe('ToolExecutor timeout', () => {
       defineTool({
         name: 'delayed_write',
         description: 'Commit a delayed write unless cancelled.',
+        metadata: { permissions: ['fs:write'] },
         parameters: { type: 'object', properties: {} },
         async execute(_input, ctx) {
           await new Promise<void>((resolve, reject) => {
@@ -42,6 +43,11 @@ describe('ToolExecutor timeout', () => {
       hooks: new HookRegistry(),
       rootDir: process.cwd(),
       toolTimeoutMs: 10,
+      approvalChannel: {
+        async requestApproval() {
+          return 'allow_once';
+        },
+      },
     });
 
     const resultPromise = executor.executeOne({
@@ -67,6 +73,7 @@ describe('ToolExecutor telemetry and hooks', () => {
       defineTool({
         name: 'echo',
         description: 'Echo input.',
+        metadata: { permissions: ['fs:read'] },
         parameters: { type: 'object', properties: {} },
         async execute() {
           return 'ok';
@@ -104,6 +111,7 @@ describe('ToolExecutor telemetry and hooks', () => {
       defineTool({
         name: 'echo',
         description: 'Echo input.',
+        metadata: { permissions: ['fs:read'] },
         parameters: { type: 'object', properties: {} },
         async execute(input) {
           return input;
@@ -174,6 +182,7 @@ describe('ToolExecutor telemetry and hooks', () => {
       defineTool({
         name: 'echo',
         description: 'Echo output.',
+        metadata: { permissions: ['fs:read'] },
         parameters: { type: 'object', properties: {} },
         async execute() {
           events.push('execute');

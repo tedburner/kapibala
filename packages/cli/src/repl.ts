@@ -1,6 +1,7 @@
 import readline from 'node:readline';
 import { AbortError, type AgentSession } from '@kiturone/kapibala';
 import type { CommandContext, CommandDispatcher } from './commands/dispatcher.js';
+import { type CliApprovalChannel, askWithReadline, confirmWithReadline } from './ui/approval.js';
 import { createEventRenderer } from './ui/events.js';
 import { readSecret } from './ui/secret.js';
 import { fitVisible } from './ui/width.js';
@@ -10,6 +11,7 @@ export interface REPLOptions {
   dispatcher: CommandDispatcher;
   context: CommandContext;
   debug?: boolean;
+  approvalChannel?: CliApprovalChannel;
 }
 
 export async function startREPL(options: REPLOptions): Promise<void> {
@@ -22,6 +24,8 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     input: process.stdin,
     output: process.stdout,
   });
+  options.approvalChannel?.bind((request, signal) => askWithReadline(rl, request, signal));
+  context.confirm = (prompt) => confirmWithReadline(rl, prompt);
 
   context.readSecret = async (prompt: string) => {
     const secret = await readSecret(prompt);
@@ -33,7 +37,9 @@ export async function startREPL(options: REPLOptions): Promise<void> {
 
   const updatePrompt = () => {
     const active = session.getActiveProfile();
-    rl.setPrompt(`\x1b[36mkpbl\x1b[0m \x1b[90m(${active.id})\x1b[0m \x1b[32m❯\x1b[0m `);
+    rl.setPrompt(
+      `\x1b[36mkpbl\x1b[0m \x1b[90m(${active.id} | ${session.getMode()})\x1b[0m \x1b[32m❯\x1b[0m `,
+    );
   };
 
   // 包装原始 onModelSwitched 回调，切换模型时即时刷新 prompt
@@ -111,7 +117,7 @@ export async function startREPL(options: REPLOptions): Promise<void> {
       [
         '',
         cyan(`╭${'─'.repeat(BOX_INNER)}╮`),
-        row('  🐾 \x1b[1m\x1b[37mKapibala (kpbl) v0.0.1\x1b[0m'),
+        row('  🐾 \x1b[1m\x1b[37mKapibala (kpbl) v0.0.2\x1b[0m'),
         row(`  活跃模型: \x1b[32m${active.name}\x1b[0m (${active.modelName})`),
         row(`  工作目录: \x1b[90m${cwd}\x1b[0m`),
         row(''),

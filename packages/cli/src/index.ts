@@ -4,16 +4,20 @@ import {
   JSONLMessageStore,
   type ModelProfile,
   OpenAICompatibleProvider,
-  builtinTools,
+  type SessionMode,
 } from '@kiturone/kapibala';
 import minimist from 'minimist';
 import { clearCommand } from './commands/clear.js';
 import { type CommandContext, CommandDispatcher } from './commands/dispatcher.js';
 import { helpCommand } from './commands/help.js';
+import { instructionsCommand } from './commands/instructions.js';
+import { logsCommand } from './commands/logs.js';
+import { modeCommand } from './commands/mode.js';
 import { modelCommand } from './commands/model.js';
 import { settingsCommand } from './commands/settings.js';
 import { statusCommand } from './commands/status.js';
 import { runOneShot } from './oneshot.js';
+import { detectProjectRoot } from './project-root.js';
 import { resolveProjectTrust } from './project-trust.js';
 import { startREPL } from './repl.js';
 import {
@@ -24,18 +28,29 @@ import {
   resolveApiKey,
   resolveBaseURL,
 } from './settings.js';
+import { registerBuiltinTools } from './tool-registration.js';
+import { CliApprovalChannel } from './ui/approval.js';
 import { runSetupWizard } from './wizard.js';
+
+/** 具名解释器或用户显式提供的解释器可执行文件全路径。 */
+function isValidShellPreference(value: string): boolean {
+  return (
+    ['auto', 'bash', 'wsl', 'pwsh', 'powershell'].includes(value) ||
+    /[\\/]/.test(value) ||
+    value.toLowerCase().endsWith('.exe')
+  );
+}
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = minimist(argv, {
-    string: ['model', 'base-url', 'api-key', 'prompt'],
-    boolean: ['help', 'version', 'debug'],
+    string: ['model', 'base-url', 'api-key', 'prompt', 'permission', 'shell'],
+    boolean: ['help', 'version', 'debug', 'disable-shell'],
     alias: { m: 'model', h: 'help', v: 'version', p: 'prompt' },
   });
 
   if (args.help) {
     console.log(`
-🐾 Kapibala (kpbl) v0.0.1 - Production-grade TypeScript AI Agent Harness
+🐾 Kapibala (kpbl) v0.0.2 - Production-grade TypeScript AI Agent Harness
 
 使用方式:
   kpbl [选项] [问题/指令]
@@ -51,6 +66,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   --base-url <url>       临时覆盖模型 API 端点
   --api-key <key>        临时指定 API 密钥
   --debug                输出调试日志与事件追踪
+  --permission <mode>    本次会话权限: approval|plan|auto|full-access
+  --shell <kind>         解释器: auto|bash|wsl|pwsh|powershell 或解释器全路径
+  --disable-shell        关闭默认命令工具
   -v, --version          查看当前版本
   -h, --help             查看帮助信息
 
@@ -61,7 +79,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   if (args.version) {
-    console.log('kpbl v0.0.1');
+    console.log('kpbl v0.0.2');
     process.exit(0);
   }
 
@@ -95,6 +113,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
   const { settings, sourcePath } = trustResult.loaded;
+  const modeNames: Record<string, SessionMode> = {
+    approval: 'Approval',
+    plan: 'Plan',
+    auto: 'Auto',
+    'full-access': 'FullAccess',
+  };
+  const requestedMode =
+    typeof args.permission === 'string' ? modeNames[args.permission.toLowerCase()] : undefined;
+  if (args.permission && !requestedMode)
+    throw new Error(`Unknown permission mode: ${args.permission}`);
+  const defaultMode =
+    settings.permissionMode === 'FullAccess' ? 'Approval' : (settings.permissionMode ?? 'Approval');
+  if (settings.permissionMode === 'FullAccess')
+    console.error('[kapibala] 用户配置不能默认启用 FullAccess，本次使用 Approval。');
+  const mode = requestedMode ?? defaultMode;
 
   // 命令行参数覆盖
   const targetModelId = args.model || settings.defaultModel;
@@ -138,18 +171,42 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // 会话历史记录持久化至工作区 .kapibala/history.jsonl
   const workspaceHistoryPath = path.join(process.cwd(), '.kapibala', 'history.jsonl');
   const store = new JSONLMessageStore(workspaceHistoryPath);
+  const approvalChannel = new CliApprovalChannel();
 
   const session = new AgentSession({
     defaultProfile: activeProfile,
     defaultProvider: currentProvider,
     store,
     rootDir: process.cwd(),
-    logger: args.debug ? (msg) => console.log(`\x1b[90m[DEBUG] ${msg}\x1b[0m`) : undefined,
+    projectRoot: detectProjectRoot(process.cwd()),
+    cwd: process.cwd(),
+    logger: args.debug ? (msg) => console.error(`[DEBUG] ${msg}`) : undefined,
+    onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
+    mode,
+    permissionRules: settings.permissionRules,
+    approvalChannel,
   });
 
-  // 注册内置工具
-  for (const tool of builtinTools) {
-    session.tools.register(tool);
+  // 注册内置工具。显式指定的解释器（具名或全路径）不可用时启动失败；
+  // auto 找不到可用解释器时仅禁用 run_command 并诊断，文件工具继续可用。
+  const preference = args.shell ?? settings.shell?.preference ?? 'auto';
+  if (!isValidShellPreference(preference)) throw new Error(`Unknown shell: ${preference}`);
+  const autoDegrade = preference === 'auto';
+  try {
+    registerBuiltinTools(session.tools, {
+      cwd: process.cwd(),
+      shell: preference,
+      disableShell: args['disable-shell'] || settings.shell?.enabled === false,
+    });
+  } catch (error: unknown) {
+    if (!autoDegrade) {
+      console.error(`[kapibala] 命令解释器不可用: ${(error as Error).message}`);
+      process.exitCode = 2;
+      return;
+    }
+    console.error(
+      `[kapibala] 未找到可用的命令解释器，本次会话已禁用 run_command: ${(error as Error).message}`,
+    );
   }
 
   // 优雅退出：必须先走 session.destroy()（插件 teardown + session:end 钩子）再退出进程，
@@ -168,6 +225,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   dispatcher.register('settings', settingsCommand);
   dispatcher.register('clear', clearCommand);
   dispatcher.register('status', statusCommand);
+  dispatcher.register('mode', modeCommand);
+  dispatcher.register('logs', logsCommand);
+  dispatcher.register('instructions', instructionsCommand);
   dispatcher.register('help', helpCommand);
   dispatcher.register('exit', () => gracefulExit());
   dispatcher.register('quit', () => gracefulExit());
@@ -209,6 +269,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       session,
       prompt: oneShotPrompt.trim(),
       debug: Boolean(args.debug),
+      approvalChannel,
     });
     if (exitCode !== 0) process.exitCode = exitCode;
     return;
@@ -220,5 +281,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     dispatcher,
     context: commandContext,
     debug: Boolean(args.debug),
+    approvalChannel,
   });
 }

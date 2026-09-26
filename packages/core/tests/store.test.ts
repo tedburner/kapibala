@@ -90,6 +90,8 @@ describe('JSONLMessageStore', () => {
       toolUseId: 'call_abc',
       content: 'Tool execution was interrupted or crashed in previous session',
       isError: true,
+      errorCode: 'OUTCOME_UNKNOWN',
+      retryPolicy: 'after_user_action',
     });
   });
 

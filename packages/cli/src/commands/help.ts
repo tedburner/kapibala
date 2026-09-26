@@ -10,6 +10,9 @@ export const helpCommand: CommandHandler = () => {
   console.log('  \x1b[33m/settings default <id>\x1b[0m   将指定模型设为全局默认');
   console.log('  \x1b[33m/clear\x1b[0m                   清空当前对话历史上下文');
   console.log('  \x1b[33m/status\x1b[0m                  查看 Token 消耗统计与工具状态');
+  console.log('  \x1b[33m/mode [mode]\x1b[0m             查看或切换 Approval/Plan/Auto/FullAccess');
+  console.log('  \x1b[33m/logs [count]\x1b[0m            查看最近的结构化运行日志');
+  console.log('  \x1b[33m/instructions\x1b[0m            查看本轮项目指令来源');
   console.log('  \x1b[33m/help\x1b[0m                    打印本命令帮助信息');
   console.log('  \x1b[33m/exit\x1b[0m 或 \x1b[33m/quit\x1b[0m           优雅退出当前终端');
   console.log(

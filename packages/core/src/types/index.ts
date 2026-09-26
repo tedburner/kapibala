@@ -28,6 +28,10 @@ export interface ToolResultBlock {
   isError?: boolean;
   /** 单次工具调用总耗时，包含 tool hooks 与实际执行。 */
   durationMs?: number;
+  /** 稳定错误类别；旧历史中的该字段可缺省。 */
+  errorCode?: string;
+  /** 不代表自动重试，只描述调用方应如何处理该错误。 */
+  retryPolicy?: 'never' | 'immediate' | 'backoff' | 'after_user_action';
 }
 
 export interface ThinkingBlock {
@@ -139,6 +143,7 @@ export type SessionEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; thinking: string }
   | { type: 'tool_start'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'tool_progress'; id: string; name: string; elapsedMs: number; outputBytes: number }
   | {
       type: 'tool_finish';
       id: string;

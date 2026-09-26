@@ -1,11 +1,21 @@
 import { AbortError, SessionBusyError } from '../errors/index.js';
 import { ToolExecutor } from '../executor/index.js';
 import { HookRegistry } from '../hooks/registry.js';
+import { type InstructionSnapshot, loadInstructions } from '../instructions/index.js';
+import { createDefaultLogSinks, recoverIncompleteAudit } from '../logging/file-sink.js';
+import { type EventLogger, StructuredLogger, createLogId } from '../logging/index.js';
 import { AgentLoop } from '../loop/index.js';
 import type { ModelProfile, ModelProvider, ModelRole } from '../models/index.js';
 import { SimpleModelRouter, resolveContextWindow } from '../models/router.js';
 import type { AgentPlugin } from '../plugin/index.js';
 import { PromptAssembler } from '../prompt/index.js';
+import { type ApprovalChannel, SessionApprovalCache } from '../security/approval.js';
+import {
+  type PermissionRule,
+  type SessionMode,
+  validatePermissionRules,
+  visibleTools,
+} from '../security/permissions.js';
 import type { MessageStore } from '../store/index.js';
 import { ToolRegistry } from '../tools/registry.js';
 import type {
@@ -25,6 +35,17 @@ export interface SessionConfig {
   systemPrompt?: string;
   maxSteps?: number;
   logger?: (msg: string) => void;
+  eventLogger?: EventLogger;
+  loggingDirectory?: string;
+  mode?: SessionMode;
+  permissionRules?: readonly PermissionRule[];
+  approvalChannel?: ApprovalChannel;
+  projectRoot?: string;
+  cwd?: string;
+  userInstructionsPath?: string;
+  auditRecoveryDirectory?: string;
+  /** 接收普通运行日志失败的脱敏诊断；诊断失败也不得中断问答或替代审计。 */
+  onDiagnostic?: (message: string) => void;
 }
 
 export interface SessionStats {
@@ -46,6 +67,17 @@ export class AgentSession {
   private readonly customSystemPrompt?: string;
   private readonly maxSteps: number;
   private readonly logger?: (msg: string) => void;
+  private readonly eventLogger: EventLogger;
+  private readonly sessionId = createLogId();
+  private mode: SessionMode;
+  private readonly permissionRules: readonly PermissionRule[];
+  private readonly approvalChannel?: ApprovalChannel;
+  private readonly approvalCache = new SessionApprovalCache();
+  private readonly projectRoot: string;
+  private readonly cwd: string;
+  private readonly userInstructionsPath?: string;
+  private instructionSnapshot?: InstructionSnapshot;
+  private readonly auditRecoveryDirectory?: string;
 
   private history: CanonicalMessage[] = [];
   private totalTurns = 0;
@@ -67,14 +99,52 @@ export class AgentSession {
     this.customSystemPrompt = config.systemPrompt;
     this.maxSteps = config.maxSteps ?? 20;
     this.logger = config.logger;
+    validatePermissionRules(config.permissionRules ?? []);
+    this.mode = config.mode ?? 'Approval';
+    this.permissionRules = config.permissionRules ?? [];
+    this.approvalChannel = config.approvalChannel;
+    this.projectRoot = config.projectRoot ?? this.rootDir;
+    this.cwd = config.cwd ?? this.rootDir;
+    this.userInstructionsPath = config.userInstructionsPath;
+    const sinks = config.eventLogger ? undefined : createDefaultLogSinks(config.loggingDirectory);
+    this.eventLogger =
+      config.eventLogger ??
+      new StructuredLogger({
+        operationSink: sinks!.operationSink,
+        auditSink: sinks!.auditSink,
+        debug: config.logger !== undefined,
+        onDiagnostic: config.onDiagnostic ?? config.logger,
+      });
+    this.auditRecoveryDirectory = config.auditRecoveryDirectory ?? sinks?.auditSink.directory;
   }
 
   async init(): Promise<void> {
     if (this.initialized) return;
+    if (this.auditRecoveryDirectory) {
+      const count = await recoverIncompleteAudit(this.auditRecoveryDirectory);
+      if (count > 0)
+        await this.eventLogger.record({
+          level: 'warn',
+          event: 'audit.recovered_unknown',
+          sessionId: this.sessionId,
+          fields: { count },
+        });
+    }
+    this.instructionSnapshot = loadInstructions({
+      projectRoot: this.projectRoot,
+      cwd: this.cwd,
+      userFile: this.userInstructionsPath,
+    });
     if (this.store) {
       this.history = await this.store.load();
     }
     await this.hooks.emit('session:start', { logger: this.logger });
+    await this.eventLogger.record({
+      level: 'info',
+      event: 'session.started',
+      sessionId: this.sessionId,
+      fields: { modelId: this.router.getProfile('default').id },
+    });
     this.initialized = true;
   }
 
@@ -105,6 +175,21 @@ export class AgentSession {
 
   getActiveProfile(role: ModelRole = 'default'): ModelProfile {
     return this.router.getProfile(role);
+  }
+
+  /** 只在空闲时切换本次会话模式；宿主负责 FullAccess 的显式选择交互。 */
+  switchMode(mode: SessionMode): void {
+    this.assertIdle('switch permission mode');
+    this.mode = mode;
+  }
+
+  getMode(): SessionMode {
+    return this.mode;
+  }
+
+  /** 返回最近一次成功装载的来源路径，不暴露指令正文。 */
+  getInstructionSources(): string[] {
+    return this.instructionSnapshot?.sources.map((source) => source.path) ?? [];
   }
 
   getHistory(): CanonicalMessage[] {
@@ -159,6 +244,7 @@ export class AgentSession {
     this.assertIdle('start another run');
     resolveContextWindow(this.router.getProfile('default').contextWindow);
     this.activeRun = true;
+    const runId = createLogId();
     const runStartTime = Date.now();
     const aggregate = {
       modelDurationMs: 0,
@@ -191,6 +277,30 @@ export class AgentSession {
         await this.init();
       }
 
+      await this.eventLogger.record({
+        level: 'info',
+        event: 'run.started',
+        sessionId: this.sessionId,
+        runId,
+      });
+
+      try {
+        this.instructionSnapshot = loadInstructions({
+          projectRoot: this.projectRoot,
+          cwd: this.cwd,
+          userFile: this.userInstructionsPath,
+        });
+      } catch (error: unknown) {
+        await this.eventLogger.record({
+          level: 'warn',
+          event: 'instructions.refresh_failed',
+          sessionId: this.sessionId,
+          runId,
+          fields: { status: 'retained_previous_snapshot' },
+        });
+        if (!this.instructionSnapshot) throw error;
+      }
+
       this.totalTurns++;
 
       // 1. 组装并记录 User 消息
@@ -210,6 +320,8 @@ export class AgentSession {
         tools: this.tools,
         rootDir: this.rootDir,
         customInstructions: this.customSystemPrompt,
+        instructionSources: this.instructionSnapshot.sources,
+        visibleTools: visibleTools(this.tools.list(), this.mode, this.permissionRules),
       });
       const assembledSystemPrompt = promptAssembler.assemble();
 
@@ -220,6 +332,13 @@ export class AgentSession {
         rootDir: this.rootDir,
         signal: options?.signal,
         logger: this.logger,
+        eventLogger: this.eventLogger,
+        sessionId: this.sessionId,
+        runId,
+        mode: () => this.mode,
+        permissionRules: this.permissionRules,
+        approvalChannel: this.approvalChannel,
+        approvalCache: this.approvalCache,
       });
 
       const loop = new AgentLoop({
@@ -230,6 +349,11 @@ export class AgentSession {
         systemPrompt: assembledSystemPrompt,
         maxSteps: this.maxSteps,
         signal: options?.signal,
+        eventLogger: this.eventLogger,
+        sessionId: this.sessionId,
+        runId,
+        getMode: () => this.mode,
+        permissionRules: this.permissionRules,
       });
 
       // 4. 执行循环并落盘。含 tool_use 的完成事件先缓冲，直到 tool_result 已进入历史并落盘，
@@ -240,11 +364,25 @@ export class AgentSession {
       let pendingAssistantPersisted = false;
       let pendingPersistenceStarted = false;
       let pendingToolMessages: CanonicalMessage[] = [];
+      let persistedHistoryLength = this.history.length;
+      let loopCompleted = false;
+      let loopFailed = false;
 
       try {
         for await (const event of loop.run(this.history)) {
           if (event.type === 'step_log') {
             this.logger?.(`[Turn ${event.log.turn} | ${event.log.stage}] ${event.log.message}`);
+            await this.eventLogger.record({
+              level: 'debug',
+              event: 'diagnostic.step',
+              sessionId: this.sessionId,
+              runId,
+              fields: {
+                phase: event.log.stage,
+                durationMs: event.log.durationMs ?? 0,
+                attempt: event.log.turn,
+              },
+            });
           }
           if (event.type === 'turn_finish') {
             this.lastMetrics = event.metrics;
@@ -285,6 +423,7 @@ export class AgentSession {
             await this.persistAssistant(pendingAssistant);
             pendingAssistantPersisted = true;
             await this.persistToolMessages(event.messages);
+            persistedHistoryLength = this.history.length;
 
             const releasable = pendingEvents;
             pendingAssistant = undefined;
@@ -298,9 +437,14 @@ export class AgentSession {
           } else if (event.type === 'tool_messages') {
             await this.persistToolMessages(event.messages);
           }
+          if (event.type === 'message_stop' || event.type === 'tool_messages') {
+            persistedHistoryLength = this.history.length;
+          }
           yield event;
         }
+        loopCompleted = true;
       } catch (error: unknown) {
+        loopFailed = true;
         if (pendingAssistant && !pendingPersistenceStarted) {
           const interruptedMessages = pendingClosedInMemory
             ? pendingToolMessages
@@ -314,10 +458,25 @@ export class AgentSession {
           yield { type: 'tool_messages', messages: interruptedMessages };
         }
         throw error;
+      } finally {
+        // 早退时 Loop 的 finally 已等待工具并闭合历史，但不会再发出落盘事件。
+        // 仅追加正常落盘游标之后的消息，避免重复已完成的事务或重试失败的写入。
+        if (!loopCompleted && !loopFailed && this.store) {
+          for (const message of this.history.slice(persistedHistoryLength)) {
+            await this.store.append(message);
+          }
+        }
       }
       const metrics = finalizeRun(runStatus);
       this.lastRunMetrics = metrics;
       runFinalized = true;
+      await this.eventLogger.record({
+        level: 'info',
+        event: 'run.finished',
+        sessionId: this.sessionId,
+        runId,
+        fields: { status: metrics.status, durationMs: metrics.totalDurationMs },
+      });
       yield { type: 'run_finish', metrics };
     } catch (error: unknown) {
       const status: RunMetrics['status'] =
@@ -325,6 +484,13 @@ export class AgentSession {
       const metrics = finalizeRun(status);
       this.lastRunMetrics = metrics;
       runFinalized = true;
+      await this.eventLogger.record({
+        level: 'error',
+        event: 'run.finished',
+        sessionId: this.sessionId,
+        runId,
+        fields: { status: metrics.status, durationMs: metrics.totalDurationMs },
+      });
       yield { type: 'run_finish', metrics };
       throw error;
     } finally {
@@ -344,8 +510,8 @@ export class AgentSession {
     for (const plugin of this.plugins) {
       try {
         await plugin.teardown?.();
-      } catch (err: unknown) {
-        this.logger?.(`Plugin '${plugin.name}' teardown failed: ${(err as Error).message}`);
+      } catch {
+        this.logger?.('Plugin teardown failed');
       }
     }
     this.plugins.length = 0;
@@ -398,8 +564,14 @@ export class AgentSession {
         .map((toolUse) => ({
           type: 'tool_result' as const,
           toolUseId: toolUse.id,
-          content: `Tool execution interrupted before completion: ${error instanceof Error ? error.message : String(error)}`,
+          content: JSON.stringify({
+            code: 'OUTCOME_UNKNOWN',
+            retryPolicy: 'after_user_action',
+            message: 'Tool execution was interrupted; outcome is unknown',
+          }),
           isError: true,
+          errorCode: 'OUTCOME_UNKNOWN',
+          retryPolicy: 'after_user_action' as const,
         })),
       timestamp: Date.now(),
     };

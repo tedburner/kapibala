@@ -4,7 +4,8 @@ import { ToolExecutor } from '../src/executor/index.js';
 import { HookRegistry } from '../src/hooks/registry.js';
 import { AgentLoop } from '../src/loop/index.js';
 import type { ModelProvider } from '../src/models/index.js';
-import type { ToolRegistry } from '../src/tools/registry.js';
+import { defineTool } from '../src/tools/index.js';
+import { ToolRegistry } from '../src/tools/registry.js';
 import type { CanonicalMessage, SessionEvent } from '../src/types/index.js';
 import {
   ScriptedProvider,
@@ -60,6 +61,37 @@ function toolMessagesEvents(events: SessionEvent[]) {
 }
 
 describe('AgentLoop 工具结果回填与历史合法性', () => {
+  it('streams bounded tool progress before the final tool result', async () => {
+    const provider = new ScriptedProvider([
+      [
+        { type: 'tool_call_finish', id: 'call_progress', name: 'progress', input: {} },
+        { type: 'message_stop' },
+      ],
+      [{ type: 'message_stop' }],
+    ]);
+    const tools = new ToolRegistry();
+    tools.register(
+      defineTool({
+        name: 'progress',
+        description: 'Progress',
+        parameters: {},
+        metadata: { permissions: ['fs:read'] },
+        async execute(_input, ctx) {
+          ctx.onProgress?.({ elapsedMs: 500, outputBytes: 12 });
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return 'done';
+        },
+      }),
+    );
+    const history: CanonicalMessage[] = [makeUserMessage('progress')];
+    const { loop } = buildLoop({ provider, history, tools });
+    const events = await collect(loop.run(history));
+    const progressIndex = events.findIndex((event) => event.type === 'tool_progress');
+    const finishIndex = events.findIndex((event) => event.type === 'tool_finish');
+    expect(progressIndex).toBeGreaterThan(0);
+    expect(progressIndex).toBeLessThan(finishIndex);
+    expect(events[progressIndex]).toMatchObject({ type: 'tool_progress', outputBytes: 12 });
+  });
   it('把工具结果回填进历史，并对外派发 tool_messages 供落盘', async () => {
     const provider = new ScriptedProvider([
       [

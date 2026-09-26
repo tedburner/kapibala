@@ -1,3 +1,4 @@
+import { createDefaultLogSinks } from '@kiturone/kapibala';
 import { formatContextUsage } from '../ui/metrics.js';
 import type { CommandHandler } from './dispatcher.js';
 
@@ -7,6 +8,11 @@ export const statusCommand: CommandHandler = (_args, ctx) => {
   console.log(`活跃模型: \x1b[32m${stats.activeModel}\x1b[0m`);
   console.log(`交互轮次: ${stats.totalTurns}`);
   console.log(`已加载工具数: ${stats.loadedToolsCount}`);
+  console.log(`权限模式: ${ctx.session.getMode()}`);
+  console.log(`命令环境: ${ctx.session.tools.get('run_command')?.description ?? '已关闭或不可用'}`);
+  const sinks = createDefaultLogSinks();
+  console.log(`运行日志: ${sinks.operationSink.directory}`);
+  console.log(`审批审计: ${sinks.auditSink.directory} (${sinks.auditSink.getUsageBytes()} bytes)`);
   console.log('Token 消耗统计:');
   console.log(`  - 提示词 (Prompt):     ${stats.totalTokens.promptTokens}`);
   console.log(`  - 输出生成 (Completion): ${stats.totalTokens.completionTokens}`);

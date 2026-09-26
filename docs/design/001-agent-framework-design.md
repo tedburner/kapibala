@@ -577,10 +577,10 @@ export interface UserSettings {
 
 ```ts
 interface PermissionRule {
-  // 匹配维度:工具名(支持 mcp__fs__* 通配) 或 能力(capability)
+  // 早期蓝图；v0.0.2 实际实现不接受通配工具名
   tool?: string
   capability?: Capability
-  pattern?: string              // 针对入参的匹配,如 bash 的 command 前缀
+  pattern?: string              // 早期蓝图；v0.0.2 不接受命令前缀匹配
   decision: 'allow' | 'deny' | 'ask'
 }
 
@@ -591,7 +591,7 @@ type Capability =
 
 - **优先用 capability 而非 tool 名**:工具可以被动态注册(MCP 会引入大量未知工具),而 capability 是稳定小集合。用 capability 写规则,新接入的 MCP 工具自动被既有策略覆盖,无需为它单独补规则。
 - 工具通过 `metadata.permissions` 声明其所需 capability(见 §3.4);未声明的工具自 v0.0.2 起一律走确认门。
-- **v0.0.1 的 `metadata.permissions` 只是声明,尚未参与授权**。内置文件工具在各自 `execute` 内调用 PathSandbox;ToolExecutor 不读取 capability。v0.0.2 必须先交付统一执行前权限决策,用内置工具的声明做第一批端到端测试,再接入 opt-in Bash。插件代码已在宿主进程运行,工具调用审批不能替代对不可信插件的宿主隔离。
+- **v0.0.1 的 `metadata.permissions` 只是声明,尚未参与授权**。内置文件工具在各自 `execute` 内调用 PathSandbox;ToolExecutor 不读取 capability。v0.0.2 的统一执行前权限决策和审计门覆盖全部工具，CLI 默认注册跨平台 `run_command`；插件代码已在宿主进程运行,工具调用审批不能替代对不可信插件的宿主隔离。
 
 ### 6.3 求值顺序(deny 绝对优先)
 
@@ -621,11 +621,11 @@ type Capability =
 
 ### 6.5 v0.0.1 的具体约束
 
-1. **v0.0.1 不实现、不注册 bash 工具**。v0.0.2 权限决策与审批就绪后,才允许以 opt-in 方式注册,并声明 `dangerous: true`。
+1. **v0.0.1 不实现、不注册 bash 工具**。v0.0.2 完成权限与审计门后默认注册 `run_command`，在 Windows 仅凭 `PATH` 与运行时探针自动选择 Bash（native Bash → WSL 兜底）或回退 PowerShell，不写死安装路径；可由用户显式关闭。
 2. **文件系统沙箱**(`security/sandbox.ts`):路径解析(含 `..` 归一化、符号链接解析)后必须落在允许的 root 内,越界直接 `ToolError`。
 3. **权限决策缓存属 v0.0.2 规划**:`once`(本次允许)/ `always`(会话内记住)/ `never`(会话内拒绝),v0.0.1 尚无审批入口。
 4. **v0.0.1 内置工具无网络能力**;第三方插件代码仍拥有宿主进程权限。`net` 声明在 v0.0.2 权限决策接入前不构成网络隔离。
-5. **未挂载权限插件时的语义是 fail-open**(工具直接执行)。这在 v0.0.1 是可接受的——默认工具集不含 bash、全部受路径沙箱约束,危险面已经由上面第 1 条的 bash opt-in 策略压到最小。**v0.0.2 引入权限插件后应改为 fail-closed**:未声明 `permissions` 的工具一律走确认门。此项需在 v0.0.2 明确,避免默认放行的语义被后继版本继承。
+5. **v0.0.1 未挂载权限插件时的语义是 fail-open**(工具直接执行)；该版本默认工具集不含命令工具,文件工具受路径沙箱约束。**v0.0.2 的 ToolExecutor 固定调用权限门**：未声明 `permissions` 的工具一律走确认门，`Plan` 直接拒绝；宿主未提供审批通道时拒绝需要人工批准的操作。
 6. **v0.0.1 不实现权限规则引擎**(§6.2–6.4 的求值、分层合并、信任策略均属 v0.0.2)。当前防线是**不注册 bash + 内置文件工具逐项调用 PathSandbox**;`ToolMetadata` 声明和 `tool:before` 挂载点仅为后续权限决策预留契约,不能据此声称第三方工具已受沙箱保护。
 
 ### 6.6 v0.0.2 四态 SessionMode
@@ -641,6 +641,10 @@ type Capability =
 
 - `FullAccess` 不是“关闭所有安全边界”;若未来提供突破工作区或宿主隔离的能力,必须使用独立且更醒目的显式开关,不能复用此模式名称。
 - `ApprovalChannel` 是注入接口;TTY CLI 负责交互,非交互环境对需要询问的操作默认拒绝。
+
+> **v0.0.2 实现基线**：上文 §6.1–6.4 保留早期蓝图，具体规则和执行顺序以 [v0.0.2 可信执行设计](../../openspec/changes/v0-0-2-trusted-execution/design.md) 为准。授权门在 `tool:before` 可改写 Hook 之后对最终参数裁决；`deny`、显式 `ask`、会话缓存、可信 `allow`、模式默认值依次求值。当前 CLI 只接受用户级可执行规则，项目设置中的权限和命令执行字段直接拒绝，避免项目配置扩大权限。`run_command` 不支持命令前缀或通配符规则，完整命令规则必须绑定解释器和工作目录。`FullAccess` 仅能本次显式选择，不覆盖 `deny/ask`、PathSandbox 或宿主限制。命令进程以当前用户权限运行，不受文件工具 PathSandbox 约束。
+
+> v0.0.2 默认将脱敏运行事件写入用户级 `~/.kapibala/logs/`，逐工具的请求、决定、启动和结果写入 `~/.kapibala/audit/`；可由操作 ID 和工具调用 ID 关联。审计区分人工确认与模式、规则、缓存的自动决定。`--debug` 仅增加脱敏开发诊断，不能关闭或替代常规日志。完整命令与工具结果可能存在于会话历史，命令大输出在工作区 `.kapibala/tool-results/`；本地日志不提供防篡改隔离。
 - 审批拒绝、超时和取消都转为合法的 `is_error` 工具结果,不得破坏 assistant `tool_use` → `tool_result` 闭合不变量。
 - 项目配置与项目指令只能收紧规则;放宽权限必须来自已信任的用户级配置或本次人工批准。
 
@@ -746,10 +750,10 @@ kapibala/
 | `grep` | `fs:read` | — | 同上 | 同上 |
 | `write_file` | `fs:write` | — | 写沙箱:root 内 + 拒绝越界与 symlink 逃逸 | 按 `fs:write` 规则;可对特定路径配 pattern |
 | `edit_file` | `fs:write` | — | 同上(唯一目标精确替换) | 同上 |
-| `bash` | `exec` + `net:*`(不可判定) | ✅ | **v0.0.1 不实现、不注册** | v0.0.2 在 SessionMode、`exec` 规则、command 前缀 pattern 与确认门就绪后以 opt-in 方式接入 |
+| `run_command` | `exec` + 文件/环境/网络保守声明 | ✅ | **v0.0.1 不实现、不注册** | v0.0.2 权限与审计门验收后默认注册，Bash/PowerShell 自动选择；每条命令单独裁决，不支持前缀 pattern |
 | ~~`repl`~~(代码执行) | `exec` | ✅ | **v0.0.1 不做**——危险面等同 bash,但实现成本高(持久进程、状态、回收),验证场景用不到;`bash` 已能覆盖"跑一段代码"的需求 | 随 exec 能力一起在 v0.0.2+ 评估 |
 
-- v0.0.2 设计意图:**能力阶梯决定默认策略**——只读与写入由权限策略决策,执行类工具一律 opt-in;v0.0.1 的 capability 标注尚不触发策略。模型拿到的能力集越小,行为越可预测,提示词 L2 层也越干净。
+- v0.0.2 设计意图:**能力阶梯决定默认策略**——只读与写入由权限策略决策,命令工具默认可用但每次执行仍须裁决；v0.0.1 的 capability 标注尚不触发策略。模型拿到的能力集由模式和整项拒绝规则过滤。
 - `list_files` 从工具集移除:`glob` 可完全覆盖其场景,少一个工具就少一份 L2 提示词成本。
 
 2. **packages/cli**:
@@ -811,7 +815,7 @@ kapibala/
 | 版本 | 内容 | 依赖的扩展点 | 交付形态 |
 |---|---|---|---|
 | **v0.0.1** | 核心骨架 + OpenAI 兼容全套 + 交互 CLI + 既有能力收尾增强 | Plugin / Hook / Registry / Executor;指标、工具展示、每轮底栏当前 Git 分支、配置、脚本、沙箱与 Headless Core 架构门禁 | 当前版本 |
-| **v0.0.2** | 可信执行与项目指令:先验收四态 SessionMode、执行前权限决策与 ApprovalChannel,再交付结构化工具错误、审批缓存、多层 AGENTS.md;权限端到端测试通过后才接入 opt-in Bash | `tool:before` / `tool:after` + L4 提示词层 + 项目信任 | core + CLI 增量 |
+| **v0.0.2** | 可信执行与项目指令:默认结构化日志和逐工具审计、四态 SessionMode、执行前权限决策与 ApprovalChannel、结构化工具错误、审批缓存、多层 AGENTS.md、默认注册的跨平台 `run_command` | ToolExecutor 最终授权门 + L4 提示词层 + 项目信任 | core + CLI 增量 |
 | **v0.0.3** | 消息生命周期与上下文管理:先规范失败轮次、连续同角色消息及完整工具事务,再交付状态层、上下文预算、滚动压缩与摘要检查点 | `model:before` 改写历史 + MessageStore 扩展 + Summary 路由回退 | core 内增量 |
 | **v0.0.4** | Anthropic 原生 Provider 消费 v0.0.3 的合法消息序列 + 场景模型路由运行时落地 | Provider 适配 + ModelRouter;小模型意图分类为可选策略 | core + CLI 增量 |
 | **v0.0.5** | skill 机制:SkillRegistry、渐进式披露、`load_skill`、来源与权限约束;向宿主暴露可搜索的 Skill 名称、描述、来源、参数提示和用户可调用性元数据,CLI 展示当前加载/调用的 Skill 名称 | `skills/` + L2.5 层 + `model:before` | core 内增量 |
