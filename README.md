@@ -72,6 +72,8 @@ npm install @kiturone/kapibala
 
 包页面：[CLI](https://www.npmjs.com/package/@kiturone/kapibala-cli) · [Core SDK](https://www.npmjs.com/package/@kiturone/kapibala)。
 
+后续版本支持推送标签后由 GitHub Actions 自动校验、打包、发布 npm 并创建 GitHub Release；首次配置与失败重试见 [自动发布说明](docs/releases/publishing.md)。
+
 ### 克隆仓库本地调试
 
 如果你刚刚克隆了本项目，**一条命令**即可完成依赖安装、编译、全量校验并直接进入交互会话（运行的是当前源码，适合修改和调试）：

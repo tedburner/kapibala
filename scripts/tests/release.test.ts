@@ -1,0 +1,119 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createReleaseNotes,
+  planPublication,
+  readRegistry,
+  validateNpmVersion,
+  validateRelease,
+} from '../release.js';
+
+const manifests = [
+  { name: 'kapibala-monorepo', version: '0.0.4' },
+  { name: '@kiturone/kapibala', version: '0.0.4' },
+  {
+    name: '@kiturone/kapibala-cli',
+    version: '0.0.4',
+    dependencies: { '@kiturone/kapibala': 'workspace:*' },
+  },
+];
+const expected = { name: '@kiturone/kapibala', version: '0.0.4', integrity: 'sha512-test' };
+const existing = {
+  name: expected.name,
+  version: expected.version,
+  dist: { integrity: expected.integrity },
+};
+
+describe('release validation', () => {
+  it('requires an npm version with trusted-publishing support', () => {
+    for (const version of ['11.5.1', '11.15.0', '12.0.2']) {
+      expect(() => validateNpmVersion(version)).not.toThrow();
+    }
+    for (const version of ['10.9.0', '11.4.9', '11.5.0', 'unknown']) {
+      expect(() => validateNpmVersion(version)).toThrow(/npm/i);
+    }
+  });
+  it('requires one version across the tag, manifests and CLI display', () => {
+    expect(validateRelease('v0.0.4', manifests, '0.0.4')).toBe('0.0.4');
+    expect(() => validateRelease('v0.0.5', manifests, '0.0.4')).toThrow(/version/i);
+    expect(() => validateRelease('v0.0.4', manifests, '0.0.3')).toThrow(/version/i);
+    expect(() =>
+      validateRelease(
+        'v0.0.4',
+        [manifests[0], { ...manifests[1], version: '0.0.3' }, manifests[2]],
+        '0.0.4',
+      ),
+    ).toThrow(/version/i);
+  });
+
+  it('rejects malformed, prerelease and non-decimal-position tags', () => {
+    for (const tag of [
+      'main',
+      'v0.0.10',
+      'v0.10.0',
+      'v0.0.4-beta.1',
+      'v00.0.4',
+      'v0.0.4\ninjected',
+    ]) {
+      expect(() => validateRelease(tag, manifests, '0.0.4')).toThrow(/tag/i);
+    }
+  });
+
+  it('prepares a new publication and skips only an identical existing version', () => {
+    expect(planPublication(expected, { 'dist-tags': { latest: '0.0.3' }, versions: {} })).toBe(
+      'publish',
+    );
+    expect(
+      planPublication(expected, {
+        'dist-tags': { latest: '0.0.4' },
+        versions: { '0.0.4': existing },
+      }),
+    ).toBe('skip');
+    expect(() =>
+      planPublication(expected, {
+        'dist-tags': { latest: '0.0.4' },
+        versions: { '0.0.4': { ...existing, dist: { integrity: 'different' } } },
+      }),
+    ).toThrow(/integrity/i);
+  });
+
+  it('refuses to downgrade latest or silently repair an inconsistent existing tag', () => {
+    expect(() =>
+      planPublication(expected, { 'dist-tags': { latest: '0.0.5' }, versions: {} }),
+    ).toThrow(/newer/i);
+    expect(() =>
+      planPublication(expected, {
+        'dist-tags': { latest: '0.0.3' },
+        versions: { '0.0.4': existing },
+      }),
+    ).toThrow(/latest/i);
+  });
+
+  it('converts release-note relative links to the pinned source tag', () => {
+    expect(
+      createReleaseNotes(
+        '[Migration](../migration/v0.0.4.md) [Web](https://example.com)',
+        'v0.0.4',
+      ),
+    ).toBe(
+      '[Migration](https://github.com/tedburner/kapibala/blob/v0.0.4/docs/migration/v0.0.4.md) [Web](https://example.com)',
+    );
+  });
+});
+
+describe('public registry lookup', () => {
+  it('treats only HTTP 404 as an absent package', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('', { status: 404 }));
+    expect(await readRegistry(expected.name, fetcher)).toEqual({ versions: {} });
+    fetcher.mockResolvedValue(new Response('unavailable', { status: 503 }));
+    await expect(readRegistry(expected.name, fetcher)).rejects.toThrow(/503/);
+  });
+
+  it('rejects malformed metadata and propagates transport failures before publishing', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ error: 'bad metadata' })));
+    await expect(readRegistry(expected.name, fetcher)).rejects.toThrow(/metadata/i);
+    fetcher.mockRejectedValue(new Error('connection reset'));
+    await expect(readRegistry(expected.name, fetcher)).rejects.toThrow(/connection reset/);
+  });
+});

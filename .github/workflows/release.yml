@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag to publish or retry (for example v0.0.4)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kapibala-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Validate release source and version
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release.ts check "$RELEASE_TAG"
+          sha="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          test "$sha" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$sha" origin/main
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: prepare
+    uses: ./.github/workflows/verify.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+
+  publish:
+    needs: [prepare, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          install: false
+          cache: false
+      - name: Install from lockfile and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Validate source and pack
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
+          node scripts/release.ts check "$RELEASE_TAG"
+          release_dir="$RUNNER_TEMP/kapibala-release"
+          echo "RELEASE_DIR=$release_dir" >> "$GITHUB_ENV"
+          mkdir -p "$release_dir"
+          pnpm -C packages/core pack --pack-destination "$release_dir"
+          pnpm -C packages/cli pack --pack-destination "$release_dir"
+      - name: Publish Core then CLI using npm trusted publishing
+        run: node scripts/release.ts publish "$RELEASE_TAG" "$RELEASE_DIR"
+      - name: Verify installation from the public registry
+        run: |
+          set -euo pipefail
+          smoke="$RUNNER_TEMP/kapibala-registry-smoke"
+          npm install --prefix "$smoke" --ignore-scripts --no-audit --no-fund --package-lock=false \
+            --registry=https://registry.npmjs.org \
+            "@kiturone/kapibala@$RELEASE_VERSION" "@kiturone/kapibala-cli@$RELEASE_VERSION"
+          test "$(node "$smoke/node_modules/@kiturone/kapibala-cli/dist/bin.js" --version)" = "kpbl v$RELEASE_VERSION"
+          node "$smoke/node_modules/@kiturone/kapibala-cli/dist/bin.js" --help
+          cd "$smoke"
+          node --input-type=module -e 'import assert from "node:assert/strict"; import * as sdk from "@kiturone/kapibala"; assert.equal(typeof sdk.AgentSession, "function"); assert.equal(typeof sdk.SessionManager, "function")'
+          node -e 'const assert = require("node:assert/strict"); assert.equal(typeof require("@kiturone/kapibala").AgentSession, "function")'
+      - name: Create GitHub Release and upload verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node scripts/release.ts notes "$RELEASE_TAG" "$RELEASE_DIR/release-notes.md"
+          assets=("$RELEASE_DIR/kiturone-kapibala-$RELEASE_VERSION.tgz" "$RELEASE_DIR/kiturone-kapibala-cli-$RELEASE_VERSION.tgz" "$RELEASE_DIR/SHA256SUMS.txt")
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "Kapibala $RELEASE_TAG" --notes-file "$RELEASE_DIR/release-notes.md" --latest
+          fi
+      - name: Preserve packages and checksums for inspection
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kapibala-${{ needs.prepare.outputs.tag }}
+          path: ${{ runner.temp }}/kapibala-release/
+          if-no-files-found: ignore

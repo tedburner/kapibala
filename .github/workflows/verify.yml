@@ -3,6 +3,15 @@ name: Verify
 on:
   push:
   pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact source commit to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   cross-platform:
@@ -13,7 +22,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/setup@v2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: pnpm/setup@v3
         with:
           version: 12.4.1
           runtime: node@24
