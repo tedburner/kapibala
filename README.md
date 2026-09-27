@@ -54,7 +54,7 @@
 
 ## 🚀 极速测试与启动 (One-Minute Quickstart)
 
-需要 Node.js 20 或更高版本。**当前工作区为 v0.0.3，尚未执行本版发布**；本 README 的历史会话与压缩说明对应当前源码。npm 安装获得 registry 当前提供的版本，可能不含这些能力；运行本地 v0.0.3 请使用 `pnpm dev`。
+需要 Node.js 20 或更高版本。**v0.0.3 已发布**，本 README 的历史会话与压缩说明对应本版。发布内容见 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/v0.0.3)；调试当前源码请使用 `pnpm dev`。
 
 ### 从 npm 安装使用
 
