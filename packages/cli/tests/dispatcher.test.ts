@@ -1,9 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearCommand } from '../src/commands/clear.js';
 import { type CommandContext, CommandDispatcher } from '../src/commands/dispatcher.js';
 import { modelCommand } from '../src/commands/model.js';
 
 describe('CommandDispatcher', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   const dispatcher = new CommandDispatcher();
   dispatcher.register('clear', clearCommand);
   dispatcher.register('model', modelCommand);
@@ -59,6 +66,7 @@ describe('CommandDispatcher', () => {
     const handled = await dispatcher.dispatch('/clear', ctx);
     expect(handled).toBe(true);
     expect(mockSession.reset).toHaveBeenCalledTimes(1);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('会话上下文已清空'));
   });
 
   it('should switch model when /model <id> is supplied', async () => {
@@ -68,12 +76,18 @@ describe('CommandDispatcher', () => {
     const handled = await dispatcher.dispatch('/model mock-2', ctx);
     expect(handled).toBe(true);
     expect(onModelSwitched).toHaveBeenCalledWith('mock-2');
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('已切换至模型: DeepSeek V4 Pro'),
+    );
   });
 
   it('should handle unknown slash commands gracefully', async () => {
     const ctx = createCtx();
     const handled = await dispatcher.dispatch('/unknown-cmd', ctx);
     expect(handled).toBe(true);
+    expect(console.log).toHaveBeenCalledExactlyOnceWith(
+      '未知命令: /unknown-cmd。输入 /help 查看支持的命令。',
+    );
   });
 
   // 裸 exit / quit 必须被识别：若落到模型会把「想退出」变成一次真实的 API 调用。

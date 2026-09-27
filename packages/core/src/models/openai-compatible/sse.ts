@@ -2,7 +2,11 @@
  * Lightweight Server-Sent Events (SSE) stream parser for Node.js fetch
  */
 
-export async function* parseSSEStream(stream: ReadableStream<Uint8Array>): AsyncIterable<string> {
+/** 逐行解析 SSE；报告明确 DONE，提前退出时取消并等待 reader 清理再释放锁。 */
+export async function* parseSSEStream(
+  stream: ReadableStream<Uint8Array>,
+  onDone?: () => void,
+): AsyncIterable<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -25,6 +29,7 @@ export async function* parseSSEStream(stream: ReadableStream<Uint8Array>): Async
         if (trimmed.startsWith('data:')) {
           const dataContent = trimmed.slice(5).trim();
           if (dataContent === '[DONE]') {
+            onDone?.();
             return;
           }
           yield dataContent;
@@ -36,9 +41,13 @@ export async function* parseSSEStream(stream: ReadableStream<Uint8Array>): Async
       const dataContent = buffer.trim().slice(5).trim();
       if (dataContent !== '[DONE]') {
         yield dataContent;
-      }
+      } else onDone?.();
     }
   } finally {
-    reader.releaseLock();
+    try {
+      await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
 }

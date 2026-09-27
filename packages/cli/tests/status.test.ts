@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { statusCommand } from '../src/commands/status.js';
+import { formatContextUsage } from '../src/ui/metrics.js';
 
 describe('/status context usage', () => {
+  it('distinguishes estimated input usage from measured usage', () => {
+    expect(
+      formatContextUsage({
+        usedTokens: 8000,
+        limitTokens: 1000000,
+        percent: 0.8,
+        estimatedLimit: false,
+        estimatedUsage: true,
+      }),
+    ).toBe('≈8k/1M (0.8%, 估算)');
+  });
   it('shows the latest request context usage and marks an estimated limit', () => {
     const lines: string[] = [];
     const log = vi.spyOn(console, 'log').mockImplementation((...args) => {

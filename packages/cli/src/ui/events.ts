@@ -1,6 +1,13 @@
-import type { SessionEvent } from '@kiturone/kapibala';
+import {
+  ModelError,
+  type ModelErrorInfo,
+  type SessionEvent,
+  describeModelError,
+  sanitizeModelErrorMessage,
+} from '@kiturone/kapibala';
 import { getCurrentGitBranch } from '../git.js';
 import { formatContextUsage, formatTokenCount } from './metrics.js';
+import { formatModelError, formatModelFailureSummary } from './model-errors.js';
 import {
   formatToolInvocation,
   formatToolResultSummary,
@@ -163,6 +170,8 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
   } = options;
   const currentColumns = (): number => (typeof columns === 'function' ? columns() : columns);
   let isThinking = false;
+  let renderedModelError: ModelErrorInfo | undefined;
+  let summaryFailure: ModelErrorInfo | undefined;
   const pendingTools = new Map<string, PendingToolLine>();
   const interactiveToolLines: string[] = [];
   /**
@@ -186,7 +195,34 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
 
   return {
     render(event: SessionEvent): void {
-      if (event.type === 'step_log') {
+      if (
+        event.type === 'compaction_start' ||
+        event.type === 'compaction_finish' ||
+        event.type === 'compaction_failed'
+      ) {
+        finishThinking();
+        markToolLinesStale();
+        const label = event.kind === 'prune' ? '旧工具结果剪裁' : '历史摘要';
+        const text =
+          event.type === 'compaction_start'
+            ? `${label}开始 (${event.reason}, ${event.persistence})`
+            : event.type === 'compaction_finish'
+              ? `${label}已提交: ${event.beforeTokens} → ${event.afterTokens} 估算 tokens (${event.durationMs}ms, ${event.persistence})`
+              : `${label}失败，保留最近有效投影；连续失败 ${event.consecutiveFailures}: ${sanitizeUntrustedOutput(event.error)}`;
+        write(`\n${color(text, event.type === 'compaction_failed' ? 33 : 90, isTTY)}\n`);
+        if (event.type === 'compaction_failed' && event.modelError) {
+          summaryFailure = event.modelError;
+          write(`\n${color(formatModelError(event.modelError), 33, isTTY)}`);
+        }
+      } else if (event.type === 'context_budget_exceeded') {
+        finishThinking();
+        markToolLinesStale();
+        write(
+          `\n上下文超限: 估算 ${event.usedTokens} / 输入预算 ${event.inputBudget}。当前任务保持原文，请选择更大窗口或拆分任务。\n`,
+        );
+      } else if (event.type === 'session_resumed' || event.type === 'session_switched') {
+        write(`\n活动会话: ${sanitizeUntrustedOutput(event.conversationId)}\n`);
+      } else if (event.type === 'step_log') {
         if (debug) {
           const time = new Date(event.log.timestamp).toLocaleTimeString();
           const duration = event.log.durationMs !== undefined ? ` [${event.log.durationMs}ms]` : '';
@@ -262,8 +298,19 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
       } else if (event.type === 'run_finish') {
         finishThinking();
         const metrics = event.metrics;
+        if (metrics.failure && !renderedModelError)
+          write(`\n${color(formatModelError(metrics.failure), 31, isTTY)}`);
+        if (metrics.status === 'failed') {
+          write(
+            `\n${color('本次请求失败，未获得完整答复。可以在当前会话重试；已完成的工具结果仍保留。', 31, isTTY)}\n`,
+          );
+        }
         const branch = getGitBranch();
         const segments: FooterSegment[] = [];
+        if (metrics.failure)
+          segments.push({ text: formatModelFailureSummary(metrics.failure), dropPriority: 0 });
+        else if (summaryFailure)
+          segments.push({ text: formatModelFailureSummary(summaryFailure), dropPriority: 1 });
         if (branch) segments.push({ text: `Git: ${branch}`, dropPriority: 0 });
         segments.push({
           text: `📊 总耗时: ${(metrics.totalDurationMs / 1_000).toFixed(2)}s`,
@@ -295,11 +342,22 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
         }
         const footer = fitFooter(segments, isTTY ? currentColumns() : Number.POSITIVE_INFINITY);
         write(`\n${color(footer, 90, isTTY)}\n`);
+        renderedModelError = undefined;
+        summaryFailure = undefined;
       } else if (event.type === 'error') {
         finishThinking();
-        write(
-          `\n${color(`❌ 错误: ${sanitizeUntrustedOutput(event.error.message)}`, 31, isTTY)}\n`,
-        );
+        const info =
+          event.modelError ??
+          (event.error instanceof ModelError
+            ? describeModelError(event.error, { operation: 'primary' })
+            : undefined);
+        if (info) {
+          renderedModelError = info;
+          write(`\n${color(formatModelError(info), 31, isTTY)}`);
+        } else
+          write(
+            `\n${color(`❌ 错误: ${sanitizeModelErrorMessage(event.error.message)}`, 31, isTTY)}\n`,
+          );
       }
     },
 

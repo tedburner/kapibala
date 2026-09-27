@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PromptAssembler } from '../src/prompt/index.js';
+import { PromptAssembler } from '../src/capabilities/prompt/index.js';
 
 describe('PromptAssembler tool-use guidance', () => {
   it('prefers a direct file read and stops redundant discovery once evidence is sufficient', () => {

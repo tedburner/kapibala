@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { SessionApprovalCache } from '../src/security/approval.js';
-import { PermissionPolicy, validatePermissionRules } from '../src/security/permissions.js';
+import { SessionApprovalCache } from '../src/capabilities/security/approval.js';
+import {
+  PermissionPolicy,
+  validatePermissionRules,
+} from '../src/capabilities/security/permissions.js';
 
 const policy = new PermissionPolicy();
 

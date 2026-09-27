@@ -1,9 +1,11 @@
 import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
+import { persistDefaultModel } from '../default-model.js';
 import { PROVIDER_METAS, providerCategory } from '../providers.js';
 import {
   API_KEY_ENV_NONE,
   type LoadSettingsOptions,
   type UserSettings,
+  credentialGroup,
   describeCredentialGroup,
   ensureProfile,
   loadGlobalSettingsForWrite,
@@ -12,10 +14,10 @@ import {
   updateProfileApiKey,
 } from '../settings.js';
 import { formatTokenCount } from '../ui/metrics.js';
-import { readSecret } from '../ui/secret.js';
-import { type SelectOption, select } from '../ui/select.js';
+import type { SelectOption } from '../ui/select.js';
 import { runSetupWizard } from '../wizard.js';
 import type { CommandHandler } from './dispatcher.js';
+import { settingsCommand } from './settings.js';
 
 export interface UpdateModelApiKeyOptions {
   secretReader?: (prompt: string) => Promise<string>;
@@ -42,30 +44,29 @@ export async function updateModelApiKey(
   ctx: Parameters<CommandHandler>[1],
   options: UpdateModelApiKeyOptions = {},
 ): Promise<boolean> {
-  const secretReader = options.secretReader ?? ctx.readSecret ?? readSecret;
+  if (!options.secretReader && !ctx.readSecret)
+    throw new Error('秘密输入不可用，请在交互终端配置密钥或使用厂商环境变量');
+  const secretReader = (options.secretReader ?? ctx.readSecret)!;
   const apiKey = (await secretReader(`请输入 ${profile.name} 的新 API Key: `)).trim();
   if (!apiKey) {
     console.log('\x1b[33mAPI Key 为空，已取消更新。\x1b[0m');
     return false;
   }
 
-  updateProfileApiKey(ctx.settings, profile.id, apiKey);
-
   const globalSettings = globalSettingsForWrite(options);
-  const globalProfile = globalSettings.profiles.find((candidate) => candidate.id === profile.id);
-  if (globalProfile) {
-    // 走 updateProfileApiKey 而非直接赋值：让磁盘配置同样执行组内归一，
-    // 否则会残留同厂商族的旧密钥副本，下次加载时与该密钥双源并存。
-    updateProfileApiKey(globalSettings, profile.id, apiKey);
-  } else {
-    globalSettings.profiles.push({ ...profile, apiKey });
-  }
+  ensureProfile(globalSettings, profile);
+  // 统一走 updateProfileApiKey 执行组内归一，无论该 profile 是否已存盘，
+  // 均自动清理同厂商族其它模型的旧密钥副本，确保全局配置中同族只留一份密钥。
+  updateProfileApiKey(globalSettings, profile.id, apiKey);
   const savedPath = (options.saveSettings ?? saveGlobalSettings)(globalSettings, {
     homeDir: options.homeDir,
   });
-  if (ctx.session.getActiveProfile().id === profile.id) {
-    ctx.onModelSwitched(profile.id);
+  updateProfileApiKey(ctx.settings, profile.id, apiKey);
+  const active = ctx.session.getActiveProfile();
+  if (credentialGroup(active) === credentialGroup(profile)) {
+    ctx.onModelSwitched(active.id);
   }
+  ctx.onCredentialsUpdated?.(profile.id);
   console.log(`\x1b[32m✔ 已更新 '${profile.name}' 的 API Key：${savedPath}\x1b[0m`);
   console.log(
     `\x1b[90m  ${describeCredentialGroup(profile)} 下的其它模型将自动复用该密钥，无需重复输入。\x1b[0m`,
@@ -89,15 +90,6 @@ async function ensureApiKey(
   }
   console.log(`\x1b[33m模型 '${profile.name}' 尚未配置 API Key，请先补录。\x1b[0m`);
   return updateModelApiKey(profile, ctx);
-}
-
-/** 把「当前模型 / 指定模型」写为全局默认，只落盘用户自有的 profile，不物化整份内置清单。 */
-function persistDefaultModel(profile: ModelProfile, ctx: Parameters<CommandHandler>[1]): void {
-  ctx.settings.defaultModel = profile.id;
-  const globalSettings = globalSettingsForWrite({});
-  ensureProfile(globalSettings, profile);
-  globalSettings.defaultModel = profile.id;
-  saveGlobalSettings(globalSettings);
 }
 
 /**
@@ -138,8 +130,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
 
   // 1. 若输入 `/model setup`，直接启动配置向导
   if (target === 'setup') {
-    const { profile } = await runSetupWizard();
-    ctx.onModelSwitched(profile.id);
+    await settingsCommand(['setup'], ctx);
     return;
   }
 
@@ -151,8 +142,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
       console.log(`\x1b[31m未找到模型 Profile '${defaultId}'。\x1b[0m`);
       return;
     }
-    ctx.settings.defaultModel = defaultId;
-    persistDefaultModel(found, ctx);
+    persistDefaultModel(found, ctx.settings);
     console.log(`\x1b[32m✔ 已将 '${found.name}' 设为全局默认模型。\x1b[0m`);
     return;
   }
@@ -176,6 +166,13 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
 
   // 4. 若无参数输入 `/model`：启动两步分级交互菜单 (第一步选 Provider，第二步选具体模型)
   const active = ctx.session.getActiveProfile();
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.log(`当前模型: ${active.id} (${active.name})`);
+    for (const profile of ctx.settings.profiles) console.log(`  ${profile.id}: ${profile.name}`);
+    console.log('使用 /model <id> 切换模型。');
+    return;
+  }
+  if (!ctx.select) throw new Error('交互输入不可用，请使用 /model <id>');
   const currentProviderKey = providerCategory(active);
 
   while (true) {
@@ -215,7 +212,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
 
     const defaultProviderIdx = providerOptions.findIndex((o) => o.value === currentProviderKey);
 
-    const chosenProvider = await select({
+    const chosenProvider = await ctx.select({
       message: '第一步：请选择模型提供商 (Provider)',
       options: providerOptions,
       defaultIndex: defaultProviderIdx >= 0 ? defaultProviderIdx : 0,
@@ -227,13 +224,12 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     }
 
     if (chosenProvider === '__action_setup__') {
-      const { profile } = await runSetupWizard();
-      ctx.onModelSwitched(profile.id);
+      await settingsCommand(['setup'], ctx);
       return;
     }
 
     if (chosenProvider === '__action_set_default__') {
-      persistDefaultModel(active, ctx);
+      persistDefaultModel(active, ctx.settings);
       console.log(`\x1b[32m✔ 已将 '${active.name}' 保存为全局默认模型。\x1b[0m`);
       return;
     }
@@ -264,7 +260,6 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
         badge = '默认';
       }
 
-      const thinkingTag = p.supportsThinking ? ' | 深度思考' : '';
       const contextWindow = resolveContextWindow(p.contextWindow);
       const contextTag = ` | ${contextWindow.estimated ? '≈' : ''}${formatTokenCount(contextWindow.tokens)}`;
 
@@ -272,7 +267,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
         label: p.name,
         value: p.id,
         badge,
-        description: `${p.modelName}${contextTag}${thinkingTag} · ${describeKeyStatus([p], ctx.settings)}`,
+        description: `${p.modelName}${contextTag} · ${describeKeyStatus([p], ctx.settings)}`,
       };
     });
 
@@ -284,7 +279,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
 
     const activeModelIdx = modelsUnderProvider.findIndex((p) => p.id === active.id);
 
-    const chosenModel = await select({
+    const chosenModel = await ctx.select({
       message: `第二步：请选择【${providerName}】的具体模型`,
       options: modelOptions,
       defaultIndex: activeModelIdx >= 0 ? activeModelIdx : 0,

@@ -1,28 +1,36 @@
 import path from 'node:path';
 import {
   AgentSession,
-  JSONLMessageStore,
   type ModelProfile,
   OpenAICompatibleProvider,
+  SessionManager,
   type SessionMode,
+  ToolRegistry,
 } from '@kiturone/kapibala';
 import minimist from 'minimist';
+import { ActiveSessionController } from './active-session.js';
+import { COMMAND_CATALOG } from './commands/catalog.js';
 import { clearCommand } from './commands/clear.js';
+import { compactCommand, contextCommand } from './commands/context.js';
 import { type CommandContext, CommandDispatcher } from './commands/dispatcher.js';
 import { helpCommand } from './commands/help.js';
+import { historyCommand, newCommand, renameCommand, resumeCommand } from './commands/history.js';
 import { instructionsCommand } from './commands/instructions.js';
 import { logsCommand } from './commands/logs.js';
 import { modeCommand } from './commands/mode.js';
 import { modelCommand } from './commands/model.js';
 import { settingsCommand } from './commands/settings.js';
 import { statusCommand } from './commands/status.js';
+import { CliInputCoordinator } from './input-coordinator.js';
 import { runOneShot } from './oneshot.js';
 import { detectProjectRoot } from './project-root.js';
 import { resolveProjectTrust } from './project-trust.js';
 import { startREPL } from './repl.js';
+import { openStartupSession, validateSessionStartup } from './session-startup.js';
 import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
+  detectProviderFamily,
   loadSettings,
   migrateGlobalSettingsCatalog,
   resolveApiKey,
@@ -30,6 +38,7 @@ import {
 } from './settings.js';
 import { registerBuiltinTools } from './tool-registration.js';
 import { CliApprovalChannel } from './ui/approval.js';
+import { CLI_VERSION } from './version.js';
 import { runSetupWizard } from './wizard.js';
 
 /** 具名解释器或用户显式提供的解释器可执行文件全路径。 */
@@ -41,16 +50,17 @@ function isValidShellPreference(value: string): boolean {
   );
 }
 
+/** 解析启动参数并管理独立会话、共享输入和退出清理；显式恢复失败不回退新建。 */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = minimist(argv, {
-    string: ['model', 'base-url', 'api-key', 'prompt', 'permission', 'shell'],
-    boolean: ['help', 'version', 'debug', 'disable-shell'],
+    string: ['model', 'base-url', 'api-key', 'prompt', 'permission', 'shell', 'resume'],
+    boolean: ['help', 'version', 'debug', 'disable-shell', 'continue'],
     alias: { m: 'model', h: 'help', v: 'version', p: 'prompt' },
   });
 
   if (args.help) {
     console.log(`
-🐾 Kapibala (kpbl) v0.0.2 - Production-grade TypeScript AI Agent Harness
+🐾 Kapibala (kpbl) v${CLI_VERSION} - Production-grade TypeScript AI Agent Harness
 
 使用方式:
   kpbl [选项] [问题/指令]
@@ -58,7 +68,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 示例:
   kpbl                             # 启动交互式会话终端 (REPL)
   kpbl "请帮我查看当前目录结构"    # 免交互单次会话模式 (直接问答)
-  kpbl -m deepseek-v4-pro          # 指定深度推理模型启动终端
+  kpbl -m deepseek-v4-pro          # 指定 DeepSeek V4 Pro 启动终端
 
 选项:
   -m, --model <id>       指定要使用的模型 profile id (如 deepseek-flash, claude-opus-5)
@@ -69,6 +79,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   --permission <mode>    本次会话权限: approval|plan|auto|full-access
   --shell <kind>         解释器: auto|bash|wsl|pwsh|powershell 或解释器全路径
   --disable-shell        关闭默认命令工具
+  --continue             续答当前项目最近有内容的会话
+  --resume <id>          按完整 ID 或唯一前缀恢复会话
   -v, --version          查看当前版本
   -h, --help             查看帮助信息
 
@@ -79,11 +91,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   if (args.version) {
-    console.log('kpbl v0.0.2');
+    console.log(`kpbl v${CLI_VERSION}`);
     process.exit(0);
   }
 
   // 0. 内置模型清单升级
+  validateSessionStartup({ continue: args.continue, resume: args.resume });
   // 厂商换代后老配置里的 modelName 会指向已退役模型（如 deepseek-chat 已不可访问）。
   // 这里只动全局配置文件，且仅在版本落后时写回；失败不能挡住启动。
   try {
@@ -136,6 +149,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     BUILTIN_PROFILES.find((p) => p.id === targetModelId);
 
   if (!activeProfile) {
+    // 显式指定的模型不静默替换：与 --permission 非法时直接失败保持一致，
+    // 避免用户在错误的模型上产生真实 API 费用与行为偏差。
+    if (args.model) throw new Error(`Unknown model id: ${args.model}`);
+    if (settings.defaultModel) {
+      const fallbackId = settings.profiles[0]?.id ?? BUILTIN_PROFILES[0]!.id;
+      console.error(
+        `\x1b[33m[kapibala] 配置的默认模型 ${settings.defaultModel} 不存在，已回退到 ${fallbackId}。\x1b[0m`,
+      );
+    }
     activeProfile = settings.profiles[0] ?? BUILTIN_PROFILES[0]!;
   }
 
@@ -149,138 +171,192 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // 2. 检测可用性，若完全无配置则唤起初次向导
   // 传入 settings 才能复用同厂商族已配置的密钥，避免同厂换个模型就要求重新输入。
   let activeApiKey = resolveApiKey(activeProfile, settings);
-
-  if (!activeApiKey && activeProfile.apiKeyEnv !== API_KEY_ENV_NONE) {
-    const { profile, apiKey } = await runSetupWizard();
-    activeProfile = profile;
-    activeApiKey = apiKey;
-  }
-
-  // 3. 构建 Provider 与 Session
-  const createProvider = (profile: ModelProfile, apiKey: string) => {
-    return new OpenAICompatibleProvider({
-      baseURL: resolveBaseURL(profile),
-      apiKey,
-      modelName: profile.modelName,
-      supportsThinking: profile.supportsThinking,
-    });
-  };
-
-  let currentProvider = createProvider(activeProfile, activeApiKey || 'none');
-
-  // 会话历史记录持久化至工作区 .kapibala/history.jsonl
-  const workspaceHistoryPath = path.join(process.cwd(), '.kapibala', 'history.jsonl');
-  const store = new JSONLMessageStore(workspaceHistoryPath);
-  const approvalChannel = new CliApprovalChannel();
-
-  const session = new AgentSession({
-    defaultProfile: activeProfile,
-    defaultProvider: currentProvider,
-    store,
-    rootDir: process.cwd(),
-    projectRoot: detectProjectRoot(process.cwd()),
+  const manager = new SessionManager({
     cwd: process.cwd(),
-    logger: args.debug ? (msg) => console.error(`[DEBUG] ${msg}`) : undefined,
     onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
-    mode,
-    permissionRules: settings.permissionRules,
-    approvalChannel,
   });
-
-  // 注册内置工具。显式指定的解释器（具名或全路径）不可用时启动失败；
-  // auto 找不到可用解释器时仅禁用 run_command 并诊断，文件工具继续可用。
-  const preference = args.shell ?? settings.shell?.preference ?? 'auto';
-  if (!isValidShellPreference(preference)) throw new Error(`Unknown shell: ${preference}`);
-  const autoDegrade = preference === 'auto';
+  let controller: ActiveSessionController | undefined;
+  const inputCoordinator = new CliInputCoordinator();
   try {
-    registerBuiltinTools(session.tools, {
-      cwd: process.cwd(),
-      shell: preference,
-      disableShell: args['disable-shell'] || settings.shell?.enabled === false,
-    });
-  } catch (error: unknown) {
-    if (!autoDegrade) {
-      console.error(`[kapibala] 命令解释器不可用: ${(error as Error).message}`);
-      process.exitCode = 2;
-      return;
+    // 显式目标先验证和锁定；错误 ID 不启动密钥向导或创建替代会话。
+    const restoredHandle = args.resume === undefined ? undefined : await manager.open(args.resume);
+    if (!activeApiKey && activeProfile.apiKeyEnv !== API_KEY_ENV_NONE) {
+      if (!inputCoordinator.interactive)
+        throw new Error('尚未配置模型密钥；非交互环境请通过厂商环境变量或全局设置配置。');
+      const { profile, apiKey } = await runSetupWizard({
+        question: (prompt) => inputCoordinator.question(prompt),
+        secretReader: (prompt) => inputCoordinator.readSecret(prompt),
+      });
+      activeProfile = profile;
+      activeApiKey = apiKey;
     }
-    console.error(
-      `[kapibala] 未找到可用的命令解释器，本次会话已禁用 run_command: ${(error as Error).message}`,
-    );
-  }
 
-  // 优雅退出：必须先走 session.destroy()（插件 teardown + session:end 钩子）再退出进程，
-  // 与 rl.close / oneshot finally 的资源回收语义保持一致。
-  const gracefulExit = () => {
-    console.log('\x1b[32m再见！🐾\x1b[0m');
-    void session
-      .destroy()
-      .catch(() => undefined)
-      .finally(() => process.exit(0));
-  };
-
-  // 4. 初始化 CommandDispatcher
-  const dispatcher = new CommandDispatcher();
-  dispatcher.register('model', modelCommand);
-  dispatcher.register('settings', settingsCommand);
-  dispatcher.register('clear', clearCommand);
-  dispatcher.register('status', statusCommand);
-  dispatcher.register('mode', modeCommand);
-  dispatcher.register('logs', logsCommand);
-  dispatcher.register('instructions', instructionsCommand);
-  dispatcher.register('help', helpCommand);
-  dispatcher.register('exit', () => gracefulExit());
-  dispatcher.register('quit', () => gracefulExit());
-
-  const commandContext: CommandContext = {
-    session,
-    settings,
-    settingsPath: sourcePath,
-    onModelSwitched: (newProfileId: string) => {
-      // 向导或命令可能刚把新 profile 写进磁盘，这里必须重新加载而不是查启动时的快照：
-      // 快照里没有新 profile 会导致"向导已打印已就绪、实际 provider 没换"，
-      // 而且过期的 ctx.settings 会在后续 saveGlobalSettings 时把刚写入的配置覆盖回去。
-      const { settings: fresh, sourcePath: freshPath } = loadSettings();
-      Object.assign(settings, fresh);
-      commandContext.settingsPath = freshPath;
-
-      const profile =
-        settings.profiles.find((x) => x.id === newProfileId) ??
-        BUILTIN_PROFILES.find((x) => x.id === newProfileId);
-      if (!profile) {
-        console.log(`\x1b[31m未找到模型 Profile '${newProfileId}'，模型切换已跳过。\x1b[0m`);
+    // 3. 构建当前宿主配置；每次切换重新创建 Session，不继承旧授权缓存。
+    const createProvider = (profile: ModelProfile, apiKey: string) =>
+      new OpenAICompatibleProvider({
+        baseURL: resolveBaseURL(profile),
+        apiKey,
+        modelName: profile.modelName,
+        supportsThinking: profile.supportsThinking,
+        replayReasoningContent: detectProviderFamily(profile) === 'deepseek',
+      });
+    let currentProfile: ModelProfile = activeProfile;
+    let currentProvider = createProvider(currentProfile, activeApiKey || 'none');
+    const approvalChannel = new CliApprovalChannel();
+    const builtinTools = new ToolRegistry();
+    const preference = args.shell ?? settings.shell?.preference ?? 'auto';
+    if (!isValidShellPreference(preference)) throw new Error(`Unknown shell: ${preference}`);
+    try {
+      registerBuiltinTools(builtinTools, {
+        cwd: process.cwd(),
+        shell: preference,
+        disableShell: args['disable-shell'] || settings.shell?.enabled === false,
+      });
+    } catch (error: unknown) {
+      if (preference !== 'auto') throw error;
+      console.error(
+        `[kapibala] 命令解释器不可用，本次禁用 run_command: ${(error as Error).message}`,
+      );
+    }
+    try {
+      await manager.importLegacy();
+      const initialHandle =
+        restoredHandle ??
+        (await openStartupSession(manager, {
+          continue: args.continue,
+          resume: args.resume,
+        }));
+      const configureSummary = (target: AgentSession) => {
+        const summaryId = settings.modelRouting?.summary;
+        const summaryProfile = settings.profiles.find((profile) => profile.id === summaryId);
+        if (summaryProfile) {
+          const key = resolveApiKey(summaryProfile, settings);
+          if (key || summaryProfile.apiKeyEnv === API_KEY_ENV_NONE)
+            target.switchModel(
+              summaryProfile,
+              'summary',
+              createProvider(summaryProfile, key || 'none'),
+            );
+          else console.error('[kapibala] 摘要路由没有可用密钥，本次回退当前默认模型。');
+        }
+      };
+      const factory = async (handle: import('@kiturone/kapibala').ManagedSession) => {
+        const created = new AgentSession({
+          defaultProfile: currentProfile,
+          defaultProvider: currentProvider,
+          store: handle.store,
+          conversationId: handle.conversationId,
+          rootDir: process.cwd(),
+          projectRoot: manager.project.projectRoot,
+          cwd: process.cwd(),
+          gitBranch: manager.project.gitBranch,
+          logger: args.debug ? (message) => console.error(`[DEBUG] ${message}`) : undefined,
+          onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
+          mode: controller?.session.getMode() ?? mode,
+          permissionRules: settings.permissionRules,
+          approvalChannel,
+        });
+        for (const tool of builtinTools.list()) created.tools.register(tool);
+        configureSummary(created);
+        return created;
+      };
+      const initial = await factory(initialHandle);
+      await initial.init();
+      controller = new ActiveSessionController({
+        manager,
+        factory,
+        current: { session: initial, handle: initialHandle },
+        onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
+        onSwitched: (event) => console.log(`活动会话: ${event.conversationId}`),
+      });
+      const active = controller;
+      if (args.resume || args.continue) {
+        console.log(
+          `已加载会话 ${active.session.conversationId}（${active.session.getHistory().length} 条消息）`,
+        );
+        if (active.handle.branchDrift)
+          console.log(
+            `分支环境已变化: ${active.handle.branchDrift.createdBranch ?? '无'} → ${active.handle.branchDrift.currentBranch ?? '无'}；保持本次工作目录。`,
+          );
+      }
+      const dispatcher = new CommandDispatcher();
+      const handlers: Record<string, import('./commands/dispatcher.js').CommandHandler> = {
+        new: newCommand,
+        resume: resumeCommand,
+        history: historyCommand,
+        rename: renameCommand,
+        context: contextCommand,
+        compact: compactCommand,
+        model: modelCommand,
+        settings: settingsCommand,
+        permissions: modeCommand,
+        status: statusCommand,
+        logs: logsCommand,
+        instructions: instructionsCommand,
+        help: helpCommand,
+        exit: async (_args, context) => {
+          await context.onExit();
+        },
+      };
+      for (const definition of COMMAND_CATALOG)
+        dispatcher.registerDefinition(definition, handlers[definition.name]);
+      const commandContext: CommandContext = {
+        get session() {
+          return active.session;
+        },
+        controller: active,
+        dispatcher,
+        settings,
+        settingsPath: sourcePath,
+        onModelSwitched: (newProfileId) => {
+          const { settings: fresh, sourcePath: freshPath } = loadSettings();
+          Object.assign(settings, fresh);
+          commandContext.settingsPath = freshPath;
+          const profile =
+            settings.profiles.find((candidate) => candidate.id === newProfileId) ??
+            BUILTIN_PROFILES.find((candidate) => candidate.id === newProfileId);
+          if (!profile) throw new Error(`未找到模型 Profile '${newProfileId}'`);
+          const provider = createProvider(profile, resolveApiKey(profile, settings) || 'none');
+          active.session.switchModel(profile, 'default', provider);
+          currentProfile = profile;
+          currentProvider = provider;
+          configureSummary(active.session);
+        },
+        onCredentialsUpdated: () => {
+          configureSummary(active.session);
+        },
+        onExit: () => {
+          inputCoordinator.close();
+        },
+      };
+      const oneShotPrompt = args.prompt || (args._.length > 0 ? args._.join(' ') : null);
+      if (oneShotPrompt && typeof oneShotPrompt === 'string' && oneShotPrompt.trim()) {
+        const exitCode = await runOneShot({
+          session: active.session,
+          controller: active,
+          inputCoordinator,
+          prompt: oneShotPrompt.trim(),
+          debug: Boolean(args.debug),
+          approvalChannel,
+        });
+        if (exitCode) process.exitCode = exitCode;
         return;
       }
-
-      const key = resolveApiKey(profile, settings) || 'none';
-      currentProvider = createProvider(profile, key);
-      session.switchModel(profile, 'default', currentProvider);
-    },
-    onExit: () => gracefulExit(),
-  };
-
-  // 5. 启动会话
-  await session.init();
-
-  // 检查是否传入了直接问答参数 (如: kpbl "请帮我分析项目" 或 kpbl -p "xxx")
-  const oneShotPrompt = args.prompt || (args._.length > 0 ? args._.join(' ') : null);
-  if (oneShotPrompt && typeof oneShotPrompt === 'string' && oneShotPrompt.trim().length > 0) {
-    const exitCode = await runOneShot({
-      session,
-      prompt: oneShotPrompt.trim(),
-      debug: Boolean(args.debug),
-      approvalChannel,
-    });
-    if (exitCode !== 0) process.exitCode = exitCode;
-    return;
+      await startREPL({
+        session: active.session,
+        controller: active,
+        inputCoordinator,
+        dispatcher,
+        context: commandContext,
+        debug: Boolean(args.debug),
+        approvalChannel,
+      });
+    } finally {
+      if (controller) await controller.close();
+      else await manager.close();
+    }
+  } finally {
+    inputCoordinator.close();
+    if (!controller) await manager.close();
   }
-
-  // 启动交互式 REPL 会话终端
-  await startREPL({
-    session,
-    dispatcher,
-    context: commandContext,
-    debug: Boolean(args.debug),
-    approvalChannel,
-  });
 }

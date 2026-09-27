@@ -34,6 +34,9 @@ describe('runSetupWizard resource cleanup', () => {
     try {
       await expect(runSetupWizard()).rejects.toThrow('invalid global settings');
       expect(readlineMocks.close).toHaveBeenCalledOnce();
+      const output = log.mock.calls.flat().join('\n');
+      expect(output).toContain('DeepSeek V4 Pro');
+      expect(output).not.toMatch(/深度思考|深度推理|旗舰/);
     } finally {
       log.mockRestore();
     }

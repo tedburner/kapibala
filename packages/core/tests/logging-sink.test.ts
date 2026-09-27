@@ -2,8 +2,8 @@ import fs, { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } fro
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FileLogSink } from '../src/logging/file-sink.js';
-import type { LogEvent } from '../src/logging/index.js';
+import { FileLogSink } from '../src/extensibility/logging/file-sink.js';
+import type { LogEvent } from '../src/extensibility/logging/index.js';
 
 const directories: string[] = [];
 

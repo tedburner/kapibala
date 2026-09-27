@@ -60,7 +60,7 @@ export interface LoadedSettings {
  * 内置模型清单版本。**改动 BUILTIN_PROFILES 就必须 +1**，否则老用户不会触发目录升级
  * （migrateBuiltinCatalog 只在版本落后时执行），菜单里会一直挂着已退役的模型。
  */
-export const BUILTIN_CATALOG_VERSION = 2;
+export const BUILTIN_CATALOG_VERSION = 3;
 
 /**
  * 内置模型清单。
@@ -86,7 +86,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'deepseek-v4-pro',
-    name: 'DeepSeek V4 Pro (深度推理)',
+    name: 'DeepSeek V4 Pro',
     provider: 'openai-compatible',
     baseURL: 'https://api.deepseek.com/v1',
     apiKeyEnv: 'DEEPSEEK_API_KEY',
@@ -97,7 +97,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   // ── OpenAI ──────────────────────────────────────────────────────────────
   {
     id: 'gpt-6-astra',
-    name: 'OpenAI GPT-6 Astra (旗舰)',
+    name: 'OpenAI GPT-6 Astra',
     provider: 'openai-compatible',
     baseURL: 'https://api.openai.com/v1',
     apiKeyEnv: 'OPENAI_API_KEY',
@@ -107,7 +107,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'gpt-5.6-sol',
-    name: 'OpenAI GPT-5.6 Sol (复杂推理与编码)',
+    name: 'OpenAI GPT-5.6 Sol',
     provider: 'openai-compatible',
     baseURL: 'https://api.openai.com/v1',
     apiKeyEnv: 'OPENAI_API_KEY',
@@ -117,7 +117,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'gpt-5.6-terra',
-    name: 'OpenAI GPT-5.6 Terra (日常均衡)',
+    name: 'OpenAI GPT-5.6 Terra',
     provider: 'openai-compatible',
     baseURL: 'https://api.openai.com/v1',
     apiKeyEnv: 'OPENAI_API_KEY',
@@ -127,7 +127,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'gpt-5.6-luna',
-    name: 'OpenAI GPT-5.6 Luna (高吞吐低价)',
+    name: 'OpenAI GPT-5.6 Luna',
     provider: 'openai-compatible',
     baseURL: 'https://api.openai.com/v1',
     apiKeyEnv: 'OPENAI_API_KEY',
@@ -138,7 +138,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   // ── Anthropic ───────────────────────────────────────────────────────────
   {
     id: 'claude-fable-5-1',
-    name: 'Claude Fable 5.1 (最强推理)',
+    name: 'Claude Fable 5.1',
     provider: 'openai-compatible',
     baseURL: 'https://api.anthropic.com/v1',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
@@ -148,7 +148,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'claude-opus-5',
-    name: 'Claude Opus 5 (复杂 Agent 与编码)',
+    name: 'Claude Opus 5',
     provider: 'openai-compatible',
     baseURL: 'https://api.anthropic.com/v1',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
@@ -158,7 +158,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'claude-sonnet-5',
-    name: 'Claude Sonnet 5 (日常主力)',
+    name: 'Claude Sonnet 5',
     provider: 'openai-compatible',
     baseURL: 'https://api.anthropic.com/v1',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
@@ -168,7 +168,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'claude-haiku-4-5',
-    name: 'Claude Haiku 4.5 (最快最省)',
+    name: 'Claude Haiku 4.5',
     provider: 'openai-compatible',
     baseURL: 'https://api.anthropic.com/v1',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
@@ -179,7 +179,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   // ── Google Gemini ───────────────────────────────────────────────────────
   {
     id: 'gemini-3.1-pro-preview',
-    name: 'Gemini 3.1 Pro (复杂任务旗舰)',
+    name: 'Gemini 3.1 Pro',
     provider: 'openai-compatible',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
     apiKeyEnv: 'GEMINI_API_KEY',
@@ -189,7 +189,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'gemini-3-flash-preview',
-    name: 'Gemini 3 Flash (生产流量主力)',
+    name: 'Gemini 3 Flash',
     provider: 'openai-compatible',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
     apiKeyEnv: 'GEMINI_API_KEY',
@@ -200,7 +200,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   // ── 通义千问 ────────────────────────────────────────────────────────────
   {
     id: 'qwen3.8-max',
-    name: 'Qwen3.8-Max (旗舰)',
+    name: 'Qwen3.8-Max',
     provider: 'openai-compatible',
     baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     apiKeyEnv: 'DASHSCOPE_API_KEY',
@@ -210,7 +210,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'qwen3.8-flash',
-    name: 'Qwen3.8-Flash (快速低价)',
+    name: 'Qwen3.8-Flash',
     provider: 'openai-compatible',
     baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     apiKeyEnv: 'DASHSCOPE_API_KEY',
@@ -220,7 +220,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'qwen3.7-plus',
-    name: 'Qwen3.7-Plus (均衡)',
+    name: 'Qwen3.7-Plus',
     provider: 'openai-compatible',
     baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     apiKeyEnv: 'DASHSCOPE_API_KEY',
@@ -231,7 +231,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   // ── Kimi（月之暗面）─────────────────────────────────────────────────────
   {
     id: 'kimi-k3',
-    name: 'Kimi K3 (长程编码与知识工作)',
+    name: 'Kimi K3',
     provider: 'openai-compatible',
     baseURL: 'https://api.moonshot.cn/v1',
     apiKeyEnv: 'MOONSHOT_API_KEY',
@@ -241,7 +241,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'kimi-k2.7-code',
-    name: 'Kimi K2.7 Code (编码专用)',
+    name: 'Kimi K2.7 Code',
     provider: 'openai-compatible',
     baseURL: 'https://api.moonshot.cn/v1',
     apiKeyEnv: 'MOONSHOT_API_KEY',
@@ -252,7 +252,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   // ── 智谱 GLM ────────────────────────────────────────────────────────────
   {
     id: 'glm-5.3',
-    name: 'GLM-5.3 (旗舰)',
+    name: 'GLM-5.3',
     provider: 'openai-compatible',
     baseURL: 'https://open.bigmodel.cn/api/paas/v4',
     apiKeyEnv: 'ZHIPU_API_KEY',
@@ -262,7 +262,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   },
   {
     id: 'glm-5.3-flash',
-    name: 'GLM-5.3-Flash (原生多模态)',
+    name: 'GLM-5.3-Flash',
     provider: 'openai-compatible',
     baseURL: 'https://open.bigmodel.cn/api/paas/v4',
     apiKeyEnv: 'ZHIPU_API_KEY',

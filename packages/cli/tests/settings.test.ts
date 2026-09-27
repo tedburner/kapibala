@@ -703,6 +703,22 @@ function legacyProfile(id: string, overrides: Partial<ModelProfile> = {}): Model
 }
 
 describe('migrateBuiltinCatalog 存量配置升级', () => {
+  it('升级第 2 版配置中的模型展示名，保留密钥和模型路由', () => {
+    const profile = BUILTIN_PROFILES.find((p) => p.id === 'gpt-5.6-terra')!;
+    const raw: UserSettings = {
+      builtinCatalogVersion: 2,
+      defaultModel: profile.id,
+      modelRouting: { summary: profile.id },
+      profiles: [{ ...profile, name: 'OpenAI GPT-5.6 Terra (日常均衡)', apiKey: 'fixture-key' }],
+    };
+    const { settings, changed } = migrateBuiltinCatalog(raw);
+    expect(changed).toBe(true);
+    expect(settings.profiles[0].name).toBe('OpenAI GPT-5.6 Terra');
+    expect(settings.profiles[0].apiKey).toBe('fixture-key');
+    expect(settings.modelRouting).toEqual(raw.modelRouting);
+    expect(settings.profiles[0].supportsThinking).toBe(profile.supportsThinking);
+  });
+
   it('退役 id 重定向到现役模型，并把密钥带过去', () => {
     const raw: UserSettings = {
       defaultModel: 'deepseek-v4-flash',

@@ -22,7 +22,7 @@ export const PROVIDER_METAS: ProviderMeta[] = [
   {
     key: 'deepseek',
     name: 'DeepSeek',
-    desc: '国内直连、极速响应与旗舰推理能力',
+    desc: 'DeepSeek Flash / V4 Pro',
     keyPrompt: '请输入您的 DeepSeek API Key (sk-...): ',
   },
   {

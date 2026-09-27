@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { defineTool } from '../src/capabilities/tools/index.js';
+import { AgentSession } from '../src/context/session/index.js';
+import { JSONLMessageStore } from '../src/context/store/jsonl.js';
 import { AbortError } from '../src/errors/index.js';
 import type { ModelProfile } from '../src/models/index.js';
-import { AgentSession } from '../src/session/index.js';
-import { JSONLMessageStore } from '../src/store/jsonl.js';
-import { defineTool } from '../src/tools/index.js';
 import type { ContentBlock, SessionEvent } from '../src/types/index.js';
 import { ScriptedProvider, findDanglingToolUses, makeEchoToolRegistry } from './helpers/mock.js';
 

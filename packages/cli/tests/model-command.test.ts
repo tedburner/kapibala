@@ -95,4 +95,42 @@ describe('updateModelApiKey', () => {
     });
     expect(runtimeProfile.apiKey).toBe('new-key');
   });
+
+  it('cleans redundant keys in the same family when a new unpersisted profile is configured', async () => {
+    // 模拟磁盘已存一个 OpenAI 模型的旧 key
+    const siblingProfile = {
+      ...builtinProfile('gpt-5.6-terra'),
+      id: 'openai-sibling',
+      apiKey: 'sk-sibling-old',
+    };
+    const globalSettings: UserSettings = {
+      defaultModel: siblingProfile.id,
+      profiles: [siblingProfile],
+    };
+    // 目标模型是未持久化到 globalSettings 的内置模型
+    const targetProfile = builtinProfile('gpt-5.6-terra');
+    const runtimeSettings: UserSettings = {
+      defaultModel: targetProfile.id,
+      profiles: [{ ...targetProfile }],
+    };
+    const saveSettings = vi.fn(() => 'saved');
+    const context: CommandContext = {
+      session: { getActiveProfile: () => targetProfile } as unknown as AgentSession,
+      settings: runtimeSettings,
+      onModelSwitched: vi.fn(),
+      onExit: () => undefined,
+    };
+
+    await updateModelApiKey(targetProfile, context, {
+      secretReader: async () => 'sk-fresh-key',
+      saveSettings,
+      globalSettings,
+    });
+
+    // globalSettings 中新增了 targetProfile 且持有新 key，同族的 siblingProfile 的 apiKey 被归一清理为 undefined
+    const persistedTarget = globalSettings.profiles.find((p) => p.id === targetProfile.id);
+    const persistedSibling = globalSettings.profiles.find((p) => p.id === siblingProfile.id);
+    expect(persistedTarget?.apiKey).toBe('sk-fresh-key');
+    expect(persistedSibling?.apiKey).toBeUndefined();
+  });
 });

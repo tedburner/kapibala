@@ -1,6 +1,6 @@
 {
   "name": "@kiturone/kapibala",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Headless core engine and abstractions for the Kapibala agent harness",
   "license": "MIT",
   "author": "tedburner",
@@ -10,6 +10,7 @@
     "directory": "packages/core"
   },
   "type": "module",
+  "engines": { "node": ">=20" },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",

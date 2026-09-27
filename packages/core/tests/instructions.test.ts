@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadInstructions } from '../src/instructions/index.js';
+import { loadInstructions } from '../src/capabilities/instructions/index.js';
 
 describe('AGENTS.md instruction loader', () => {
   const dirs: string[] = [];

@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { PathSandbox } from '../src/capabilities/security/sandbox.js';
+import { writeFileTool } from '../src/capabilities/tools/builtin/fs.js';
 import { ToolError } from '../src/errors/index.js';
-import { PathSandbox } from '../src/security/sandbox.js';
-import { writeFileTool } from '../src/tools/builtin/fs.js';
 
 /**
  * 探测当前环境支持哪种"链接"。

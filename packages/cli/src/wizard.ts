@@ -67,11 +67,14 @@ export async function probeEndpoint(profile: ModelProfile, apiKey: string): Prom
 
 export interface SetupWizardOptions {
   secretReader?: (prompt: string) => Promise<string>;
+  question?: (prompt: string) => Promise<string>;
 }
 
 export async function runSetupWizard(
   options: SetupWizardOptions = {},
 ): Promise<{ profile: ModelProfile; apiKey: string }> {
+  if (options.question)
+    return executeSetupWizard({ question: options.question }, () => {}, options);
   const rl = readline.createInterface({ input, output });
   let readlineClosed = false;
   const closeReadline = (): void => {
@@ -88,7 +91,7 @@ export async function runSetupWizard(
 }
 
 async function executeSetupWizard(
-  rl: ReadlineInterface,
+  rl: Pick<ReadlineInterface, 'question'>,
   closeReadline: () => void,
   options: SetupWizardOptions,
 ): Promise<{ profile: ModelProfile; apiKey: string }> {
@@ -126,10 +129,7 @@ async function executeSetupWizard(
       entry.models.forEach((candidate, index) => {
         const contextWindow = resolveContextWindow(candidate.contextWindow);
         const context = ` | ${contextWindow.estimated ? '≈' : ''}${formatTokenCount(contextWindow.tokens)}`;
-        const thinking = candidate.supportsThinking ? ' | 深度思考' : '';
-        console.log(
-          `  ${index + 1}) ${candidate.name} —— ${candidate.modelName}${context}${thinking}`,
-        );
+        console.log(`  ${index + 1}) ${candidate.name} —— ${candidate.modelName}${context}`);
       });
       const modelChoice =
         (await rl.question(`请选择具体模型 [1-${entry.models.length}] (默认 1): `)).trim() || '1';

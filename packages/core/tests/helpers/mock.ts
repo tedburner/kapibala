@@ -1,6 +1,6 @@
+import { defineTool } from '../../src/capabilities/tools/index.js';
+import { ToolRegistry } from '../../src/capabilities/tools/registry.js';
 import type { ModelProvider } from '../../src/models/index.js';
-import { defineTool } from '../../src/tools/index.js';
-import { ToolRegistry } from '../../src/tools/registry.js';
 import type {
   CanonicalMessage,
   ModelEvent,

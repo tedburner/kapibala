@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { defineTool } from '../src/capabilities/tools/index.js';
+import { ToolRegistry } from '../src/capabilities/tools/registry.js';
 import { AbortError } from '../src/errors/index.js';
-import { ToolExecutor } from '../src/executor/index.js';
-import { HookRegistry } from '../src/hooks/registry.js';
-import { AgentLoop } from '../src/loop/index.js';
+import { HookRegistry } from '../src/extensibility/hooks/registry.js';
 import type { ModelProvider } from '../src/models/index.js';
-import { defineTool } from '../src/tools/index.js';
-import { ToolRegistry } from '../src/tools/registry.js';
+import { ToolExecutor } from '../src/runtime/executor/index.js';
+import { AgentLoop } from '../src/runtime/loop/index.js';
 import type { CanonicalMessage, SessionEvent } from '../src/types/index.js';
 import {
   ScriptedProvider,

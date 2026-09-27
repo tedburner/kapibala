@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export type CoreHostBoundaryRule = 'cli-dependency' | 'terminal-io' | 'terminal-rendering';
+export type CoreHostBoundaryRule =
+  | 'cli-dependency'
+  | 'terminal-io'
+  | 'terminal-rendering'
+  | 'runtime-context';
 
 export interface CoreSourceFile {
   file: string;
@@ -51,6 +55,17 @@ export function findCoreHostBoundaryViolations(
   for (const file of files) {
     const lines = file.source.split(/\r?\n/);
     for (const [index, line] of lines.entries()) {
+      if (
+        /(?:^|[\\/])runtime[\\/]/.test(file.file) &&
+        /(?:from\s+|import\s*\(\s*)['"][^'"]*(?:context|store|session)\//.test(line)
+      ) {
+        violations.push({
+          file: file.file,
+          line: index + 1,
+          rule: 'runtime-context',
+          message: 'Runtime 必须通过共享契约调用上下文能力，不导入具体会话或存储。',
+        });
+      }
       for (const rule of RULES) {
         rule.pattern.lastIndex = 0;
         if (rule.pattern.test(line)) {

@@ -1,14 +1,24 @@
 import type { AgentSession } from '@kiturone/kapibala';
+import type { ActiveSessionController } from '../active-session.js';
 import type { UserSettings } from '../settings.js';
+import type { SelectConfig } from '../ui/select.js';
+import type { CommandDefinition } from './catalog.js';
 
 export interface CommandContext {
   session: AgentSession;
   settings: UserSettings;
   settingsPath?: string;
   onModelSwitched: (newProfileId: string) => void;
-  onExit: () => void;
+  onCredentialsUpdated?: (profileId: string) => void;
+  onExit: () => void | Promise<void>;
   readSecret?: (prompt: string) => Promise<string>;
   confirm?: (prompt: string) => Promise<boolean>;
+  controller?: ActiveSessionController;
+  dispatcher?: CommandDispatcher;
+  isInputBusy?: () => boolean;
+  question?: (prompt: string) => Promise<string>;
+  select?: <T>(config: SelectConfig<T>) => Promise<T | null>;
+  renderEvent?: (event: import('@kiturone/kapibala').SessionEvent) => void;
 }
 
 export type CommandHandler = (args: string[], ctx: CommandContext) => Promise<void> | void;
@@ -30,9 +40,41 @@ const BARE_ALIASES = new Map<string, string>([
 
 export class CommandDispatcher {
   private readonly handlers = new Map<string, CommandHandler>();
+  private readonly definitions = new Map<string, CommandDefinition>();
+  private mutationActive = false;
 
   register(command: string, handler: CommandHandler): void {
-    this.handlers.set(command.toLowerCase(), handler);
+    this.registerDefinition(
+      {
+        name: command,
+        usage: `/${command}`,
+        description: '',
+        group: 'diagnostic',
+        mutates: () => false,
+        validate: () => undefined,
+      },
+      handler,
+    );
+  }
+
+  /** 主入口与别名共享定义，先检查所有名称冲突再注册，失败不产生半注册状态。 */
+  registerDefinition(definition: CommandDefinition, handler: CommandHandler): void {
+    const names = [definition.name, ...(definition.aliases ?? [])].map((name) =>
+      name.toLowerCase(),
+    );
+    if (new Set(names).size !== names.length || names.some((name) => this.handlers.has(name)))
+      throw new Error('Duplicate command or alias registration');
+    for (const name of names) {
+      this.handlers.set(name, handler);
+      this.definitions.set(name, definition);
+    }
+  }
+
+  getDefinition(name: string): CommandDefinition | undefined {
+    return this.definitions.get(name.toLowerCase().replace(/^\//, ''));
+  }
+  getDefinitions(): CommandDefinition[] {
+    return [...new Set(this.definitions.values())];
   }
 
   async dispatch(rawInput: string, ctx: CommandContext): Promise<boolean> {
@@ -42,9 +84,16 @@ export class CommandDispatcher {
     let args: string[] = [];
 
     if (trimmed.startsWith('/')) {
-      const parts = trimmed.slice(1).split(/\s+/);
-      command = parts[0]?.toLowerCase();
-      args = parts.slice(1);
+      const match = rawInput.trimStart().match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
+      command = match?.[1]?.toLowerCase();
+      const tail = match?.[2] ?? '';
+      args = this.definitions.get(command ?? '')?.rawTail
+        ? tail.length
+          ? [tail]
+          : []
+        : tail.trim()
+          ? tail.trim().split(/\s+/)
+          : [];
       // 单独一个 "/" 视为已处理（避免落到模型）
       if (!command) return true;
     } else {
@@ -57,14 +106,31 @@ export class CommandDispatcher {
 
     const handler = this.handlers.get(command);
     if (!handler) {
-      console.log(`\x1b[33m未知命令: /${command}。输入 /help 查看支持的命令。\x1b[0m`);
+      console.log(`未知命令: /${command}。输入 /help 查看支持的命令。`);
       return true;
     }
 
     try {
-      await handler(args, ctx);
+      const definition = this.definitions.get(command)!;
+      const validation = definition.validate(args);
+      if (validation) throw new Error(`${validation}。用法: ${definition.usage}`);
+      const mutating = definition.mutates(args);
+      if (
+        mutating &&
+        (this.mutationActive ||
+          ctx.controller?.isBusy() ||
+          ctx.session.isBusy?.() ||
+          ctx.isInputBusy?.())
+      )
+        throw new Error('会话忙，请等待执行和清理完成后重试');
+      if (mutating) this.mutationActive = true;
+      try {
+        await handler(args, ctx);
+      } finally {
+        if (mutating) this.mutationActive = false;
+      }
     } catch (err: unknown) {
-      console.log(`\x1b[31m命令执行失败: ${(err as Error).message}\x1b[0m`);
+      console.log(`命令执行失败: ${(err as Error).message}`);
     }
 
     return true;

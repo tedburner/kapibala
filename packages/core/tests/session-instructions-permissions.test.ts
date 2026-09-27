@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { defineTool } from '../src/capabilities/tools/index.js';
+import { AgentSession } from '../src/context/session/index.js';
 import type { ModelProfile } from '../src/models/index.js';
-import { AgentSession } from '../src/session/index.js';
-import { defineTool } from '../src/tools/index.js';
 import { ScriptedProvider } from './helpers/mock.js';
 
 const profile: ModelProfile = {

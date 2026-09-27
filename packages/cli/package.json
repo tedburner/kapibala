@@ -1,6 +1,6 @@
 {
   "name": "@kiturone/kapibala-cli",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Interactive CLI for Kapibala (kpbl)",
   "license": "MIT",
   "author": "tedburner",
@@ -10,6 +10,7 @@
     "directory": "packages/cli"
   },
   "type": "module",
+  "engines": { "node": ">=20" },
   "bin": {
     "kpbl": "./dist/bin.js"
   },

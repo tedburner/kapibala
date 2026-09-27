@@ -18,6 +18,7 @@ export const modeCommand: CommandHandler = async (args, ctx) => {
   const mode = MODES[requested];
   if (!mode) throw new Error(`未知权限模式: ${requested}`);
   if (mode === 'FullAccess') {
+    if (!ctx.confirm) throw new Error('FullAccess 需要交互终端显式确认');
     const confirmed =
       (await ctx.confirm?.('FullAccess 将默认批准已注册且已声明能力的工具调用。')) ?? false;
     if (!confirmed) {

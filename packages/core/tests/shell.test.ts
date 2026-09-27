@@ -2,15 +2,39 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ToolExecutor } from '../src/executor/index.js';
-import { HookRegistry } from '../src/hooks/registry.js';
-import { type LogEvent, type LogSink, StructuredLogger } from '../src/logging/index.js';
-import { classifyBashOutput, detectShell } from '../src/shell/detect.js';
-import { cleanupCommandResults, createRunCommandTool } from '../src/shell/tool.js';
-import { readFileTool } from '../src/tools/builtin/fs.js';
-import { ToolRegistry } from '../src/tools/registry.js';
+import { classifyBashOutput, detectShell } from '../src/capabilities/shell/detect.js';
+import { cleanupCommandResults, createRunCommandTool } from '../src/capabilities/shell/tool.js';
+import { readFileTool } from '../src/capabilities/tools/builtin/fs.js';
+import { ToolRegistry } from '../src/capabilities/tools/registry.js';
+import { HookRegistry } from '../src/extensibility/hooks/registry.js';
+import {
+  type LogEvent,
+  type LogSink,
+  StructuredLogger,
+} from '../src/extensibility/logging/index.js';
+import { ToolExecutor } from '../src/runtime/executor/index.js';
 
 describe('cross-platform shell discovery and execution', () => {
+  it('runs a quoted native Node executable and observes both output and its real file effect', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-native-node-'));
+    directories.push(root);
+    fs.writeFileSync(
+      path.join(root, 'probe.mjs'),
+      "import fs from 'node:fs'; fs.writeFileSync('observed.txt','executed'); console.log('NATIVE_NODE_EXECUTED');\n",
+    );
+    const environment = detectShell({
+      cwd: root,
+      preference: process.platform === 'win32' ? 'powershell' : 'bash',
+    });
+    const command =
+      process.platform === 'win32'
+        ? `& '${process.execPath.replaceAll("'", "''")}' ./probe.mjs`
+        : `'${process.execPath.replaceAll("'", "'\\''")}' ./probe.mjs`;
+    const result = await createRunCommandTool(environment).execute({ command }, { rootDir: root });
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain('NATIVE_NODE_EXECUTED');
+    expect(fs.readFileSync(path.join(root, 'observed.txt'), 'utf8')).toBe('executed');
+  }, 15000);
   const directories: string[] = [];
   afterEach(async () => {
     for (const directory of directories.splice(0)) {

@@ -8,6 +8,16 @@ import {
 } from '../scripts/check-host-boundary.js';
 
 describe('Headless Core architecture boundary', () => {
+  it('rejects runtime dependencies on concrete context implementations', () => {
+    expect(
+      findCoreHostBoundaryViolations([
+        {
+          file: 'src/runtime/loop/index.ts',
+          source: "import { ContextManager } from '../../context/manager.js';",
+        },
+      ]),
+    ).toMatchObject([{ rule: 'runtime-context' }]);
+  });
   it('detects terminal rendering and CLI dependencies', () => {
     const violations = findCoreHostBoundaryViolations([
       { file: 'stdout.ts', source: 'process.stdout.write("hello");' },

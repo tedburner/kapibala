@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { FileLogSink, recoverIncompleteAudit } from '../src/logging/file-sink.js';
-import type { LogEvent } from '../src/logging/index.js';
+import { FileLogSink, recoverIncompleteAudit } from '../src/extensibility/logging/file-sink.js';
+import type { LogEvent } from '../src/extensibility/logging/index.js';
 
 describe('audit crash recovery', () => {
   const dirs: string[] = [];

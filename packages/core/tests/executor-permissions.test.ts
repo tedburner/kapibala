@@ -2,14 +2,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { ToolExecutor } from '../src/executor/index.js';
-import { HookRegistry } from '../src/hooks/registry.js';
-import { type LogEvent, type LogSink, StructuredLogger } from '../src/logging/index.js';
-import type { SessionApprovalCache } from '../src/security/approval.js';
-import type { ApprovalRequest } from '../src/security/approval.js';
-import { writeFileTool } from '../src/tools/builtin/fs.js';
-import { defineTool } from '../src/tools/index.js';
-import { ToolRegistry } from '../src/tools/registry.js';
+import type { SessionApprovalCache } from '../src/capabilities/security/approval.js';
+import type { ApprovalRequest } from '../src/capabilities/security/approval.js';
+import { writeFileTool } from '../src/capabilities/tools/builtin/fs.js';
+import { defineTool } from '../src/capabilities/tools/index.js';
+import { ToolRegistry } from '../src/capabilities/tools/registry.js';
+import { HookRegistry } from '../src/extensibility/hooks/registry.js';
+import {
+  type LogEvent,
+  type LogSink,
+  StructuredLogger,
+} from '../src/extensibility/logging/index.js';
+import { ToolExecutor } from '../src/runtime/executor/index.js';
 
 class Sink implements LogSink {
   readonly events: LogEvent[] = [];

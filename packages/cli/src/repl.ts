@@ -1,183 +1,126 @@
-import readline from 'node:readline';
 import { AbortError, type AgentSession } from '@kiturone/kapibala';
+import type { ActiveSessionController } from './active-session.js';
 import type { CommandContext, CommandDispatcher } from './commands/dispatcher.js';
-import { type CliApprovalChannel, askWithReadline, confirmWithReadline } from './ui/approval.js';
+import { CliInputCoordinator } from './input-coordinator.js';
+import type { CliApprovalChannel } from './ui/approval.js';
 import { createEventRenderer } from './ui/events.js';
-import { readSecret } from './ui/secret.js';
-import { fitVisible } from './ui/width.js';
+import { CLI_VERSION } from './version.js';
 
 export interface REPLOptions {
   session: AgentSession;
+  controller?: ActiveSessionController;
+  inputCoordinator?: CliInputCoordinator;
   dispatcher: CommandDispatcher;
   context: CommandContext;
   debug?: boolean;
   approvalChannel?: CliApprovalChannel;
 }
 
+/** 统一输入和活动引用的 REPL；取消后等待清理，不缓存旧 Session，不创建额外 stdin 消费者。 */
 export async function startREPL(options: REPLOptions): Promise<void> {
-  const { session, dispatcher, context, debug } = options;
-
-  let activeAbortController: AbortController | null = null;
-  let lastCtrlCTime = 0;
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  options.approvalChannel?.bind((request, signal) => askWithReadline(rl, request, signal));
-  context.confirm = (prompt) => confirmWithReadline(rl, prompt);
-
-  context.readSecret = async (prompt: string) => {
-    const secret = await readSecret(prompt);
-    // readSecret 临时接管同一个 TTY；清除 readline 可能缓存的掩码输入，避免进入下一条命令。
-    (rl as unknown as { line: string }).line = '';
-    (rl as unknown as { cursor: number }).cursor = 0;
-    return secret;
-  };
-
-  const updatePrompt = () => {
-    const active = session.getActiveProfile();
-    rl.setPrompt(
-      `\x1b[36mkpbl\x1b[0m \x1b[90m(${active.id} | ${session.getMode()})\x1b[0m \x1b[32m❯\x1b[0m `,
+  const { dispatcher, context, debug } = options;
+  const input = options.inputCoordinator ?? new CliInputCoordinator();
+  const session = () => options.controller?.session ?? options.session;
+  const operations = new Set<Promise<void>>();
+  let fallbackAbort: AbortController | undefined;
+  let exiting = false;
+  let lastInterrupt = 0;
+  context.dispatcher = dispatcher;
+  context.isInputBusy = () => input.isBusy();
+  context.question = (prompt) => input.question(prompt);
+  context.readSecret = (prompt) => input.readSecret(prompt);
+  context.confirm = (prompt) => input.confirm(prompt);
+  context.select = (config) => input.select(config);
+  options.approvalChannel?.bind((request, signal) => input.approve(request, signal));
+  const statusRenderer = createEventRenderer({ debug });
+  context.renderEvent = (event) => statusRenderer.render(event);
+  const busy = () => options.controller?.isBusy() ?? session().isBusy();
+  const prompt = () =>
+    input.prompt(
+      `kpbl (${session().getActiveProfile().id} | ${session().getMode()} | ${session().conversationId.slice(0, 8)}) ❯ `,
     );
+  const requestExit = () => {
+    exiting = true;
+    input.cancel();
+    options.controller?.abort();
+    fallbackAbort?.abort();
+    input.close();
   };
-
-  // 包装原始 onModelSwitched 回调，切换模型时即时刷新 prompt
-  const originalOnModelSwitched = context.onModelSwitched;
-  context.onModelSwitched = (newProfileId: string) => {
-    originalOnModelSwitched(newProfileId);
-    updatePrompt();
-  };
-
-  const gracefulExit = () => {
-    console.log('\n\x1b[32m再见！🐾\x1b[0m');
-    // 退出前触发 session:end 与插件 teardown(设计文档 §3.2 / §3.3)
-    void session
-      .destroy()
-      .catch(() => undefined)
-      .finally(() => process.exit(0));
-  };
-
-  // 优雅处理 Ctrl+C 中断状态机 (参考 Claude Code CLI 规范)
-  process.on('SIGINT', () => {
+  context.onExit = requestExit;
+  input.onInterrupt(() => {
+    if (busy()) {
+      options.controller?.abort();
+      fallbackAbort?.abort();
+      console.log('\n已请求中止，正在等待工具、摘要与存储清理。');
+      return;
+    }
+    if (input.getLine().trim()) {
+      input.clearLine();
+      prompt();
+      return;
+    }
     const now = Date.now();
-
-    // 1. 处于流式生成或工具执行中：单次按下立即中止当前轮次生成并自愈
-    if (activeAbortController) {
-      activeAbortController.abort();
-      activeAbortController = null;
-      process.stdout.write('\n\x1b[33m^C [当前轮次已中止，会话上下文已就绪]\x1b[0m\n\n');
-      updatePrompt();
-      rl.prompt();
-      return;
-    }
-
-    // 2. 处于等待输入中：
-    // 若当前输入框有输入内容，单次 Ctrl+C 清空当前行
-    if (rl.line && rl.line.trim().length > 0) {
-      process.stdout.write('\n');
-      // 清空当前编辑行
-      (rl as any).line = '';
-      (rl as any).cursor = 0;
-      updatePrompt();
-      rl.prompt();
-      return;
-    }
-
-    // 若输入框为空：
-    if (now - lastCtrlCTime < 1500) {
-      // 连续 2 次快速按下：直接退出程序
-      gracefulExit();
-    } else {
-      lastCtrlCTime = now;
-      process.stdout.write('\n\x1b[90m(再按一次 Ctrl+C 退出程序，或输入 /exit)\x1b[0m\n');
-      updatePrompt();
-      rl.prompt();
+    if (now - lastInterrupt < 1500) requestExit();
+    else {
+      lastInterrupt = now;
+      console.log('\n再按一次 Ctrl+C 退出，或输入 /exit。');
+      prompt();
     }
   });
-
-  // 处理 Ctrl+D / EOF
-  rl.on('close', () => {
-    gracefulExit();
-  });
-
-  const printWelcome = () => {
-    const active = session.getActiveProfile();
-    const cwd = process.cwd();
-
-    // 边框整体宽度 64 列 = 左右竖线各 1 列 + 内容区 62 列。
-    // 内容区补白一律走 fitVisible 按「显示宽度」计算（CJK/emoji 记 2 列），
-    // 不要手写空格 —— 手写极易按「汉字=1 列」估错，导致右边框凸出或错位。
-    const BOX_INNER = 62;
-    const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
-    const row = (content: string): string =>
-      `${cyan('│')}${fitVisible(content, BOX_INNER)}${cyan('│')}`;
-
+  if (input.interactive)
     console.log(
-      [
-        '',
-        cyan(`╭${'─'.repeat(BOX_INNER)}╮`),
-        row('  🐾 \x1b[1m\x1b[37mKapibala (kpbl) v0.0.2\x1b[0m'),
-        row(`  活跃模型: \x1b[32m${active.name}\x1b[0m (${active.modelName})`),
-        row(`  工作目录: \x1b[90m${cwd}\x1b[0m`),
-        row(''),
-        row('  \x1b[1m快捷指令:\x1b[0m'),
-        row('  • \x1b[33m/model\x1b[0m   交互式切换模型与配置向导'),
-        row('  • \x1b[33m/clear\x1b[0m   清空上下文，开启新会话'),
-        row('  • \x1b[33m/help\x1b[0m    查看所有指令与用量状态'),
-        row('  • \x1b[33mCtrl+C\x1b[0m   生成中按 1 次中止当前回答；空闲连按 2 次退出程序'),
-        cyan(`╰${'─'.repeat(BOX_INNER)}╯`),
-        '',
-      ].join('\n'),
+      `\n🐾 Kapibala (kpbl) v${CLI_VERSION}\n会话: ${session().conversationId}\n/new 新建 | /resume 续答 | /context 预算 | /help 命令\n`,
     );
-  };
-
-  printWelcome();
-  updatePrompt();
-  rl.prompt();
-
-  for await (const line of rl) {
-    const input = line.trim();
-    if (!input) {
-      updatePrompt();
-      rl.prompt();
-      continue;
+  prompt();
+  input.onLine((raw) => {
+    if (!raw.trim() || exiting) {
+      prompt();
+      return;
     }
-
-    // 1. 优先检查并分发 Slash 命令
-    const handled = await dispatcher.dispatch(input, context);
-    if (handled) {
-      updatePrompt();
-      rl.prompt();
-      continue;
-    }
-
-    // 2. 正常对话交互，启动流式执行
-    // controller 用局部变量持有：SIGINT 处理器会把全局引用置 null，
-    // 若 catch 里读全局会把中止误判为异常并重复报错。
-    const controller = new AbortController();
-    activeAbortController = controller;
-
-    try {
+    const operation = (async () => {
+      const handled = await dispatcher.dispatch(raw, context);
+      if (handled) return;
+      if (busy()) {
+        console.log('会话忙，请等待执行与清理完成；只读命令仍可查询。');
+        return;
+      }
+      const abort = new AbortController();
+      fallbackAbort = abort;
       const renderer = createEventRenderer({ debug });
-      for await (const event of session.run(input, { signal: controller.signal })) {
-        renderer.render(event);
+      try {
+        const stream = options.controller
+          ? options.controller.run(raw.trim(), { signal: abort.signal })
+          : session().run(raw.trim(), { signal: abort.signal });
+        for await (const event of stream) renderer.render(event);
+      } catch (error) {
+        if (!(error instanceof AbortError) && !abort.signal.aborted)
+          console.error(`执行失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      } finally {
+        renderer.finish();
+        if (fallbackAbort === abort) fallbackAbort = undefined;
       }
-      renderer.finish();
-      process.stdout.write('\n');
-    } catch (err: unknown) {
-      if (err instanceof AbortError || controller.signal.aborted) {
-        // 已由 SIGINT 处理
-      } else {
-        console.log(`\n\x1b[31m发生异常: ${(err as Error).message}\x1b[0m\n`);
-      }
-    } finally {
-      if (activeAbortController === controller) {
-        activeAbortController = null;
-      }
+    })();
+    operations.add(operation);
+    void operation
+      .catch((error) =>
+        console.error(`命令失败: ${error instanceof Error ? error.message : '未知错误'}`),
+      )
+      .finally(() => {
+        operations.delete(operation);
+        if (!exiting && !busy()) prompt();
+      });
+  });
+  try {
+    await input.whenClosed;
+    if (input.interactive) {
+      options.controller?.abort();
+      fallbackAbort?.abort();
     }
-
-    updatePrompt();
-    rl.prompt();
+    await Promise.allSettled([...operations]);
+    statusRenderer.finish();
+    if (options.controller) await options.controller.close();
+    else await session().destroy();
+  } finally {
+    input.close();
   }
 }

@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ToolError } from '../src/errors/index.js';
 import {
   builtinTools,
   editFileTool,
@@ -10,8 +9,9 @@ import {
   grepTool,
   readFileTool,
   writeFileTool,
-} from '../src/tools/builtin/fs.js';
-import { ToolRegistry } from '../src/tools/registry.js';
+} from '../src/capabilities/tools/builtin/fs.js';
+import { ToolRegistry } from '../src/capabilities/tools/registry.js';
+import { ToolError } from '../src/errors/index.js';
 
 /**
  * 内置 fs 工具的端到端行为测试。

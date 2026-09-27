@@ -1,4 +1,4 @@
-import type { SessionEvent } from '@kiturone/kapibala';
+import { ModelError, type SessionEvent, describeModelError } from '@kiturone/kapibala';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createEventRenderer } from '../src/ui/events.js';
 import { displayWidth } from '../src/ui/width.js';
@@ -323,6 +323,97 @@ describe('createEventRenderer tool output', () => {
 });
 
 describe('createEventRenderer request metrics', () => {
+  it('shows summary model details while keeping the history failure notice', () => {
+    const info = describeModelError(new ModelError('Insufficient Balance', { status: 402 }), {
+      operation: 'summary',
+      modelId: 'summary-model',
+    });
+    const output = renderEvents(
+      [
+        {
+          type: 'compaction_failed',
+          conversationId: 'test',
+          kind: 'summary',
+          reason: 'manual',
+          persistence: 'memory',
+          error: '保留最近有效投影',
+          errorCode: info.code,
+          modelError: info,
+          consecutiveFailures: 1,
+        },
+      ],
+      { isTTY: false },
+    );
+    expect(output).toContain('保留最近有效投影');
+    expect(output).toContain('摘要模型请求失败');
+    expect(output).toContain('Insufficient Balance');
+    expect(output).toContain('HTTP 402');
+  });
+  it('shows provider details, advice and the failed phase in the footer', () => {
+    const error = new ModelError('Insufficient Balance', {
+      status: 402,
+      providerCode: 'insufficient_quota',
+      stage: 'response',
+    });
+    const modelError = describeModelError(error, {
+      modelId: 'deepseek-flash',
+      operation: 'primary',
+    });
+    const output = renderEvents(
+      [
+        { type: 'error', error, modelError },
+        {
+          type: 'run_finish',
+          metrics: {
+            startTime: 0,
+            endTime: 1,
+            totalDurationMs: 1,
+            modelDurationMs: 1,
+            toolDurationMs: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            turns: 1,
+            toolCalls: 0,
+            status: 'failed',
+            failure: modelError,
+          },
+        },
+      ],
+      { isTTY: false },
+    );
+    expect(output).toContain('Insufficient Balance');
+    expect(output).toContain('HTTP 402');
+    expect(output).toContain('insufficient_quota');
+    expect(output).toContain('建议:');
+    expect(output).toContain('失败: 主任务');
+  });
+  it.each([false, true])('explicitly reports failed runs after thinking (TTY: %s)', (isTTY) => {
+    const output = renderEvents(
+      [
+        { type: 'thinking_delta', thinking: 'Let me check package.json' },
+        {
+          type: 'run_finish',
+          metrics: {
+            startTime: 0,
+            endTime: 71000,
+            totalDurationMs: 71000,
+            modelDurationMs: 71000,
+            toolDurationMs: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            turns: 1,
+            toolCalls: 0,
+            status: 'failed',
+          },
+        },
+      ],
+      { isTTY },
+    );
+    expect(output).toContain('本次请求失败，未获得完整答复');
+    expect(output).toContain('可以在当前会话重试');
+  });
   it('shows the last-request context usage separately from aggregate run tokens', () => {
     const output = renderEvent(
       {

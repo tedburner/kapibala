@@ -10,12 +10,12 @@ export function formatTokenCount(tokens: number): string {
   return String(tokens);
 }
 
-/** 格式化最近一次内部模型请求的上下文占用。 */
+/** 格式化最近一次内部模型请求的上下文占用；估算输入显式标注，不冒充实测或计费数据。 */
 export function formatContextUsage(usage: ContextUsage, separator = '/'): string {
-  const prefix = usage.estimatedLimit ? '≈' : '';
+  const prefix = usage.estimatedLimit || usage.estimatedUsage ? '≈' : '';
   const limit = formatTokenCount(usage.limitTokens);
   if (usage.usedTokens === undefined || usage.percent === undefined) {
     return `${prefix}未知${separator}${limit}`;
   }
-  return `${prefix}${formatTokenCount(usage.usedTokens)}${separator}${limit} (${usage.percent.toFixed(1)}%)`;
+  return `${prefix}${formatTokenCount(usage.usedTokens)}${separator}${limit} (${usage.percent.toFixed(1)}%${usage.estimatedUsage ? ', 估算' : ''})`;
 }

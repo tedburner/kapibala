@@ -1,0 +1,84 @@
+{
+  "model": "deepseek-flash",
+  "date": "2026-09-26T13:55:31.161Z",
+  "workload": "scripted reproducible history; real model summaries and continuation answers",
+  "checks": [
+    {
+      "name": "multi-file-constraints",
+      "beforeMessages": 6,
+      "afterMessages": 3,
+      "restoredEqual": true,
+      "first": [
+        {
+          "type": "compaction_start",
+          "conversationId": "multi-file-constraints",
+          "reason": "manual",
+          "persistence": "disk",
+          "kind": "summary",
+          "beforeTokens": 1888
+        },
+        {
+          "type": "compaction_finish",
+          "conversationId": "multi-file-constraints",
+          "reason": "manual",
+          "persistence": "disk",
+          "kind": "summary",
+          "beforeTokens": 1888,
+          "afterTokens": 420,
+          "checkpointId": "01a0de00-0a1d-7694-aea5-fee985de940e",
+          "coveredEndMessageId": "legacy-25833e6197b4cd251004949f9b491a92153664b25a5df22ff17d77b4e11b98e5",
+          "modelId": "deepseek-flash",
+          "durationMs": 8489
+        }
+      ],
+      "summaryUsage": [
+        {
+          "usage": {
+            "promptTokens": 1265,
+            "completionTokens": 1846,
+            "totalTokens": 3111,
+            "cachedPromptTokens": 0
+          },
+          "modelId": "deepseek-flash"
+        }
+      ],
+      "baseline": {
+        "output": "**约束（必须保留）**\n- `add(a,b)` 接口签名不变\n- 不修改 `package.json`\n- 只改 `src/add.ts` 与 `tests/add.test.ts`\n- 所有变更都必须有验证\n\n**已验证结论**\n- 仅有一次 `src/add.ts` 读取观察：其中含 `export function add(a:number,b:number){return a+b;}` 及大量 `// existing source line` 注释行。\n- 除此之外无验证：未运行测试、未运行类型检查、未读 `package.json`、未读 `tests/add.test.ts`。\n\n**待办**\n- 补溢出边界测试（如 `Number.MAX_SAFE_INTEGER` 等）\n- 确认负数与零测试是否真实存在于 `tests/add.test.ts`（用户陈述，未经工具验证）\n- 对最终变更运行验证（测试/类型检查）\n\n**不能声称成功的未知项**\n- 不能声称负数/零测试已通过（未运行，仅用户口述）\n- 不能声称负数支持已实现——读取到的实现只是 `a+b`，未见显式负数处理代码，且该读取是历史观察，不代表当前文件状态\n- 不能声称 `package.json` 未被改动（未读取）\n- 不能声称溢出边界行为（截断/精度丢失/抛错）符合预期（未定义未验证）\n- 不能声称任何文件已写入、测试已执行或任务已完成",
+        "usage": {
+          "promptTokens": 1539,
+          "completionTokens": 631,
+          "totalTokens": 2170,
+          "cachedPromptTokens": 0
+        },
+        "finishReason": "stop",
+        "durationMs": 7451
+      },
+      "compressed": {
+        "output": "- **必须保留的约束**  \n  1. 保留 `add(a, b)` 接口。  \n  2. 不修改 `package.json`。  \n  3. 所有变更都必须有验证。  \n  4. 变更范围仅限 `src/add.ts` 与 `tests/add.test.ts`（历史决策）。\n\n- **已验证/历史观察**  \n  - 已读取 `src/add.ts`，内容含 `export function add(a:number,b:number){return a+b;}` 及大量既有源码行。  \n  - 历史记录称“已完成负数与零测试”，但未确认通过，不能视为当前成功。  \n  - `modifiedFiles` 为空，历史记录显示未修改文件；无失败文件操作、无未知文件操作。\n\n- **待办**  \n  - 补溢出边界。\n\n- **不能声称成功的未知副作用**  \n  - 历史 `unknownEffects` 为空，但不能据此推断“完全无副作用”或“变更已成功”。  \n  - 不能声称负数支持已完成、溢出边界已覆盖、测试已通过；当前未重新验证。",
+        "usage": {
+          "promptTokens": 517,
+          "completionTokens": 1318,
+          "totalTokens": 1835,
+          "cachedPromptTokens": 0
+        },
+        "finishReason": "stop",
+        "durationMs": 6376
+      },
+      "cacheUsage": "provider reported; sample only",
+      "toolExecution": "none; quality fixture only",
+      "qualityValidated": false,
+      "validationScope": "One reproducible fixture; full real-tool task quality not validated"
+    },
+    {
+      "name": "command-output-and-unknown-effect",
+      "qualityValidated": false,
+      "reason": "Real model summary did not commit: MODEL_STREAM,SUMMARY_INCOMPLETE"
+    },
+    {
+      "name": "rolling-summary-restart",
+      "qualityValidated": false,
+      "reason": "Real model summary did not commit: MODEL_STREAM,SUMMARY_INCOMPLETE"
+    }
+  ],
+  "status": "incomplete"
+}

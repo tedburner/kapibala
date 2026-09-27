@@ -62,10 +62,10 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - 造型铁律：口鼻必须是"上窄下宽"的钝形深色块（水豚最关键辨识特征）；不要大面积奶油色口鼻斑（会读成泰迪熊）；头不要撑满画面（会读成河马）。
 - README 抬头 `<picture>` + `prefers-color-scheme` 双主题（dark 版仅字标换暖白 `#F0E4D6`）；tagline 固定：**心如止水，稳定如初 —— AI Agent Harness**。
 
-## 当前状态（2026-09-26）
+## 当前状态（2026-09-27）
 
 - 版本号采用十进制位进位：补丁位只使用 `0–9`，`v0.0.9` 之后为 `v0.1.0`（不使用 `v0.0.10`）；后续同理。
 - v0.0.1 既有能力与后续路线图见 `docs/RELEASES.md`，不在规则文件重复维护能力清单。
-- 工作区版本为 v0.0.2：默认结构化运行日志与逐工具审计、四态权限、结构化工具错误、多层项目指令、默认注册的跨平台 `run_command` 已实现。接入与执行边界见 `docs/migration/v0.0.2.md`；版本是否发布以 GitHub Release 和 npm registry 为准。
-- 本机 Windows 构建与验证通过：**38 test files / 284 passed | 3 skipped**；Linux/WSL 隔离副本 **287 passed**，Git Bash 真实命令验收 **21 passed**。远端 CI 发布门禁见 `openspec/changes/v0-0-2-trusted-execution/tasks.md` 第 7.3 项；不要把本地验证当作发布完成。
-- v0.0.3 前置待办：在压缩历史前定义**失败轮次、连续同角色消息与完整工具事务**的 canonical 规范化规则；当前 OpenAI 兼容 Provider 已在 wire 层合并连续 user 并跳过空 assistant。v0.0.4 Anthropic 原生 Provider 必须消费该合法序列。
+- 工作区版本为 v0.0.3：独立历史会话、显式续答、消息生命周期、完整轮次保护、保守两级压缩和 Core 六大领域重构已实现。迁移边界见 `docs/migration/v0.0.3.md`，验收与真实模型限制见 `docs/verification/v0.0.3.md`；版本是否发布以 GitHub Release 和 npm registry 为准。
+- 本地门禁与 Windows/POSIX 真实进程验收记录统一见 `docs/verification/v0.0.3.md`；保留 shell、权限、审计与 Headless 回归门禁。三组真实工具任务小规模质量验收已完成，证据与费用限制见 `docs/verification/v0.0.3-live-quality.md`；不把小样本验证当作通用质量保证或发布完成。
+- v0.0.3 已定义**失败轮次、连续同角色消息与完整工具事务**的 canonical 规范化规则；原历史独立于模型投影，恢复缺失结果记录为 OUTCOME_UNKNOWN，不重放工具。v0.0.4 Anthropic 原生 Provider 必须消费该合法序列。

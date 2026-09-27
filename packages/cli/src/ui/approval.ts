@@ -2,7 +2,7 @@ import type readline from 'node:readline';
 import type { ApprovalChannel, ApprovalChoice, ApprovalRequest } from '@kiturone/kapibala';
 
 /** 将控制字符和双向文本控制符显示为转义文本，保留完整审批内容且禁止终端重绘。 */
-function escapeApprovalText(value: string): string {
+export function escapeApprovalText(value: string): string {
   return [...value]
     .map((character) => {
       const code = character.codePointAt(0)!;

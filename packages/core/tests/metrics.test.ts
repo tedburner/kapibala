@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { AgentSession } from '../src/context/session/index.js';
 import type { ModelEvent, ModelProfile, ModelProvider, ModelRequest } from '../src/index.js';
-import { AgentSession } from '../src/session/index.js';
 import { ScriptedProvider, makeEchoToolRegistry } from './helpers/mock.js';
 
 class MockMetricProvider implements ModelProvider {
@@ -158,7 +158,7 @@ describe('Step Logs and TurnMetrics', () => {
     });
   });
 
-  it('keeps context usage unknown when the provider omits usage data', async () => {
+  it('shows explicitly estimated context usage when the provider omits usage data', async () => {
     const provider = new ScriptedProvider([
       [{ type: 'text_delta', text: 'done' }, { type: 'message_stop' }],
     ]);
@@ -168,12 +168,55 @@ describe('Step Logs and TurnMetrics', () => {
       // consume the full run
     }
 
-    expect(session.getStats().contextUsage).toEqual({
-      usedTokens: undefined,
+    expect(session.getStats().contextUsage).toMatchObject({
+      usedTokens: session.getContextSnapshot()?.estimate.total,
       limitTokens: 1_000_000,
-      percent: undefined,
+      estimatedUsage: true,
       estimatedLimit: true,
     });
+    expect(session.getStats().contextUsage.usedTokens).toBeGreaterThan(0);
+  });
+
+  it('uses the failed request estimate instead of the earlier successful step usage', async () => {
+    const first = new ScriptedProvider([
+      [
+        {
+          type: 'tool_call_finish',
+          id: 'metric-read',
+          name: 'echo',
+          input: { value: 'file content' },
+        },
+        {
+          type: 'message_stop',
+          usage: { promptTokens: 7000, completionTokens: 100, totalTokens: 7100 },
+        },
+      ],
+    ]);
+    let requests = 0;
+    const session = new AgentSession({
+      defaultProfile: { ...profile, contextWindow: '1M' },
+      defaultProvider: {
+        name: 'failed-metrics',
+        async *create(request) {
+          if (requests++ === 0) yield* first.create(request);
+          else throw new Error('stream failed');
+        },
+        assembleToolResults: first.assembleToolResults.bind(first),
+      },
+    });
+    for (const tool of makeEchoToolRegistry().list()) session.tools.register(tool);
+    for await (const _ of session.run('test interrupted metrics')) {
+    }
+    const stats = session.getStats();
+    expect(stats.lastRunMetrics?.status).toBe('failed');
+    expect(stats.usageKnown).toBe(false);
+    expect(stats.contextUsage).toMatchObject({
+      usedTokens: session.getContextSnapshot()?.estimate.total,
+      estimatedUsage: true,
+      estimatedLimit: false,
+    });
+    expect(stats.contextUsage.usedTokens).not.toBe(7000);
+    expect(stats.lastRunMetrics?.promptTokens).toBe(7000);
   });
 
   it('rejects invalid context windows at session profile boundaries', () => {

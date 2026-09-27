@@ -5,7 +5,7 @@ import {
   commandAuditSummary,
   executionFingerprint,
   projectSafeFields,
-} from '../src/logging/index.js';
+} from '../src/extensibility/logging/index.js';
 
 describe('structured logging', () => {
   it('records operation events normally and adds diagnostics only in debug mode', async () => {
@@ -50,6 +50,12 @@ describe('structured logging', () => {
   });
 
   it('projects only safe fields and never keeps secrets or model content', () => {
+    expect(projectSafeFields({ transportCode: 'UND_ERR_SOCKET' })).toEqual({
+      transportCode: 'UND_ERR_SOCKET',
+    });
+    expect(projectSafeFields({ transportCode: 'private connection details' })).toEqual({
+      transportCode: '[redacted]',
+    });
     expect(
       projectSafeFields({
         toolName: 'read_file',
