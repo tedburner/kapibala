@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionLock } from '../src/context/session-lock.js';
 import { SessionManager, resolveSessionProject } from '../src/context/session-manager.js';
 import { SessionStore } from '../src/context/session-store.js';
@@ -11,7 +11,10 @@ describe('independent sessions', () => {
   beforeEach(() => {
     directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-manager-'));
   });
-  afterEach(() => fs.rmSync(directory, { recursive: true, force: true }));
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
   const manager = () =>
     new SessionManager({ cwd: directory, homeDirectory: path.join(directory, 'home') });
 
@@ -54,14 +57,20 @@ describe('independent sessions', () => {
   });
 
   it('creates isolated sessions and continues only the most recent content', async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
     const sessions = manager();
     const a = await sessions.create();
     await a.store.append({ role: 'user', content: [{ type: 'text', text: 'first task' }] });
+    clock.mockReturnValue(now + 1);
     const b = await sessions.create();
     expect(a.conversationId).not.toBe(b.conversationId);
     expect(await b.store.load()).toEqual([]);
     expect((await sessions.continueRecent()).conversationId).toBe(a.conversationId);
-    expect(await sessions.open(a.conversationId.slice(0, 12))).toBe(a);
+    const differentAt = [...a.conversationId].findIndex((char, i) => char !== b.conversationId[i]);
+    const uniquePrefix = a.conversationId.slice(0, differentAt + 1);
+    expect(uniquePrefix.length).toBeLessThan(a.conversationId.length);
+    expect(await sessions.open(uniquePrefix)).toBe(a);
     await sessions.rename(a.conversationId, 'custom\u001b[31m title');
     const list = await sessions.list();
     const renamed = list.items.find((item) => item.conversationId === a.conversationId)!;
