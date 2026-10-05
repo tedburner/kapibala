@@ -20,6 +20,8 @@
     "lint": "pnpm check-architecture && pnpm check-secrets && biome check .",
     "format": "biome format --write .",
     "verify": "pnpm typecheck && pnpm test && pnpm lint",
+    "flow": "tsx scripts/flow.ts",
+    "release": "tsx scripts/flow.ts release",
     "dev": "node scripts/dev.mjs",
     "dev:build": "node scripts/dev.mjs --no-start",
     "dev:cli": "pnpm --filter \"@kiturone/kapibala-cli\" dev",

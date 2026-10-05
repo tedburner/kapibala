@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createReleaseNotes,
+  nextVersion,
   planPublication,
   readRegistry,
   validateNpmVersion,
   validateRelease,
+  validateReleaseNotes,
 } from '../release.js';
 
 const manifests = [
@@ -24,6 +26,15 @@ const existing = {
 };
 
 describe('release validation', () => {
+  it('rejects scaffold placeholders before a release is tagged or published', () => {
+    expect(() => validateReleaseNotes('# Kapibala v0.0.4：<发布主题，发布前替换>')).toThrow(/占位/);
+    expect(() => validateReleaseNotes('本版交付 <发布前补全：一段话概述>')).toThrow(/占位/);
+    expect(() => validateReleaseNotes('已于 <发布日期> 发布')).toThrow(/占位/);
+    expect(() => validateReleaseNotes('<!-- 交付要点：能力、边界、已知限制，逐条列出 -->')).toThrow(
+      /占位/,
+    );
+    expect(() => validateReleaseNotes('# Kapibala v0.0.4\n\n修复历史会话恢复问题。')).not.toThrow();
+  });
   it('requires an npm version with trusted-publishing support', () => {
     for (const version of ['11.5.1', '11.15.0', '12.0.2']) {
       expect(() => validateNpmVersion(version)).not.toThrow();
@@ -56,6 +67,16 @@ describe('release validation', () => {
     ]) {
       expect(() => validateRelease(tag, manifests, '0.0.4')).toThrow(/tag/i);
     }
+  });
+
+  it('carries decimal positions to the next version', () => {
+    expect(nextVersion('0.0.3')).toBe('0.0.4');
+    expect(nextVersion('0.0.9')).toBe('0.1.0');
+    expect(nextVersion('0.9.0')).toBe('0.9.1');
+    expect(nextVersion('0.9.9')).toBe('1.0.0');
+    expect(nextVersion('2.9.9')).toBe('3.0.0');
+    expect(() => nextVersion('0.0.10')).toThrow(/version/i);
+    expect(() => nextVersion('v0.0.3')).toThrow(/version/i);
   });
 
   it('prepares a new publication and skips only an identical existing version', () => {

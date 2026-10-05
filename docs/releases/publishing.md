@@ -19,13 +19,12 @@
 
 ## 发布新版本
 
-1. 更新根、Core、CLI 的 `package.json` 版本，以及 `packages/cli/src/version.ts` 中的 `CLI_VERSION`，四处必须一致。
-2. 准备 `docs/releases/vX.Y.Z.md`，同步迁移与验收说明。补丁位、次版本位只用 0–9，例如 `v0.0.9` 后为 `v0.1.0`。
-3. 完成本地检查、提交并上传代码；发布源提交必须已包含在远端 `main`。
-4. 创建并推送对应标签。下例仅说明下一版的操作，不代表当前已经实现 v0.0.4：
+1. 在 `main` 上准备并提交 `docs/releases/vX.Y.Z.md`，同步迁移与验收说明。可先运行 `pnpm release --scaffold` 生成骨架；发布前必须补全占位内容。补丁位、次版本位只用 0–9，例如 `v0.0.9` 后为 `v0.1.0`。
+2. 确保工作区干净且本地 `main` 不落后远端，运行 `pnpm release [version]`。脚本同步根、Core、CLI 的 `package.json` 和 `CLI_VERSION`，运行 `pnpm verify`，经交互确认后创建 `:bookmark: 发布 vX.Y.Z` 提交及附注标签。可先用 `pnpm release --dry-run` 查看计划；非交互调用必须显式传入 `--yes`。
+3. 手动推送发布提交和标签，发布源提交必须先包含在远端 `main`。下例仅说明下一版的操作，不代表当前已经实现 v0.0.4：
 
 ```bash
-git tag v0.0.4
+git push origin main
 git push origin v0.0.4
 ```
 

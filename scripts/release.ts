@@ -27,6 +27,14 @@ interface ExpectedPackage {
 
 const registry = 'https://registry.npmjs.org';
 const packageNames = ['@kiturone/kapibala', '@kiturone/kapibala-cli'];
+const versionManifestFiles = [
+  'package.json',
+  'packages/core/package.json',
+  'packages/cli/package.json',
+];
+
+/** 与发布标签同构的稳定版本号：major 可多位，minor/patch 只允许 0–9（十进制位进位）。 */
+export const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.[0-9]\.[0-9]$/;
 
 /** OIDC 发布要求 npm 11.5.1 或更新版本；版本不明时拒绝继续发布。 */
 export function validateNpmVersion(version: string): void {
@@ -49,6 +57,41 @@ export function validateRelease(tag: string, manifests: Manifest[], cliVersion: 
     throw new Error('Unexpected release package names');
   }
   return version;
+}
+
+/** 十进制位进位推演下一版本：0.0.9 → 0.1.0，0.9.9 → 1.0.0。 */
+export function nextVersion(current: string): string {
+  if (!STABLE_VERSION_PATTERN.test(current)) throw new Error(`Invalid current version: ${current}`);
+  const [major, minor, patch] = current.split('.').map(Number);
+  if (patch < 9) return `${major}.${minor}.${patch + 1}`;
+  if (minor < 9) return `${major}.${minor + 1}.0`;
+  return `${major + 1}.0.0`;
+}
+
+/** 工作区版本唯一真源：三个清单与 CLI 展示版本必须完全一致，否则拒绝继续。 */
+export function readWorkspaceVersion(root: string): string {
+  const versions = new Set<string>();
+  for (const file of versionManifestFiles) {
+    versions.add(readJson(path.join(root, file)).version);
+  }
+  const cliSource = fs.readFileSync(path.join(root, 'packages/cli/src/version.ts'), 'utf8');
+  versions.add(/CLI_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(cliSource)?.[1] ?? '');
+  if (versions.size !== 1) throw new Error('Workspace versions are inconsistent across manifests');
+  const version = [...versions][0];
+  if (!version) throw new Error('Workspace versions are missing');
+  return version;
+}
+
+/** 拒绝未补全的发布说明骨架，供本地流程与 CI 发布检查共用。 */
+export function validateReleaseNotes(markdown: string): void {
+  if (
+    !markdown.trim() ||
+    /<发布主题，发布前替换>|<发布前补全：一段话概述>|<发布日期>|<!-- 交付要点：能力、边界、已知限制，逐条列出 -->/.test(
+      markdown,
+    )
+  ) {
+    throw new Error('发布说明仍含占位内容，请补全后再发布');
+  }
 }
 
 /** 已发布的版本不可覆盖；重试只允许跳过内容一致且 latest 正确的包，不允许回退 latest。 */
@@ -122,14 +165,13 @@ function readJson(file: string): Manifest {
 }
 
 function checkWorkspace(root: string, tag: string): string {
-  const manifests = ['package.json', 'packages/core/package.json', 'packages/cli/package.json'].map(
-    (file) => readJson(path.join(root, file)),
-  );
+  const manifests = versionManifestFiles.map((file) => readJson(path.join(root, file)));
   const cliSource = fs.readFileSync(path.join(root, 'packages/cli/src/version.ts'), 'utf8');
   const cliVersion = /CLI_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(cliSource)?.[1] ?? '';
   const version = validateRelease(tag, manifests, cliVersion);
-  if (!fs.existsSync(path.join(root, `docs/releases/${tag}.md`)))
-    throw new Error('Release notes are missing');
+  const notesFile = path.join(root, `docs/releases/${tag}.md`);
+  if (!fs.existsSync(notesFile)) throw new Error('Release notes are missing');
+  validateReleaseNotes(fs.readFileSync(notesFile, 'utf8'));
   return version;
 }
 
