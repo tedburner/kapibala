@@ -97,17 +97,7 @@ jobs:
       - name: Publish Core then CLI using npm trusted publishing
         run: node scripts/release.ts publish "$RELEASE_TAG" "$RELEASE_DIR"
       - name: Verify installation from the public registry
-        run: |
-          set -euo pipefail
-          smoke="$RUNNER_TEMP/kapibala-registry-smoke"
-          npm install --prefix "$smoke" --ignore-scripts --no-audit --no-fund --package-lock=false \
-            --registry=https://registry.npmjs.org \
-            "@kiturone/kapibala@$RELEASE_VERSION" "@kiturone/kapibala-cli@$RELEASE_VERSION"
-          test "$(node "$smoke/node_modules/@kiturone/kapibala-cli/dist/bin.js" --version)" = "kpbl v$RELEASE_VERSION"
-          node "$smoke/node_modules/@kiturone/kapibala-cli/dist/bin.js" --help
-          cd "$smoke"
-          node --input-type=module -e 'import assert from "node:assert/strict"; import * as sdk from "@kiturone/kapibala"; assert.equal(typeof sdk.AgentSession, "function"); assert.equal(typeof sdk.SessionManager, "function")'
-          node -e 'const assert = require("node:assert/strict"); assert.equal(typeof require("@kiturone/kapibala").AgentSession, "function")'
+        run: node scripts/release.ts smoke "$RELEASE_TAG" "$RUNNER_TEMP/kapibala-registry-smoke"
       - name: Create GitHub Release and upload verified assets
         env:
           GH_TOKEN: ${{ github.token }}

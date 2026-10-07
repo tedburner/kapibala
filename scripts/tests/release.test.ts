@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createReleaseNotes,
+  isPropagationLag,
   nextVersion,
   planPublication,
   readRegistry,
@@ -77,6 +78,17 @@ describe('release validation', () => {
     expect(nextVersion('2.9.9')).toBe('3.0.0');
     expect(() => nextVersion('0.0.10')).toThrow(/version/i);
     expect(() => nextVersion('v0.0.3')).toThrow(/version/i);
+  });
+
+  it('treats only registry propagation lag as a retryable smoke failure', () => {
+    expect(
+      isPropagationLag(
+        'npm failed: npm error code ETARGET\nnpm error notarget No matching version found for @kiturone/kapibala-cli@0.0.4.',
+      ),
+    ).toBe(true);
+    expect(isPropagationLag('npm failed: 1')).toBe(false);
+    expect(isPropagationLag('npm failed: npm error code ECONNREFUSED')).toBe(false);
+    expect(isPropagationLag('npm failed: npm error code E404 - Not found')).toBe(false);
   });
 
   it('prepares a new publication and skips only an identical existing version', () => {
