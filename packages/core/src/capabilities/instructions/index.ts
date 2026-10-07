@@ -31,8 +31,10 @@ const MAX_LEVELS = 16;
 
 /** 按用户层和项目根至 cwd 的目录链读取指令，全部成功后才返回快照。 */
 export function loadInstructions(options: InstructionLoadOptions): InstructionSnapshot {
-  const root = fs.realpathSync(options.projectRoot);
-  const cwd = fs.realpathSync(options.cwd);
+  // 必须用 native 解析与 resolveSessionProject 的 projectRoot 对齐：JS realpath 不展开
+  // Windows 8.3 短名（如 CI 临时目录里的 RUNNER~1），会让包含性检查对同一目录误判越界。
+  const root = fs.realpathSync.native(options.projectRoot);
+  const cwd = fs.realpathSync.native(options.cwd);
   const relative = path.relative(root, cwd);
   if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error('Instruction cwd is outside project root');
