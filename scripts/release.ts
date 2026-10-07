@@ -175,7 +175,7 @@ function checkWorkspace(root: string, tag: string): string {
   return version;
 }
 
-function run(command: string, args: string[], capture = false): string {
+function run(command: string, args: string[], capture = false, cwd?: string): string {
   if (process.platform === 'win32' && command === 'npm') {
     const npmCli = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
     if (!fs.existsSync(npmCli)) throw new Error('Cannot locate the npm CLI bundled with Node.js');
@@ -185,6 +185,7 @@ function run(command: string, args: string[], capture = false): string {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
     stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+    cwd,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} failed: ${result.stderr ?? result.status}`);
@@ -261,6 +262,79 @@ async function publish(root: string, tag: string, directory: string): Promise<vo
   );
 }
 
+/** 判定安装失败是否为 registry CDN 传播延迟（新版本尚不可见）；其余失败不属于可重试范围。 */
+export function isPropagationLag(message: string): boolean {
+  return /ETARGET|notarget/i.test(message);
+}
+
+const SMOKE_INSTALL_ATTEMPTS = 10;
+const SMOKE_INSTALL_DELAY_MS = 30_000;
+
+/**
+ * 在隔离目录从公共 registry 安装双包并验收 CLI 版本、帮助输出与 SDK ESM/CJS 导出。
+ * registry API 确认可见后，CDN 边缘对 packument 的缓存仍可能落后数分钟；安装报
+ * ETARGET/notarget 视为传播延迟并按有限次退避重试，其余错误立即中止，不掩盖真实故障。
+ */
+async function smokeInstall(root: string, tag: string, directory: string): Promise<void> {
+  const version = checkWorkspace(root, tag);
+  fs.rmSync(directory, { recursive: true, force: true });
+  fs.mkdirSync(directory, { recursive: true });
+  // 显式 package.json 阻止 npm 沿目录树向上合并外层的依赖状态。
+  fs.writeFileSync(
+    path.join(directory, 'package.json'),
+    JSON.stringify({ name: 'kapibala-registry-smoke', private: true }),
+  );
+  const install = [
+    'install',
+    '--prefix',
+    directory,
+    '--ignore-scripts',
+    '--no-audit',
+    '--no-fund',
+    '--package-lock=false',
+    '--registry',
+    registry,
+    ...packageNames.map((name) => `${name}@${version}`),
+  ];
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      run('npm', install, true);
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt >= SMOKE_INSTALL_ATTEMPTS || !isPropagationLag(message)) throw error;
+      console.log(
+        `Registry CDN has not served ${version} yet (attempt ${attempt}/${SMOKE_INSTALL_ATTEMPTS}); retrying in ${SMOKE_INSTALL_DELAY_MS / 1000}s`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, SMOKE_INSTALL_DELAY_MS));
+    }
+  }
+  const cliBin = path.join(directory, 'node_modules', packageNames[1], 'dist', 'bin.js');
+  if (run('node', [cliBin, '--version'], true).trim() !== `kpbl v${version}`)
+    throw new Error(`Registry-installed CLI version mismatch: expected kpbl v${version}`);
+  run('node', [cliBin, '--help'], true);
+  run(
+    'node',
+    [
+      '--input-type=module',
+      '-e',
+      'import assert from "node:assert/strict"; import * as sdk from "@kiturone/kapibala"; assert.equal(typeof sdk.AgentSession, "function"); assert.equal(typeof sdk.SessionManager, "function")',
+    ],
+    true,
+    directory,
+  );
+  run(
+    'node',
+    [
+      '-e',
+      'const assert = require("node:assert/strict"); assert.equal(typeof require("@kiturone/kapibala").AgentSession, "function")',
+    ],
+    true,
+    directory,
+  );
+  console.log(`Registry smoke install verified ${version}`);
+}
+
 async function main(): Promise<void> {
   const [command, tag, destination] = process.argv.slice(2);
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -270,11 +344,13 @@ async function main(): Promise<void> {
     console.log(`Release version verified: ${version}`);
   } else if (command === 'publish' && destination) {
     await publish(root, tag, path.resolve(destination));
+  } else if (command === 'smoke' && destination) {
+    await smokeInstall(root, tag, path.resolve(destination));
   } else if (command === 'notes' && destination) {
     const markdown = fs.readFileSync(path.join(root, `docs/releases/${tag}.md`), 'utf8');
     fs.writeFileSync(destination, createReleaseNotes(markdown, tag));
   } else {
-    throw new Error('Usage: node scripts/release.ts check|publish|notes <tag> [destination]');
+    throw new Error('Usage: node scripts/release.ts check|publish|smoke|notes <tag> [destination]');
   }
 }
 

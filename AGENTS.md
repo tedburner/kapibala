@@ -29,7 +29,7 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 
 - **日常开发在分支上进行，main 始终保持可发布**：`pnpm flow feat <topic>`（支持 `fix` / `chore` / `docs`，topic 省略时自动生成「日期-时分」名）联网成功时从最新 `origin/main` 切出，获取远端失败时从本地 `main` 切出并自动切换；任意命名用 `pnpm flow branch <name>`。合并回主干用 `git merge --no-ff <分支>`。
 - **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。自动推演下一版本（十进制位进位，`0.0.9 → 0.1.0`）、同步四处版本号（3 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 vX.Y.Z`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明必须先写好 `docs/releases/vX.Y.Z.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）。
-- **推送永远手动**：`git push origin main` 后 `git push origin vX.Y.Z`；tag 推送触发 Actions（verify → npm trusted publishing → GitHub Release）。
+- **推送永远手动**：先 `git push origin main` 并等 main 的 Verify 工作流通过，再 `git push origin vX.Y.Z`（提前暴露门禁失败，避免移动已推送的标签）；tag 推送触发 Actions（verify → npm trusted publishing → GitHub Release）。
 - 版本推演与工作区版本读取的唯一实现在 `scripts/release.ts`（`nextVersion` / `readWorkspaceVersion`），不要在别处另写逻辑；分支与发布编排在 `scripts/flow.ts`。
 
 ## 核心不变量
