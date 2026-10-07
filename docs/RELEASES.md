@@ -26,7 +26,7 @@
 | **v0.0.1** | **核心骨架、交互 CLI 与既有能力收尾**（已完成） | OpenAI 兼容协议、Slash 命令、首次配置向导、PathSandbox、崩溃历史自愈、请求级指标与上下文占用、Headless Core 架构门禁、跨平台一键开发脚本 | CLI (`kpbl`) + Core SDK |
 | **v0.0.2** | **可信执行与项目指令**（功能已实现；[发布说明](releases/v0.0.2.md)） | 默认结构化运行日志与逐工具审计、四态 `SessionMode`、执行前授权与人工审批、结构化工具错误、多层 `AGENTS.md`；`run_command` 默认注册，解释器发现只用 `PATH` 与运行时探针（native Bash → WSL → PowerShell 兜底），每条命令仍单独裁决；`FullAccess` 只能在本次会话显式选择 | Core + CLI 增量 |
 | **v0.0.3** | **历史会话、消息生命周期与上下文管理**（已发布；[发布说明](releases/v0.0.3.md)，[验收记录](verification/v0.0.3.md)） | 以 Pi 会话投影与滚动摘要为主体：独立版本化 JSONL、稳定 ID、SessionManager、历史列表与分支提示，默认新建及显式恢复；规范完整工具事务；保守读取/搜索结果剪裁 → 增量摘要，借鉴 Codex 恢复一致性，各级先提交后激活；摘要首尾截断与总预算、真实文件操作详情、可恢复失败熔断、稳定序列化与效果实测；完整保护当前任务和最近成功交互，超限停止，任务内部压缩后续再做；Core 六大领域重构及命令统一 | Core + CLI 增量 |
-| **v0.0.4** | **多协议与场景模型路由** | Anthropic 原生 Messages、OpenAI 原生 Responses、现有 Chat Completions 兼容层加固；共享合法历史与完整工具事务，扩展 `default` / `summary` 路由并落地 `fast` / `planning` / `execution` 显式场景选择，提供结构化思考事件基础；小模型意图分类留待后续 | Core + CLI 增量 |
+| **v0.0.4** | **多协议与场景模型路由**（已发布；[发布说明](releases/v0.0.4.md)，[验收记录](verification/v0.0.4.md)） | Anthropic 原生 Messages、OpenAI 原生 Responses、现有 Chat Completions 兼容层加固；共享合法历史与完整工具事务，扩展 `default` / `summary` 路由并落地 `fast` / `planning` / `execution` 显式场景选择，提供结构化思考事件基础；小模型意图分类留待后续 | Core + CLI 增量 |
 | **v0.0.5** | **技能体系 (Skills)** | SkillRegistry、渐进式披露、按需 `load_skill`、Skill 来源与独立权限约束；对宿主暴露可搜索的 Skill 元数据 | Core 内增量 |
 | **v0.0.6** | **MCP 生态扩展** | 独立包接入 Stdio，再扩展 HTTP；MCP 工具按 source 动态批量上下线，装载受项目信任与权限策略约束；MCP Prompt 注册为可搜索的用户命令 | `@kiturone/kapibala-mcp` |
 | **v0.0.7** | **会话增强与多智能体** | 基于 v0.0.3 的独立会话、Envelope 因果 `parentId` 与基本 SessionManager，增强跨项目全文检索、历史分叉（DAG 树）、归档与多会话协调；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理权限只继承或收紧 | Core + 宿主增量 |
@@ -38,7 +38,7 @@
 
 - 原生 Anthropic Messages 与 OpenAI Responses 分别接入同一个 Agent 工具循环；保留第三方 Chat Completions 兼容网关，并加固工具参数、停止原因与断流校验。内置 Claude/OpenAI Profile 显式选择对应原生协议，自建 Profile 不自动改协议。
 - `planning`、`execution`、`fast` 由用户或 SDK 显式选择，一次 `run` 内角色不随工具调用自动变化；`summary` 独立。提供可见思考块事件和按模型计算的输出预算，不推断隐藏思考。
-- 版本开发范围、实施顺序、迁移与验收门槛见 [v0.0.4 完整开发方案](superpowers/specs/2026-10-05-v0-0-4-development-plan.md)，协议细节见 [技术设计](superpowers/specs/2026-10-05-v0-0-4-multi-protocol-routing-design.md)。技术方案于 2026-10-06 确认，工作区实现及本地验收于 2026-10-07 完成；41 项进度见 [OpenSpec tasks](../openspec/changes/v0-0-4-multi-protocol-routing/tasks.md)，证据见 [验收记录](verification/v0.0.4.md)，接入见 [迁移说明](migration/v0.0.4.md)。真实付费 API 未验收，本版尚未发布。自动意图分类、托管工具、多模态和界面折叠不进入本版。
+- 版本开发范围、实施顺序、迁移与验收门槛见 [v0.0.4 完整开发方案](superpowers/specs/2026-10-05-v0-0-4-development-plan.md)，协议细节见 [技术设计](superpowers/specs/2026-10-05-v0-0-4-multi-protocol-routing-design.md)。技术方案于 2026-10-06 确认，工作区实现及本地验收于 2026-10-07 完成；41 项进度见 [OpenSpec tasks](../openspec/changes/v0-0-4-multi-protocol-routing/tasks.md)，证据见 [验收记录](verification/v0.0.4.md)，接入见 [迁移说明](migration/v0.0.4.md)。真实付费 API 未验收；npm 与 GitHub Release 已于 2026-10-07 发布并完成远端安装验收。自动意图分类、托管工具、多模态和界面折叠不进入本版。
 
 ### v0.0.3 已确认交付边界（2026-09-27）
 

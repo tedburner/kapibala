@@ -7,7 +7,7 @@
 
   **心如止水，稳定如初 —— AI Agent Harness**
 
-  <p><a href="package.json"><img src="https://img.shields.io/badge/workspace-0.0.3-blue.svg" alt="Version"></a> <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript" alt="TypeScript"></a> <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520.0-green?logo=node.js" alt="Node.js"></a> <a href="https://pnpm.io/"><img src="https://img.shields.io/badge/pnpm-workspace-orange?logo=pnpm" alt="pnpm"></a> <a href="https://vitest.dev/"><img src="https://img.shields.io/badge/tested_with-Vitest-yellow?logo=vitest" alt="Vitest"></a> <a href="https://biomejs.dev/"><img src="https://img.shields.io/badge/code_style-Biome-60a5fa?logo=biome" alt="Code Style"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-purple.svg" alt="License"></a></p>
+  <p><a href="package.json"><img src="https://img.shields.io/badge/workspace-0.0.4-blue.svg" alt="Version"></a> <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript" alt="TypeScript"></a> <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520.0-green?logo=node.js" alt="Node.js"></a> <a href="https://pnpm.io/"><img src="https://img.shields.io/badge/pnpm-workspace-orange?logo=pnpm" alt="pnpm"></a> <a href="https://vitest.dev/"><img src="https://img.shields.io/badge/tested_with-Vitest-yellow?logo=vitest" alt="Vitest"></a> <a href="https://biomejs.dev/"><img src="https://img.shields.io/badge/code_style-Biome-60a5fa?logo=biome" alt="Code Style"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-purple.svg" alt="License"></a></p>
 
   <p>
     <a href="#-项目介绍">项目介绍</a> •
@@ -38,23 +38,24 @@
 
 ## ⚡ 核心特性
 
-- 🌐 **OpenAI 兼容协议（零外部模型 SDK 依赖）**：基于 Node.js 原生 `fetch` 与 SSE 解析器，支持 DeepSeek 的 `reasoning_content` 与多分片 Tool Call。内置厂商 profile 通过 OpenAI 兼容端点或网关接入，不代表各厂商原生协议已实现；Anthropic 原生 Provider 属于 v0.0.4。工具调用只在完整流结束且参数通过解析后执行。
+- 🌐 **OpenAI 兼容协议（零外部模型 SDK 依赖）**：基于 Node.js 原生 `fetch` 与 SSE 解析器，支持 DeepSeek 的 `reasoning_content` 与多分片 Tool Call。内置厂商 profile 通过 OpenAI 兼容端点或网关接入，Claude / OpenAI 官方模型已切换到下方 v0.0.4 原生协议。工具调用只在完整流结束且参数通过解析后执行。
 - 🎮 **流畅交互式 CLI 与 Slash 命令系统**：单一命令 `kpbl` 启动交互终端，支持打字机流式输出与思考链高亮；内置 `/model`、`/settings`、`/clear`、`/status`、`/help` 等斜杠命令；生成中 `Ctrl+C` 触发 `AbortController` 优雅中断并修补历史。
 - 🧙 **首次冷启动向导 (First-Run Setup Wizard)**：全新环境自动引导选择提供商与密钥；内置只读连通性探测（`GET {baseURL}/models`，不产生计费 token），探测失败只告警不阻断 —— 私有网关常常未实现该端点。配置持久化至 `~/.kapibala/settings.json`（自动 0600 权限）。
 - 🛡️ **安全沙箱与能力隔离 (PathSandbox)**：工具能力分层（`fs:read`、`fs:write`、`exec`、`net:outbound` 等）；沙箱强制校验工作区物理路径，防御 `../` 越界与 Symlink 穿透。内置工具：`read_file`、`write_file`、`edit_file`、`glob`、`grep`。
 - 💾 **独立历史会话与可恢复投影（v0.0.3）**：受管 CLI 每会话一份版本化 JSONL，user / assistant / tool_result 消息级串行落盘，列表使用可重建缓存。尾部残片隔离后修复，中部损坏或未知版本明确拒绝；缺失工具结果以 OUTCOME_UNKNOWN 修复，不重放工具。剪裁与摘要保留原文，检查点先 fsync 提交再激活；普通追加不宣称跨消息原子事务。
+- 🔀 **原生多协议与场景模型路由（v0.0.4）**：Anthropic Messages、OpenAI Responses 与 Chat Completions 兼容层共享同一 AgentSession、工具事务与 canonical 历史；Profile 显式选择协议，错误不自动降级。`planning` / `execution` / `fast` 角色在整个 run 固定绑定，输出预算可覆盖，思考内容以结构化事件透出。
 - 📊 **细粒度步骤日志与关键性能指标**：每一执行阶段派发结构化日志事件（请求发起、首 Token 到达、流式结束、工具调用起止、单轮结束）。默认底栏展示 Git 分支、总耗时、上下文占用、本轮输入/输出 Token 与工具耗时；`--debug` 追加 **TTFT** 与模型耗时。
 - 🧾 **可信执行（v0.0.2）**：默认写入脱敏的结构化运行日志与逐工具审批审计，记录人工批准、规则或模式自动批准、拒绝及操作结果；`--debug` 仅增加开发诊断。`Approval`、`Plan`、`Auto`、`FullAccess` 共享执行前授权门，`FullAccess` 只能在本次会话显式选择，且仍受显式规则和路径约束。
 - 💻 **跨平台命令工具（v0.0.2）**：`run_command` 默认注册，每条命令仍需按当前模式审批或裁决；解释器发现只用 `PATH` 与运行时探针，Windows 自动按 native Bash → WSL → PowerShell 兜底（不写死安装路径），其他平台使用 Bash，也可用 `--shell` 指定解释器或其全路径、用 `--disable-shell` 关闭。命令进程以当前系统用户权限运行，不受文件工具的 PathSandbox 限制。
 - 🧩 **Headless Core 与多宿主复用**：`@kiturone/kapibala` 只负责模型、循环、工具、历史、Hook 与结构化 `SessionEvent`，不包含任何终端 / GUI 组件；TUI、桌面、Web 等宿主消费同一套事件流。`pnpm check-architecture` 已加入 lint 门禁，防止 Core 反向依赖宿主。
 - 🔒 **代码级凭证防泄漏防护**：独立的自动化密钥特征扫描脚本 `pnpm check-secrets` 并入 lint 流程；`.gitignore` 深度过滤环境密钥与历史数据，严禁真实 API Key 被意外提交。
-- 🧭 **默认模型与摘要路由**：主任务使用当前 `default`，摘要使用已配置的 `summary`，未绑定时回退当前默认模型。`planning`、`execution`、`fast` 已有配置与 SDK 绑定槽位，阶段性调用和 CLI 角色选择留在 v0.0.4。
+- 🧭 **默认模型与摘要路由**：主任务使用当前 `default`，摘要使用已配置的 `summary`，未绑定时回退当前默认模型。`planning`、`execution`、`fast` 场景路由已随 v0.0.4 交付：CLI 角色绑定、`--role` 与 SDK `role` 在整个 run 内固定生效。
 
 ---
 
 ## 🚀 极速测试与启动 (One-Minute Quickstart)
 
-需要 Node.js 20 或更高版本。**v0.0.3 已发布**，本 README 的历史会话与压缩说明对应本版。发布内容见 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/v0.0.3)；调试当前源码请使用 `pnpm dev`。
+需要 Node.js 20 或更高版本。**v0.0.4 已发布**（原生多协议与场景模型路由），历史会话与压缩说明对应 v0.0.3。发布内容见 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/v0.0.4)；调试当前源码请使用 `pnpm dev`。
 
 ### 从 npm 安装使用
 
@@ -228,10 +229,10 @@ pnpm build && node packages/cli/dist/bin.js
 
 ## 🧩 SDK 使用指南 (`@kiturone/kapibala`)
 
-`@kiturone/kapibala` 是独立的 Headless Agent 核心包。本文示例使用 v0.0.3：
+`@kiturone/kapibala` 是独立的 Headless Agent 核心包。本文示例使用 v0.0.4：
 
 ```bash
-npm install @kiturone/kapibala@0.0.3
+npm install @kiturone/kapibala@0.0.4
 ```
 
 ### 1. 基础对话与流式事件监听
