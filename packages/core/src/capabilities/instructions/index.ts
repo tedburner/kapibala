@@ -29,12 +29,27 @@ const MAX_TOTAL_BYTES = 128 * 1024;
 // 目录链层级上限；判定计数含项目根自身，故比较时用 segments.length + 1
 const MAX_LEVELS = 16;
 
-/** 按用户层和项目根至 cwd 的目录链读取指令，全部成功后才返回快照。 */
+/** 存在的文件解析为 native 真实路径；不存在的候选保持绝对路径形式，等待后续按 ENOENT 跳过。 */
+function canonicalizeOptionalFile(file: string): string {
+  try {
+    return fs.realpathSync.native(file);
+  } catch {
+    return path.resolve(file);
+  }
+}
+
+/**
+ * 按用户层和项目根至 cwd 的目录链读取指令，全部成功后才返回快照。
+ * 所有路径统一用 native 语义解析（与 resolveSessionProject 的 projectRoot 对齐）：JS realpath
+ * 不展开 Windows 8.3 短名（CI 临时目录形如 RUNNER~1），混用会让包含性检查把同一目录误判越界、
+ * 让去重错过同一文件；返回的 source 路径因此是 canonical 形式，调用方按 canonical 比较。
+ */
 export function loadInstructions(options: InstructionLoadOptions): InstructionSnapshot {
-  // 必须用 native 解析与 resolveSessionProject 的 projectRoot 对齐：JS realpath 不展开
-  // Windows 8.3 短名（如 CI 临时目录里的 RUNNER~1），会让包含性检查对同一目录误判越界。
   const root = fs.realpathSync.native(options.projectRoot);
   const cwd = fs.realpathSync.native(options.cwd);
+  const userFile = canonicalizeOptionalFile(
+    options.userFile ?? path.join(os.homedir(), '.kapibala', 'AGENTS.md'),
+  );
   const relative = path.relative(root, cwd);
   if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error('Instruction cwd is outside project root');
@@ -42,7 +57,6 @@ export function loadInstructions(options: InstructionLoadOptions): InstructionSn
   const segments = relative ? relative.split(path.sep) : [];
   if (segments.length + 1 > MAX_LEVELS)
     throw new Error(`Instruction directory chain exceeds ${MAX_LEVELS} levels`);
-  const userFile = options.userFile ?? path.join(os.homedir(), '.kapibala', 'AGENTS.md');
   const candidates = [userFile];
   let directory = root;
   candidates.push(path.join(directory, 'AGENTS.md'));

@@ -85,7 +85,7 @@ describe('session instruction and mode snapshots', () => {
     }
     expect(lists[1]).toEqual(['read', 'write']);
     expect(prompts[1]).toContain('second instruction');
-    expect(session.getInstructionSources()).toEqual([instruction]);
+    expect(session.getInstructionSources()).toEqual([fs.realpathSync.native(instruction)]);
   });
 
   it('fails first instruction load but retains a previous snapshot on later failure', async () => {
@@ -106,7 +106,7 @@ describe('session instruction and mode snapshots', () => {
     for await (const _event of session.run('second')) {
       /* consume */
     }
-    expect(session.getInstructionSources()).toEqual([instruction]);
+    expect(session.getInstructionSources()).toEqual([fs.realpathSync.native(instruction)]);
     const fresh = new AgentSession({
       defaultProfile: profile,
       defaultProvider: new ScriptedProvider([]),
