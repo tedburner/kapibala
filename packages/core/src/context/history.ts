@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { validateProtocolContent } from '../models/protocol-state.js';
 import type { CanonicalMessage, ToolResultBlock } from '../types/index.js';
 export { createMessageId } from '../types/identity.js';
 
@@ -7,6 +8,7 @@ export function identifyHistory(
   messages: readonly CanonicalMessage[],
   source: string,
 ): CanonicalMessage[] {
+  for (const message of messages) validateProtocolContent(message.content);
   return messages.map((message, position) => ({
     ...structuredClone(message),
     id:
@@ -17,17 +19,24 @@ export function identifyHistory(
   }));
 }
 
+/**
+ * 一次缺失工具结果的补齐：result 为 OUTCOME_UNKNOWN 占位，只用于闭合历史事务。
+ * 持久化为 history_repair 记录后，恢复时叠加到原工具事务；不重放工具。
+ */
 export interface HistoryRepair {
   assistantId: string;
   toolCallId: string;
   result: ToolResultBlock;
 }
 
+/** normalizeHistory 的产物：合法请求视图、来源追踪与修复/丢弃审计。 */
 export interface NormalizedHistory {
   messages: CanonicalMessage[];
   /** 与 messages 同序的原始消息 ID 集合；修复结果关联原始 assistant。 */
   sources: string[][];
+  /** 已注入 messages 的缺失结果占位；结构与 history_repair 持久记录一致。 */
   repairs: HistoryRepair[];
+  /** 被忽略的孤儿、迟到或重复工具结果提示；只诊断，不回写调用方输入。 */
   diagnostics: string[];
 }
 
@@ -41,7 +50,8 @@ export function normalizeHistory(input: readonly CanonicalMessage[]): Normalized
   const calls = new Set<string>();
   const push = (message: CanonicalMessage, sources: string[]) => {
     const last = result.messages.at(-1);
-    const pure = (m: CanonicalMessage) => m.content.every((b) => b.type === 'text');
+    const pure = (m: CanonicalMessage) =>
+      m.content.every((b) => b.type === 'text' && !b.protocolMeta);
     if (
       last &&
       !last.contextSummary &&
@@ -116,12 +126,16 @@ export function normalizeHistory(input: readonly CanonicalMessage[]): Normalized
   return result;
 }
 
+/** 以用户输入为界划分的一次交互及其终态；保护范围与摘要资格都以它为单位。 */
 export interface InteractionBoundary {
   interactionId: string;
+  /** completed 需显式终态或推断成功；failed 只来自显式终态，缺省 interrupted。 */
   status: 'completed' | 'failed' | 'interrupted';
+  /** 该交互按历史顺序覆盖的原始消息 ID。 */
   messageIds: string[];
 }
 
+/** 运行收尾时记录的交互终态；有 start 无 finish 的运行恢复后保持 interrupted。 */
 export interface InteractionTerminal {
   interactionId: string;
   status: InteractionBoundary['status'];
@@ -174,9 +188,15 @@ export function indexInteractions(
       last.role === 'assistant' &&
       (!last.state || last.state === 'completed') &&
       last.content.every(
-        (b) => b.type === 'text' || b.type === 'thinking' || b.type === 'redacted_thinking',
+        (b) =>
+          b.type === 'text' ||
+          b.type === 'thinking' ||
+          b.type === 'redacted_thinking' ||
+          b.type === 'provider_state',
       ) &&
-      last.content.some((b) => b.type === 'text' && b.text.trim()) &&
+      last.content.some(
+        (b) => b.type === 'text' && b.text.trim() && b.protocolMeta?.phase !== 'commentary',
+      ) &&
       !normalized.repairs.length
     )
       boundary.status = 'completed';

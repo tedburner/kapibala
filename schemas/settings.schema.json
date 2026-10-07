@@ -17,7 +17,7 @@
     },
     "modelRouting": {
       "type": "object",
-      "description": "场景模型路由蓝图。v0.0.1 仅持久化契约，运行时统一回退到 defaultModel。",
+      "description": "显式场景模型绑定。planning/execution/fast 通过 /model route 或 --role 选择；summary 仅用于摘要，未绑定时回退 default。",
       "additionalProperties": false,
       "properties": {
         "planning": {
@@ -34,7 +34,7 @@
         },
         "fast": {
           "type": "string",
-          "description": "快速分类/意图识别场景使用的模型 id。"
+          "description": "用户显式选择的快速问答模型 id，不自动分类或切换角色。"
         }
       }
     },
@@ -70,8 +70,8 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["openai-compatible"],
-          "description": "v0.0.1 固定走 OpenAI 兼容协议。"
+          "enum": ["openai-compatible", "anthropic", "openai-responses"],
+          "description": "显式选择 Chat Completions、Anthropic Messages 或 OpenAI Responses；自建网关不根据模型名称自动迁移。"
         },
         "baseURL": {
           "type": "string",
@@ -109,6 +109,29 @@
         "supportsThinking": {
           "type": "boolean",
           "description": "是否解析 reasoning_content 为规范 thinking 块。"
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "主任务含思考的总输出上限；内置 OpenAI 默认 32768、Claude 默认 16384、兼容模型默认 4096，用户更低覆盖会保留。摘要目的预算仍不超过 4096。"
+        },
+        "anthropicWorkspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "可选 Anthropic 工作区 ID，仅原生 Messages 协议使用。"
+        },
+        "chatCapabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Chat 端点显式能力；缺省维持既有参数基线，并要求合法 finish_reason 和 DONE。",
+          "properties": {
+            "maxTokensField": { "enum": ["max_tokens", "max_completion_tokens"] },
+            "supportsStreamingUsage": { "type": "boolean" },
+            "supportsTemperature": { "type": "boolean" },
+            "requiresDone": { "type": "boolean" },
+            "replayReasoningContent": { "type": "boolean" }
+          }
         }
       }
     }

@@ -41,6 +41,10 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 
 ## 约定
 
+- **注释约定（强制）**：所有导出符号（class / function / interface / type / const / enum）必须有简体中文 JSDoc，写**约束、边界、为什么**
+  （保证什么、不做什么、何时失败、调用方注意什么），风格参照现有代码；类的重要公开方法、易误解的字段与复杂私有逻辑块同样需要注释。
+  **新增功能代码必须随实现同步带注释**，不留无注释的导出面；禁止复述代码的空话注释、禁止引用 review/PR/日期。
+  修改行为时同步修订受影响注释 —— 注释与代码语义不符按 bug 处理。
 - 品牌拼写只允许 **`Kapibala`**（禁止少一个 i 的旧拼法）；配置目录 **`.kapibala`**；错误基类 `KapibalaError`；默认 `agentName` 为 `'Kapibala'`。
 - `/model` 的厂商族推断统一走 `packages/cli/src/settings.ts` 的 `detectProviderFamily`，不要在命令层另写启发式；密钥解析走同族回退（`FAMILY_KEY_ENV`），不做跨厂商兜底。
 - **密钥按厂商族共用（一个厂商只需配一次）**：分组键统一走 `credentialGroup()` —— 可识别厂商按 family 归组，`unknown` 退化到按端点 host 隔离（否则多个自建网关会串用同一把 key）；分组展示名走 `describeCredentialGroup()`。

@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import type { Capability } from '../tools/index.js';
 import type { ShellScope } from './permissions.js';
 
+/**
+ * 人工审批的五选一结果。allow_once / deny_once 只作用于本次执行；
+ * allow_session / deny_session 由执行器按精确调用范围写入会话缓存（allow_session 还要求请求允许会话级缓存）；
+ * cancel 表示放弃审批，一律拒绝且绝不进入缓存。
+ */
 export type ApprovalChoice =
   | 'allow_once'
   | 'allow_session'
@@ -16,9 +21,11 @@ export interface ApprovalRequest {
   input: Record<string, unknown>;
   rootDir: string;
   shell?: ShellScope;
+  /** 宿主是否允许本次请求写入会话级允许缓存；deny_session 的缓存不受此限制。 */
   sessionAllowed: boolean;
 }
 
+/** 宿主实现的审批入口；未提供通道时执行器按非交互直接拒绝，通道抛错视同 cancel。 */
 export interface ApprovalChannel {
   requestApproval(request: ApprovalRequest, signal?: AbortSignal): Promise<ApprovalChoice>;
 }

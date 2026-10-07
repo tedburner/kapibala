@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+/** 受支持的解释器家族；wsl 是 Windows 上的 WSL bash launcher，路径与输出语义与 native bash 不同。 */
 export type ShellKind = 'bash' | 'wsl' | 'pwsh' | 'powershell';
 /** auto / 具名解释器，或用户显式提供的解释器可执行文件全路径。 */
 export type ShellPreference = 'auto' | ShellKind | (string & {});
 
+/** 探测成功后固定的解释器身份；executableDigest 参与命令审批指纹，解释器被替换即失配。 */
 export interface ShellEnvironment {
   kind: ShellKind;
   executable: string;
@@ -16,8 +18,11 @@ export interface ShellEnvironment {
 }
 
 export interface ShellDetectOptions {
+  /** 'auto'、具名解释器，或解释器可执行文件全路径；含路径分隔符或 .exe 后缀按显式路径处理。 */
   preference?: ShellPreference;
+  /** 探测与后续执行的基准目录；探测前先取 realpath，符号链接会被展开。 */
   cwd: string;
+  /** 以下两项供测试注入平台与 PATH；缺省取当前进程的值。 */
   platform?: NodeJS.Platform;
   pathEnv?: string;
 }

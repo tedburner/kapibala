@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { ModelError } from '../../errors/index.js';
+import { validateProtocolContent } from '../../models/protocol-state.js';
 import {
   type CanonicalMessage,
   type ToolResultBlock,
@@ -9,6 +11,10 @@ import {
 } from '../../types/index.js';
 import type { MessageStore } from './index.js';
 
+/**
+ * 旧版单文件 JSONL MessageStore：每行一条消息，无版本化状态能力。
+ * 写入为同步追加，不做 fsync 或单写者保护；恢复时容错跳过损坏行并闭合悬挂事务。
+ */
 export class JSONLMessageStore implements MessageStore {
   readonly filePath: string;
 
@@ -20,7 +26,9 @@ export class JSONLMessageStore implements MessageStore {
     }
   }
 
+  /** 校验协议内容后追加一行 JSON；不补身份、不查重、不 fsync。 */
   async append(message: CanonicalMessage): Promise<void> {
+    validateProtocolContent(message.content);
     const record = {
       ts: message.timestamp ?? Date.now(),
       role: message.role,
@@ -32,6 +40,7 @@ export class JSONLMessageStore implements MessageStore {
     fs.appendFileSync(this.filePath, `${JSON.stringify(record)}\n`, 'utf-8');
   }
 
+  /** 读取全部消息；半截损坏行忽略，悬挂 tool_use 就地补 OUTCOME_UNKNOWN 结果。 */
   async load(): Promise<CanonicalMessage[]> {
     if (!fs.existsSync(this.filePath)) {
       return [];
@@ -47,6 +56,7 @@ export class JSONLMessageStore implements MessageStore {
       try {
         const record = JSON.parse(trimmed);
         if (record.role && record.content) {
+          validateProtocolContent(record.content);
           messages.push({
             role: record.role,
             content: record.content,
@@ -56,7 +66,8 @@ export class JSONLMessageStore implements MessageStore {
             state: record.state,
           });
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof ModelError) throw error;
         // 遇到半截脏行忽略，实现容错恢复
       }
     }
@@ -67,6 +78,7 @@ export class JSONLMessageStore implements MessageStore {
     return messages;
   }
 
+  /** 删除整个文件；文件不存在时静默成功。 */
   async clear(): Promise<void> {
     if (fs.existsSync(this.filePath)) {
       fs.unlinkSync(this.filePath);

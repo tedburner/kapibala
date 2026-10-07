@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+/** 事件严重度；debug / trace 仅在 StructuredLogger 显式开启 debug 时写入。 */
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
+/** 事件通道：operation 为运行日志，audit 为审批与操作审计；两者持久化保证与保留策略不同。 */
 export type LogChannel = 'operation' | 'audit';
+/** 允许落盘的字段值类型；复杂结构必须先降维为标量或受控摘要。 */
 export type LogField = string | number | boolean | null;
 
 /** 单条可持久化的脱敏运行或审计事件。 */
@@ -24,6 +27,7 @@ export interface LogSink {
   write(event: LogEvent): Promise<void>;
 }
 
+/** 调用方提供的宽松输入；fields 仅白名单字段经脱敏校验后进入 LogEvent。 */
 export interface LogInput {
   level: LogLevel;
   event: string;

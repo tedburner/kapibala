@@ -242,7 +242,7 @@ describe('Step Logs and TurnMetrics', () => {
     expect(session.getActiveProfile().id).toBe(profile.id);
   });
 
-  it('does not leave the session busy when the active profile becomes invalid during a run', async () => {
+  it('isolates the active snapshot from caller mutation and releases the session after a run', async () => {
     const mutableProfile: ModelProfile = { ...profile, contextWindow: '1M' };
     const provider = new ScriptedProvider([
       [
@@ -266,7 +266,9 @@ describe('Step Logs and TurnMetrics', () => {
       }
     };
 
-    await expect(consumeRun('invalid profile')).rejects.toThrow(/contextWindow/i);
+    await expect(consumeRun('mutated external profile')).resolves.toBeUndefined();
+    expect(session.getActiveProfile().contextWindow).toBe('1M');
+    expect(session.isBusy()).toBe(false);
 
     invalidateProfile = false;
     mutableProfile.contextWindow = '1M';

@@ -4,11 +4,17 @@ import path from 'node:path';
 import readline from 'node:readline';
 import type { LogEvent, LogSink } from './index.js';
 
+/** FileLogSink 的构造项；保留与落盘策略按通道强制，调用方传值不能放宽。 */
 export interface FileLogSinkOptions {
+  /** 日志目录；不存在时按 0o700 创建。 */
   directory: string;
+  /** 通道前缀，同时决定文件名与保留、同步策略。 */
   prefix: 'operation' | 'audit';
+  /** 单文件字节上限，超出后换下一个序号文件；缺省 10MB。 */
   maxBytes?: number;
+  /** 按天保留的天数；仅 operation 通道生效，audit 恒为长期保留。 */
   retentionDays?: number;
+  /** 每条写入后强制 fsync；audit 通道强制开启。 */
   sync?: boolean;
 }
 
@@ -54,6 +60,7 @@ export class FileLogSink implements LogSink {
       .reduce((total, name) => total + fs.statSync(path.join(this.directory, name)).size, 0);
   }
 
+  /** 优先写入当天未满的最后一个序号文件，超限或无同名文件时开下一个序号。 */
   private chooseFile(date: string, bytes: number): string {
     const names = fs
       .readdirSync(this.directory)
@@ -71,6 +78,7 @@ export class FileLogSink implements LogSink {
     );
   }
 
+  /** 按文件名中的日期删除早于保留期的自有文件；删除依据文件名而非文件 mtime。 */
   private cleanupExpired(currentDate: string): void {
     const current = Date.parse(`${currentDate}T00:00:00.000Z`);
     const cutoff = current - (this.retentionDays ?? 0) * 86_400_000;

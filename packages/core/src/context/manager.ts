@@ -6,6 +6,7 @@ import {
   ModelError,
   describeModelError,
 } from '../errors/index.js';
+import { projectProtocolHistory } from '../models/protocol-state.js';
 import type { ModelProfile, ModelRouter } from '../models/router.js';
 import type { CanonicalMessage, ModelRequest, SessionEvent, Usage } from '../types/index.js';
 import {
@@ -74,6 +75,17 @@ interface FailureState {
 const digest = (value: unknown) =>
   createHash('sha256').update(stableSerialize(value)).digest('hex');
 
+/**
+ * 主任务的 Profile 与请求覆盖共用有效上限；分别校验后取更低值，禁止非法值被裁剪掩盖。
+ * @returns 准备请求与只读展示使用的同一输出预留及输入预算。
+ */
+function createRequestBudget(profile: ModelProfile, request: ModelRequest): ContextBudget {
+  const profileBudget = createContextBudget(profile.contextWindow, profile.maxOutputTokens);
+  if (request.maxTokens === undefined) return profileBudget;
+  const requestBudget = createContextBudget(profile.contextWindow, request.maxTokens);
+  return requestBudget.outputReserve < profileBudget.outputReserve ? requestBudget : profileBudget;
+}
+
 /** 固定验证原因映射，绝不把 Provider 异常正文或模型输出写入事件。 */
 function summaryFailureCode(error: unknown): string {
   if (error instanceof ModelError) return error.code;
@@ -101,37 +113,59 @@ function summaryFailureCode(error: unknown): string {
   return Object.hasOwn(codes, error.message) ? codes[error.message] : 'SUMMARY_VALIDATION_FAILED';
 }
 
+/**
+ * 最近一次请求准备或只读检查发布的上下文快照，供宿主展示与诊断。
+ * 反映原始历史与实际请求两侧状态；不代表工具执行结果，也不承诺下次压缩行为。
+ */
 export interface ContextSnapshot {
   conversationId: string;
   modelId: string;
+  /** 最终请求指纹；observe 只对匹配指纹的请求回填实测 usage。 */
   fingerprint: string;
   budget: ContextBudget;
   estimate: TokenEstimate;
+  /** 最近成功交互及其后全部交互的原始消息 ID；剪裁与摘要不得越过。 */
   protectedMessageIds: string[];
+  /** 原始历史条数；与 projectedMessageCount 的差值来自摘要覆盖与压缩投影。 */
   rawMessageCount: number;
   projectedMessageCount: number;
+  /** 模型或请求配置变化后为 true，直到下一次准备成功。 */
   stale: boolean;
+  /** 匹配指纹请求的实测 usage；缺失表示尚未观测，不按零推断。 */
   actualPromptTokens?: number;
   actualCachedPromptTokens?: number;
   /** false 表示只读静态估算，尚未执行下一请求的动态 Hook。 */
   dynamicKnown: boolean;
+  /** 当前检查点摘要消息的估算占用；无检查点为 0。 */
   summaryTokens: number;
   checkpointId?: string;
+  /** 累计被替换为占位描述的成功工具结果数。 */
   prunedResults: number;
+  /** 已提交（含恢复自持久状态）的摘要检查点次数。 */
   summaryCount: number;
+  /** 当前配置纪元内连续摘要失败次数；达到 3 次暂停自动摘要。 */
   consecutiveFailures: number;
+  /** 熔断生效标志；阈值触发的压缩被暂停，手动压缩仍可重试。 */
   automaticSummaryPaused: boolean;
+  /** disk 有版本化 Store 支撑；memory 只在内存，unsupported 禁用剪裁与摘要。 */
   persistence: 'disk' | 'memory' | 'unsupported';
 }
 
+/** ContextManager 的宿主注入；除 conversationId 外均可缺省，缺省时按保守方式降级。 */
 export interface ContextManagerOptions {
+  /** 提供状态能力时启用持久剪裁与摘要；旧 Store 降级为仅内存并给出诊断。 */
   store?: MessageStore;
   estimator?: TokenEstimator;
   conversationId: string;
+  /** 存储降级、无效状态记录等非致命事件的脱敏诊断通道。 */
   onDiagnostic?: (message: string) => void;
+  /** 摘要角色绑定来源；缺省时跳过二级摘要，仅保留一级剪裁。 */
   router?: ModelRouter;
+  /** 转发给文件观察提取；项目根不作为历史工具相对路径的推断依据。 */
   projectRoot?: string;
+  /** 当前已注册的内置工具名集合；剪裁白名单只认可其中的内置只读工具。 */
   builtInToolNames?: () => ReadonlySet<string>;
+  /** 每个摘要 attempt 的使用量回调；在候选校验前触发，失败摘要仍计消耗。 */
   onSummaryUsage?: (attemptId: string, usage: Usage | undefined, modelId: string) => Promise<void>;
 }
 
@@ -234,7 +268,10 @@ export class ContextManager {
   }
 
   /**
-   * 最终 Hook 之后统一预算；输出 reserve 同时约束实际 maxTokens，超限零 Provider 调用。
+   * 最终 Hook 之后统一预算；Profile 与请求的更低覆盖同时约束输出预留和实际 maxTokens。
+   * 非法输出配置或输入超限在 Provider 调用前失败；不使用固定 4096 覆盖原生模型上限。
+   * 签名或加密续答可禁止压缩；此时仍估算并拒绝超预算请求，不剪裁历史或调用摘要网络。
+   * @param allowCompaction 是否允许当前请求剪裁/摘要；冻结私有续答前缀时传 false。
    * @returns 语义事件及准备完成的请求，不改变持久历史。
    */
   async *prepare(
@@ -243,28 +280,34 @@ export class ContextManager {
     profile: ModelProfile,
     runId?: string,
     reason: CompactionReason = 'threshold',
+    allowCompaction = true,
   ): AsyncGenerator<SessionEvent, ModelRequest> {
-    const budget = createContextBudget(profile.contextWindow);
-    if (
-      request.maxTokens !== undefined &&
-      (!Number.isSafeInteger(request.maxTokens) || request.maxTokens <= 0)
-    )
-      throw new Error('Invalid output token budget');
+    const budget = createRequestBudget(profile, request);
     let prepared: ModelRequest = {
       ...request,
-      maxTokens: Math.min(request.maxTokens ?? budget.outputReserve, budget.outputReserve),
+      maxTokens: budget.outputReserve,
     };
     const estimate = (req: ModelRequest) =>
       this.estimator.estimate(req, `${profile.id}:${profile.modelName}`);
-    const base = this.project(history);
+    const base = projectProtocolHistory(
+      this.project(history),
+      {
+        protocol: profile.provider,
+        modelName: profile.modelName,
+        baseURL: profile.baseURL,
+        workspaceId: profile.anthropicWorkspaceId,
+      },
+      request.context,
+    );
     const index = indexInteractions(history, this.terminals);
     const protectedIds = new Set(index.protectedMessageIds);
     const coveredPosition = this.checkpoint
       ? history.findIndex((m) => m.id === this.checkpoint!.coveredEndMessageId)
       : -1;
     const eligibleIds = new Set<string>();
-    const baseSources = normalizeHistory(history.slice(coveredPosition + 1)).sources;
-    const baseRaw = normalizeHistory(history.slice(coveredPosition + 1)).messages;
+    const normalizedBase = normalizeHistory(history.slice(coveredPosition + 1));
+    const baseSources = normalizedBase.sources;
+    const baseRaw = normalizedBase.messages;
     // Hook 改写、删除或重排来源时保守停止切分；新增不可追踪内容始终留在最终请求。
     const knownOrder = prepared.messages
       .filter((m) => base.some((original) => original.id === m.id))
@@ -333,6 +376,7 @@ export class ContextManager {
         provider: summaryProfile.provider,
         baseURL: summaryProfile.baseURL,
         contextWindow: summaryProfile.contextWindow,
+        maxOutputTokens: summaryProfile.maxOutputTokens,
       },
       policy: POLICY_VERSION,
     });
@@ -345,6 +389,7 @@ export class ContextManager {
     };
     const prefix = history.filter((m) => eligibleIds.has(m.id!));
     if (
+      allowCompaction &&
       prefix.length &&
       this.persistence !== 'unsupported' &&
       (reason !== 'threshold' || estimate(prepared).total >= budget.trigger)
@@ -526,17 +571,20 @@ export class ContextManager {
   getSnapshot(): ContextSnapshot | undefined {
     return this.snapshot ? structuredClone(this.snapshot) : undefined;
   }
-  /** 从当前静态投影估算，不执行 Hook/Provider 或更新状态；恢复后即可查看检查点。 */
+  /**
+   * 从当前静态投影估算，不执行 Hook/Provider 或更新状态；恢复后即可查看检查点。
+   * 输出预留与准备请求使用同一 Profile/请求覆盖规则；非法覆盖也在只读检查时失败。
+   */
   inspect(
     history: readonly CanonicalMessage[],
     request: ModelRequest,
     profile: ModelProfile,
   ): ContextSnapshot {
-    const budget = createContextBudget(profile.contextWindow);
+    const budget = createRequestBudget(profile, request);
     return {
       ...this.buildSnapshot(
         history,
-        request,
+        { ...request, maxTokens: budget.outputReserve },
         profile,
         budget,
         indexInteractions(history, this.terminals).protectedMessageIds,

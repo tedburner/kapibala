@@ -22,10 +22,13 @@ import {
 } from '../../extensibility/logging/index.js';
 import type { ToolResultBlock, ToolUseBlock } from '../../types/index.js';
 
+/** ToolExecutor 的构造项；审计写入需要 eventLogger 与 sessionId 同时提供，否则不产生审计。 */
 export interface ExecutorOptions {
   tools: ToolRegistry;
   hooks: HookRegistry;
+  /** 工具执行的绝对根目录；路径解析与审批均以此为基准。 */
   rootDir: string;
+  /** 会话级取消信号；与 cancel() 的内部信号合并生效。 */
   signal?: AbortSignal;
   logger?: (msg: string) => void;
   /** 单次工具执行超时(毫秒)。异步挂起的工具超时后返回 isError 结果，避免永久卡死会话循环 */
@@ -33,14 +36,22 @@ export interface ExecutorOptions {
   eventLogger?: EventLogger;
   sessionId?: string;
   runId?: string;
+  /** 固定模式或每次裁决时读取的取值函数；宿主可中途切换。 */
   mode?: SessionMode | (() => SessionMode);
   permissionRules?: readonly PermissionRule[];
+  /** 审批入口；缺省视为非交互环境，需要询问的调用一律拒绝。 */
   approvalChannel?: ApprovalChannel;
+  /** 会话内 allow_session / deny_session 审批缓存；缺省使用实例私有缓存。 */
   approvalCache?: SessionApprovalCache;
 }
 
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
 
+/**
+ * 工具执行器：按「审计 → 钩子裁决 → 权限裁决 → 执行 → 结果闭合」处理单次调用。
+ * 所有拒绝与异常都闭合为 isError 的工具结果，不向调用方抛出；
+ * 同一 run 内参数完全相同的 never 失败会被拒绝重复执行。
+ */
 export class ToolExecutor {
   private readonly tools: ToolRegistry;
   private readonly hooks: HookRegistry;
@@ -82,6 +93,7 @@ export class ToolExecutor {
     this.cancellation.abort();
   }
 
+  /** 串行执行全部调用并返回与入参顺序一致的结果；某个结果要求用户介入后，其余调用直接拒绝。 */
   async runAll(
     calls: ToolUseBlock[],
     onProgress?: (event: {
@@ -279,7 +291,8 @@ export class ToolExecutor {
         input: currentInput,
         rootDir: this.rootDir,
         ...(shell ? { shell } : {}),
-        // 只有无参数的解释器内建查询能确认不依赖外部脚本；其余命令仅允许单次批准。
+        // 解释器内建查询与内容已绑定摘要的工作区直引脚本可确认不受外部脚本变更影响，
+        // 允许会话级批准；其余 shell 命令仅允许单次批准。
         sessionAllowed:
           !shell ||
           /^(?:pwd|get-location)$/i.test(shell.command.trim()) ||
@@ -485,7 +498,7 @@ export class ToolExecutor {
       });
     }
 
-    // 3. 触发 tool:after hooks
+    // 触发 tool:after hooks
     try {
       for (const hook of this.hooks.get('tool:after')) {
         await hook(

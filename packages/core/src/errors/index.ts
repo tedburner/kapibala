@@ -2,6 +2,9 @@
  * Error Taxonomy for Kapibala Agent Harness
  */
 
+import type { PrimaryModelRole } from '../models/router.js';
+
+/** 模型失败的安全分类；由明确状态码与受控错误码推导，不基于自然语言猜测根因。 */
 export type ModelErrorCategory =
   | 'authentication'
   | 'quota'
@@ -13,6 +16,7 @@ export type ModelErrorCategory =
   | 'invalid_request'
   | 'invalid_response'
   | 'unknown';
+/** ModelError 的受控输入；仅这些字段会进入错误对象，原始响应体与密钥不得携带。 */
 export interface ModelErrorOptions {
   status?: number;
   retryable?: boolean;
@@ -33,6 +37,8 @@ export interface ModelErrorInfo {
   transportCode?: string;
   stage?: ModelErrorOptions['stage'];
   operation?: 'primary' | 'summary';
+  /** type-only 引用协议层角色类型；运行时无循环依赖。 */
+  modelRole?: PrimaryModelRole;
   modelId?: string;
   provider?: string;
   retryPolicy: KapibalaError['retryPolicy'];
@@ -156,7 +162,7 @@ const MODEL_ERROR_ADVICE: Record<ModelErrorCategory, string> = {
 /** 生成统一脱敏说明；上下文补充调用场景，不携带原始异常、请求正文或密钥。 */
 export function describeModelError(
   error: ModelError,
-  context: Pick<ModelErrorInfo, 'modelId' | 'provider' | 'operation'> = {},
+  context: Pick<ModelErrorInfo, 'modelId' | 'provider' | 'operation' | 'modelRole'> = {},
 ): ModelErrorInfo {
   return {
     category: error.category,
@@ -172,9 +178,11 @@ export function describeModelError(
     modelId: context.modelId ? sanitizeModelErrorMessage(context.modelId) : undefined,
     provider: context.provider ? sanitizeModelErrorMessage(context.provider) : undefined,
     operation: context.operation,
+    modelRole: context.modelRole,
   };
 }
 
+/** 错误体系基类：code 供机器判定，retryPolicy 是处理建议而非重试授权，safeMessage 是可对外展示的固定文案。 */
 export class KapibalaError extends Error {
   readonly code: string;
   readonly retryPolicy: 'never' | 'immediate' | 'backoff' | 'after_user_action';
@@ -196,8 +204,10 @@ export class KapibalaError extends Error {
   }
 }
 
+/** 模型调用失败；message 已脱敏，对外诊断统一经 describeModelError 产出，retryPolicy 仅为处理建议。 */
 export class ModelError extends KapibalaError {
   readonly status?: number;
+  /** 属于可退避重试的瞬态类别（限流/服务/超时/网络）；不等于自动重试授权。 */
   readonly retryable: boolean;
   /** 可选的受控底层连接错误码，不包含原始传输异常文本。 */
   readonly transportCode?: string;
@@ -251,6 +261,7 @@ export class ContextOverflowError extends ModelError {
   }
 }
 
+/** 模型 API 语义之外的传输失败；retryable 表示属于可立即重试的网络类错误。 */
 export class TransportError extends KapibalaError {
   readonly retryable: boolean;
 
@@ -261,6 +272,7 @@ export class TransportError extends KapibalaError {
   }
 }
 
+/** 工具执行失败的通用错误；retryPolicy 固定 never，后续处理由调用方决定。 */
 export class ToolError extends KapibalaError {
   constructor(message: string) {
     super(message, {
@@ -272,6 +284,7 @@ export class ToolError extends KapibalaError {
   }
 }
 
+/** 请求的工具在注册表中不存在；message 回显工具名与可用列表，对外展示用 safeMessage。 */
 export class ToolNotFound extends KapibalaError {
   readonly toolName: string;
   readonly availableTools: string[];
@@ -288,6 +301,7 @@ export class ToolNotFound extends KapibalaError {
   }
 }
 
+/** 用户主动中止；不属于失败，恢复需要用户重新发起操作。 */
 export class AbortError extends KapibalaError {
   constructor(message = 'Execution aborted by user') {
     super(message, {
@@ -299,6 +313,7 @@ export class AbortError extends KapibalaError {
   }
 }
 
+/** 无受控分类的致命错误（code 固定 INTERNAL_ERROR、不可重试）；终止策略由宿主决定。 */
 export class FatalError extends KapibalaError {
   constructor(message: string) {
     super(message);
@@ -306,6 +321,7 @@ export class FatalError extends KapibalaError {
   }
 }
 
+/** 会话正在执行任务时拒绝新的排他操作（切换模型、挂载插件等），operation 描述被拒绝的动作。 */
 export class SessionBusyError extends KapibalaError {
   constructor(operation: string) {
     super(`Session is already running; cannot ${operation}`);

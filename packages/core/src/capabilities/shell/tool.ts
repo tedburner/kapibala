@@ -18,6 +18,7 @@ const MAX_COMMAND_BYTES = 8 * 1024;
 const OWNED_RESULT = /^run-[a-f0-9-]{36}\.txt$/;
 const RESULT_MANIFEST = 'managed-results.jsonl';
 
+/** run_command 的输入；cwd 相对工作区根解析，timeout_ms 合法区间 1..600000，越界在执行前失败。 */
 export interface RunCommandInput {
   [key: string]: unknown;
   command: string;
@@ -25,12 +26,19 @@ export interface RunCommandInput {
   timeout_ms?: number;
 }
 
+/** 命令执行结果；output 只是内联前缀，完整输出超过内联上限的部分落盘为受管结果文件。 */
 export interface CommandResult {
+  /** 进程正常退出时的退出码；被信号终止时为 null。 */
   exitCode: number | null;
+  /** stdout 与 stderr 交错合并的文本，最多前 64 KiB（按 UTF-8 字符边界截断）。 */
   output: string;
+  /** output 并非全部输出的标志；超出内联上限的完整内容写入 outputFile。 */
   outputTruncated: boolean;
+  /** 受管结果文件路径（工作区内 .kapibala/tool-results/），仅输出超过内联上限时存在。 */
   outputFile?: string;
+  /** 结果文件触及 16 MiB 上限后被截断的标志。 */
   outputFileTruncated: boolean;
+  /** 两个流产生的原始字节总数（不受截断影响），供进度与审计使用。 */
   outputBytes: number;
   shell: ShellEnvironment['kind'];
 }

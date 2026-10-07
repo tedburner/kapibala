@@ -5,6 +5,10 @@ import type { CliInputCoordinator } from './input-coordinator.js';
 import { type CliApprovalChannel, askWithReadline } from './ui/approval.js';
 import { createEventRenderer } from './ui/events.js';
 
+/**
+ * 单次问答的运行参数。传 `controller` 时经活动会话控制器执行（享有忙碌门与旧会话清理）；
+ * 传 `inputCoordinator` 时审批复用统一输入协调器，否则在 TTY 上自建临时 readline。
+ */
 export interface OneShotOptions {
   session: AgentSession;
   prompt: string;

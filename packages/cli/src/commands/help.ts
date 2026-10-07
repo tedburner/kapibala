@@ -1,6 +1,10 @@
 import { COMMAND_CATALOG } from './catalog.js';
 import type { CommandHandler } from './dispatcher.js';
 
+/**
+ * 输出命令用法。挂载 dispatcher 时以实际注册的定义为准（含别名与状态门提示），
+ * 否则回退到静态目录；按名称或别名查询单个命令时未命中即抛错。
+ */
 export const helpCommand: CommandHandler = (args, ctx) => {
   if (ctx.dispatcher) {
     const definitions = args[0]

@@ -2,24 +2,31 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+/** 单个通过全部校验的指令文件；path 为去重后的候选路径，content 是严格 UTF-8 解码的全文。 */
 export interface InstructionSource {
   path: string;
   content: string;
 }
 
+/** 一次成功加载的完整结果；sources 按「用户层 → 项目根 → 逐级子目录」顺序排列。 */
 export interface InstructionSnapshot {
   sources: readonly InstructionSource[];
+  /** 全部来源实际字节数之和（以读取结果为准），供调用方审计体积预算。 */
   totalBytes: number;
 }
 
 export interface InstructionLoadOptions {
+  /** 目录链上界；cwd 必须位于其内，越界直接失败而不是静默截断链。 */
   projectRoot: string;
+  /** 指令收集的终点目录；相对 projectRoot 的每一层都会尝试读取 AGENTS.md。 */
   cwd: string;
+  /** 用户层指令文件；缺省为 ~/.kapibala/AGENTS.md，与项目层同路径时去重。 */
   userFile?: string;
 }
 
 const MAX_FILE_BYTES = 32 * 1024;
 const MAX_TOTAL_BYTES = 128 * 1024;
+// 目录链层级上限；判定计数含项目根自身，故比较时用 segments.length + 1
 const MAX_LEVELS = 16;
 
 /** 按用户层和项目根至 cwd 的目录链读取指令，全部成功后才返回快照。 */
@@ -42,6 +49,7 @@ export function loadInstructions(options: InstructionLoadOptions): InstructionSn
     candidates.push(path.join(directory, 'AGENTS.md'));
   }
 
+  // 用户层与项目层可能指向同一文件（如用户文件就放在项目根），按平台大小写规则去重
   const seenPaths = new Set<string>();
   const uniqueCandidates: string[] = [];
   for (const file of candidates) {
@@ -76,6 +84,7 @@ export function loadInstructions(options: InstructionLoadOptions): InstructionSn
       throw new Error(`Cannot read instructions at ${file}`, { cause: error });
     }
     if (bytes.byteLength > MAX_FILE_BYTES) throw new Error(`Instruction ${file} exceeds 32 KiB`);
+    // stat 与读取之间文件可能被替换或增长：用实际字节数校正预算，超限同样失败
     totalBytes += bytes.byteLength - stat.size;
     if (totalBytes > MAX_TOTAL_BYTES) throw new Error('Instructions exceed 128 KiB total');
     let content: string;

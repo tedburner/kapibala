@@ -2,8 +2,13 @@ import { ToolNotFound } from '../../errors/index.js';
 import type { Tool, ToolDefinition } from './index.js';
 import { toToolDefinition } from './index.js';
 
+/** 同名工具冲突策略：error 直接抛错；prefer-builtin 保留既有内置注册；prefer-last 后到者覆盖。 */
 export type ConflictPolicy = 'error' | 'prefer-builtin' | 'prefer-last';
 
+/**
+ * 按名称索引的工具注册表。冲突按构造时给定的策略处理，胜出条目的来源标签保持不变；
+ * 来源标签支持按源批量注册与注销，注销只移除以该标签注册的工具，不回收冲突中保留的内置实现。
+ */
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
   private readonly toolSources = new Map<string, string>(); // toolName -> source
@@ -55,6 +60,7 @@ export class ToolRegistry {
     return this.tools.get(name);
   }
 
+  /** 未命中时抛 ToolNotFound，并携带当前全部可用名称辅助模型自纠。 */
   resolve(name: string): Tool {
     const tool = this.tools.get(name);
     if (!tool) {

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ToolError } from '../../errors/index.js';
 
+/** 路径沙箱配置；rootDir 是所有文件访问的词法与物理边界。 */
 export interface SandboxConfig {
   rootDir: string;
   /**
@@ -19,6 +20,10 @@ function tryRealpath(target: string): string | undefined {
   }
 }
 
+/**
+ * 把文件访问限制在 rootDir 内：先做词法归一化检查，再展开符号链接做物理检查，两层都通过才放行。
+ * 实例会缓存 rootDir 的物理路径，应按 rootDir 复用实例，而不是每次调用新建。
+ */
 export class PathSandbox {
   readonly rootDir: string;
   readonly allowSymlinks: boolean;

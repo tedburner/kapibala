@@ -4,14 +4,23 @@ import type { Tool } from '../tools/index.js';
 import type { ToolRegistry } from '../tools/registry.js';
 
 export interface PromptAssemblerOptions {
+  /** 提供时才生成 L2 工具清单段；缺省表示本次运行不向模型展示任何工具。 */
   tools?: ToolRegistry;
+  /** L3 环境段展示的工作区根目录；文件工具的沙箱边界与其保持一致。 */
   rootDir: string;
   agentName?: string;
+  /** 宿主自定义提示词，插在环境段与 L4 指令之间；纯空白视为未提供。 */
   customInstructions?: string;
+  /** L4 项目指令段的内容，来自 loadInstructions 快照；为空时整段省略。 */
   instructionSources?: readonly InstructionSource[];
+  /** 覆盖 tools.list() 作为 L2 清单来源；通常传入按权限过滤后的可见工具。 */
   visibleTools?: readonly Tool[];
 }
 
+/**
+ * 把行为规则（L1）、工具清单（L2）、环境（L3）与项目指令（L4）拼装为系统提示词。
+ * 各段之间以 `\n\n---\n\n` 分隔；不提供的内容整段跳过，不做占位填充。
+ */
 export class PromptAssembler {
   private readonly tools?: ToolRegistry;
   private readonly rootDir: string;
@@ -29,6 +38,7 @@ export class PromptAssembler {
     this.visibleTools = options.visibleTools;
   }
 
+  /** 按固定层级拼装系统提示词；同一选项集总是产出相同文本，便于审计与缓存。 */
   assemble(): string {
     const sections: string[] = [];
 

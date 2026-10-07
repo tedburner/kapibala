@@ -1,11 +1,18 @@
 import { isInteractiveTerminal } from '../input-coordinator.js';
+import { PRIMARY_MODEL_ROLES, ROUTABLE_MODEL_ROLES } from '../model-bindings.js';
 
+/**
+ * 单个命令的静态定义：/help、注册冲突检查与运行期门禁共用的唯一事实。
+ * `validate` 只做参数合法性检查，返回人类可读的错误消息或 undefined；
+ * `mutates` 判定该次调用是否改变状态，dispatcher 据此在忙碌期拒绝变更类调用。
+ */
 export interface CommandDefinition {
   name: string;
   aliases?: string[];
   usage: string;
   description: string;
   group: 'session' | 'context' | 'model' | 'permissions' | 'diagnostic';
+  /** 尾部不按空白切分，整段作为单个参数传递（供 /rename 这类自由文本）。 */
   rawTail?: boolean;
   mutates: (args: string[]) => boolean;
   validate: (args: string[]) => string | undefined;
@@ -13,6 +20,7 @@ export interface CommandDefinition {
 
 const none = (args: string[]) => (args.length ? '不接受参数' : undefined);
 const one = (args: string[]) => (args.length > 1 ? '最多接受一个参数' : undefined);
+/** 可选上限的计数参数：至多一个正整数且不超过 maximum。 */
 const integer = (args: string[], maximum = Number.MAX_SAFE_INTEGER) =>
   args.length > 1 ||
   (args[0] !== undefined &&
@@ -27,12 +35,17 @@ const settings = (args: string[]) =>
   (args[0] === 'default' && args.length === 2)
     ? undefined
     : '使用 setup 或 default <id>';
+// /model 的参数白名单：无参、key [id]、setup、set-default <id>、route <主任务角色>、
+// 显式角色绑定 <角色> <id>，以及裸 <id> 直切。
 const model = (args: string[]) =>
   !args.length ||
   (args[0] === 'key' && args.length <= 2) ||
   (args[0] === 'setup' && args.length === 1) ||
   (args[0] === 'set-default' && args.length === 2) ||
-  (!['key', 'setup', 'set-default'].includes(args[0]) && args.length === 1)
+  (args[0] === 'route' && args.length === 2 && PRIMARY_MODEL_ROLES.includes(args[1] as never)) ||
+  (ROUTABLE_MODEL_ROLES.includes(args[0] as never) && args.length === 2) ||
+  (![...ROUTABLE_MODEL_ROLES, 'route', 'key', 'setup', 'set-default'].includes(args[0]) &&
+    args.length === 1)
     ? undefined
     : '模型参数或子命令不正确';
 
@@ -90,7 +103,8 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'model',
-    usage: '/model [id] | /model key [id]',
+    usage:
+      '/model [id] | /model <planning|execution|fast|summary> <id> | /model route <default|planning|execution|fast> | /model key [id]',
     description: '选择当前模型或更新密钥；兼容 setup/set-default',
     group: 'model',
     // 与协调器同口径的双边判定：stdout 非终端时无参 /model 只是只读列表，

@@ -3,16 +3,19 @@ import readline, { type Interface as ReadlineInterface } from 'node:readline/pro
 import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
 import { type ProviderMeta, listBuiltinProviders } from './providers.js';
 import {
+  API_KEY_ENV_NONE,
   type UserSettings,
   describeCredentialGroup,
   loadGlobalSettingsForWrite,
   resolveApiKeyDetailed,
   resolveBaseURL,
   saveGlobalSettings,
+  updateProfileApiKey,
 } from './settings.js';
 import { formatTokenCount } from './ui/metrics.js';
 import { readSecret } from './ui/secret.js';
 
+/** 端点探测结论：ok 可达、auth 密钥被拒、unreachable 网络或端点未实现 /models；detail 供原样展示。 */
 export interface ProbeResult {
   status: 'ok' | 'auth' | 'unreachable';
   detail: string;
@@ -34,7 +37,7 @@ export function makeCustomProfileId(name: string, baseURL: string): string {
 
 /**
  * 轻量连通性探测：GET {baseURL}/models。
- * 只做只读探测，不产生任何计费 token；判定结果不阻塞配置保存。
+ * 按显式协议选择鉴权，只做只读探测，不产生任何计费 token；判定结果不阻塞配置保存。
  */
 export async function probeEndpoint(profile: ModelProfile, apiKey: string): Promise<ProbeResult> {
   const controller = new AbortController();
@@ -45,7 +48,14 @@ export async function probeEndpoint(profile: ModelProfile, apiKey: string): Prom
   try {
     const headers: Record<string, string> = {};
     if (apiKey && apiKey !== 'none') {
-      headers.Authorization = `Bearer ${apiKey}`;
+      if (profile.provider === 'anthropic') {
+        // 与 Core AnthropicProvider 保持同源：官方 API 认 x-api-key，部分网关只认 Bearer，两者都发。
+        headers['x-api-key'] = apiKey;
+        headers.Authorization = `Bearer ${apiKey}`;
+        headers['anthropic-version'] = '2023-06-01';
+        if (profile.anthropicWorkspaceId)
+          headers['anthropic-workspace-id'] = profile.anthropicWorkspaceId;
+      } else headers.Authorization = `Bearer ${apiKey}`;
     }
     const response = await fetch(url, { method: 'GET', headers, signal: controller.signal });
     if (response.ok) {
@@ -65,11 +75,20 @@ export async function probeEndpoint(profile: ModelProfile, apiKey: string): Prom
   }
 }
 
+/**
+ * 向导的注入项。提供 question 时走外部问答通道（如 REPL 命令上下文），不创建 readline；
+ * secretReader 缺省用终端无回显读取。
+ */
 export interface SetupWizardOptions {
   secretReader?: (prompt: string) => Promise<string>;
   question?: (prompt: string) => Promise<string>;
 }
 
+/**
+ * 冷启动/重配置向导：选厂商与模型（或自定义端点）→ 密钥处理（同组已存密钥默认复用）→
+ * 探测连通性 → 持久化到全局配置并设为默认模型。
+ * 探测失败不阻断保存；持久化成功才返回 Profile，向导内不改动内存中的有效设置。
+ */
 export async function runSetupWizard(
   options: SetupWizardOptions = {},
 ): Promise<{ profile: ModelProfile; apiKey: string }> {
@@ -90,6 +109,7 @@ export async function runSetupWizard(
   }
 }
 
+/** 保留已存用户预算及端点能力，持久化成功后才交付新 Profile；密钥只经同组入口归一。 */
 async function executeSetupWizard(
   rl: Pick<ReadlineInterface, 'question'>,
   closeReadline: () => void,
@@ -166,8 +186,18 @@ async function executeSetupWizard(
   // 只读磁盘原始配置：合并版配置里含全部内置 profile，回写会把用户从未启用的模型物化进文件。
   // 文件存在但损坏/含非法值时 loadGlobalSettingsForWrite 直接抛错 —— 静默回退空骨架会把
   // 用户已有 profile（含内联 apiKey）在下一次写盘时全部清空。
-  const settings: UserSettings = loadGlobalSettingsForWrite();
+  const settings: UserSettings = structuredClone(loadGlobalSettingsForWrite());
   const existingProfile = settings.profiles.find((profile) => profile.id === selectedProfile.id);
+  if (existingProfile) {
+    selectedProfile = {
+      ...existingProfile,
+      ...selectedProfile,
+      maxOutputTokens: existingProfile.maxOutputTokens ?? selectedProfile.maxOutputTokens,
+      chatCapabilities: existingProfile.chatCapabilities ?? selectedProfile.chatCapabilities,
+      anthropicWorkspaceId:
+        existingProfile.anthropicWorkspaceId ?? selectedProfile.anthropicWorkspaceId,
+    };
+  }
   if (keyPrompt && existingProfile?.apiKey?.trim()) {
     const replace = (await rl.question('该模型已有保存的 API Key，是否更新？[y/N]: '))
       .trim()
@@ -203,9 +233,20 @@ async function executeSetupWizard(
   if (keyPrompt) {
     const secretReader = options.secretReader ?? readSecret;
     enteredKey = (await secretReader(keyPrompt)).trim();
+    // 空密钥直接保存会让「向导成功 → 启动即 fatal」；重问一次并允许显式跳过（无密钥模式保存）。
+    while (!enteredKey) {
+      const proceed = (
+        await options.question?.(
+          '未输入 API Key。以无密钥模式保存并继续（稍后可用 /model key 配置）？[y/N]: ',
+        )
+      )
+        ?.trim()
+        .toLowerCase();
+      if (proceed === 'y' || proceed === 'yes') break;
+      enteredKey = (await secretReader(keyPrompt)).trim();
+    }
+    if (!enteredKey && !selectedProfile.apiKey) selectedProfile.apiKeyEnv = API_KEY_ENV_NONE;
   }
-
-  selectedProfile.apiKey = enteredKey;
 
   console.log('\n⏳ 正在验证连接与可用性...');
   const probe = await probeEndpoint(selectedProfile, enteredKey);
@@ -228,6 +269,8 @@ async function executeSetupWizard(
   } else {
     settings.profiles.push(selectedProfile);
   }
+  if (enteredKey && selectedProfile.apiKeyEnv !== API_KEY_ENV_NONE)
+    updateProfileApiKey(settings, selectedProfile.id, enteredKey);
   settings.defaultModel = selectedProfile.id;
 
   if (enteredKey && enteredKey !== 'ollama') {

@@ -1,16 +1,17 @@
 import { ContextOverflowError, ModelError } from '../../errors/index.js';
 import type {
   CanonicalMessage,
-  ContentBlock,
   ModelEvent,
   ModelRequest,
-  ToolDefinition,
   ToolResultBlock,
   Usage,
 } from '../../types/index.js';
-import type { ModelProvider } from '../index.js';
-import { parseSSEStream } from './sse.js';
+import { type ModelProvider, assembleCanonicalToolResults } from '../index.js';
+import type { ChatCapabilities } from '../router.js';
+import { isContextOverflow, parseToolArguments, safeTransportCode } from '../transport/http.js';
+import { parseSSEFrames } from '../transport/sse.js';
 
+/** Chat 端点配置；能力覆盖只改变请求字段和完成边界，不改变协议身份。 */
 export interface OpenAIProviderOptions {
   baseURL: string;
   apiKey: string;
@@ -18,43 +19,21 @@ export interface OpenAIProviderOptions {
   supportsThinking?: boolean;
   /** 回传 assistant 思考历史；默认仅为 DeepSeek 官方端点启用，自建兼容网关可显式开启。 */
   replayReasoningContent?: boolean;
+  /** 显式端点能力；缺省保留 max_tokens、usage 和 temperature 请求基线，要求 DONE。 */
+  chatCapabilities?: ChatCapabilities;
   /** 建立 HTTP 连接(收到响应头)的超时毫秒数；仅约束建连阶段，不限制流式读取总时长 */
   connectTimeoutMs?: number;
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
 
-/** 只保留已知连接错误码；不将可能含端点、密钥或用户数据的原始异常写入日志。 */
-function safeTransportCode(error: unknown): string | undefined {
-  const allowed = new Set([
-    'UND_ERR_SOCKET',
-    'UND_ERR_BODY_TIMEOUT',
-    'UND_ERR_HEADERS_TIMEOUT',
-    'UND_ERR_CONNECT_TIMEOUT',
-    'ECONNRESET',
-    'ETIMEDOUT',
-    'ECONNREFUSED',
-    'ENOTFOUND',
-    'EAI_AGAIN',
-  ]);
-  let current = error;
-  for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth++) {
-    const candidate = current as { code?: unknown; cause?: unknown };
-    if (typeof candidate.code === 'string' && allowed.has(candidate.code)) return candidate.code;
-    current = candidate.cause;
-  }
-  return undefined;
-}
-
-/** 只接受明确错误码，不根据普通 400 或可能含用户文本的错误消息猜测。 */
-function isContextOverflow(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const code = (error as { code?: unknown }).code;
-  return (
-    code === 'context_length_exceeded' ||
-    code === 'context_window_exceeded' ||
-    code === 'max_context_length_exceeded'
-  );
+/** 协议结构错误统一失败；不回显原始参数或私有响应内容。 */
+function invalidResponse(message: string): ModelError {
+  return new ModelError(message, {
+    code: 'MODEL_INVALID_RESPONSE',
+    stage: 'stream',
+    retryable: false,
+  });
 }
 
 interface WireToolCall {
@@ -74,27 +53,54 @@ interface WireMessage {
   tool_calls?: WireToolCall[];
 }
 
+/** 将 canonical 历史投影为 Chat 请求，在完整终态和全部工具验证后交付可执行结果。 */
 export class OpenAICompatibleProvider implements ModelProvider {
   readonly name = 'openai-compatible';
   readonly baseURL: string;
   readonly apiKey: string;
+  /** 未提供凭据时由 Session 在记录用户消息前拒绝请求。 */
+  get credentialsReady(): boolean {
+    return Boolean(this.apiKey.trim());
+  }
   readonly modelName: string;
   readonly supportsThinking: boolean;
   readonly replayReasoningContent: boolean;
   readonly connectTimeoutMs: number;
+  readonly chatCapabilities: Readonly<ChatCapabilities>;
 
-  /** 初始化协议适配；思考历史回传独立于模型能力标签，仅对兼容端点启用。 */
+  /** 暴露实际请求目标供原子绑定校验，不包含凭据。 */
+  get binding() {
+    return {
+      protocol: 'openai-compatible' as const,
+      baseURL: this.baseURL,
+      modelName: this.modelName,
+    };
+  }
+
+  /**
+   * 初始化 Chat 协议适配；显式端点能力优先，思考回传独立于模型 supportsThinking 标签。
+   * @param options 请求目标、凭据和能力配置；缺省只有 DeepSeek 官方端点回传可见思考。
+   */
   constructor(options: OpenAIProviderOptions) {
     this.baseURL = options.baseURL.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
     this.modelName = options.modelName;
     this.supportsThinking = options.supportsThinking ?? false;
+    this.chatCapabilities = Object.freeze({ ...options.chatCapabilities });
     this.replayReasoningContent =
-      options.replayReasoningContent ?? new URL(this.baseURL).hostname === 'api.deepseek.com';
+      this.chatCapabilities.replayReasoningContent ??
+      options.replayReasoningContent ??
+      new URL(this.baseURL).hostname === 'api.deepseek.com';
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   }
 
-  /** 发送流式请求，兼容端点原样回传思考历史；中断仅报告错误，不自动重放工具或请求。 */
+  /**
+   * 发送 Chat 流式请求；默认同时要求合法 finish_reason 和 DONE，只有显式例外允许完整 EOF。
+   * 全部工具的 ID、名称和对象参数在任何完成事件之前校验；截断、过滤或中断不交付工具。
+   * @param req canonical 历史、工具、预算与取消信号；能力覆盖来自端点配置。
+   * @returns 文本、可见思考和工具增量，完整响应最后产生 message_stop。
+   * @throws ModelError 响应缺少合法终态、工具身份或完整对象参数时失败，不自动重放请求。
+   */
   async *create(req: ModelRequest): AsyncIterable<ModelEvent> {
     const url = `${this.baseURL}/chat/completions`;
     const wireMessages = this.translateMessagesToWire(req.messages, req.systemPrompt);
@@ -115,15 +121,17 @@ export class OpenAICompatibleProvider implements ModelProvider {
       model: this.modelName,
       messages: wireMessages,
       stream: true,
-      stream_options: { include_usage: true },
-      temperature: req.temperature ?? 0.7,
     };
+    if (this.chatCapabilities.supportsStreamingUsage !== false)
+      payload.stream_options = { include_usage: true };
+    if (this.chatCapabilities.supportsTemperature !== false)
+      payload.temperature = req.temperature ?? 0.7;
 
     if (wireTools) {
       payload.tools = wireTools;
     }
     if (req.maxTokens) {
-      payload.max_tokens = req.maxTokens;
+      payload[this.chatCapabilities.maxTokensField ?? 'max_tokens'] = req.maxTokens;
     }
 
     let response: Response;
@@ -204,7 +212,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
       // 状态机收集分片 tool_calls
       const pendingToolCalls = new Map<
         number,
-        { id: string; name: string; argumentChunks: string[] }
+        {
+          id: string;
+          name: string;
+          argumentChunks: string[];
+          emittedChunks: number;
+          started: boolean;
+        }
       >();
       let usage: Usage | undefined;
       let finishReason: string | undefined;
@@ -212,10 +226,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
       const requestStartTime = Date.now();
       let ttftMs: number | undefined;
 
-      for await (const chunk of parseSSEStream(response.body, () => {
-        streamDone = true;
-      })) {
+      for await (const frame of parseSSEFrames(response.body)) {
         if (req.signal?.aborted) return;
+        const chunk = frame.data;
+        if (chunk.trim() === '[DONE]') {
+          streamDone = true;
+          break;
+        }
         if (!chunk) continue;
 
         let json: any;
@@ -235,18 +252,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
             retryable: false,
           });
 
-        if (json.error) {
+        const wireError = json.error ?? (frame.event === 'error' ? json : undefined);
+        if (wireError) {
           const message =
-            typeof json.error.message === 'string' ? json.error.message : 'Model API stream error';
-          const details = [json.error.type, json.error.code]
+            typeof wireError.message === 'string' ? wireError.message : 'Model API stream error';
+          const details = [wireError.type, wireError.code]
             .filter((value) => typeof value === 'string' && value.length > 0)
             .join(', ');
           const options = {
-            providerCode: typeof json.error.code === 'string' ? json.error.code : undefined,
-            providerType: typeof json.error.type === 'string' ? json.error.type : undefined,
+            providerCode: typeof wireError.code === 'string' ? wireError.code : undefined,
+            providerType: typeof wireError.type === 'string' ? wireError.type : undefined,
             stage: 'stream' as const,
           };
-          if (isContextOverflow(json.error))
+          if (isContextOverflow(wireError))
             throw new ContextOverflowError(undefined, { ...options, message });
           throw new ModelError(details ? `${message} (${details})` : message, options);
         }
@@ -264,10 +282,25 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
         const choice = json.choices?.[0];
         if (!choice) continue;
-        if (typeof choice.finish_reason === 'string') finishReason = choice.finish_reason;
+        if (finishReason !== undefined)
+          throw invalidResponse('Model response contained a choice after its terminal state');
+        if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
+          if (typeof choice.finish_reason !== 'string')
+            throw invalidResponse('Model response contained an invalid finish reason');
+          finishReason = choice.finish_reason;
+        }
 
         const delta = choice.delta;
         if (!delta) continue;
+        if (typeof delta !== 'object' || Array.isArray(delta))
+          throw invalidResponse('Model response contained an invalid delta');
+        if (delta.function_call)
+          throw invalidResponse('Model response used an unsupported legacy function call');
+        for (const field of ['content', 'reasoning_content'])
+          if (delta[field] != null && typeof delta[field] !== 'string')
+            throw invalidResponse('Model response contained an invalid text delta');
+        if (delta.tool_calls != null && !Array.isArray(delta.tool_calls))
+          throw invalidResponse('Model response contained invalid tool calls');
 
         if (
           (delta.content ||
@@ -291,62 +324,91 @@ export class OpenAICompatibleProvider implements ModelProvider {
         // 3. 工具调用增量
         if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
           for (const tc of delta.tool_calls) {
-            const index = tc.index ?? 0;
+            if (!tc || typeof tc !== 'object' || !Number.isSafeInteger(tc.index) || tc.index < 0)
+              throw invalidResponse('Model response contained an invalid tool index');
+            if (tc.type != null && tc.type !== 'function')
+              throw invalidResponse('Model response contained an unsupported tool type');
+            const index = tc.index;
             let entry = pendingToolCalls.get(index);
             if (!entry) {
               entry = {
-                id: tc.id ?? `call_${Date.now()}_${index}`,
-                name: tc.function?.name ?? '',
+                id: '',
+                name: '',
                 argumentChunks: [],
+                emittedChunks: 0,
+                started: false,
               };
               pendingToolCalls.set(index, entry);
+            }
+            for (const [field, value] of [
+              ['id', tc.id],
+              ['name', tc.function?.name],
+            ] as const) {
+              if (value === undefined || value === null) continue;
+              if (
+                typeof value !== 'string' ||
+                !value.trim() ||
+                (entry[field] && entry[field] !== value)
+              )
+                throw invalidResponse(
+                  'Model response contained an invalid or changed tool identity',
+                );
+              entry[field] = value;
+            }
+            if (tc.function?.arguments !== undefined) {
+              if (typeof tc.function.arguments !== 'string')
+                throw invalidResponse('Model response contained an invalid tool argument delta');
+              if (tc.function.arguments) entry.argumentChunks.push(tc.function.arguments);
+            }
+            if (entry.id && entry.name && !entry.started) {
+              entry.started = true;
               yield { type: 'tool_call_start', id: entry.id, name: entry.name };
             }
-
-            if (tc.function?.name && !entry.name) {
-              entry.name = tc.function.name;
-            }
-
-            if (tc.function?.arguments) {
-              entry.argumentChunks.push(tc.function.arguments);
+            while (entry.started && entry.emittedChunks < entry.argumentChunks.length) {
               yield {
                 type: 'tool_call_delta',
                 id: entry.id,
-                argumentChunk: tc.function.arguments,
+                argumentChunk: entry.argumentChunks[entry.emittedChunks++],
               };
             }
           }
         }
       }
 
-      if (!streamDone && finishReason === undefined)
+      if (req.signal?.aborted) return;
+      if (
+        finishReason === undefined ||
+        (!streamDone && this.chatCapabilities.requiresDone !== false)
+      )
         throw new ModelError('Model response stream ended without a completion marker', {
           retryable: false,
           code: 'MODEL_STREAM_INCOMPLETE',
           stage: 'stream',
         });
 
-      // 触发所有已收集完整的 tool_calls
-      for (const [, tc] of pendingToolCalls.entries()) {
-        const fullArgs = tc.argumentChunks.join('');
-        let parsedInput: Record<string, unknown> = {};
-        let parseError: boolean | undefined;
-        try {
-          parsedInput = fullArgs.trim() ? JSON.parse(fullArgs) : {};
-        } catch {
-          // 解析失败不静默吞掉：input 退化为 _raw 并显式标记，工具端报错时可定位根因
-          parsedInput = { _raw: fullArgs };
-          parseError = true;
-        }
+      if (finishReason !== 'stop' && finishReason !== 'tool_calls' && finishReason !== 'length')
+        throw invalidResponse('Model response contained an unsupported or filtered finish reason');
+      // 截断语义与 Anthropic/Responses 一致：length 由 Loop 统一裁决——
+      // 无工具的截断文本按最终回答交付，有工具的整批拒绝执行；本层不做提前收口。
+      if (pendingToolCalls.size > 0 && !['tool_calls', 'length'].includes(finishReason))
+        throw invalidResponse('Model response finish reason did not match its tool calls');
+      if (pendingToolCalls.size === 0 && finishReason === 'tool_calls')
+        throw invalidResponse('Model response finish reason did not match its tool calls');
 
-        yield {
+      // 先验证整批工具，避免较早的合法调用在较晚的坏调用之前成为可执行结果。
+      const ids = new Set<string>();
+      const completedTools = [...pendingToolCalls.values()].map((tc) => {
+        if (!tc.id || !tc.name || ids.has(tc.id))
+          throw invalidResponse('Model response contained missing or duplicate tool identities');
+        ids.add(tc.id);
+        return {
           type: 'tool_call_finish',
           id: tc.id,
           name: tc.name,
-          input: parsedInput,
-          parseError,
-        };
-      }
+          input: parseToolArguments(tc.argumentChunks.join('')),
+        } as const;
+      });
+      for (const tool of completedTools) yield tool;
 
       const durationMs = Date.now() - requestStartTime;
       yield { type: 'message_stop', usage, ttftMs, durationMs, finishReason };
@@ -364,18 +426,26 @@ export class OpenAICompatibleProvider implements ModelProvider {
       );
     } finally {
       req.signal?.removeEventListener('abort', onOuterAbort);
+      timeoutController.abort();
     }
   }
 
+  /**
+   * 将工具结果装配为 canonical tool 消息，wire 角色仅在下一请求投影时转换。
+   * @param results 已完成的工具结果，保持调用 ID 与内容，不重放工具。
+   * @returns 逐条克隆的 canonical tool 消息，允许消息级落盘。
+   */
   assembleToolResults(results: ToolResultBlock[]): CanonicalMessage[] {
-    return results.map((r) => ({
-      role: 'tool' as const,
-      content: [r],
-      timestamp: Date.now(),
-    }));
+    return assembleCanonicalToolResults(results);
   }
 
-  /** 将历史投影为协议消息；兼容端点完整回传思考片段，普通端点不发送该扩展字段。 */
+  /**
+   * 将历史投影为 Chat 消息；合并连续 user，剔除空 assistant，保持工具调用与结果身份。
+   * 仅显式允许的端点回传可见思考；签名、脱敏思考和原生私有 Item 不适用于 Chat。
+   * @param messages canonical 历史；只投影文本、可选可见思考和工具语义。
+   * @param systemPrompt 可选全局提示词，去除首尾空白后作为首条 system。
+   * @returns 与输入历史独立的 Chat wire 消息数组。
+   */
   private translateMessagesToWire(
     messages: CanonicalMessage[],
     systemPrompt?: string,

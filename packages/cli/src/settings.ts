@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +11,7 @@ import {
   validatePermissionRules,
 } from '@kiturone/kapibala';
 
+/** 场景角色 → 模型 Profile id 的显式绑定；缺省角色运行在 defaultModel 之上。 */
 export interface ModelRoutingConfig {
   planning?: string;
   execution?: string;
@@ -17,6 +19,11 @@ export interface ModelRoutingConfig {
   fast?: string;
 }
 
+/**
+ * 磁盘配置文件（全局与项目共用同一结构）。
+ * 项目配置受信任后合并进全局，但权限、shell 与信任列表只能来自用户级设置。
+ * 「读全局 → 改一处 → 写回」必须基于磁盘原始配置，不得回写 loadSettings 的合并结果。
+ */
 export interface UserSettings {
   $schema?: string;
   defaultModel: string;
@@ -38,6 +45,7 @@ export interface UserSettings {
   builtinCatalogVersion?: number;
 }
 
+/** 配置加载的范围控制；cwd / homeDir 缺省取当前目录与用户主目录。 */
 export interface LoadSettingsOptions {
   cwd?: string;
   homeDir?: string;
@@ -45,11 +53,13 @@ export interface LoadSettingsOptions {
   includeProject?: boolean;
 }
 
+/** 检测到未信任项目的待确认信息：内容尚未读取，只记录项目与配置文件路径。 */
 export interface PendingProjectSettings {
   projectPath: string;
   settingsPath: string;
 }
 
+/** loadSettings 的结果：有效设置、生效文件路径，以及（若存在）等待信任确认的项目。 */
 export interface LoadedSettings {
   settings: UserSettings;
   sourcePath?: string;
@@ -60,7 +70,7 @@ export interface LoadedSettings {
  * 内置模型清单版本。**改动 BUILTIN_PROFILES 就必须 +1**，否则老用户不会触发目录升级
  * （migrateBuiltinCatalog 只在版本落后时执行），菜单里会一直挂着已退役的模型。
  */
-export const BUILTIN_CATALOG_VERSION = 3;
+export const BUILTIN_CATALOG_VERSION = 4;
 
 /**
  * 内置模型清单。
@@ -98,7 +108,8 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   {
     id: 'gpt-6-astra',
     name: 'OpenAI GPT-6 Astra',
-    provider: 'openai-compatible',
+    provider: 'openai-responses',
+    maxOutputTokens: 32768,
     baseURL: 'https://api.openai.com/v1',
     apiKeyEnv: 'OPENAI_API_KEY',
     modelName: 'gpt-6-astra',
@@ -108,7 +119,8 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   {
     id: 'gpt-5.6-sol',
     name: 'OpenAI GPT-5.6 Sol',
-    provider: 'openai-compatible',
+    provider: 'openai-responses',
+    maxOutputTokens: 32768,
     baseURL: 'https://api.openai.com/v1',
     apiKeyEnv: 'OPENAI_API_KEY',
     modelName: 'gpt-5.6-sol',
@@ -118,7 +130,8 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   {
     id: 'gpt-5.6-terra',
     name: 'OpenAI GPT-5.6 Terra',
-    provider: 'openai-compatible',
+    provider: 'openai-responses',
+    maxOutputTokens: 32768,
     baseURL: 'https://api.openai.com/v1',
     apiKeyEnv: 'OPENAI_API_KEY',
     modelName: 'gpt-5.6-terra',
@@ -128,7 +141,8 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   {
     id: 'gpt-5.6-luna',
     name: 'OpenAI GPT-5.6 Luna',
-    provider: 'openai-compatible',
+    provider: 'openai-responses',
+    maxOutputTokens: 32768,
     baseURL: 'https://api.openai.com/v1',
     apiKeyEnv: 'OPENAI_API_KEY',
     modelName: 'gpt-5.6-luna',
@@ -139,7 +153,8 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   {
     id: 'claude-fable-5-1',
     name: 'Claude Fable 5.1',
-    provider: 'openai-compatible',
+    provider: 'anthropic',
+    maxOutputTokens: 16384,
     baseURL: 'https://api.anthropic.com/v1',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
     modelName: 'claude-fable-5-1',
@@ -149,7 +164,8 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   {
     id: 'claude-opus-5',
     name: 'Claude Opus 5',
-    provider: 'openai-compatible',
+    provider: 'anthropic',
+    maxOutputTokens: 16384,
     baseURL: 'https://api.anthropic.com/v1',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
     modelName: 'claude-opus-5',
@@ -159,7 +175,8 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   {
     id: 'claude-sonnet-5',
     name: 'Claude Sonnet 5',
-    provider: 'openai-compatible',
+    provider: 'anthropic',
+    maxOutputTokens: 16384,
     baseURL: 'https://api.anthropic.com/v1',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
     modelName: 'claude-sonnet-5',
@@ -169,7 +186,8 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
   {
     id: 'claude-haiku-4-5',
     name: 'Claude Haiku 4.5',
-    provider: 'openai-compatible',
+    provider: 'anthropic',
+    maxOutputTokens: 16384,
     baseURL: 'https://api.anthropic.com/v1',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
     modelName: 'claude-haiku-4-5',
@@ -325,10 +343,12 @@ const CATALOG_OWNED_FIELDS = [
 /** 无需密钥的本地端点(如 Ollama)的 apiKeyEnv 约定值 */
 export const API_KEY_ENV_NONE = 'NONE';
 
+/** 用户级配置文件路径：<homeDir>/.kapibala/settings.json。 */
 export function getGlobalSettingsPath(homeDir = os.homedir()): string {
   return path.join(homeDir, '.kapibala', 'settings.json');
 }
 
+/** 项目级配置文件路径：<cwd>/.kapibala/settings.json。 */
 export function getProjectSettingsPath(cwd = process.cwd()): string {
   return path.join(cwd, '.kapibala', 'settings.json');
 }
@@ -366,10 +386,6 @@ function createBaseSettings(): UserSettings {
   return {
     $schema: KAPIBALA_SCHEMA_URL,
     defaultModel: DEFAULT_MODEL_ID,
-    modelRouting: {
-      planning: 'deepseek-v4-pro',
-      execution: DEFAULT_MODEL_ID,
-    },
     profiles: [...BUILTIN_PROFILES],
     builtinCatalogVersion: BUILTIN_CATALOG_VERSION,
   };
@@ -447,6 +463,7 @@ function remapLegacyReferences(settings: UserSettings): UserSettings {
   return settings;
 }
 
+/** 目录升级结果；changed 为 false 时 settings 即原样返回的输入。 */
 export interface CatalogMigrationResult {
   settings: UserSettings;
   /** 人类可读的变更说明，供启动时提示用户 */
@@ -527,6 +544,7 @@ export function migrateBuiltinCatalog(raw: UserSettings): CatalogMigrationResult
       modelName: builtin.modelName,
       contextWindow: builtin.contextWindow,
       supportsThinking: builtin.supportsThinking,
+      maxOutputTokens: profile.maxOutputTokens ?? builtin.maxOutputTokens,
     };
   });
 
@@ -589,7 +607,8 @@ export function loadSettings(options: LoadSettingsOptions = {}): LoadedSettings 
       }
       sourcePath = globalPath;
     } catch (err: unknown) {
-      if (err instanceof InvalidPermissionSettings) throw err;
+      if (err instanceof InvalidPermissionSettings || err instanceof InvalidModelSettings)
+        throw err;
       // 损坏配置不能静默吞掉：用户会以为配置生效了，实际一直在跑默认值
       console.error(
         `[kapibala] Failed to parse global settings (${globalPath}): ${(err as Error).message}`,
@@ -623,7 +642,8 @@ export function loadSettings(options: LoadSettingsOptions = {}): LoadedSettings 
       }
       sourcePath = projectSettingsPath;
     } catch (err: unknown) {
-      if (err instanceof InvalidPermissionSettings) throw err;
+      if (err instanceof InvalidPermissionSettings || err instanceof InvalidModelSettings)
+        throw err;
       console.error(
         `[kapibala] Failed to parse project settings (${projectSettingsPath}): ${(err as Error).message}`,
       );
@@ -633,12 +653,19 @@ export function loadSettings(options: LoadSettingsOptions = {}): LoadedSettings 
   return { settings: remapLegacyReferences(settings), sourcePath };
 }
 
-/** 写入全局配置。任何一次全局写入都会盖上当前清单版本，避免下次启动重复迁移。 */
+/**
+ * 原子写入全局配置；先写同目录临时文件再替换，失败保留旧文件和完整入参。
+ * 成功后将迁移后的 profiles、引用及版本号一并同步回入参；调用方须重新读取其中的
+ * Profile，不能依赖保存前的对象引用，避免连续保存时以新版本号覆盖回旧协议。
+ */
 export function saveGlobalSettings(
   settings: UserSettings,
   options: Pick<LoadSettingsOptions, 'homeDir'> = {},
 ): string {
   validateProfileContextWindows(settings.profiles);
+  // 盖章前先同步目录字段：若启动迁移失败（仅告警放行），后续写盘不能把旧协议字段
+  // 连同新版本号一起固化进用户文件，否则迁移永不触发。
+  const migrated = migrateBuiltinCatalog(settings).settings;
   const globalPath = getGlobalSettingsPath(options.homeDir);
   const dir = path.dirname(globalPath);
 
@@ -646,9 +673,24 @@ export function saveGlobalSettings(
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 
-  settings.builtinCatalogVersion = BUILTIN_CATALOG_VERSION;
-  const content = JSON.stringify(settings, null, 2);
-  fs.writeFileSync(globalPath, content, { encoding: 'utf-8', mode: 0o600 });
+  const content = JSON.stringify(
+    { ...migrated, builtinCatalogVersion: BUILTIN_CATALOG_VERSION },
+    null,
+    2,
+  );
+  const temporaryPath = `${globalPath}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, content, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    fs.renameSync(temporaryPath, globalPath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch {
+      /* 写入失败或文件尚未建立。 */
+    }
+    throw error;
+  }
+  Object.assign(settings, migrated, { builtinCatalogVersion: BUILTIN_CATALOG_VERSION });
   try {
     fs.chmodSync(globalPath, 0o600);
   } catch {
@@ -709,8 +751,13 @@ export function ensureProfile(settings: UserSettings, profile: ModelProfile): Mo
   return added;
 }
 
+/**
+ * 密钥来源：inline 配置内联、shared 同厂商族已存密钥复用、none 免密钥端点、
+ * env 声明的环境变量、family-env 同族回退环境变量。
+ */
 export type ApiKeySource = 'inline' | 'shared' | 'none' | 'env' | 'family-env';
 
+/** 密钥解析结果：key 是实际可用值，source 说明它从哪来（供展示与「隐式复用」提示）。 */
 export interface ResolvedApiKey {
   key: string;
   source: ApiKeySource;
@@ -789,6 +836,7 @@ export function resolveApiKeyDetailed(
   return undefined;
 }
 
+/** {@link resolveApiKeyDetailed} 的简版：只要密钥值，不要来源说明。 */
 export function resolveApiKey(
   profile: ModelProfile,
   settings?: Pick<UserSettings, 'profiles'>,
@@ -821,6 +869,7 @@ function endpointHost(profile: ModelProfile): string {
   }
 }
 
+/** 组内归一的执行摘要：报告哪些 profile 的冗余密钥被清理、每组保留了哪一份。 */
 export interface NormalizeGroupKeysResult {
   /** 被清除冗余副本的 profile id */
   cleared: string[];
@@ -872,6 +921,7 @@ export function resolveBaseURL(profile: ModelProfile): string {
   return (override || profile.baseURL || '').replace(/\/+$/, '');
 }
 
+/** 厂商族；unknown 为无法识别的自建端点兜底，不参与同族密钥复用与环境变量回退。 */
 export type ProviderFamily =
   | 'openai'
   | 'anthropic'
@@ -987,17 +1037,26 @@ function mergeSettings(
   for (const p of base.profiles) profilesMap.set(p.id, p);
   if (Array.isArray(incoming.profiles)) {
     for (const p of incoming.profiles) {
-      // 校验失败只剔除该 profile，不拖垮整个配置文件：用户其余的好配置必须继续生效。
+      const inherited = profilesMap.get(p.id);
+      const effective = inherited
+        ? {
+            ...inherited,
+            ...p,
+            maxOutputTokens:
+              p.maxOutputTokens === undefined ? inherited.maxOutputTokens : p.maxOutputTokens,
+          }
+        : p;
+      // 既有窗口错误仍只剔除条目；新预算/协议/能力错误必须失败，禁止静默继承高预算。
       try {
-        resolveContextWindow(p.contextWindow);
+        validateProfileContextWindows([effective]);
       } catch (error: unknown) {
+        if (error instanceof InvalidModelSettings) throw error;
         console.warn(
           `[kapibala] Ignoring model profile '${p.id}' with invalid contextWindow: ${(error as Error).message}`,
         );
         continue;
       }
-      const inherited = profilesMap.get(p.id);
-      profilesMap.set(p.id, inherited ? { ...inherited, ...p } : p);
+      profilesMap.set(p.id, effective);
     }
   }
 
@@ -1031,6 +1090,7 @@ function mergeSettings(
 }
 
 class InvalidPermissionSettings extends Error {}
+class InvalidModelSettings extends Error {}
 
 /** 具名解释器或用户显式提供的解释器可执行文件全路径。 */
 function isValidShellPreference(value: string): boolean {
@@ -1041,9 +1101,45 @@ function isValidShellPreference(value: string): boolean {
   );
 }
 
-/** 配置进入运行时前统一校验上下文窗口，避免直到展示指标或压缩时才暴露坏值。 */
+/** 新协议、预算和端点能力配置非法时必须中止加载，不能剔除用户覆盖后改用内置值。 */
+function validateProfileExtensions(profile: ModelProfile): void {
+  const invalid = (field: string): never => {
+    throw new InvalidModelSettings(`Invalid ${field} for model profile '${profile.id}'`);
+  };
+  if (
+    profile.maxOutputTokens !== undefined &&
+    (!Number.isSafeInteger(profile.maxOutputTokens) || profile.maxOutputTokens <= 0)
+  )
+    invalid('maxOutputTokens');
+  if (!['openai-compatible', 'anthropic', 'openai-responses'].includes(profile.provider))
+    invalid('provider');
+  if (profile.chatCapabilities !== undefined) {
+    const capabilities = profile.chatCapabilities;
+    if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities))
+      invalid('chatCapabilities');
+    const booleans = [
+      'supportsStreamingUsage',
+      'supportsTemperature',
+      'requiresDone',
+      'replayReasoningContent',
+    ] as const;
+    if (Object.keys(capabilities).some((field) => !['maxTokensField', ...booleans].includes(field)))
+      invalid('chatCapabilities');
+    if (
+      capabilities.maxTokensField !== undefined &&
+      !['max_tokens', 'max_completion_tokens'].includes(capabilities.maxTokensField)
+    )
+      invalid('chatCapabilities.maxTokensField');
+    for (const field of booleans)
+      if (capabilities[field] !== undefined && typeof capabilities[field] !== 'boolean')
+        invalid(`chatCapabilities.${field}`);
+  }
+}
+
+/** 配置进入运行时前统一校验窗口及显式扩展；新扩展错误不能按旧窗口宽容规则过滤。 */
 function validateProfileContextWindows(profiles: ModelProfile[]): void {
   for (const profile of profiles) {
+    validateProfileExtensions(profile);
     try {
       resolveContextWindow(profile.contextWindow);
     } catch (error: unknown) {

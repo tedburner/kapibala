@@ -15,6 +15,7 @@ import {
 } from './tool-presentation.js';
 import { charWidth, displayWidth } from './width.js';
 
+/** 事件渲染器的可注入项；全部缺省时直接写 stdout，宿主可替换以复用同一渲染逻辑。 */
 export interface EventRendererOptions {
   debug?: boolean;
   /** 开发诊断独立写入 stderr，避免污染非 TTY 的答案 stdout。 */
@@ -32,6 +33,7 @@ export interface EventRendererOptions {
   columns?: number | (() => number);
 }
 
+/** 会话事件渲染契约：render 逐事件输出，finish 收尾（幂等，异常路径可重复调用）。 */
 export interface EventRenderer {
   /** 渲染单个会话事件到终端。 */
   render(event: SessionEvent): void;

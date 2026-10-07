@@ -9,11 +9,17 @@ import { readJsonlLines, syncSessionDirectory } from './jsonl-lines.js';
 import { SessionLock } from './session-lock.js';
 import { type SessionHeader, type SessionRecord, SessionStore } from './session-store.js';
 
+/** 会话桶的项目身份：会话按工作树根隔离存储在项目桶目录下。 */
 export interface ProjectIdentity {
+  /** 真实工作树根（非 Git 目录时为真实 cwd），作为会话归属与来源基准。 */
   projectRoot: string;
+  /** 解析符号链接后的真实 cwd。 */
   cwd: string;
+  /** 规范化根目录的 SHA-256，决定 ~/.kapibala/sessions 下的桶目录。 */
   projectKey: string;
+  /** detached HEAD 或非 Git 目录时缺省。 */
   gitBranch?: string;
+  /** true 表示 cwd 位于 Git 工作树内；同工作树子目录共用同一桶。 */
   gitWorktree?: boolean;
 }
 
@@ -54,25 +60,34 @@ export function resolveSessionProject(cwd: string): ProjectIdentity {
   };
 }
 
+/**
+ * 会话 sidecar 缓存元数据；可随时从正文重建，校验失败即丢弃，不是恢复依据。
+ * 正文 JSONL 始终是唯一真源。
+ */
 export interface SessionMetadata {
   schemaVersion: 1;
   conversationId: string;
   fileName: string;
   projectRoot: string;
   createdAt: number;
+  /** 最后一次正文、用户 run 或 reset 的时间；usage 与标题不影响排序。 */
   lastActivityAt: number;
   messageCount: number;
   title: string;
+  /** 用户显式重命名的标题；存在时 reset 不再回退为默认标题。 */
   customTitle?: string;
   gitBranch?: string;
   lastActivityGitBranch?: string;
   lastModelId?: string;
+  /** 旧历史导入的幂等身份（来源路径 + 内容哈希）；重复导入据此跳过。 */
   importIdentity?: string;
   size: number;
   mtimeMs: number;
+  /** 最后计入的记录 ID；与正文 stat 一同用于增量校验。 */
   revision: string;
 }
 
+/** 打开的会话句柄：持有单写者锁与 Store，宿主用毕必须 release。 */
 export interface ManagedSession {
   conversationId: string;
   store: SessionStore;
@@ -82,9 +97,11 @@ export interface ManagedSession {
   header: SessionHeader;
   /** 环境提示，不执行 checkout，也不把旧授权或模型配置带入当前运行。 */
   branchDrift?: { createdBranch?: string; currentBranch?: string };
+  /** 释放单写者锁并移除句柄；宿主须先结束 AgentSession 的工具/摘要清理。 */
   release(): Promise<void>;
 }
 
+/** SessionManager 配置；cwd 决定项目桶，homeDirectory 便于测试隔离。 */
 export interface SessionManagerOptions {
   cwd?: string;
   homeDirectory?: string;

@@ -1,11 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { CanonicalMessage } from '../types/index.js';
+import { validateProtocolContent } from '../models/protocol-state.js';
+import type { CanonicalMessage, ContentBlock } from '../types/index.js';
 import { type HistoryRepair, createMessageId, normalizeHistory } from './history.js';
 import { readJsonlLines, syncSessionDirectory } from './jsonl-lines.js';
 import type { MessageStore } from './store/index.js';
 
+/** 会话正文 schema 版本；读取时不匹配即拒绝恢复，不做跨版本猜测。 */
 export const SESSION_SCHEMA_VERSION = 1;
+/** 会话记录类型：header 只出现一次，message 承载正文，其余为状态记录。 */
 export type SessionRecordType =
   | 'header'
   | 'message'
@@ -21,15 +24,18 @@ export type SessionRecordType =
   | 'reset'
   | 'legacy_import';
 
+/** 会话文件首条记录：身份与创建环境快照；conversationId 与文件名强绑定。 */
 export interface SessionHeader {
   conversationId: string;
   projectRoot: string;
   initialCwd: string;
   createdAt?: number;
   gitBranch?: string;
+  /** 旧历史导入的幂等身份；存在时同一来源只导入一次。 */
   importIdentity?: string;
 }
 
+/** 单条 JSONL 记录封装；parentId 链接前驱，恢复时校验追加次序。 */
 export interface SessionRecord {
   schemaVersion: number;
   type: SessionRecordType;
@@ -39,6 +45,7 @@ export interface SessionRecord {
   payload: Record<string, unknown>;
 }
 
+/** loadState 返回的版本化状态视图；记录自最近 reset 起有效。 */
 export interface SessionState {
   header: SessionHeader;
   /** 最近 reset 之后的记录；包含正文及状态，不包含头部。 */
@@ -148,6 +155,7 @@ export class SessionStore implements StatefulMessageStore {
 
   /** 消息级持久化，补稳定身份并保留所有终态字段，成功后方可进入下一次写入。 */
   async append(message: CanonicalMessage): Promise<void> {
+    validateProtocolContent(message.content);
     const payload = { ...structuredClone(message), id: message.id ?? createMessageId() };
     await this.enqueue('message', payload);
     // 为已有 SDK 以同一对象进入内存历史的模式补身份；正文始终独立复制。
@@ -365,6 +373,7 @@ export class SessionStore implements StatefulMessageStore {
         if (messages.has(record.payload.id))
           throw new Error(`Duplicate message ID: ${record.payload.id}`);
         messages.add(record.payload.id);
+        validateProtocolContent(record.payload.content as ContentBlock[]);
       }
       if (record.type === 'header' && records.length)
         throw new Error('Session corrupt: repeated header');

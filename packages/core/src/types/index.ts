@@ -4,16 +4,54 @@
 
 import type { ModelErrorInfo } from '../errors/index.js';
 
+/** 原生协议内容的来源；仅同一次运行、同模型和端点允许回传私有状态。 */
+export interface ProtocolOrigin {
+  version: 1;
+  protocol: 'anthropic' | 'openai-responses';
+  modelName: string;
+  modelId?: string;
+  runId: string;
+  endpointScope: string;
+}
+
+/** Responses Item 与 canonical 块的对应关系；调用 Item 身份独立于业务 call_id。 */
+export interface ProtocolItemMetadata {
+  origin: ProtocolOrigin;
+  itemIndex: number;
+  itemId?: string;
+  contentIndex?: number;
+  phase?: 'commentary' | 'final_answer';
+  contentType?: 'output_text' | 'refusal';
+  arguments?: string;
+}
+
+/** 只保存受控 reasoning Item；密文不进入展示或摘要源。 */
+export interface ProviderStateBlock {
+  type: 'provider_state';
+  origin: ProtocolOrigin;
+  item: {
+    type: 'reasoning';
+    id: string;
+    encrypted_content?: string;
+    summary: { type: 'summary_text'; text: string }[];
+    status?: 'in_progress' | 'completed' | 'incomplete';
+  };
+}
+
+/** canonical 历史的内容块联合；provider_state 等私有块只在同 run、同模型与端点续答回传。 */
 export type ContentBlock =
   | TextBlock
   | ToolUseBlock
   | ToolResultBlock
   | ThinkingBlock
-  | RedactedThinkingBlock;
+  | RedactedThinkingBlock
+  | ProviderStateBlock;
 
 export interface TextBlock {
   type: 'text';
   text: string;
+  /** 源 wire Item 元数据；正文被改写后由调用方清除，不作为业务身份。 */
+  protocolMeta?: ProtocolItemMetadata;
 }
 
 export interface ToolUseBlock {
@@ -25,6 +63,8 @@ export interface ToolUseBlock {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /** 源 wire Item 元数据；内容被改写后由调用方清除，不作为业务身份。 */
+  protocolMeta?: ProtocolItemMetadata;
 }
 
 export interface ToolResultBlock {
@@ -43,14 +83,19 @@ export interface ToolResultBlock {
 export interface ThinkingBlock {
   type: 'thinking';
   thinking: string;
+  /** 存在签名或来源时属于私有输出，改写内容会被整批拒绝。 */
   signature?: string;
+  origin?: ProtocolOrigin;
 }
 
+/** Provider 提供的密文占位；仅按原样回传用于续答，不进入展示或摘要源。 */
 export interface RedactedThinkingBlock {
   type: 'redacted_thinking';
   data: string;
+  origin?: ProtocolOrigin;
 }
 
+/** 单次模型请求的 token 用量；由 Provider 上报，缺失的字段不能按零推断。 */
 export interface Usage {
   promptTokens: number;
   completionTokens: number;
@@ -59,8 +104,13 @@ export interface Usage {
   cachedPromptTokens?: number;
 }
 
+/** canonical 消息角色；'tool' 仅用于工具结果消息，wire 角色转换只发生在请求投影阶段。 */
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
+/**
+ * 协议无关的历史真源；wire 格式只在请求投影时出现。
+ * 不变量：assistant 消息中的 tool_use 进入历史后，对应 tool_result 消息必须紧跟其后。
+ */
 export interface CanonicalMessage {
   /** 派生背景锚点独立于真实用户输入，避免合并后丢失受保护原消息的来源身份。 */
   contextSummary?: { checkpointId: string };
@@ -75,22 +125,27 @@ export interface CanonicalMessage {
   timestamp?: number;
 }
 
+/** 判别并收窄为文本块。 */
 export function isTextBlock(block: ContentBlock): block is TextBlock {
   return block.type === 'text';
 }
 
+/** 判别并收窄为工具调用块。 */
 export function isToolUseBlock(block: ContentBlock): block is ToolUseBlock {
   return block.type === 'tool_use';
 }
 
+/** 判别并收窄为工具结果块。 */
 export function isToolResultBlock(block: ContentBlock): block is ToolResultBlock {
   return block.type === 'tool_result';
 }
 
+/** 判别并收窄为思考块。 */
 export function isThinkingBlock(block: ContentBlock): block is ThinkingBlock {
   return block.type === 'thinking';
 }
 
+/** 单个 turn 的指标快照；错误与熔断路径也以统一构造产出（工具字段为零），保证结构一致。 */
 export interface TurnMetrics {
   turn: number;
   startTime: number;
@@ -105,6 +160,7 @@ export interface TurnMetrics {
   toolCallsCount: number;
 }
 
+/** 一次完整 run 的累计指标；token 数为各轮请求之和，上下文占用单独见 contextUsage。 */
 export interface RunMetrics {
   startTime: number;
   endTime: number;
@@ -124,6 +180,7 @@ export interface RunMetrics {
   contextUsage?: ContextUsage;
 }
 
+/** 供宿主展示的上下文占用快照；估算值不能用于计费或精确预算。 */
 export interface ContextUsage {
   usedTokens?: number;
   /** true 表示未收到当前请求 usage，输入占用使用预算估算，不能用于计费。 */
@@ -133,6 +190,7 @@ export interface ContextUsage {
   estimatedLimit: boolean;
 }
 
+/** 单 turn 内关键阶段的进度标记；顺序与 AgentLoop 的实际派发时序一致，供展示与诊断。 */
 export type StepLogStage =
   | 'model_request_start'
   | 'first_token'
@@ -141,6 +199,7 @@ export type StepLogStage =
   | 'tool_execution_finish'
   | 'turn_finish';
 
+/** 面向宿主的步骤日志；message 可直接展示，结构化数值放在 metadata 中。 */
 export interface StepLogEntry {
   timestamp: number;
   turn: number;
@@ -213,7 +272,9 @@ export type SessionEvent =
   | { type: 'turn_start'; turn: number }
   | { type: 'step_log'; log: StepLogEntry }
   | { type: 'text_delta'; text: string }
-  | { type: 'thinking_delta'; thinking: string }
+  | { type: 'thinking_block_start'; blockId: string }
+  | { type: 'thinking_delta'; thinking: string; blockId?: string }
+  | { type: 'thinking_block_stop'; blockId: string }
   | { type: 'tool_start'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_progress'; id: string; name: string; elapsedMs: number; outputBytes: number }
   | {
@@ -244,7 +305,9 @@ export type SessionEvent =
 // 底层 Provider 吐出的原始事件流
 export type ModelEvent =
   | { type: 'text_delta'; text: string }
-  | { type: 'thinking_delta'; thinking: string }
+  | { type: 'thinking_block_start'; blockId: string }
+  | { type: 'thinking_delta'; thinking: string; blockId?: string }
+  | { type: 'thinking_block_stop'; blockId: string }
   | { type: 'tool_call_start'; id: string; name: string }
   | { type: 'tool_call_delta'; id: string; argumentChunk: string }
   | {
@@ -261,21 +324,29 @@ export type ModelEvent =
       ttftMs?: number;
       durationMs?: number;
       finishReason?: string;
+      /** 完整且有序的最终内容；有此字段时增量只供展示，不重复装配或执行工具。 */
+      finalContent?: ContentBlock[];
+      refusal?: boolean;
     };
 
+/** 投影给模型的工具描述；由注册表条目转换而来，仅暴露名称、描述与参数 Schema。 */
 export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>; // JSON Schema
 }
 
+/** 协议无关的模型请求；messages 是 canonical 真源的克隆，wire 翻译只发生在 Provider 内。 */
 export interface ModelRequest {
   systemPrompt?: string;
   messages: CanonicalMessage[];
   tools?: ToolDefinition[];
   signal?: AbortSignal;
+  /** 以下两项可选覆盖采样温度与单次输出上限；未设置时由适配器按协议与能力决定。 */
   temperature?: number;
   maxTokens?: number;
+  /** 宿主提供的本次运行来源；缺省时原生适配器不回传来源未知的私有状态。 */
+  context?: { runId: string; modelId?: string };
 }
 
 /** runtime 通用请求准备契约；实现可以预算或投影，Loop 不依赖具体上下文管理器。 */

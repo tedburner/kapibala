@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 
+/** 分支读取的可注入实现（缺省 execFileSync 调 git）；同步签名，失败以抛错表达。 */
 export type GitBranchReader = (cwd: string) => string;
 
 function readGitBranch(cwd: string): string {

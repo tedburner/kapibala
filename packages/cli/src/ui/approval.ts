@@ -64,6 +64,7 @@ export async function askWithReadline(
   return 'deny_once';
 }
 
+/** 复用既有 readline 的显式确认：只接受逐字 yes，非 TTY 一律返回 false，不自动批准。 */
 export async function confirmWithReadline(
   rl: readline.Interface,
   prompt: string,

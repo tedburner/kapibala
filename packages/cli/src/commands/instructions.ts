@@ -1,5 +1,6 @@
 import type { CommandHandler } from './dispatcher.js';
 
+/** 列出当前会话生效的项目指令来源；无来源时明确输出「无」。只读诊断。 */
 export const instructionsCommand: CommandHandler = (_args, ctx) => {
   const sources = ctx.session.getInstructionSources();
   console.log('当前项目指令来源:');

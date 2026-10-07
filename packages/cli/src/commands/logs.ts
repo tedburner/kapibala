@@ -3,6 +3,10 @@ import path from 'node:path';
 import { type LogEvent, createDefaultLogSinks } from '@kiturone/kapibala';
 import type { CommandHandler } from './dispatcher.js';
 
+/**
+ * 输出最近 N 条（默认 20，上限 100）运行与审计日志；两类来源合并后按时间正序展示。
+ * 只读已落盘文件，不发起任何运行。
+ */
 export const logsCommand: CommandHandler = (args) => {
   const count = args[0] === undefined ? 20 : Number(args[0]);
   if (!Number.isInteger(count) || count < 1 || count > 100) throw new Error('日志条数必须为 1–100');
@@ -21,6 +25,7 @@ export const logsCommand: CommandHandler = (args) => {
   }
 };
 
+/** 从最新日志文件向回读，凑满 count 即止；崩溃留下的残缺末行静默跳过。 */
 function readRecent(directory: string, prefix: 'operation' | 'audit', count: number): LogEvent[] {
   if (!fs.existsSync(directory)) return [];
   const files = fs

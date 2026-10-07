@@ -51,7 +51,10 @@ describe('unified slash command contract', () => {
         '/settings unexpected',
         '使用 setup 或 default <id>。用法: /settings [setup | default <id>]',
       ],
-      ['/model key a b', '模型参数或子命令不正确。用法: /model [id] | /model key [id]'],
+      [
+        '/model key a b',
+        `模型参数或子命令不正确。用法: ${COMMAND_CATALOG.find((command) => command.name === 'model')!.usage}`,
+      ],
       ['/permissions strange', '未知权限模式。用法: /permissions [approval|plan|auto|full-access]'],
       ['/new extra', '不接受参数。用法: /new'],
     ];

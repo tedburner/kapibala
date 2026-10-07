@@ -17,6 +17,7 @@ pnpm-debug.log*
 
 # Local agent workspace (session memory / diagnostics), never part of the package
 .workbuddy/
+.zcode/
 
 # Personal requirement notes (local scratch, not part of the package)
 需求点.txt

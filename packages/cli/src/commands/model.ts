@@ -1,5 +1,11 @@
-import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
-import { persistDefaultModel } from '../default-model.js';
+import { type ModelProfile, type ModelRole, resolveContextWindow } from '@kiturone/kapibala';
+import { persistDefaultModel, persistModelRole } from '../default-model.js';
+import { isInteractiveTerminal } from '../input-coordinator.js';
+import {
+  ROUTABLE_MODEL_ROLES,
+  createModelBinding,
+  parsePrimaryModelRole,
+} from '../model-bindings.js';
 import { PROVIDER_METAS, providerCategory } from '../providers.js';
 import {
   API_KEY_ENV_NONE,
@@ -15,10 +21,13 @@ import {
 } from '../settings.js';
 import { formatTokenCount } from '../ui/metrics.js';
 import type { SelectOption } from '../ui/select.js';
-import { runSetupWizard } from '../wizard.js';
 import type { CommandHandler } from './dispatcher.js';
 import { settingsCommand } from './settings.js';
 
+/**
+ * {@link updateModelApiKey} 的注入点，供测试与宿主替换密钥读取和配置写入。
+ * `globalSettings` 传入时直接作为磁盘原始配置使用，并在保存后回写同步到该对象。
+ */
 export interface UpdateModelApiKeyOptions {
   secretReader?: (prompt: string) => Promise<string>;
   saveSettings?: typeof saveGlobalSettings;
@@ -39,11 +48,18 @@ function globalSettingsForWrite(options: UpdateModelApiKeyOptions): UserSettings
   return loadGlobalSettingsForWrite({ homeDir: options.homeDir });
 }
 
+/**
+ * 交互式更新模型密钥：读取输入后经 updateProfileApiKey 写入全局配置（同组冗余副本自动归一），
+ * 再同步内存中的有效设置并通知宿主。非交互环境必须显式提供 secretReader，否则抛错。
+ * 返回 false 表示用户输入了空密钥而取消，不算失败。
+ */
 export async function updateModelApiKey(
   profile: ModelProfile,
   ctx: Parameters<CommandHandler>[1],
   options: UpdateModelApiKeyOptions = {},
 ): Promise<boolean> {
+  if (!options.secretReader && !isInteractiveTerminal())
+    throw new Error('非交互环境不能等待密钥输入，请通过厂商环境变量或全局设置配置。');
   if (!options.secretReader && !ctx.readSecret)
     throw new Error('秘密输入不可用，请在交互终端配置密钥或使用厂商环境变量');
   const secretReader = (options.secretReader ?? ctx.readSecret)!;
@@ -53,7 +69,7 @@ export async function updateModelApiKey(
     return false;
   }
 
-  const globalSettings = globalSettingsForWrite(options);
+  const globalSettings = structuredClone(globalSettingsForWrite(options));
   ensureProfile(globalSettings, profile);
   // 统一走 updateProfileApiKey 执行组内归一，无论该 profile 是否已存盘，
   // 均自动清理同厂商族其它模型的旧密钥副本，确保全局配置中同族只留一份密钥。
@@ -61,12 +77,15 @@ export async function updateModelApiKey(
   const savedPath = (options.saveSettings ?? saveGlobalSettings)(globalSettings, {
     homeDir: options.homeDir,
   });
+  if (options.globalSettings && options.globalSettings !== ctx.settings)
+    Object.assign(options.globalSettings, globalSettings);
   updateProfileApiKey(ctx.settings, profile.id, apiKey);
-  const active = ctx.session.getActiveProfile();
-  if (credentialGroup(active) === credentialGroup(profile)) {
-    ctx.onModelSwitched(active.id);
+  if (ctx.onCredentialsUpdated) {
+    ctx.onCredentialsUpdated(profile.id);
+  } else {
+    const active = ctx.session.getActiveProfile();
+    if (credentialGroup(active) === credentialGroup(profile)) ctx.onModelSwitched(active.id);
   }
-  ctx.onCredentialsUpdated?.(profile.id);
   console.log(`\x1b[32m✔ 已更新 '${profile.name}' 的 API Key：${savedPath}\x1b[0m`);
   console.log(
     `\x1b[90m  ${describeCredentialGroup(profile)} 下的其它模型将自动复用该密钥，无需重复输入。\x1b[0m`,
@@ -109,8 +128,33 @@ function describeKeyStatus(models: ModelProfile[], settings: UserSettings): stri
   return '⚠️ 未配置密钥';
 }
 
+/**
+ * `/model` 入口：`key [id]` 更新密钥、`<角色> <id>` 绑定角色、`route <role>` 选择主任务角色，
+ * 兼容 `setup` / `set-default` 子命令；无参数时非 TTY 输出只读列表，TTY 进入分级选择菜单。
+ * 切换与绑定前都先确保密钥就绪，缺密钥时引导补录，补录取消则整体中止。
+ */
 export const modelCommand: CommandHandler = async (args, ctx) => {
   const target = args[0];
+
+  if (target === 'route') {
+    const role = parsePrimaryModelRole(args[1]);
+    if (!ctx.onRoleSelected) throw new Error('当前宿主不支持模型角色选择');
+    ctx.onRoleSelected(role);
+    console.log(`✔ 当前主任务角色: ${role}`);
+    return;
+  }
+  if (ROUTABLE_MODEL_ROLES.includes(target as never)) {
+    const role = target as Exclude<ModelRole, 'default'>;
+    const profile = ctx.settings.profiles.find((candidate) => candidate.id === args[1]);
+    if (!profile) throw new Error(`未找到模型 Profile '${args[1]}'`);
+    if (!ctx.onRoleBound) throw new Error('当前宿主不支持模型角色绑定');
+    if (!(await ensureApiKey(profile, ctx))) return;
+    createModelBinding(profile, ctx.settings);
+    persistModelRole(profile, role, ctx.settings);
+    ctx.onRoleBound(role, profile.id);
+    console.log(`✔ 已绑定 ${role}: ${profile.name} (${profile.id})`);
+    return;
+  }
 
   // 0. `/model key [profile-id]` 主动更新当前或指定模型的密钥
   if (target === 'key') {
@@ -167,7 +211,9 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
   // 4. 若无参数输入 `/model`：启动两步分级交互菜单 (第一步选 Provider，第二步选具体模型)
   const active = ctx.session.getActiveProfile();
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.log(`当前模型: ${active.id} (${active.name})`);
+    console.log(
+      `当前角色: ${ctx.session.getModelRole?.() ?? 'default'} | 模型: ${active.id} (${active.name})`,
+    );
     for (const profile of ctx.settings.profiles) console.log(`  ${profile.id}: ${profile.name}`);
     console.log('使用 /model <id> 切换模型。');
     return;
@@ -295,7 +341,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
       continue;
     }
 
-    if (chosenModel === active.id) {
+    if (chosenModel === active.id && (ctx.session.getModelRole?.() ?? 'default') === 'default') {
       console.log(`\x1b[90m当前已在使用模型 '${active.name}'。\x1b[0m`);
       return;
     }

@@ -10,6 +10,7 @@ export const statusCommand: CommandHandler = (_args, ctx) => {
   console.log(`会话: ${stats.conversationId ?? ctx.session.conversationId ?? '未提供'}`);
   if (ctx.controller) console.log(`标题: ${ctx.controller.handle.metadata?.title ?? '缓存未知'}`);
   console.log(`活跃模型: ${stats.activeModel}`);
+  console.log(`主任务角色: ${ctx.session.getModelRole?.() ?? 'default'}`);
   console.log(`交互轮次: ${stats.totalTurns} | 工具数: ${stats.loadedToolsCount}`);
   console.log(`权限模式: ${ctx.session.getMode()}`);
   console.log(`命令环境: ${ctx.session.tools.get('run_command')?.description ?? '已关闭或不可用'}`);
