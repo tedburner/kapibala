@@ -4,6 +4,11 @@ import type { ApprovalChoice, ApprovalRequest } from '@kiturone/kapibala';
 import { escapeApprovalText } from './ui/approval.js';
 import type { SelectConfig } from './ui/select.js';
 
+/**
+ * {@link CliInputCoordinator} 的构造参数；input/output 可注入以便测试与宿主复用。
+ * `interactive` 缺省按两侧流是否均为 TTY 推断；显式置 false 时菜单按取消、
+ * 审批按拒绝处理，问答原语直接抛错。
+ */
 export interface CliInputOptions {
   input?: Readable;
   output?: Writable;
@@ -27,6 +32,7 @@ export function isInteractiveTerminal(): boolean {
 /** REPL、菜单、向导、审批和密钥的单一输入所有者；任何时刻只有一个问答消费者。 */
 export class CliInputCoordinator {
   readonly interactive: boolean;
+  /** readline 关闭（EOF / close）后 resolve；宿主据此等待输入循环完全退出。 */
   readonly whenClosed: Promise<void>;
   private readonly rl: readline.Interface;
   private readonly output: Writable;
@@ -191,6 +197,7 @@ export class CliInputCoordinator {
       this.rl.close();
     }
   }
+  /** 空闲且交互时刷新提示符；忙碌期调用不打印、不打断当前问答。 */
   prompt(value: string): void {
     if (!this.closed && !this.pending && this.interactive) {
       this.rl.setPrompt(value);

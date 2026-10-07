@@ -5,15 +5,20 @@ import type {
   SessionManager,
 } from '@kiturone/kapibala';
 
+/** 句柄与已初始化会话的成对持有；两者同生共死，清理时一起销毁。 */
 interface ActiveSession {
   handle: ManagedSession;
   session: AgentSession;
 }
+/** {@link ActiveSessionController} 的构造参数。 */
 export interface ActiveSessionControllerOptions {
   manager: SessionManager;
+  /** 只负责把句柄包装成 AgentSession（含工具注册与绑定装载），不调用 init；发布前由控制器统一执行。 */
   factory: (handle: ManagedSession) => Promise<AgentSession>;
+  /** 初始活动会话；调用方需保证其已 init 完成。 */
   current: ActiveSession;
   onDiagnostic?: (message: string) => void;
+  /** 会话发布成功后回调；此时旧会话可能尚未清理完成。 */
   onSwitched?: (event: Extract<SessionEvent, { type: 'session_switched' }>) => void;
 }
 
@@ -26,6 +31,7 @@ export class ActiveSessionController {
   private abortController?: AbortController;
   private pendingOperation?: Promise<void>;
   private pendingSwitch?: Promise<void>;
+  /** 已被替换但尚未完成清理的旧会话；清理失败保留在此，供 close() 重试。 */
   private readonly retired = new Map<string, ActiveSession>();
 
   constructor(private readonly options: ActiveSessionControllerOptions) {

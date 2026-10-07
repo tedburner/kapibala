@@ -16,8 +16,14 @@ export interface ProviderMeta {
   keyPrompt: string;
 }
 
+/** 无法识别厂商（自建网关等）在菜单与向导中的统一分组键。 */
 export const CUSTOM_PROVIDER_KEY = 'custom';
 
+/**
+ * 厂商展示元数据，顺序即 /model 菜单与冷启动向导的呈现顺序。
+ * `key` 必须能被 detectProviderFamily 识别（或就是 custom），否则该分组在菜单里永远为空；
+ * 新增厂商只改这里与内置清单，不要在命令层另备一份模型 id 清单。
+ */
 export const PROVIDER_METAS: ProviderMeta[] = [
   {
     key: 'deepseek',

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { AbortError } from '../errors/index.js';
+import { summarySafeMessage } from '../models/protocol-state.js';
 import type { ModelRouter } from '../models/router.js';
 import { createMessageId } from '../types/identity.js';
 import type { CanonicalMessage, ModelRequest, Usage } from '../types/index.js';
@@ -10,6 +11,7 @@ import {
   stableSerialize,
 } from './budget.js';
 
+/** 摘要模型的 JSON 输出契约；只有通过 validateSummary 的实例可进入检查点。 */
 export interface ContextSummary {
   schemaVersion: 1;
   goal: string;
@@ -19,9 +21,11 @@ export interface ContextSummary {
   pendingWork: string[];
   /** 原消息身份，不接受模型虚构来源或把旧摘要当成授权。 */
   references: string[];
+  /** 结果未知的副作用记录；保留不确定性，不冒充成功或失败。 */
   unknownEffects: string[];
 }
 
+/** 一次文件操作的历史观察；只描述曾经发生，不描述文件当前状态。 */
 export interface FileObservation {
   /** 有执行目录证据时为绝对路径；旧记录缺少依据时为原相对路径，基目录未知。 */
   path: string;
@@ -30,11 +34,14 @@ export interface FileObservation {
   operation: string;
 }
 
+/** 检查点携带的文件事实：按结果分类的观察列表，每类上限 500 条。 */
 export interface FileDetails {
   readFiles: FileObservation[];
   modifiedFiles: FileObservation[];
   failedFileOperations: FileObservation[];
+  /** 工具结果缺失或 OUTCOME_UNKNOWN 时的操作记录。 */
   unknownFileOperations: FileObservation[];
+  /** 超出 500 上限被丢弃的观察总数；渲染时与列表截断数合并展示。 */
   omitted: number;
 }
 
@@ -195,22 +202,28 @@ export function validateSummary(value: unknown, sourceIds: ReadonlySet<string>):
   return structuredClone(summary);
 }
 
+/** 摘要服务配置；router 提供摘要角色绑定，全部 attempt 共享总时限。 */
 export interface SummaryServiceOptions {
   router: ModelRouter;
+  /** 保留旧 API 形参；项目根不作为历史工具相对路径的推断依据。 */
   projectRoot: string;
   estimator?: TokenEstimator;
   /** 真实使用量在候选校验前记账，失败摘要仍保留消耗；不得包含主任务 TTFT。 */
   onUsage?: (attemptId: string, usage: Usage | undefined, modelId: string) => Promise<void>;
+  /** 单次 generate 的总时限，生效值不超过 120 秒；超时按摘要失败处理。 */
   timeoutMs?: number;
 }
 
+/** 一次成功摘要的产出与计量；usage 为本次 generate 全部 attempt 的累计值。 */
 export interface SummaryCandidate {
   summary: ContextSummary;
   details: FileDetails;
+  /** 实际发起的摘要模型调用次数；上限 4。 */
   calls: number;
   modelId: string;
   durationMs: number;
   usage: Usage;
+  /** 任一 attempt 缺失 usage 时为 false，不将缺失消耗伪装为零。 */
   usageKnown: boolean;
 }
 
@@ -233,6 +246,7 @@ export class SummaryService {
   /**
    * 按完整用户交互分批，以旧摘要和新增原始前缀取材；中间结果只是局部候选，不激活。
    * 单个不可拆分输入超预算、无终态、截断或非法来源均失败，取消先关闭 Provider 迭代。
+   * 摘要输出独立限制为 4096，并受 Profile 更低覆盖及窗口约束；非法 Profile 预算先失败。
    */
   async generate(
     history: readonly CanonicalMessage[],
@@ -249,7 +263,11 @@ export class SummaryService {
     try {
       const profile = this.options.router.getProfile('summary');
       const provider = this.options.router.resolve('summary');
-      const budget = createContextBudget(profile.contextWindow);
+      const profileBudget = createContextBudget(profile.contextWindow, profile.maxOutputTokens);
+      const budget = createContextBudget(
+        profile.contextWindow,
+        Math.min(4096, profileBudget.outputReserve),
+      );
       const allSources = new Set([
         ...history.map((m) => m.id!),
         ...(previous?.summary.references ?? []),
@@ -263,7 +281,7 @@ export class SummaryService {
             (!message.interactionId || message.interactionId !== units.at(-1)![0].interactionId))
         )
           units.push([]);
-        units.at(-1)!.push(structuredClone(message));
+        units.at(-1)!.push(summarySafeMessage(message));
       }
       let rolling = previous?.summary;
       let calls = 0;
@@ -297,7 +315,8 @@ export class SummaryService {
         tools: [],
         maxTokens: budget.outputReserve,
         signal: controller.signal,
-        temperature: 0,
+        // 原生模型使用自己的采样默认，摘要目的不强制沿用旧 Chat 的采样参数。
+        ...(profile.provider === 'openai-compatible' ? { temperature: 0 } : {}),
       });
       while (position < units.length) {
         if (controller.signal.aborted) throw new AbortError();
@@ -337,6 +356,14 @@ export class SummaryService {
               stopped = true;
               finishReason = event.finishReason;
               attemptUsage = event.usage;
+              if (event.finalContent?.some((block) => block.type === 'tool_use'))
+                throw new Error('Summary unexpectedly attempted a tool call');
+              if (event.refusal) throw new Error('Summary model refused the request');
+              if (event.finalContent)
+                text = event.finalContent
+                  .filter((block) => block.type === 'text')
+                  .map((block) => block.text)
+                  .join('');
             }
           }
         } finally {

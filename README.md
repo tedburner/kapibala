@@ -112,6 +112,7 @@ pnpm build && node packages/cli/dist/bin.js
 ```text
 选项:
   -m, --model <id>       指定要使用的模型 profile id (如 deepseek-flash, claude-opus-5)
+  --role <role>          显式主任务角色: default|planning|execution|fast
   -p, --prompt <text>    直接执行单次问答并输出结果 (免进入 REPL)
   --base-url <url>       临时覆盖模型 API 端点 (例如使用自建代理/中转)
   --api-key <key>        临时指定 API 密钥
@@ -195,9 +196,11 @@ pnpm build && node packages/cli/dist/bin.js
 | 指令 | 作用说明 | 示例 |
 |---|---|---|
 | `/model` | **呼出交互式模型选择菜单**（编号选择；非 TTY 只列模型） | `/model` |
-| `/model <id>` | 命令行快速切换模型 (高级快捷方式) | `/model deepseek-v4-pro` |
+| `/model <id>` | 更新本次 default 绑定并切回 default 角色 | `/model deepseek-v4-pro` |
+| `/model <role> <id>` | 保存 planning/execution/fast/summary 模型绑定 | `/model planning claude-opus-5` |
+| `/model route <role>` | 选择 default/planning/execution/fast 主任务角色 | `/model route planning` |
 | `/model setup` | 重新唤出终端交互配置向导 | `/model setup` |
-| `/model key [id]` | 更新指定模型（或其所属厂商族）的 API Key | `/model key gpt-5.6-terra` |
+| `/model key [id]` | 未指定 ID 时更新当前角色模型；同步刷新同组所有角色凭据 | `/model key gpt-5.6-terra` |
 | `/model set-default <id>` | 将指定模型持久化为全局默认模型 | `/model set-default gpt-5.6-terra` |
 | `/settings`、`/config` | 查看配置；default 设置下次启动模型，setup 打开向导 | `/settings default deepseek-flash` |
 | `/new`、`/clear` | 保留旧文件并新建独立会话 | `/new` |
@@ -369,7 +372,32 @@ try {
 }
 ```
 
-`JSONLMessageStore` 仍可作为旧 SDK 消息存储使用，但不具备状态存储能力，不启用可恢复压缩。原始历史与有效投影、恢复和锁边界见 [v0.0.3 迁移说明](docs/migration/v0.0.3.md)。SDK 可以绑定 `planning`、`execution`、`fast` 槽位，当前主循环不会自动调用这些角色。
+`JSONLMessageStore` 仍可作为旧 SDK 消息存储使用，但不具备状态存储能力，不启用可恢复压缩。原始历史与有效投影、恢复和锁边界见 [v0.0.3 迁移说明](docs/migration/v0.0.3.md)。SDK 可以绑定 `planning`、`execution`、`fast` 槽位，通过 `run(input, { role: 'planning' })` 显式选择；每次工具循环固定该角色，缺绑定或密钥在请求前失败。
+
+### 显式角色与原生协议（v0.0.4 工作区能力）
+
+CLI 从 `modelRouting` 装载角色绑定，普通任务仍使用 `defaultModel`，首次默认保持 `deepseek-flash`。角色只选择模型，权限仍由独立的 Approval/Plan/Auto/FullAccess 规则裁决；选择 planning 不增加提示词、自动执行计划或放行写操作。
+
+```text
+/model planning claude-opus-5
+/model execution gpt-6-astra
+/model fast deepseek-flash
+/model route planning
+请先分析方案
+/model route execution
+按照已确认方案实现
+/model route default
+```
+
+单次启动示例为 `kpbl --role planning -p "分析方案"`，必须已有可用的 planning 映射；非法角色、缺映射或选中角色缺密钥会明确失败，非交互模式不等待输入密钥。`--model` 设置本次 default 绑定；`--base-url` 与 `--api-key` 临时覆盖实际选中角色的端点和密钥，优先于环境端点覆盖，不写入配置。未使用的 default 缺密钥不会阻止已有可用角色运行，真正使用该默认绑定时再诊断。
+
+当前角色在提示符和 `/status` 展示。CLI 内 `/new` 与 `/resume` 保留当前选择；新进程恢复历史默认回到 default，除非明确传入 `--role`。`/model <id>` 会选择 default；`/settings default <id>` 和 `/model set-default <id>` 只设置下次默认启动模型。
+
+`summary` 只用于摘要，未绑定时回退 default；其输出目的预算不超过 4096，且受所选模型更低覆盖约束。选择 planning/execution 不会把摘要改用该角色，也不会自动扩大摘要预算。
+
+协议由 Profile 的 `provider` 决定：`anthropic` 使用原生 Messages，`openai-responses` 使用原生 Responses，`openai-compatible` 保留 Chat Completions。自建 Claude/OpenAI 网关可以继续显式使用 Chat；不会凭模型名称猜协议。SDK 对应构造 `AnthropicProvider`、`OpenAIResponsesProvider` 或 `OpenAICompatibleProvider` 后调用 `switchModel(profile, role, provider)`；Profile 与实际 Provider 的模型、协议、端点及工作区必须一致。
+
+内置 OpenAI 原生输出上限为 32768，Claude 为 16384，兼容模型缺省为 4096。`maxOutputTokens` 表示含思考的总输出预算，合法的用户更低配置会保留，最终还受上下文窗口约束。Chat 端点的参数和 DONE 例外通过显式 `chatCapabilities` 配置，见 [兼容 Chat 说明](docs/models/openai-compatible.md)；跨协议历史和新私有块的边界见 [v0.0.4 迁移说明](docs/migration/v0.0.4.md)。
 
 ---
 
@@ -398,7 +426,7 @@ User Input ──► session.run()
                AgentLoop ◄────────────────────────┐
                     │ (分层组装上下文与提示词)            │
                     ▼                             │
-               ModelProvider (OpenAI-compatible)  │ (模型生成 tool_use)
+               ModelProvider (Messages/Responses/Chat) │ (模型生成 tool_use)
                     │                             │
                     ▼                             │
                ToolExecutor (超时 + 调度执行)    │
@@ -436,7 +464,7 @@ Kapibala 采用统一规范的 `.kapibala` 目录与 `settings.json` 命名。
     "planning": "deepseek-v4-pro",
     "execution": "deepseek-flash"
   },
-  "builtinCatalogVersion": 2,
+  "builtinCatalogVersion": 4,
   "profiles": [
     {
       "id": "deepseek-flash",
@@ -471,7 +499,7 @@ Kapibala 采用统一规范的 `.kapibala` 目录与 `settings.json` 命名。
 | **智谱 GLM** | `glm-5.3`<br>`glm-5.3-flash` | 1000k |
 | **本地 Ollama** | `ollama`（`gpt-oss:20b`，免密钥） | 131k |
 
-清单版本号记录在 `settings.json` 的 `builtinCatalogVersion` 字段（由程序写入，无需手改）。启动时若发现它落后于当前版本，会**自动做一次目录升级**：已退役的模型 id 被**重定向**到现役档位（密钥一并带过去，密钥丢失不可逆，绝不直接删），仍在内置清单里的 profile 会同步过期的 `baseURL` / `modelName` / 上下文窗口，`defaultModel` 与 `modelRouting` 里指向旧 id 的引用被改写 —— 且**不会写入任何你从未启用过的内置模型**，升级只整理你已有的配置。
+清单版本号记录在 `settings.json` 的 `builtinCatalogVersion` 字段（由程序写入，无需手改）。启动时若发现它落后于当前版本，会**自动做一次目录升级**：已退役的模型 id 被**重定向**到现役档位（密钥一并带过去），仍在内置清单里的 Profile 同步协议、端点、模型名与上下文窗口，默认和角色引用随旧 ID 重映射。目录第 4 版把内置 Claude 改为 Messages、OpenAI 改为 Responses；缺省输出预算从目录继承，用户显式预算和自建 Profile 保留。升级**不会写入任何你从未启用过的内置模型**，配置原子替换失败时保留旧文件。
 
 ---
 

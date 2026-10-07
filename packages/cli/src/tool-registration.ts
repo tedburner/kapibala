@@ -5,6 +5,7 @@ import {
   detectShell,
 } from '@kiturone/kapibala';
 
+/** CLI 默认工具集的注册参数；shell 与 detect 供测试注入或显式覆盖解释器选择。 */
 export interface BuiltinRegistrationOptions {
   cwd: string;
   disableShell?: boolean;

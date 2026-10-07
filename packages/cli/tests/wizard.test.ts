@@ -21,13 +21,41 @@ vi.mock('../src/settings.js', async (importOriginal) => {
   };
 });
 
-import { runSetupWizard } from '../src/wizard.js';
+import { probeEndpoint, runSetupWizard } from '../src/wizard.js';
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('runSetupWizard resource cleanup', () => {
+  it('uses native Anthropic authentication for its read-only connectivity probe', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+    expect(
+      await probeEndpoint(
+        {
+          id: 'native-claude',
+          name: 'Claude',
+          provider: 'anthropic',
+          baseURL: 'https://api.anthropic.com/v1/',
+          apiKeyEnv: 'ANTHROPIC_API_KEY',
+          modelName: 'claude-opus-5',
+        },
+        'fixture-key',
+      ),
+    ).toMatchObject({ status: 'ok' });
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api.anthropic.com/v1/models',
+      expect.objectContaining({
+        method: 'GET',
+        headers: {
+          'x-api-key': 'fixture-key',
+          Authorization: 'Bearer fixture-key',
+          'anthropic-version': '2023-06-01',
+        },
+      }),
+    );
+  });
   it('closes readline when loading the writable settings snapshot fails', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 

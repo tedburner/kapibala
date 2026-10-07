@@ -6,14 +6,23 @@ import {
 } from './settings.js';
 import { select } from './ui/select.js';
 
+/** 用户对项目配置的选择：trust 永久信任并应用，reject 退出且不读取。 */
 export type ProjectTrustDecision = 'trust' | 'reject';
 
+/**
+ * 信任解析结果：
+ * - `ready` 无待确认项目，配置直接可用；
+ * - `trusted` 用户确认信任，已按含项目配置的结果重载；
+ * - `rejected` 用户拒绝，宿主不得应用项目配置；
+ * - `non_interactive` 非交互终端无法确认，同样不得应用，由调用方按失败退出。
+ */
 export type ProjectTrustResult =
   | { status: 'ready'; loaded: LoadedSettings }
   | { status: 'trusted'; loaded: LoadedSettings }
   | { status: 'rejected' }
   | { status: 'non_interactive' };
 
+/** 注入项：interactive 与 choose 供测试或图形宿主替换终端菜单；其余继承 {@link LoadSettingsOptions}。 */
 export interface ResolveProjectTrustOptions extends LoadSettingsOptions {
   interactive?: boolean;
   choose?: (projectPath: string) => Promise<ProjectTrustDecision | null>;

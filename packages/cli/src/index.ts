@@ -1,12 +1,5 @@
 import path from 'node:path';
-import {
-  AgentSession,
-  type ModelProfile,
-  OpenAICompatibleProvider,
-  SessionManager,
-  type SessionMode,
-  ToolRegistry,
-} from '@kiturone/kapibala';
+import { AgentSession, SessionManager, type SessionMode, ToolRegistry } from '@kiturone/kapibala';
 import minimist from 'minimist';
 import { ActiveSessionController } from './active-session.js';
 import { COMMAND_CATALOG } from './commands/catalog.js';
@@ -22,6 +15,7 @@ import { modelCommand } from './commands/model.js';
 import { settingsCommand } from './commands/settings.js';
 import { statusCommand } from './commands/status.js';
 import { CliInputCoordinator } from './input-coordinator.js';
+import { CliModelBindings, parsePrimaryModelRole } from './model-bindings.js';
 import { runOneShot } from './oneshot.js';
 import { detectProjectRoot } from './project-root.js';
 import { resolveProjectTrust } from './project-trust.js';
@@ -30,11 +24,9 @@ import { openStartupSession, validateSessionStartup } from './session-startup.js
 import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
-  detectProviderFamily,
   loadSettings,
   migrateGlobalSettingsCatalog,
   resolveApiKey,
-  resolveBaseURL,
 } from './settings.js';
 import { registerBuiltinTools } from './tool-registration.js';
 import { CliApprovalChannel } from './ui/approval.js';
@@ -53,7 +45,7 @@ function isValidShellPreference(value: string): boolean {
 /** 解析启动参数并管理独立会话、共享输入和退出清理；显式恢复失败不回退新建。 */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = minimist(argv, {
-    string: ['model', 'base-url', 'api-key', 'prompt', 'permission', 'shell', 'resume'],
+    string: ['model', 'role', 'base-url', 'api-key', 'prompt', 'permission', 'shell', 'resume'],
     boolean: ['help', 'version', 'debug', 'disable-shell', 'continue'],
     alias: { m: 'model', h: 'help', v: 'version', p: 'prompt' },
   });
@@ -72,9 +64,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
 选项:
   -m, --model <id>       指定要使用的模型 profile id (如 deepseek-flash, claude-opus-5)
+  --role <role>          主任务角色: default|planning|execution|fast；必须已有可用绑定
   -p, --prompt <text>    直接执行问答并输出结果 (单次模式)
-  --base-url <url>       临时覆盖模型 API 端点
-  --api-key <key>        临时指定 API 密钥
+  --base-url <url>       临时覆盖当前角色 API 端点
+  --api-key <key>        临时指定当前角色 API 密钥
   --debug                输出调试日志与事件追踪
   --permission <mode>    本次会话权限: approval|plan|auto|full-access
   --shell <kind>         解释器: auto|bash|wsl|pwsh|powershell 或解释器全路径
@@ -94,6 +87,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.log(`kpbl v${CLI_VERSION}`);
     process.exit(0);
   }
+  const requestedRole = parsePrimaryModelRole(args.role);
 
   // 0. 内置模型清单升级
   validateSessionStartup({ continue: args.continue, resume: args.resume });
@@ -161,16 +155,28 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     activeProfile = settings.profiles[0] ?? BUILTIN_PROFILES[0]!;
   }
 
-  if (args['base-url']) {
-    activeProfile = { ...activeProfile, baseURL: args['base-url'] };
-  }
-  if (args['api-key']) {
-    activeProfile = { ...activeProfile, apiKey: args['api-key'] };
-  }
+  const temporaryOverrides = {
+    ...(args['base-url'] ? { baseURL: args['base-url'] as string } : {}),
+    ...(args['api-key'] ? { apiKey: args['api-key'] as string } : {}),
+  };
+  if (requestedRole === 'default') activeProfile = { ...activeProfile, ...temporaryOverrides };
 
   // 2. 检测可用性，若完全无配置则唤起初次向导
   // 传入 settings 才能复用同厂商族已配置的密钥，避免同厂换个模型就要求重新输入。
   let activeApiKey = resolveApiKey(activeProfile, settings);
+  if (requestedRole !== 'default') {
+    const id = settings.modelRouting?.[requestedRole];
+    const configured = settings.profiles.find((profile) => profile.id === id);
+    if (!configured)
+      throw new Error(
+        `角色 ${requestedRole} 尚未配置可用模型，请使用 /model ${requestedRole} <id>。`,
+      );
+    const roleProfile = { ...configured, ...temporaryOverrides };
+    if (!resolveApiKey(roleProfile, settings))
+      throw new Error(
+        `角色 ${requestedRole} 的模型 '${roleProfile.id}' 没有可用密钥，请先配置厂商密钥。`,
+      );
+  }
   const manager = new SessionManager({
     cwd: process.cwd(),
     onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
@@ -180,7 +186,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   try {
     // 显式目标先验证和锁定；错误 ID 不启动密钥向导或创建替代会话。
     const restoredHandle = args.resume === undefined ? undefined : await manager.open(args.resume);
-    if (!activeApiKey && activeProfile.apiKeyEnv !== API_KEY_ENV_NONE) {
+    if (
+      requestedRole === 'default' &&
+      !activeApiKey &&
+      activeProfile.apiKeyEnv !== API_KEY_ENV_NONE
+    ) {
       if (!inputCoordinator.interactive)
         throw new Error('尚未配置模型密钥；非交互环境请通过厂商环境变量或全局设置配置。');
       const { profile, apiKey } = await runSetupWizard({
@@ -189,19 +199,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       });
       activeProfile = profile;
       activeApiKey = apiKey;
+      Object.assign(settings, loadSettings().settings);
     }
 
     // 3. 构建当前宿主配置；每次切换重新创建 Session，不继承旧授权缓存。
-    const createProvider = (profile: ModelProfile, apiKey: string) =>
-      new OpenAICompatibleProvider({
-        baseURL: resolveBaseURL(profile),
-        apiKey,
-        modelName: profile.modelName,
-        supportsThinking: profile.supportsThinking,
-        replayReasoningContent: detectProviderFamily(profile) === 'deepseek',
-      });
-    let currentProfile: ModelProfile = activeProfile;
-    let currentProvider = createProvider(currentProfile, activeApiKey || 'none');
+    const models = new CliModelBindings(
+      settings,
+      { ...activeProfile, ...(activeApiKey ? { apiKey: activeApiKey } : {}) },
+      (message) => console.error(`[kapibala] ${message}`),
+      requestedRole !== 'default',
+      { [requestedRole]: temporaryOverrides },
+    );
     const approvalChannel = new CliApprovalChannel();
     const builtinTools = new ToolRegistry();
     const preference = args.shell ?? settings.shell?.preference ?? 'auto';
@@ -226,24 +234,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           continue: args.continue,
           resume: args.resume,
         }));
-      const configureSummary = (target: AgentSession) => {
-        const summaryId = settings.modelRouting?.summary;
-        const summaryProfile = settings.profiles.find((profile) => profile.id === summaryId);
-        if (summaryProfile) {
-          const key = resolveApiKey(summaryProfile, settings);
-          if (key || summaryProfile.apiKeyEnv === API_KEY_ENV_NONE)
-            target.switchModel(
-              summaryProfile,
-              'summary',
-              createProvider(summaryProfile, key || 'none'),
-            );
-          else console.error('[kapibala] 摘要路由没有可用密钥，本次回退当前默认模型。');
-        }
-      };
       const factory = async (handle: import('@kiturone/kapibala').ManagedSession) => {
         const created = new AgentSession({
-          defaultProfile: currentProfile,
-          defaultProvider: currentProvider,
+          defaultProfile: models.defaultBinding.profile,
+          defaultProvider: models.defaultBinding.provider,
           store: handle.store,
           conversationId: handle.conversationId,
           rootDir: process.cwd(),
@@ -257,7 +251,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           approvalChannel,
         });
         for (const tool of builtinTools.list()) created.tools.register(tool);
-        configureSummary(created);
+        models.attach(created, controller ? models.selectedRole : requestedRole);
         return created;
       };
       const initial = await factory(initialHandle);
@@ -316,15 +310,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
             settings.profiles.find((candidate) => candidate.id === newProfileId) ??
             BUILTIN_PROFILES.find((candidate) => candidate.id === newProfileId);
           if (!profile) throw new Error(`未找到模型 Profile '${newProfileId}'`);
-          const provider = createProvider(profile, resolveApiKey(profile, settings) || 'none');
-          active.session.switchModel(profile, 'default', provider);
-          currentProfile = profile;
-          currentProvider = provider;
-          configureSummary(active.session);
+          models.switchDefault(active.session, profile.id);
         },
-        onCredentialsUpdated: () => {
-          configureSummary(active.session);
-        },
+        onRoleBound: (role, id) => models.bindRole(active.session, role, id),
+        onRoleSelected: (role) => models.selectRole(active.session, role),
+        onCredentialsUpdated: (id) => models.refreshCredentials(active.session, id),
         onExit: () => {
           inputCoordinator.close();
         },

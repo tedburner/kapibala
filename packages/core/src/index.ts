@@ -29,6 +29,8 @@ export * from './extensibility/plugin/index.js';
 export * from './runtime/executor/index.js';
 export * from './models/index.js';
 export * from './models/openai-compatible/index.js';
+export * from './models/anthropic/index.js';
+export * from './models/openai-responses/index.js';
 export * from './context/store/index.js';
 export * from './capabilities/prompt/index.js';
 export * from './runtime/loop/index.js';

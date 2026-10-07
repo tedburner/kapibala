@@ -6,6 +6,10 @@ import type { CliApprovalChannel } from './ui/approval.js';
 import { createEventRenderer } from './ui/events.js';
 import { CLI_VERSION } from './version.js';
 
+/**
+ * REPL 启动参数。`controller` 缺省时退回裸会话（无切换能力）；
+ * `inputCoordinator` 缺省时内部自建，宿主可注入同一实例以共享输入所有权。
+ */
 export interface REPLOptions {
   session: AgentSession;
   controller?: ActiveSessionController;
@@ -37,7 +41,7 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   const busy = () => options.controller?.isBusy() ?? session().isBusy();
   const prompt = () =>
     input.prompt(
-      `kpbl (${session().getActiveProfile().id} | ${session().getMode()} | ${session().conversationId.slice(0, 8)}) ❯ `,
+      `kpbl (${session().getModelRole()} | ${session().getActiveProfile().id} | ${session().getMode()} | ${session().conversationId.slice(0, 8)}) ❯ `,
     );
   const requestExit = () => {
     exiting = true;

@@ -66,7 +66,10 @@ describe('readonly context snapshots', () => {
       expect(session.getContextSnapshot()!.stale).toBe(true);
       log.mockClear();
       contextCommand([], ctx);
-      expect(log.mock.calls.flat().join('\n')).toContain('过期快照');
+      const switched = log.mock.calls.flat().join('\n');
+      expect(switched).toContain('上下文 larger | 静态估算');
+      expect(switched).toContain('窗口 64000');
+      expect(switched).toContain('实测最近 prompt tokens: 未知');
       expect(provider.requests).toHaveLength(1);
       expect(hooks).toBe(1);
     } finally {

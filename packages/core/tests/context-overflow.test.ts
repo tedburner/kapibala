@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToolRegistry } from '../src/capabilities/tools/registry.js';
 import { ContextOverflowError, ModelError } from '../src/errors/index.js';
 import { HookRegistry } from '../src/extensibility/hooks/registry.js';
+import { AnthropicProvider } from '../src/models/anthropic/index.js';
 import { OpenAICompatibleProvider } from '../src/models/openai-compatible/index.js';
 import { ToolExecutor } from '../src/runtime/executor/index.js';
 import { AgentLoop } from '../src/runtime/loop/index.js';
@@ -13,6 +14,62 @@ const request: ModelRequest = {
 };
 
 describe('explicit context overflow', () => {
+  it('recovers an Anthropic HTTP overflow through one shorter request before any output', async () => {
+    const response = [
+      { type: 'message_start', message: { id: 'm', role: 'assistant', content: [] } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'done' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+      { type: 'message_stop' },
+    ];
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              type: 'invalid_request_error',
+              message: 'prompt is too long: 210000 tokens > 200000 maximum',
+            },
+          }),
+          { status: 400 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(response.map((value) => `data: ${JSON.stringify(value)}\n\n`).join('')),
+      );
+    vi.stubGlobal('fetch', fetch);
+    const provider = new AnthropicProvider({
+      baseURL: 'https://test.invalid/v1',
+      apiKey: 'test',
+      modelName: 'claude',
+    });
+    const tools = new ToolRegistry();
+    const hooks = new HookRegistry();
+    const loop = new AgentLoop({
+      provider,
+      tools,
+      hooks,
+      executor: new ToolExecutor({ tools, hooks, rootDir: process.cwd() }),
+      async *prepareRequest(candidate, _history, reason) {
+        yield* [];
+        return reason === 'overflow'
+          ? {
+              ...candidate,
+              messages: [{ role: 'user', content: [{ type: 'text', text: 'short' }] }],
+            }
+          : candidate;
+      },
+    });
+    const history = structuredClone(request.messages);
+    const events = [];
+    for await (const event of loop.run(history)) events.push(event);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetch.mock.calls[1][1].body).messages[0].content[0].text).toBe('short');
+    expect(history.at(-1)?.content).toEqual([{ type: 'text', text: 'done' }]);
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+  });
+
   it('rejects unmarked EOF before exposing a partial tool call', async () => {
     vi.stubGlobal(
       'fetch',
@@ -86,7 +143,7 @@ describe('explicit context overflow', () => {
       }
     }
   });
-  it('passes SSE completion reason and explicit overflow through', async () => {
+  it('delivers length-truncated output to the loop gate and passes explicit overflow through', async () => {
     const provider = new OpenAICompatibleProvider({
       baseURL: 'https://test.invalid',
       apiKey: 'test',
@@ -102,9 +159,11 @@ describe('explicit context overflow', () => {
           ),
         ),
     );
-    const events = [];
+    // 截断语义三协议一致：length 交付到 Loop，由其统一裁决（无工具交付、有工具拒绝）。
+    const events: ModelEvent[] = [];
     for await (const event of provider.create(request)) events.push(event);
     expect(events.at(-1)).toMatchObject({ type: 'message_stop', finishReason: 'length' });
+    expect(events.some((event) => event.type === 'tool_call_finish')).toBe(false);
     vi.stubGlobal(
       'fetch',
       vi
@@ -185,4 +244,37 @@ describe('explicit context overflow', () => {
     }
     expect(calls).toBe(1);
   });
+  it.each(['message_stop', 'thinking_block_start'] as const)(
+    'does not retry overflow after a %s boundary',
+    async (type) => {
+      let calls = 0;
+      const provider = {
+        name: 'final-only',
+        async *create(): AsyncIterable<ModelEvent> {
+          calls++;
+          yield type === 'message_stop'
+            ? { type, finalContent: [{ type: 'text', text: 'done' }] }
+            : { type, blockId: 'thinking' };
+          throw new ContextOverflowError();
+        },
+        assembleToolResults: () => [],
+      };
+      const tools = new ToolRegistry();
+      const hooks = new HookRegistry();
+      const loop = new AgentLoop({
+        provider,
+        tools,
+        hooks,
+        executor: new ToolExecutor({ tools, hooks, rootDir: process.cwd() }),
+        async *prepareRequest(candidate, _history, reason) {
+          yield* [];
+          return reason === 'overflow' ? { ...candidate, messages: [] } : candidate;
+        },
+      });
+      for await (const _ of loop.run(structuredClone(request.messages))) {
+        /* consume */
+      }
+      expect(calls).toBe(1);
+    },
+  );
 });

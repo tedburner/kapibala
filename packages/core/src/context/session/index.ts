@@ -32,7 +32,13 @@ import {
   createLogId,
 } from '../../extensibility/logging/index.js';
 import type { AgentPlugin } from '../../extensibility/plugin/index.js';
-import type { ModelProfile, ModelProvider, ModelRole } from '../../models/index.js';
+import type {
+  ModelProfile,
+  ModelProvider,
+  ModelRole,
+  PrimaryModelRole,
+} from '../../models/index.js';
+import { projectProtocolHistory } from '../../models/protocol-state.js';
 import { SimpleModelRouter, resolveContextWindow } from '../../models/router.js';
 import { ToolExecutor } from '../../runtime/executor/index.js';
 import { AgentLoop } from '../../runtime/loop/index.js';
@@ -40,59 +46,78 @@ import { cancellableGenerator } from '../../types/cancellation.js';
 import type {
   CanonicalMessage,
   ContextUsage,
+  ModelRequest,
   RunMetrics,
   SessionEvent,
   TurnMetrics,
   Usage,
 } from '../../types/index.js';
-import type { TokenEstimator } from '../budget.js';
+import { type TokenEstimator, createContextBudget, stableSerialize } from '../budget.js';
 import { createMessageId, identifyHistory } from '../history.js';
 import { ContextManager, type ContextSnapshot } from '../manager.js';
 import { resolveSessionProject } from '../session-manager.js';
 import { supportsSessionState } from '../session-store.js';
 import type { MessageStore } from '../store/index.js';
 
+/** AgentSession 的构造配置；除主任务绑定外均可缺省，缺省行为见各字段。 */
 export interface SessionConfig {
   /** 持久会话身份；有版本化 Store 时须与头部一致，日志实例身份保持独立。 */
   conversationId?: string;
   tokenEstimator?: TokenEstimator;
+  /** 无 Git 工作树时随 run_started 记录的分支回退值。 */
   gitBranch?: string;
+  /** 主任务默认模型绑定；恢复历史及未显式选择角色时使用。 */
   defaultProfile: ModelProfile;
+  /** 与 defaultProfile 匹配的协议适配器。 */
   defaultProvider: ModelProvider;
+  /** 消息级落盘通道；支持状态能力的 Store 额外启用持久压缩与交互终态。 */
   store?: MessageStore;
+  /** 工具执行与会话基目录；projectRoot/cwd 缺省沿用此值。 */
   rootDir?: string;
   systemPrompt?: string;
   maxSteps?: number;
   logger?: (msg: string) => void;
   eventLogger?: EventLogger;
   loggingDirectory?: string;
+  /** 初始权限模式，缺省 Approval；仅空闲时可切换。 */
   mode?: SessionMode;
   permissionRules?: readonly PermissionRule[];
   approvalChannel?: ApprovalChannel;
   projectRoot?: string;
   cwd?: string;
   userInstructionsPath?: string;
+  /** 未提供时使用默认日志 sink 的审计目录；init 时恢复不完整审计。 */
   auditRecoveryDirectory?: string;
   /** 接收普通运行日志失败的脱敏诊断；诊断失败也不得中断问答或替代审计。 */
   onDiagnostic?: (message: string) => void;
 }
 
+/** getStats 返回的统计快照；全部字段为独立副本，宿主修改不影响会话内部状态。 */
 export interface SessionStats {
   conversationId?: string;
   /** 历史存在无 usage 的模型步骤时为 false，不将旧消耗伪装为精确零。 */
   usageKnown?: boolean;
+  /** 摘要 attempt 的累计消耗；独立于主任务指标。 */
   summaryUsage?: Usage;
   summaryUsageKnown?: boolean;
   contextSnapshot?: ContextSnapshot;
+  /** 累计用户任务次数，含恢复自持久状态的 run_started 记录。 */
   totalTurns: number;
+  /** 主任务累计消耗；摘要消耗在 summaryUsage 单独统计。 */
   totalTokens: Usage;
   activeModel: string;
   loadedToolsCount: number;
   lastMetrics?: TurnMetrics;
   lastRunMetrics?: RunMetrics;
+  /** 最近一次内部模型请求的窗口占用；无实测时仅提供窗口上限。 */
   contextUsage: ContextUsage;
 }
 
+/**
+ * 宿主无关的 Agent 会话门面：统一模型路由、工具执行、权限与上下文压缩。
+ * 每次用户输入产生一个 run；历史与状态经 MessageStore 持久化，恢复后语义连续。
+ * 运行或清理进行中，改变状态的公开方法一律被拒绝；Core 不承担任何界面职责。
+ */
 export class AgentSession {
   private persistentId: string;
   private readonly configuredConversationId?: string;
@@ -137,6 +162,9 @@ export class AgentSession {
   private cleanupPromise?: Promise<void>;
   private sessionEndFinished = false;
   private activeRun = false;
+  private primaryRole: PrimaryModelRole = 'default';
+  private lastPrimaryProfile?: ModelProfile;
+  private lastPrimaryProvider?: ModelProvider;
   private readonly plugins: AgentPlugin[] = [];
 
   constructor(config: SessionConfig) {
@@ -179,6 +207,7 @@ export class AgentSession {
     this.context = this.createContextManager();
   }
 
+  /** 幂等初始化：恢复审计残留、指令快照与持久历史，校验会话身份并回放 usage。 */
   async init(): Promise<void> {
     if (this.initialized) return;
     if (this.auditRecoveryDirectory) {
@@ -244,6 +273,7 @@ export class AgentSession {
     this.initialized = true;
   }
 
+  /** 挂载插件并执行 setup；销毁后或运行中拒绝，setup 失败的插件不进入已装列表。 */
   async use(plugin: AgentPlugin): Promise<void> {
     if (this.destroyed) {
       throw new Error(`Cannot mount plugin '${plugin.name}': session already destroyed`);
@@ -258,26 +288,78 @@ export class AgentSession {
     this.plugins.push(plugin);
   }
 
+  /**
+   * 空闲时原子替换角色的模型绑定；本方法不改变当前角色或工具权限。
+   * @param profile 模型协议、请求目标和输出预算。
+   * @param role 被配置的主任务或摘要角色。
+   * @param provider 与目标匹配的适配器；省略时只允许复用相同目标。
+   * @throws {ModelError} 协议、模型、端点或 workspace 与适配器错配，旧绑定保留。
+   * @throws {SessionBusyError} 正在执行或清理当前任务。
+   */
   switchModel(profile: ModelProfile, role: ModelRole = 'default', provider?: ModelProvider): void {
     this.assertIdle('switch models');
     resolveContextWindow(profile.contextWindow);
+    createContextBudget(profile.contextWindow, profile.maxOutputTokens);
     if (!provider) {
-      // 默认使用当前角色的 provider
+      const current = this.router.getProfile(role);
+      if (
+        current.provider !== profile.provider ||
+        current.modelName !== profile.modelName ||
+        current.baseURL.replace(/\/+$/, '') !== profile.baseURL.replace(/\/+$/, '') ||
+        current.anthropicWorkspaceId !== profile.anthropicWorkspaceId
+      )
+        throw new ModelError('Changing a model binding requires a matching provider', {
+          stage: 'request',
+          retryable: false,
+        });
       provider = this.router.resolve(role);
     }
     this.router.setRole(role, profile, provider);
+    this.lastPrimaryProfile = undefined;
+    this.lastPrimaryProvider = undefined;
     this.context.invalidate();
     this.logger?.(`Switched model for role [${role}] to ${profile.name} (${profile.modelName})`);
   }
 
-  getActiveProfile(role: ModelRole = 'default'): ModelProfile {
+  /** 查询指定绑定或当前明确选择的主任务模型，返回独立配置副本。 */
+  getActiveProfile(role: ModelRole = this.primaryRole): ModelProfile {
     return this.router.getProfile(role);
+  }
+
+  /** 空闲时显式选择场景；缺少映射或凭据时拒绝，不回退默认模型、不修改权限。 */
+  selectModelRole(role: PrimaryModelRole): void {
+    this.assertIdle('select model role');
+    this.resolvePrimaryBinding(role);
+    this.primaryRole = role;
+    this.lastPrimaryProfile = undefined;
+    this.lastPrimaryProvider = undefined;
+    this.context.invalidate();
+  }
+
+  /** 返回本进程明确选择的场景，历史恢复不改变此状态。 */
+  getModelRole(): PrimaryModelRole {
+    return this.primaryRole;
+  }
+
+  /** 严格解析主任务快照，在输入落盘与网络调用之前检查角色、凭据与预算。 */
+  private resolvePrimaryBinding(role: PrimaryModelRole) {
+    if (!['default', 'planning', 'execution', 'fast'].includes(role))
+      throw new ModelError('Invalid primary model role', { stage: 'request', retryable: false });
+    const binding = this.router.getBinding(role, true);
+    createContextBudget(binding.profile.contextWindow, binding.profile.maxOutputTokens);
+    if (binding.provider.credentialsReady === false)
+      throw new ModelError(`Model role '${role}' requires credentials`, {
+        stage: 'request',
+        retryable: false,
+      });
+    return binding;
   }
 
   /** 只在空闲时切换本次会话模式；宿主负责 FullAccess 的显式选择交互。 */
   switchMode(mode: SessionMode): void {
     this.assertIdle('switch permission mode');
     this.mode = mode;
+    this.context.invalidate();
   }
 
   getMode(): SessionMode {
@@ -307,7 +389,11 @@ export class AgentSession {
   /** 查询最近最终请求的预算快照，尚未准备请求时返回 undefined。 */
   getContextSnapshot(): ContextSnapshot | undefined {
     const snapshot = this.context.getSnapshot();
-    if (snapshot || !this.initialized) return snapshot;
+    const profile = this.lastPrimaryProfile ?? this.getActiveProfile();
+    if ((snapshot && !snapshot.stale && snapshot.modelId === profile.id) || !this.initialized)
+      return snapshot;
+    const provider = this.lastPrimaryProvider ?? this.router.resolve(this.primaryRole);
+    const history = this.context.project(this.history);
     const assembler = new PromptAssembler({
       rootDir: this.rootDir,
       tools: this.tools,
@@ -319,14 +405,14 @@ export class AgentSession {
       this.history,
       {
         systemPrompt: assembler.assemble(),
-        messages: this.context.project(this.history),
+        messages: provider.binding ? projectProtocolHistory(history, provider.binding) : history,
         tools: visibleTools(this.tools.list(), this.mode, this.permissionRules).map((t) => ({
           name: t.name,
           description: t.description,
           parameters: t.parameters,
         })),
       },
-      this.router.getProfile('default'),
+      profile,
     );
   }
 
@@ -345,11 +431,13 @@ export class AgentSession {
       contextSnapshot: this.getContextSnapshot(),
       totalTurns: this.totalTurns,
       totalTokens: { ...this.usageStats },
-      activeModel: this.router.getProfile('default').name,
+      activeModel: (this.lastPrimaryProfile ?? this.getActiveProfile()).name,
       loadedToolsCount: this.tools.list().length,
       lastMetrics: this.lastMetrics,
       lastRunMetrics: this.lastRunMetrics,
-      contextUsage: this.lastRunMetrics?.contextUsage ?? this.createContextUsage(),
+      contextUsage: this.lastPrimaryProfile
+        ? (this.lastRunMetrics?.contextUsage ?? this.createContextUsage())
+        : this.createContextUsage(),
     });
   }
 
@@ -363,6 +451,7 @@ export class AgentSession {
     return this.lastRunMetrics ? structuredClone(this.lastRunMetrics) : undefined;
   }
 
+  /** 空闲时清空存储与全部内存状态；conversationId 不变，恢复语义等同全新会话。 */
   async reset(): Promise<void> {
     this.assertIdle('reset session');
     if (this.store) await this.store.clear();
@@ -372,6 +461,8 @@ export class AgentSession {
     this.usageStats = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     this.lastMetrics = undefined;
     this.lastRunMetrics = undefined;
+    this.lastPrimaryProfile = undefined;
+    this.lastPrimaryProvider = undefined;
     this.accountedAttempts.clear();
     this.usageKnown = true;
     this.summaryAttempts.clear();
@@ -388,13 +479,17 @@ export class AgentSession {
    * {@link SessionEvent}，分别完成展示、交互和中止控制。
    *
    * @param userInput 用户本轮输入。
-   * @param options 可选的中止信号。
+   * @param options 可选中止信号与显式主任务角色；角色在整个工具任务内固定。
    * @returns 文本、思考、工具、指标和错误等结构化事件的异步流。
    * @throws {SessionBusyError} 当前会话已有正在执行的 run 时抛出。
+   * @throws {ModelError} 显式角色缺少绑定或凭据时，在输入落盘和网络调用前抛出。
    */
-  run(userInput: string, options?: { signal?: AbortSignal }): AsyncIterable<SessionEvent> {
+  run(
+    userInput: string,
+    options?: { signal?: AbortSignal; role?: PrimaryModelRole },
+  ): AsyncIterable<SessionEvent> {
     return cancellableGenerator(
-      (signal) => this.runOperation(userInput, { signal }),
+      (signal) => this.runOperation(userInput, { signal, role: options?.role }),
       options?.signal,
     );
   }
@@ -402,10 +497,13 @@ export class AgentSession {
   /** 单次任务执行主体；调用方 return 的中止与 finally 清理由外层统一协调。 */
   private async *runOperation(
     userInput: string,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; role?: PrimaryModelRole },
   ): AsyncGenerator<SessionEvent> {
     this.assertIdle('start another run');
-    resolveContextWindow(this.router.getProfile('default').contextWindow);
+    const role = options?.role ?? this.primaryRole;
+    const { profile, provider } = this.resolvePrimaryBinding(role);
+    this.lastPrimaryProfile = profile;
+    this.lastPrimaryProvider = provider;
     this.activeRun = true;
     const runId = createLogId();
     const runStartTime = Date.now();
@@ -463,6 +561,7 @@ export class AgentSession {
         event: 'run.started',
         sessionId: this.sessionId,
         runId,
+        fields: { modelId: profile.id, modelRole: role },
       });
 
       try {
@@ -490,7 +589,8 @@ export class AgentSession {
           runId,
           runtimeSessionId: this.sessionId,
           gitBranch: currentProject.gitWorktree ? currentProject.gitBranch : this.gitBranch,
-          modelId: this.router.getProfile('default').id,
+          modelId: profile.id,
+          modelRole: role,
         });
       }
       runStarted = true;
@@ -519,6 +619,8 @@ export class AgentSession {
         visibleTools: visibleTools(this.tools.list(), this.mode, this.permissionRules),
       });
       const assembledSystemPrompt = promptAssembler.assemble();
+      let previousRequest: ModelRequest | undefined;
+      let environmentAnchorId = userMessage.id;
 
       // 3. 构建执行器与 Loop
       const executor = new ToolExecutor({
@@ -538,13 +640,24 @@ export class AgentSession {
 
       const loop = new AgentLoop({
         interactionId: runId,
-        modelId: this.router.getProfile('default').id,
+        modelId: profile.id,
+        modelRole: role,
         projectHistory: (history) => this.context.project(history),
         prepareRequest: (request, history, reason) => {
-          // 精确时间属于当前请求的动态后缀，不进入稳定系统前缀或原始历史。
+          // 首次请求固定 user 投影身份；失败历史可能合并连续 user 并保留旧 ID，
+          // 此时以最后一条 user 为锚点。续答复用该身份，不随新增工具消息移到链尾。
           const dynamicId = `environment-${runId}`;
           const messages = request.messages.filter((message) => message.id !== dynamicId);
-          messages.push({
+          let anchor = messages.findIndex(
+            (message) =>
+              message.id === environmentAnchorId ||
+              (message.interactionId === runId && message.role === 'user'),
+          );
+          if (anchor < 0 && !previousRequest) {
+            anchor = messages.map((message) => message.role).lastIndexOf('user');
+            if (anchor >= 0) environmentAnchorId = messages[anchor].id;
+          }
+          messages.splice(anchor < 0 ? messages.length : anchor + 1, 0, {
             id: dynamicId,
             role: 'user',
             content: [
@@ -555,16 +668,114 @@ export class AgentSession {
             ],
             timestamp: runStartTime,
           });
-          const context = this.context;
-          const preparation = context.prepare(
-            history,
-            { ...request, messages },
-            this.router.getProfile('default'),
-            runId,
-            reason,
+          const nativeBinding = provider.binding;
+          const projected = nativeBinding
+            ? projectProtocolHistory(messages, nativeBinding, { runId, modelId: profile.id })
+            : structuredClone(messages);
+          const sourceView = nativeBinding
+            ? projectProtocolHistory(this.context.project(history), nativeBinding, {
+                runId,
+                modelId: profile.id,
+              })
+            : this.context.project(history);
+          for (const message of projected) {
+            const original = sourceView.find((source) => source.id === message.id);
+            // 按内容多重集匹配而非块索引对齐：hook 合法增删/重排同消息内的普通块时不误报；
+            // 私有块被改写或 Item 身份被冒用仍然 fail-closed，签名前缀由冻结检查兜底。
+            const privateBag = new Map<string, number>();
+            const blockBag = new Map<string, number>();
+            for (const block of original?.content ?? []) {
+              const serialized = stableSerialize(block);
+              if (
+                block.type === 'provider_state' ||
+                block.type === 'redacted_thinking' ||
+                (block.type === 'thinking' && block.origin)
+              )
+                privateBag.set(serialized, (privateBag.get(serialized) ?? 0) + 1);
+              blockBag.set(serialized, (blockBag.get(serialized) ?? 0) + 1);
+            }
+            const take = (bag: Map<string, number>, serialized: string): boolean => {
+              const count = bag.get(serialized) ?? 0;
+              if (!count) return false;
+              if (count === 1) bag.delete(serialized);
+              else bag.set(serialized, count - 1);
+              return true;
+            };
+            for (const block of message.content) {
+              if (
+                block.type === 'provider_state' ||
+                block.type === 'redacted_thinking' ||
+                (block.type === 'thinking' && block.origin)
+              ) {
+                if (!original || !take(privateBag, stableSerialize(block)))
+                  throw new ModelError('Hook changed signed or private request provenance', {
+                    stage: 'request',
+                    retryable: false,
+                  });
+              }
+              if (block.type !== 'text' && block.type !== 'tool_use') continue;
+              if (block.protocolMeta && !take(blockBag, stableSerialize(block)))
+                block.protocolMeta = undefined;
+            }
+          }
+          const frozen = Boolean(
+            previousRequest &&
+              history.some(
+                (message) =>
+                  message.interactionId === runId &&
+                  message.content.some(
+                    (block) =>
+                      block.type === 'provider_state' ||
+                      block.type === 'redacted_thinking' ||
+                      (block.type === 'thinking' &&
+                        Boolean(block.signature && block.origin?.runId === runId)),
+                  ),
+              ),
           );
+          const candidate: ModelRequest = {
+            ...request,
+            messages: projected,
+            context: { runId, modelId: profile.id },
+            signal: options?.signal,
+          };
+          if (frozen) {
+            const generated = nativeBinding
+              ? projectProtocolHistory(
+                  this.context
+                    .project(history)
+                    .filter(
+                      (message) => message.interactionId === runId && message.role !== 'user',
+                    ),
+                  nativeBinding,
+                  candidate.context,
+                )
+              : [];
+            for (const original of generated) {
+              const matches = candidate.messages.filter((message) => message.id === original.id);
+              if (matches.length !== 1 || stableSerialize(matches[0]) !== stableSerialize(original))
+                throw new ModelError('Signed continuation prefix or tool chain changed', {
+                  stage: 'request',
+                  retryable: false,
+                });
+            }
+          }
+          if (
+            frozen &&
+            previousRequest &&
+            (stableSerialize(candidate.messages.slice(0, previousRequest.messages.length)) !==
+              stableSerialize(previousRequest.messages) ||
+              candidate.systemPrompt !== previousRequest.systemPrompt ||
+              stableSerialize(candidate.tools) !== stableSerialize(previousRequest.tools))
+          )
+            throw new ModelError('Signed continuation prefix changed', {
+              stage: 'request',
+              retryable: false,
+            });
+          const context = this.context;
+          const preparation = context.prepare(history, candidate, profile, runId, reason, !frozen);
           return (async function* () {
             const prepared = yield* preparation;
+            previousRequest = structuredClone({ ...prepared, signal: undefined });
             // 每个请求独立统计；不能将前一步实测 usage 冒充失败请求的当前上下文。
             lastPromptTokens = undefined;
             lastEstimatedPromptTokens = context.getSnapshot()?.estimate.total;
@@ -578,13 +789,14 @@ export class AgentSession {
             await this.store.appendRecord('usage', {
               attemptId,
               role: 'primary',
-              modelId: this.router.getProfile('default').id,
+              modelId: profile.id,
+              modelRole: role,
               usage: { ...usage },
             });
           this.accountUsage(attemptId, usage);
-          this.context.observe(request, usage, this.router.getProfile('default'));
+          this.context.observe(request, usage, profile);
         },
-        provider: this.router.resolve('default'),
+        provider: provider,
         executor,
         tools: this.tools,
         hooks: this.hooks,
@@ -645,8 +857,9 @@ export class AgentSession {
               (event.error instanceof ModelError
                 ? describeModelError(event.error, {
                     operation: 'primary',
-                    modelId: this.router.getProfile('default').id,
-                    provider: this.router.resolve('default').name,
+                    modelId: profile.id,
+                    modelRole: role,
+                    provider: provider.name,
                   })
                 : undefined);
           }
@@ -733,8 +946,9 @@ export class AgentSession {
       if (error instanceof ModelError)
         modelFailure = describeModelError(error, {
           operation: 'primary',
-          modelId: this.router.getProfile('default').id,
-          provider: this.router.resolve('default').name,
+          modelId: profile.id,
+          modelRole: role,
+          provider: provider.name,
         });
       const status: RunMetrics['status'] =
         error instanceof AbortError || options?.signal?.aborted ? 'aborted' : 'failed';
@@ -779,6 +993,7 @@ export class AgentSession {
     }
   }
 
+  /** 幂等销毁：卸载插件后发出 session:end；运行中拒绝，teardown 失败聚合抛出且不完成销毁。 */
   async destroy(): Promise<void> {
     if (this.destroyed) return;
     if (this.activeRun) throw new SessionBusyError('destroy session');
@@ -819,7 +1034,9 @@ export class AgentSession {
    * run 累计 promptTokens 会重复计算每一步都重发的历史，不能用于窗口占用率。
    */
   private createContextUsage(usedTokens?: number, estimatedUsage = false): ContextUsage {
-    const contextWindow = resolveContextWindow(this.router.getProfile('default').contextWindow);
+    const contextWindow = resolveContextWindow(
+      (this.lastPrimaryProfile ?? this.getActiveProfile()).contextWindow,
+    );
     return {
       usedTokens,
       limitTokens: contextWindow.tokens,
@@ -882,7 +1099,7 @@ export class AgentSession {
     return cancellableGenerator((signal) => this.compactOperation({ signal }), options?.signal);
   }
 
-  /** 手动压缩执行主体，接收由消费者生命周期拥有的中止信号。 */
+  /** 手动压缩按主任务协议投影旧历史，不复用旧 run 私有状态；原始历史与落盘内容保持不变。 */
   private async *compactOperation(options?: {
     signal?: AbortSignal;
   }): AsyncGenerator<SessionEvent> {
@@ -890,6 +1107,13 @@ export class AgentSession {
     this.activeRun = true;
     try {
       if (!this.initialized) await this.init();
+      const profile = this.lastPrimaryProfile ?? this.getActiveProfile();
+      const messages = projectProtocolHistory(this.context.project(this.history), {
+        protocol: profile.provider,
+        modelName: profile.modelName,
+        baseURL: profile.baseURL,
+        workspaceId: profile.anthropicWorkspaceId,
+      });
       const assembler = new PromptAssembler({
         rootDir: this.rootDir,
         tools: this.tools,
@@ -901,7 +1125,7 @@ export class AgentSession {
         this.history,
         {
           systemPrompt: assembler.assemble(),
-          messages: this.context.project(this.history),
+          messages,
           signal: options?.signal,
           tools: visibleTools(this.tools.list(), this.mode, this.permissionRules).map((t) => ({
             name: t.name,
@@ -909,7 +1133,7 @@ export class AgentSession {
             parameters: t.parameters,
           })),
         },
-        this.router.getProfile('default'),
+        profile,
         undefined,
         'manual',
       )) {
@@ -921,7 +1145,7 @@ export class AgentSession {
     }
   }
 
-  /** 以模型 attempt 身份幂等累加真实消耗；非法或缺失 usage 保持未知。 */
+  /** 压缩与预算超限事件写入操作日志并携带 runId；其他事件不落日志。 */
   private async logContextEvent(event: SessionEvent, runId?: string): Promise<void> {
     if (
       event.type !== 'compaction_start' &&
@@ -977,6 +1201,7 @@ export class AgentSession {
     for (const message of messages) await this.store.append(message);
   }
 
+  /** 中止时为缓冲 assistant 的每个 tool_use 生成 OUTCOME_UNKNOWN 结果并入历史，保持事务闭合。 */
   private closeInterruptedToolCalls(
     assistantEvent: Extract<SessionEvent, { type: 'message_stop' }>,
     error: unknown,
@@ -1004,6 +1229,7 @@ export class AgentSession {
     return [message];
   }
 
+  /** 收集历史中紧跟该 assistant 的连续 tool 消息；仅当覆盖全部 tool_use 时视为已闭合。 */
   private findClosedToolMessages(
     assistantEvent: Extract<SessionEvent, { type: 'message_stop' }>,
   ): CanonicalMessage[] {

@@ -8,6 +8,10 @@ const MODES: Record<string, SessionMode> = {
   'full-access': 'FullAccess',
 };
 
+/**
+ * 查看或切换权限模式。FullAccess 属高危：必须在交互终端显式确认后才切换，
+ * 未提供 confirm 回调（非交互宿主）时直接拒绝，不静默放行。
+ */
 export const modeCommand: CommandHandler = async (args, ctx) => {
   const requested = args[0]?.toLowerCase();
   if (!requested) {

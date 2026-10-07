@@ -166,7 +166,10 @@ describe('OpenAICompatibleProvider', () => {
       });
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
-        body: createReadableStream(['data: [DONE]\n\n']),
+        body: createReadableStream([
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+          'data: [DONE]\n\n',
+        ]),
       } as Response);
       for await (const _ of adapted.create({
         messages: [
@@ -261,7 +264,10 @@ describe('OpenAICompatibleProvider', () => {
   it('normalizes failed-turn user messages before sending wire history', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      body: createReadableStream(['data: [DONE]\n\n']),
+      body: createReadableStream([
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        'data: [DONE]\n\n',
+      ]),
     } as any);
 
     const messages = [
@@ -282,7 +288,7 @@ describe('OpenAICompatibleProvider', () => {
     const sseData = [
       'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
       'data: {"choices":[{"delta":{"reasoning_content":"Thinking..."}}]}\n\n',
-      'data: {"choices":[{"delta":{"content":" World"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
+      'data: {"choices":[{"delta":{"content":" World"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
       'data: [DONE]\n\n',
     ];
 
@@ -319,6 +325,7 @@ describe('OpenAICompatibleProvider', () => {
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","function":{"name":"read_file","arguments":""}}]}}]}\n\n',
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\": "}}]}}]}\n\n',
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"test.txt\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
       'data: [DONE]\n\n',
     ];
 

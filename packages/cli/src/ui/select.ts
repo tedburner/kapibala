@@ -1,5 +1,6 @@
 import readline from 'node:readline';
 
+/** 菜单选项；badge 与 description 仅影响展示，选择结果由 value 承载。 */
 export interface SelectOption<T = string> {
   label: string;
   value: T;
@@ -7,6 +8,7 @@ export interface SelectOption<T = string> {
   badge?: string;
 }
 
+/** 单选菜单配置；defaultIndex 越界时钳制到有效范围，取消返回 null。 */
 export interface SelectConfig<T = string> {
   message: string;
   options: SelectOption<T>[];

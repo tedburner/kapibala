@@ -444,4 +444,5 @@ function simpleMatch(str: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, 'i').test(str);
 }
 
+/** 五个内置文件工具的聚合；全部经 PathSandbox 校验，路径越界或符号链接穿透一律拒绝。 */
 export const builtinTools = [readFileTool, writeFileTool, editFileTool, globTool, grepTool];
