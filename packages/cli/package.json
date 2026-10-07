@@ -1,6 +1,6 @@
 {
   "name": "@kiturone/kapibala-cli",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Interactive CLI for Kapibala (kpbl)",
   "license": "MIT",
   "author": "tedburner",
