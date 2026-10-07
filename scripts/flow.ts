@@ -102,12 +102,24 @@ export function parseTargetVersion(arg: string | undefined, current: string): st
   return candidate;
 }
 
-/** 三个 package.json 的版本字段推进；JSON.stringify 保持原有键序与两空格缩进。 */
+/**
+ * 三个 package.json 的版本字段推进。
+ * 只对版本字段做定点文本替换，其余字节原样保留：整份 JSON.stringify 重序列化会把
+ * biome 期望保持单行的短数组（如 "files": ["dist"]）展开成多行，让 lint 门禁在发布路径上失败。
+ */
 export function bumpPackageJson(content: string, version: string): string {
   const manifest = JSON.parse(content) as { version?: string };
   if (typeof manifest.version !== 'string') throw new Error('Manifest is missing a version field');
-  manifest.version = version;
-  return `${JSON.stringify(manifest, null, 2)}\n`;
+  const updated = content.replace(
+    /("version"\s*:\s*")([^"]+)(")/,
+    (_match, quoteOpen: string, _current: string, quoteClose: string) =>
+      `${quoteOpen}${version}${quoteClose}`,
+  );
+  // 未命中或写回后语义不一致都要显式失败，避免把未升版的清单当作成功继续发布。
+  if (updated === content || (JSON.parse(updated) as { version?: string }).version !== version) {
+    throw new Error('Version field replacement did not take effect');
+  }
+  return updated;
 }
 
 /** CLI 展示版本推进；找不到声明即失败，避免静默漏改。 */

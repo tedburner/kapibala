@@ -116,9 +116,9 @@ describe('version bumping', () => {
 
   it('rewrites manifest version while preserving formatting', () => {
     const content =
-      '{\n  "name": "kapibala-monorepo",\n  "version": "0.0.3",\n  "private": true\n}\n';
+      '{\n  "name": "kapibala-monorepo",\n  "version": "0.0.3",\n  "files": ["dist"],\n  "private": true\n}\n';
     expect(bumpPackageJson(content, '0.0.4')).toBe(
-      '{\n  "name": "kapibala-monorepo",\n  "version": "0.0.4",\n  "private": true\n}\n',
+      '{\n  "name": "kapibala-monorepo",\n  "version": "0.0.4",\n  "files": ["dist"],\n  "private": true\n}\n',
     );
     expect(() => bumpPackageJson('{"name":"x"}', '0.0.4')).toThrow(/version/i);
   });
