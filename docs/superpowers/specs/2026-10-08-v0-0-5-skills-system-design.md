@@ -1,6 +1,6 @@
 # Kapibala v0.0.5 技能体系 (Skills) 与过程输出折叠设计方案
 
-状态：工作区实现与本地验收已于 2026-10-11 完成，尚未发布。本文记录架构与兼容边界；可验收行为和实施进度分别维护在 [OpenSpec specs](../../../openspec/changes/v0-0-5-skills-system/specs/) 与 [tasks](../../../openspec/changes/v0-0-5-skills-system/tasks.md)。实际用法见 [技能指南](../../skills.md)，证据及限制见 [验收记录](../../verification/v0.0.5.md)。
+状态：实现与验收已于 2026-10-11 完成并随 v0.0.5 发布。本文记录架构与兼容边界；可验收行为和实施进度分别维护在 [OpenSpec specs](../../../openspec/changes/v0-0-5-skills-system/specs/) 与 [tasks](../../../openspec/changes/v0-0-5-skills-system/tasks.md)。实际用法见 [技能指南](../../skills.md)，证据及限制见 [验收记录](../../verification/v0.0.5.md)。
 
 ## 一、背景与设计目标
 

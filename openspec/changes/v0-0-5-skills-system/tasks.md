@@ -1,6 +1,6 @@
 # Tasks: v0.0.5 技能体系与过程输出折叠
 
-状态：工作区实现及本地验收于2026-10-11完成，尚未提交或发布。按 design 的 D1–D10 与 specs 验收；功能、三协议、失败恢复、Windows/POSIX进程与终端、两项已授权真实模型验收证据及限制见 [验收记录](../../../docs/verification/v0.0.5.md)，兼容边界见 [迁移说明](../../../docs/migration/v0.0.5.md)。
+状态：实现与本地验收于2026-10-11完成，并随 v0.0.5 发布（远端验收见验收记录文末）。按 design 的 D1–D10 与 specs 验收；功能、三协议、失败恢复、Windows/POSIX进程与终端、两项已授权真实模型验收证据及限制见 [验收记录](../../../docs/verification/v0.0.5.md)，兼容边界见 [迁移说明](../../../docs/migration/v0.0.5.md)。
 
 ## 1. 领域模型与 Frontmatter（skill-domain-contract；D1/D2）
 

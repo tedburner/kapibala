@@ -73,10 +73,12 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - 造型铁律：口鼻必须是"上窄下宽"的钝形深色块（水豚最关键辨识特征）；不要大面积奶油色口鼻斑（会读成泰迪熊）；头不要撑满画面（会读成河马）。
 - README 抬头 `<picture>` + `prefers-color-scheme` 双主题（dark 版仅字标换暖白 `#F0E4D6`）；tagline 固定：**心如止水，稳定如初 —— AI Agent Harness**。
 
-## 当前状态（2026-10-07）
+## 当前状态（2026-10-11）
 
 - 版本号采用十进制位进位：补丁位只使用 `0–9`，`v0.0.9` 之后为 `v0.1.0`（不使用 `v0.0.10`）；后续同理。
 - v0.0.1 既有能力与后续路线图见 `docs/RELEASES.md`，不在规则文件重复维护能力清单。
+- v0.0.5 已于 2026-10-11 发布到 npm 与 GitHub Release：技能体系与过程输出折叠已落地——有界发现/信任、L2.5 目录预算、`load_skill` / `list_skills` / `read_skill_resource` 共享加载、allowed-tools 只收紧、`skillSource` v1 落盘、`/skills` 与 `/skill` 命令、Ctrl+O 与 `--output-detail`。迁移边界见 `docs/migration/v0.0.5.md`，使用与宿主边界见 `docs/skills.md`，远端发布验收（含两次 CI 修复）见 `docs/verification/v0.0.5.md`。
+- ⚠️ **Windows 项目路径身份统一走 `fs.realpathSync.native`**：JS `realpathSync` 保留 8.3 短名，与 `normalizeProjectPath` 的长路径信任身份失配（v0.0.4 指令目录、v0.0.5 项目信任各踩中一次）。新增任何与信任/项目根比较的路径解析都必须用 native 语义。
 - v0.0.4 已于 2026-10-07 发布到 npm 与 GitHub Release：原生 Anthropic Messages / OpenAI Responses 与 Chat Completions 兼容层接入同一 AgentSession，`planning` / `execution` / `fast` 场景路由与可覆盖输出预算已落地。迁移边界见 `docs/migration/v0.0.4.md`，远端发布验收见 `docs/verification/v0.0.4.md`。
 - v0.0.3 已于 2026-09-27 发布到 npm 与 GitHub Release：独立历史会话、显式续答、消息生命周期、完整轮次保护、保守两级压缩和 Core 六大领域重构已实现。迁移边界见 `docs/migration/v0.0.3.md`，远端发布验收与真实模型限制见 `docs/verification/v0.0.3.md`。
 - 本地门禁与 Windows/POSIX 真实进程验收记录统一见 `docs/verification/v0.0.3.md`；保留 shell、权限、审计与 Headless 回归门禁。三组真实工具任务小规模质量验收已完成，证据与费用限制见 `docs/verification/v0.0.3-live-quality.md`；不把小样本验证当作通用质量保证或发布完成。
