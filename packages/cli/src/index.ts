@@ -13,6 +13,7 @@ import { logsCommand } from './commands/logs.js';
 import { modeCommand } from './commands/mode.js';
 import { modelCommand } from './commands/model.js';
 import { settingsCommand } from './commands/settings.js';
+import { skillCommand, skillsCommand } from './commands/skills.js';
 import { statusCommand } from './commands/status.js';
 import { CliInputCoordinator } from './input-coordinator.js';
 import { CliModelBindings, parsePrimaryModelRole } from './model-bindings.js';
@@ -28,8 +29,10 @@ import {
   migrateGlobalSettingsCatalog,
   resolveApiKey,
 } from './settings.js';
+import { getCliSkillOptions } from './skills.js';
 import { registerBuiltinTools } from './tool-registration.js';
 import { CliApprovalChannel } from './ui/approval.js';
+import { parseOutputDetail } from './ui/events.js';
 import { CLI_VERSION } from './version.js';
 import { runSetupWizard } from './wizard.js';
 
@@ -45,7 +48,17 @@ function isValidShellPreference(value: string): boolean {
 /** 解析启动参数并管理独立会话、共享输入和退出清理；显式恢复失败不回退新建。 */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = minimist(argv, {
-    string: ['model', 'role', 'base-url', 'api-key', 'prompt', 'permission', 'shell', 'resume'],
+    string: [
+      'model',
+      'role',
+      'base-url',
+      'api-key',
+      'prompt',
+      'permission',
+      'shell',
+      'resume',
+      'output-detail',
+    ],
     boolean: ['help', 'version', 'debug', 'disable-shell', 'continue'],
     alias: { m: 'model', h: 'help', v: 'version', p: 'prompt' },
   });
@@ -69,6 +82,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   --base-url <url>       临时覆盖当前角色 API 端点
   --api-key <key>        临时指定当前角色 API 密钥
   --debug                输出调试日志与事件追踪
+  --output-detail <mode>  过程显示: summary|detailed（默认 summary，TTY 可用 Ctrl+O 切换）
   --permission <mode>    本次会话权限: approval|plan|auto|full-access
   --shell <kind>         解释器: auto|bash|wsl|pwsh|powershell 或解释器全路径
   --disable-shell        关闭默认命令工具
@@ -88,6 +102,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(0);
   }
   const requestedRole = parsePrimaryModelRole(args.role);
+  const outputDetail = parseOutputDetail(args['output-detail']);
 
   // 0. 内置模型清单升级
   validateSessionStartup({ continue: args.continue, resume: args.resume });
@@ -237,6 +252,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const factory = async (handle: import('@kiturone/kapibala').ManagedSession) => {
         const created = new AgentSession({
           defaultProfile: models.defaultBinding.profile,
+          skills: getCliSkillOptions(settings, { projectRoot: manager.project.projectRoot }),
           defaultProvider: models.defaultBinding.provider,
           store: handle.store,
           conversationId: handle.conversationId,
@@ -287,6 +303,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         status: statusCommand,
         logs: logsCommand,
         instructions: instructionsCommand,
+        skills: skillsCommand,
+        skill: skillCommand,
         help: helpCommand,
         exit: async (_args, context) => {
           await context.onExit();
@@ -327,6 +345,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           inputCoordinator,
           prompt: oneShotPrompt.trim(),
           debug: Boolean(args.debug),
+          outputDetail,
           approvalChannel,
         });
         if (exitCode) process.exitCode = exitCode;
@@ -339,6 +358,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         dispatcher,
         context: commandContext,
         debug: Boolean(args.debug),
+        outputDetail,
         approvalChannel,
       });
     } finally {

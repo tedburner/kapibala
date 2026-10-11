@@ -47,6 +47,18 @@ function redactSensitiveFields(value: unknown, key?: string): unknown {
   return value;
 }
 
+/** 完整工具详情沿用摘要的敏感字段脱敏；字符串保持原文，终端控制序列由渲染器统一过滤。 */
+export function formatToolDetail(value: unknown): string {
+  if (typeof value === 'string') {
+    try {
+      return JSON.stringify(redactSensitiveFields(JSON.parse(value)), null, 2);
+    } catch {
+      return value;
+    }
+  }
+  return JSON.stringify(redactSensitiveFields(value), null, 2) ?? '';
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1_024) return `${bytes}B`;
   if (bytes < 1_024 * 1_024) {

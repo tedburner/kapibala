@@ -15,6 +15,7 @@ export * from './errors/index.js';
 export * from './extensibility/logging/index.js';
 export * from './extensibility/logging/file-sink.js';
 export * from './capabilities/instructions/index.js';
+export * from './capabilities/skills/index.js';
 export * from './capabilities/shell/detect.js';
 export * from './capabilities/shell/tool.js';
 export * from './capabilities/security/sandbox.js';

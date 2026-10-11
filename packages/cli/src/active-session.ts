@@ -68,6 +68,15 @@ export class ActiveSessionController {
     yield* this.execute((signal) => this.session.run(prompt, { signal }), options?.signal);
   }
 
+  /** 显式技能任务沿用执行门与取消句柄，消费者提前结束时等待 Session 清理后才解锁。 */
+  async *runSkill(
+    name: string,
+    task: string,
+    options?: { signal?: AbortSignal },
+  ): AsyncGenerator<SessionEvent> {
+    yield* this.execute((signal) => this.session.runSkill(name, task, { signal }), options?.signal);
+  }
+
   /** 手动摘要使用同一 busy、取消和退出等待规则，不生成用户消息。 */
   async *compact(options?: { signal?: AbortSignal }): AsyncGenerator<SessionEvent> {
     yield* this.execute((signal) => this.session.compact({ signal }), options?.signal);

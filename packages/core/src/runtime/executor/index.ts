@@ -11,7 +11,7 @@ import {
   type PermissionRule,
   type SessionMode,
 } from '../../capabilities/security/permissions.js';
-import type { ToolContext } from '../../capabilities/tools/index.js';
+import type { Tool, ToolContext } from '../../capabilities/tools/index.js';
 import type { ToolRegistry } from '../../capabilities/tools/registry.js';
 import { KapibalaError } from '../../errors/index.js';
 import type { HookRegistry } from '../../extensibility/hooks/registry.js';
@@ -23,7 +23,23 @@ import {
 import type { ToolResultBlock, ToolUseBlock } from '../../types/index.js';
 
 /** ToolExecutor 的构造项；审计写入需要 eventLogger 与 sessionId 同时提供，否则不产生审计。 */
+/** 宿主运行级硬限制；优先于模式、审批及缓存，文案和字段不得携带凭据。 */
+export interface ToolHardDenial {
+  code: string;
+  message: string;
+  retryPolicy: ToolResultBlock['retryPolicy'];
+  fields?: Record<string, unknown>;
+}
+
 export interface ExecutorOptions {
+  /** 在最终参数上补充硬拒绝，不能把拒绝转为授权。 */
+  hardDenial?: (tool: Tool, input: Record<string, unknown>) => ToolHardDenial | undefined;
+  /** 结果钩子和执行审计完成后调用；用于在同批次下一调用前安装宿主收紧状态。 */
+  onToolResult?: (
+    tool: Tool,
+    input: Record<string, unknown>,
+    result: ToolResultBlock,
+  ) => void | Promise<void>;
   tools: ToolRegistry;
   hooks: HookRegistry;
   /** 工具执行的绝对根目录；路径解析与审批均以此为基准。 */
@@ -53,6 +69,8 @@ const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
  * 同一 run 内参数完全相同的 never 失败会被拒绝重复执行。
  */
 export class ToolExecutor {
+  private readonly hardDenial?: ExecutorOptions['hardDenial'];
+  private readonly onToolResult?: ExecutorOptions['onToolResult'];
   private readonly tools: ToolRegistry;
   private readonly hooks: HookRegistry;
   private readonly rootDir: string;
@@ -71,6 +89,8 @@ export class ToolExecutor {
   private readonly cancellation = new AbortController();
 
   constructor(options: ExecutorOptions) {
+    this.hardDenial = options.hardDenial;
+    this.onToolResult = options.onToolResult;
     this.tools = options.tools;
     this.hooks = options.hooks;
     this.rootDir = options.rootDir;
@@ -93,7 +113,10 @@ export class ToolExecutor {
     this.cancellation.abort();
   }
 
-  /** 串行执行全部调用并返回与入参顺序一致的结果；某个结果要求用户介入后，其余调用直接拒绝。 */
+  /**
+   * 串行执行全部调用并返回与入参顺序一致的结果；某个结果要求用户介入后，其余调用直接拒绝。
+   * onResult 在每个最终结果（含拒绝/失败）产生后提供独立快照，供在途预算估算，不代表历史已提交；回调不得抛错。
+   */
   async runAll(
     calls: ToolUseBlock[],
     onProgress?: (event: {
@@ -102,12 +125,14 @@ export class ToolExecutor {
       elapsedMs: number;
       outputBytes: number;
     }) => void,
+    onResult?: (result: ToolResultBlock) => void,
   ): Promise<ToolResultBlock[]> {
     const results: ToolResultBlock[] = [];
     let requiresUserAction = false;
     for (const call of calls) {
       const result = await this.executeOne(call, onProgress, requiresUserAction);
       results.push(result);
+      onResult?.(structuredClone(result));
       if (result.retryPolicy === 'after_user_action') requiresUserAction = true;
     }
     return results;
@@ -317,8 +342,10 @@ export class ToolExecutor {
           'REPEAT_BLOCKED',
         );
       }
+      const hardDenied = this.hardDenial?.(tool, currentInput);
       const cached = this.approvalCache.get(request);
       const decision = this.policy.decide({
+        hardDenied: hardDenied !== undefined,
         mode: typeof this.mode === 'function' ? this.mode() : this.mode,
         toolName: call.name,
         capabilities: request.capabilities,
@@ -361,6 +388,7 @@ export class ToolExecutor {
           decision: permitted ? 'allow' : 'deny',
           decisionSource: source,
           ...(approvalChoice ? { approvalChoice } : {}),
+          ...(hardDenied?.fields ?? {}),
           ...auditFields,
         });
       } catch {
@@ -371,16 +399,20 @@ export class ToolExecutor {
         );
       }
       if (!permitted || this.signal?.aborted) {
-        const code = this.signal?.aborted ? 'ABORTED' : 'PERMISSION_DENIED';
+        const code = this.signal?.aborted ? 'ABORTED' : (hardDenied?.code ?? 'PERMISSION_DENIED');
         try {
           await audit('tool.finished', { status: 'denied', errorCode: code });
         } catch {
           return failure('Audit result unavailable', 'AUDIT_UNAVAILABLE', 'after_user_action');
         }
         return failure(
-          this.signal?.aborted ? 'Operation cancelled' : 'Tool permission denied',
+          this.signal?.aborted
+            ? 'Operation cancelled'
+            : (hardDenied?.message ?? 'Tool permission denied'),
           code,
-          'after_user_action',
+          this.signal?.aborted
+            ? 'after_user_action'
+            : (hardDenied?.retryPolicy ?? 'after_user_action'),
         );
       }
       if (shell) {
@@ -541,6 +573,7 @@ export class ToolExecutor {
       );
     }
 
+    await this.onToolResult?.(tool, currentInput, resultBlock);
     return resultBlock;
   }
 

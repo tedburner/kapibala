@@ -31,6 +31,8 @@ export interface CommandContext {
   question?: (prompt: string) => Promise<string>;
   select?: <T>(config: SelectConfig<T>) => Promise<T | null>;
   renderEvent?: (event: import('@kiturone/kapibala').SessionEvent) => void;
+  /** 宿主按本轮渲染与活动会话取消规则消费技能运行流；只读命令不得调用。 */
+  runSkill?: (name: string, task: string) => Promise<void>;
 }
 
 /** 命令处理器：args 已按定义切分（rawTail 命令为单元素）；抛错由 dispatcher 统一捕获输出。 */

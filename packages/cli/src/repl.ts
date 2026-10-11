@@ -1,9 +1,9 @@
-import { AbortError, type AgentSession } from '@kiturone/kapibala';
+import { AbortError, type AgentSession, type SessionEvent } from '@kiturone/kapibala';
 import type { ActiveSessionController } from './active-session.js';
 import type { CommandContext, CommandDispatcher } from './commands/dispatcher.js';
 import { CliInputCoordinator } from './input-coordinator.js';
 import type { CliApprovalChannel } from './ui/approval.js';
-import { createEventRenderer } from './ui/events.js';
+import { type EventRenderer, type OutputDetail, createEventRenderer } from './ui/events.js';
 import { CLI_VERSION } from './version.js';
 
 /**
@@ -17,6 +17,8 @@ export interface REPLOptions {
   dispatcher: CommandDispatcher;
   context: CommandContext;
   debug?: boolean;
+  /** 过程显示策略，回答文本始终完整流式显示。 */
+  outputDetail?: OutputDetail;
   approvalChannel?: CliApprovalChannel;
 }
 
@@ -29,6 +31,20 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   let fallbackAbort: AbortController | undefined;
   let exiting = false;
   let lastInterrupt = 0;
+  let activeRenderer: EventRenderer | undefined;
+  input.setCompleter((line) => {
+    if (line.startsWith('/skill ')) {
+      const tail = line.slice('/skill '.length);
+      if (/\s/.test(tail)) return [[], line];
+      const names = session()
+        .getSkills()
+        .skills.filter((skill) => skill.userInvocable && skill.available && !skill.disabled)
+        .map((skill) => `/skill ${skill.name}`);
+      return [names.filter((name) => name.startsWith(line)), line];
+    }
+    const names = dispatcher.getDefinitions().map((definition) => `/${definition.name}`);
+    return [names.filter((name) => name.startsWith(line)), line];
+  });
   context.dispatcher = dispatcher;
   context.isInputBusy = () => input.isBusy();
   context.question = (prompt) => input.question(prompt);
@@ -36,7 +52,7 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   context.confirm = (prompt) => input.confirm(prompt);
   context.select = (config) => input.select(config);
   options.approvalChannel?.bind((request, signal) => input.approve(request, signal));
-  const statusRenderer = createEventRenderer({ debug });
+  const statusRenderer = createEventRenderer({ debug, outputDetail: options.outputDetail });
   context.renderEvent = (event) => statusRenderer.render(event);
   const busy = () => options.controller?.isBusy() ?? session().isBusy();
   const prompt = () =>
@@ -50,8 +66,35 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     fallbackAbort?.abort();
     input.close();
   };
+  const runTask = async (operation: (signal: AbortSignal) => AsyncIterable<SessionEvent>) => {
+    const abort = new AbortController();
+    fallbackAbort = abort;
+    const renderer = createEventRenderer({ debug, outputDetail: options.outputDetail });
+    activeRenderer = renderer;
+    const unbindToggle = input.onDetailToggle(() => renderer.toggleDetail());
+    const unbindInteraction = input.onInteraction(() => renderer.invalidateAnchor());
+    try {
+      for await (const event of operation(abort.signal)) renderer.render(event);
+    } catch (error) {
+      if (!(error instanceof AbortError) && !abort.signal.aborted)
+        console.error(`执行失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      unbindToggle();
+      unbindInteraction();
+      renderer.finish();
+      if (activeRenderer === renderer) activeRenderer = undefined;
+      if (fallbackAbort === abort) fallbackAbort = undefined;
+    }
+  };
+  context.runSkill = (name, task) =>
+    runTask((signal) =>
+      options.controller
+        ? options.controller.runSkill(name, task, { signal })
+        : session().runSkill(name, task, { signal }),
+    );
   context.onExit = requestExit;
   input.onInterrupt(() => {
+    activeRenderer?.invalidateAnchor();
     if (busy()) {
       options.controller?.abort();
       fallbackAbort?.abort();
@@ -77,6 +120,7 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     );
   prompt();
   input.onLine((raw) => {
+    activeRenderer?.invalidateAnchor();
     if (!raw.trim() || exiting) {
       prompt();
       return;
@@ -88,21 +132,11 @@ export async function startREPL(options: REPLOptions): Promise<void> {
         console.log('会话忙，请等待执行与清理完成；只读命令仍可查询。');
         return;
       }
-      const abort = new AbortController();
-      fallbackAbort = abort;
-      const renderer = createEventRenderer({ debug });
-      try {
-        const stream = options.controller
-          ? options.controller.run(raw.trim(), { signal: abort.signal })
-          : session().run(raw.trim(), { signal: abort.signal });
-        for await (const event of stream) renderer.render(event);
-      } catch (error) {
-        if (!(error instanceof AbortError) && !abort.signal.aborted)
-          console.error(`执行失败: ${error instanceof Error ? error.message : '未知错误'}`);
-      } finally {
-        renderer.finish();
-        if (fallbackAbort === abort) fallbackAbort = undefined;
-      }
+      await runTask((signal) =>
+        options.controller
+          ? options.controller.run(raw.trim(), { signal })
+          : session().run(raw.trim(), { signal }),
+      );
     })();
     operations.add(operation);
     void operation

@@ -5,17 +5,26 @@ import {
 import { PromptAssembler } from '../../capabilities/prompt/index.js';
 import {
   type ApprovalChannel,
+  type ApprovalRequest,
   SessionApprovalCache,
 } from '../../capabilities/security/approval.js';
 import {
+  PermissionPolicy,
   type PermissionRule,
   type SessionMode,
   validatePermissionRules,
   visibleTools,
 } from '../../capabilities/security/permissions.js';
+import { estimateSkillTokens } from '../../capabilities/skills/catalog.js';
+import { inspectSkillContent } from '../../capabilities/skills/content.js';
+import { type PreparedSkill, SkillRuntime } from '../../capabilities/skills/loader.js';
+import { SkillRegistry } from '../../capabilities/skills/registry.js';
+import { skillDigest, skillFailure } from '../../capabilities/skills/scanner.js';
+import type { SkillOptions } from '../../capabilities/skills/types.js';
 import { ToolRegistry } from '../../capabilities/tools/registry.js';
 import {
   AbortError,
+  KapibalaError,
   ModelError,
   type ModelErrorInfo,
   SessionBusyError,
@@ -52,7 +61,12 @@ import type {
   TurnMetrics,
   Usage,
 } from '../../types/index.js';
-import { type TokenEstimator, createContextBudget, stableSerialize } from '../budget.js';
+import {
+  type TokenEstimator,
+  UnicodeTokenEstimator,
+  createContextBudget,
+  stableSerialize,
+} from '../budget.js';
 import { createMessageId, identifyHistory } from '../history.js';
 import { ContextManager, type ContextSnapshot } from '../manager.js';
 import { resolveSessionProject } from '../session-manager.js';
@@ -61,6 +75,8 @@ import type { MessageStore } from '../store/index.js';
 
 /** AgentSession 的构造配置；除主任务绑定外均可缺省，缺省行为见各字段。 */
 export interface SessionConfig {
+  /** 宿主显式技能配置；缺省不扫描home，项目根需独立信任。 */
+  skills?: SkillOptions;
   /** 持久会话身份；有版本化 Store 时须与头部一致，日志实例身份保持独立。 */
   conversationId?: string;
   tokenEstimator?: TokenEstimator;
@@ -119,6 +135,8 @@ export interface SessionStats {
  * 运行或清理进行中，改变状态的公开方法一律被拒绝；Core 不承担任何界面职责。
  */
 export class AgentSession {
+  private readonly skillRegistry?: SkillRegistry;
+  private readonly skillRuntime?: SkillRuntime;
   private persistentId: string;
   private readonly configuredConversationId?: string;
   private readonly estimator?: TokenEstimator;
@@ -176,6 +194,41 @@ export class AgentSession {
     resolveContextWindow(config.defaultProfile.contextWindow);
     this.rootDir = config.rootDir ?? process.cwd();
     this.tools = new ToolRegistry();
+    if (config.skills) {
+      this.skillRegistry = new SkillRegistry(config.skills);
+      this.skillRuntime = new SkillRuntime(
+        this.skillRegistry,
+        this.tools,
+        async (source, input, page) => {
+          try {
+            await this.eventLogger.recordAudit({
+              level: 'info',
+              event: 'skill.resource_read',
+              sessionId: this.sessionId,
+              runId: source.runId,
+              fields: {
+                skillName: source.name,
+                contentDigest: source.contentDigest,
+                invocationId: source.invocationId,
+                pathDigest: skillDigest(input.path),
+                resourceDigest: skillDigest(page.text),
+                outputBytes: Buffer.byteLength(page.text),
+                outputTruncated: page.truncated,
+                offset: input.offset,
+                startLine: input.startLine,
+                endLine: input.endLine,
+              },
+            });
+          } catch {
+            throw new KapibalaError('Skill resource audit unavailable', {
+              code: 'AUDIT_UNAVAILABLE',
+              retryPolicy: 'after_user_action',
+              safeMessage: '技能资源读取审计不可用，本轮停止',
+            });
+          }
+        },
+      );
+    }
     this.hooks = new HookRegistry();
     this.router = new SimpleModelRouter(config.defaultProfile, config.defaultProvider);
     this.store = config.store;
@@ -262,6 +315,8 @@ export class AgentSession {
     }
     this.context = this.createContextManager();
     await this.context.restore(this.history);
+    await this.skillRegistry?.refresh();
+    this.skillRuntime?.syncTools();
     this.pendingResume = this.history.length > 0;
     await this.hooks.emit('session:start', { logger: this.logger });
     await this.eventLogger.record({
@@ -386,6 +441,22 @@ export class AgentSession {
     return this.context.project(this.history);
   }
 
+  /** 查询技能元数据、诊断与本轮活动状态；只读，不加载正文或改变权限。 */
+  getSkills(query = '') {
+    const skills = this.skillRegistry?.list('host', query) ?? [];
+    const catalog = this.createPromptAssembler(
+      this.lastPrimaryProfile ?? this.getActiveProfile(),
+      this.context.project(this.history),
+    ).getSkillCatalog();
+    return {
+      skills,
+      diagnostics: this.skillRegistry?.diagnostics ?? [],
+      activations: this.skillRuntime?.activations ?? [],
+      content: inspectSkillContent(this.history, this.context.project(this.history)),
+      catalog: { included: catalog.included, omitted: catalog.omitted },
+    };
+  }
+
   /** 查询最近最终请求的预算快照，尚未准备请求时返回 undefined。 */
   getContextSnapshot(): ContextSnapshot | undefined {
     const snapshot = this.context.getSnapshot();
@@ -394,13 +465,7 @@ export class AgentSession {
       return snapshot;
     const provider = this.lastPrimaryProvider ?? this.router.resolve(this.primaryRole);
     const history = this.context.project(this.history);
-    const assembler = new PromptAssembler({
-      rootDir: this.rootDir,
-      tools: this.tools,
-      customInstructions: this.customSystemPrompt,
-      instructionSources: this.instructionSnapshot?.sources,
-      visibleTools: visibleTools(this.tools.list(), this.mode, this.permissionRules),
-    });
+    const assembler = this.createPromptAssembler(profile, history);
     return this.context.inspect(
       this.history,
       {
@@ -494,10 +559,23 @@ export class AgentSession {
     );
   }
 
+  /** 显式用户技能入口；任务原文单条提交，与普通run共享互斥、取消及清理，不恢复历史授权。 */
+  runSkill(
+    name: string,
+    task: string,
+    options?: { signal?: AbortSignal; role?: PrimaryModelRole },
+  ): AsyncIterable<SessionEvent> {
+    return cancellableGenerator(
+      (signal) => this.runOperation(task, { signal, role: options?.role }, name),
+      options?.signal,
+    );
+  }
+
   /** 单次任务执行主体；调用方 return 的中止与 finally 清理由外层统一协调。 */
   private async *runOperation(
     userInput: string,
     options?: { signal?: AbortSignal; role?: PrimaryModelRole },
+    skillName?: string,
   ): AsyncGenerator<SessionEvent> {
     this.assertIdle('start another run');
     const role = options?.role ?? this.primaryRole;
@@ -523,6 +601,9 @@ export class AgentSession {
     let modelFailure: ModelErrorInfo | undefined;
     let runFinalized = false;
     let runStarted = false;
+    let previousRequest: ModelRequest | undefined;
+    // 在途消息只参与预算；正式历史仍由 Loop 在全部工具结果闭合后原子追加。
+    let budgetToolMessages: readonly CanonicalMessage[] = [];
 
     const finalizeRun = (status: RunMetrics['status']): RunMetrics => {
       const endTime = Date.now();
@@ -581,6 +662,50 @@ export class AgentSession {
         if (!this.instructionSnapshot) throw error;
       }
 
+      const inputBudget = createContextBudget(
+        profile.contextWindow,
+        profile.maxOutputTokens,
+      ).inputBudget;
+      await this.skillRegistry?.refresh(options?.signal);
+      this.skillRuntime?.syncTools();
+      // 在途预算与真实请求共用同一装配器：目录按实际窗口预算生成，估算不再低估目录成本。
+      const promptAssembler = this.createPromptAssembler(
+        profile,
+        this.context.project(this.history),
+        32 + estimateSkillTokens(userInput),
+      );
+      this.skillRuntime?.begin(
+        runId,
+        () => this.history,
+        () => {
+          const current: ModelRequest = {
+            ...(previousRequest ?? { systemPrompt: promptAssembler.assemble() }),
+            messages: [...this.context.project(this.history), ...budgetToolMessages],
+            tools:
+              previousRequest?.tools ??
+              visibleTools(this.tools.list(), this.mode, this.permissionRules).map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
+              })),
+          };
+          return Math.max(
+            0,
+            inputBudget -
+              (this.estimator ?? new UnicodeTokenEstimator()).estimate(current).total -
+              (previousRequest ? 0 : estimateSkillTokens(userInput) + 32),
+          );
+        },
+        () => previousRequest?.messages ?? this.context.project(this.history),
+      );
+      let preparedSkill: PreparedSkill | undefined;
+      if (skillName !== undefined) {
+        if (!this.skillRuntime || !skillName.trim() || !userInput.trim())
+          throw skillFailure('SKILL_INVALID_INPUT', '显式技能需要有效名称和任务，且宿主需启用技能');
+        await this.authorizeSkill(skillName, runId, options?.signal);
+        preparedSkill = await this.skillRuntime.prepare(skillName, 'user', options?.signal);
+      }
+
       this.totalTurns++;
       if (this.store && supportsSessionState(this.store)) {
         const currentProject = resolveSessionProject(this.cwd);
@@ -604,26 +729,31 @@ export class AgentSession {
         content: [{ type: 'text', text: userInput }],
         timestamp: Date.now(),
       };
+      if (preparedSkill)
+        userMessage.content.push({
+          type: 'text',
+          text: preparedSkill.text,
+          skillSource: preparedSkill.source,
+        });
 
       if (this.store) {
         await this.store.append(userMessage);
       }
       this.history.push(userMessage);
+      if (preparedSkill && this.skillRuntime) {
+        this.skillRuntime.acceptUser(preparedSkill);
+        for (const event of await this.commitSkills(runId)) yield event;
+        this.skillRuntime.syncTools();
+      }
 
-      // 2. 组装分层 System Prompt
-      const promptAssembler = new PromptAssembler({
-        tools: this.tools,
-        rootDir: this.rootDir,
-        customInstructions: this.customSystemPrompt,
-        instructionSources: this.instructionSnapshot.sources,
-        visibleTools: visibleTools(this.tools.list(), this.mode, this.permissionRules),
-      });
+      // 2. 组装分层 System Prompt（与在途预算共用 begin 前构造的同一装配器实例）
       const assembledSystemPrompt = promptAssembler.assemble();
-      let previousRequest: ModelRequest | undefined;
       let environmentAnchorId = userMessage.id;
 
       // 3. 构建执行器与 Loop
       const executor = new ToolExecutor({
+        hardDenial: (tool) => this.skillRuntime?.denial(tool),
+        onToolResult: (tool, _input, result) => this.skillRuntime?.acceptResult(tool, result),
         tools: this.tools,
         hooks: this.hooks,
         rootDir: this.rootDir,
@@ -639,6 +769,20 @@ export class AgentSession {
       });
 
       const loop = new AgentLoop({
+        onToolBatchUpdate: this.skillRuntime
+          ? (messages) => {
+              // 成功技能正文已由 SkillRuntime.reservedTokens 预留，不能在临时视图重复计费。
+              // 普通结果、加载失败和 already_present 引用没有预留，必须按最终内容计入。
+              budgetToolMessages = messages
+                .map((message) => ({
+                  ...message,
+                  content: message.content.filter(
+                    (block) => block.type !== 'tool_result' || block.skillSource === undefined,
+                  ),
+                }))
+                .filter((message) => message.content.length > 0);
+            }
+          : undefined,
         interactionId: runId,
         modelId: profile.id,
         modelRole: role,
@@ -772,9 +916,11 @@ export class AgentSession {
               retryable: false,
             });
           const context = this.context;
+          const skills = this.skillRuntime;
           const preparation = context.prepare(history, candidate, profile, runId, reason, !frozen);
           return (async function* () {
             const prepared = yield* preparation;
+            skills?.assertProjection(prepared.messages);
             previousRequest = structuredClone({ ...prepared, signal: undefined });
             // 每个请求独立统计；不能将前一步实测 usage 冒充失败请求的当前上下文。
             lastPromptTokens = undefined;
@@ -888,11 +1034,13 @@ export class AgentSession {
             pendingAssistantPersisted = true;
             await this.persistToolMessages(event.messages);
             persistedHistoryLength = this.history.length;
+            const skillEvents = await this.commitSkills(runId);
 
             const releasable = pendingEvents;
             pendingAssistant = undefined;
             pendingEvents = [];
             for (const buffered of releasable) yield buffered;
+            for (const skillEvent of skillEvents) yield skillEvent;
             continue;
           }
 
@@ -987,6 +1135,8 @@ export class AgentSession {
             this.context.finishInteraction({ interactionId: runId, status: terminalStatus });
           }
         } finally {
+          this.skillRuntime?.clear();
+          this.skillRuntime?.syncTools();
           this.activeRun = false;
         }
       }
@@ -1027,6 +1177,127 @@ export class AgentSession {
     if (this.destroyed) throw new Error('Session already destroyed');
     if (this.cleanupStarted) throw new Error('Session cleanup has started');
     if (this.activeRun) throw new SessionBusyError(operation);
+  }
+
+  /** 实际请求、静态统计和手动压缩共用目录空间推导；先计正文、工具和非目录提示，再预算整段目录。 */
+  private createPromptAssembler(
+    profile: ModelProfile,
+    messages: readonly CanonicalMessage[],
+    extraTokens = 0,
+  ): PromptAssembler {
+    const tools = visibleTools(this.tools.list(), this.mode, this.permissionRules);
+    const options = {
+      skills: this.skillRegistry,
+      tools: this.tools,
+      rootDir: this.rootDir,
+      customInstructions: this.customSystemPrompt,
+      instructionSources: this.instructionSnapshot?.sources,
+      visibleTools: tools,
+    };
+    const budget = createContextBudget(profile.contextWindow, profile.maxOutputTokens);
+    const base = new PromptAssembler(options).assemble();
+    const used = (this.estimator ?? new UnicodeTokenEstimator()).estimate({
+      systemPrompt: base,
+      messages: [...messages],
+      tools: tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      })),
+    }).total;
+    return new PromptAssembler({
+      ...options,
+      skillLoader: this.skillRuntime?.loaderTool,
+      contextWindow: budget.contextWindow,
+      skillBudgetTokens: Math.max(0, budget.inputBudget - used - extraTokens - 4),
+    });
+  }
+
+  /** 完整消息提交后完成技能审计；审计失败保留真实历史，停止本轮且不发布成功事件。 */
+  private async commitSkills(runId: string): Promise<SessionEvent[]> {
+    if (!this.skillRuntime) return [];
+    return this.skillRuntime.commit(
+      async (source, messageId) => {
+        try {
+          await this.eventLogger.recordAudit({
+            level: 'info',
+            event: 'skill.loaded',
+            sessionId: this.sessionId,
+            runId,
+            fields: {
+              skillName: source.name,
+              skillScope: source.scope,
+              contentDigest: source.contentDigest,
+              renderedDigest: source.renderedDigest,
+              pathDigest: skillDigest(source.filePath),
+              caller: source.caller,
+              invocationId: source.invocationId,
+              messageId,
+            },
+          });
+        } catch {
+          throw new KapibalaError('Skill commit audit unavailable', {
+            code: 'AUDIT_UNAVAILABLE',
+            retryPolicy: 'after_user_action',
+            safeMessage: '技能提交审计不可用，本轮停止',
+          });
+        }
+      },
+      this.store ? 'disk' : 'memory',
+    );
+  }
+
+  /** 显式加载仍按同一读取策略、精确缓存与宿主审批裁决；拒绝/取消/审计失败时不追加用户任务。 */
+  private async authorizeSkill(name: string, runId: string, signal?: AbortSignal): Promise<void> {
+    const request: ApprovalRequest = {
+      toolName: 'load_skill',
+      capabilities: ['fs:read'],
+      input: { name },
+      rootDir: this.rootDir,
+      sessionAllowed: true,
+    };
+    const cached = this.approvalCache.get(request);
+    const decision = new PermissionPolicy().decide({
+      toolName: request.toolName,
+      capabilities: request.capabilities,
+      mode: this.mode,
+      rules: this.permissionRules,
+      cachedApproval: cached === 'allow',
+      cachedDenial: cached === 'deny',
+    });
+    let permitted = decision.decision === 'allow';
+    let approvalChoice: Awaited<ReturnType<ApprovalChannel['requestApproval']>> | undefined;
+    if (decision.decision === 'ask') {
+      try {
+        approvalChoice =
+          (await this.approvalChannel?.requestApproval(request, signal)) ?? 'deny_once';
+      } catch {
+        approvalChoice = 'cancel';
+      }
+      permitted = approvalChoice === 'allow_once' || approvalChoice === 'allow_session';
+      if (approvalChoice === 'allow_session') this.approvalCache.set(request, 'allow');
+      if (approvalChoice === 'deny_session') this.approvalCache.set(request, 'deny');
+    }
+    await this.eventLogger.recordAudit({
+      level: 'info',
+      event: 'skill.decided',
+      sessionId: this.sessionId,
+      runId,
+      fields: {
+        skillName: name,
+        caller: 'user',
+        decision: permitted && !signal?.aborted ? 'allow' : 'deny',
+        decisionSource:
+          decision.decision === 'ask'
+            ? this.approvalChannel
+              ? 'human'
+              : 'non_interactive'
+            : decision.source,
+        approvalChoice,
+      },
+    });
+    if (!permitted) throw skillFailure('SKILL_INVOCATION_FORBIDDEN', '宿主权限禁止显式技能读取');
+    signal?.throwIfAborted();
   }
 
   /**
@@ -1114,13 +1385,7 @@ export class AgentSession {
         baseURL: profile.baseURL,
         workspaceId: profile.anthropicWorkspaceId,
       });
-      const assembler = new PromptAssembler({
-        rootDir: this.rootDir,
-        tools: this.tools,
-        customInstructions: this.customSystemPrompt,
-        instructionSources: this.instructionSnapshot?.sources,
-        visibleTools: visibleTools(this.tools.list(), this.mode, this.permissionRules),
-      });
+      const assembler = this.createPromptAssembler(profile, messages);
       for await (const event of this.context.prepare(
         this.history,
         {

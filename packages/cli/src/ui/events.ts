@@ -9,6 +9,7 @@ import { getCurrentGitBranch } from '../git.js';
 import { formatContextUsage, formatTokenCount } from './metrics.js';
 import { formatModelError, formatModelFailureSummary } from './model-errors.js';
 import {
+  formatToolDetail,
   formatToolInvocation,
   formatToolResultSummary,
   sanitizeToolName,
@@ -17,6 +18,10 @@ import { charWidth, displayWidth } from './width.js';
 
 /** 事件渲染器的可注入项；全部缺省时直接写 stdout，宿主可替换以复用同一渲染逻辑。 */
 export interface EventRendererOptions {
+  /** 摘要只折叠过程；detailed 完整流式输出公开内容，不受 UI 缓存上限约束。 */
+  outputDetail?: OutputDetail;
+  /** 当前轮次详情 UTF-8 上限，缺省 1 MiB；只影响展开快照。 */
+  cacheBytes?: number;
   debug?: boolean;
   /** 开发诊断独立写入 stderr，避免污染非 TTY 的答案 stdout。 */
   debugWrite?: (chunk: string) => void;
@@ -39,6 +44,20 @@ export interface EventRenderer {
   render(event: SessionEvent): void;
   /** 流结束后调用：补齐思考块未闭合的转义与末尾换行。 */
   finish(): void;
+  /** 真实 TTY 切换本轮详情；锚点不可靠时追加有标签快照，不删除旧滚动历史。 */
+  toggleDetail(): void;
+  /** 宿主即将写提示符、审批或其他内容时使当前工具回写锚点失效。 */
+  invalidateAnchor(): void;
+}
+
+/** 终端过程显示策略；所有模式均完整输出 assistant 文本和错误。 */
+export type OutputDetail = 'summary' | 'detailed';
+
+/** 启动阶段严格校验，非法值不能回退或产生模型请求。 */
+export function parseOutputDetail(value: unknown): OutputDetail {
+  if (value === undefined) return 'summary';
+  if (value === 'summary' || value === 'detailed') return value;
+  throw new Error('用法: --output-detail summary|detailed');
 }
 
 interface PendingToolLine {
@@ -172,6 +191,45 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
   } = options;
   const currentColumns = (): number => (typeof columns === 'function' ? columns() : columns);
   let isThinking = false;
+  let detail = options.outputDetail ?? 'summary';
+  let finished = false;
+  let thinkingSequence = 0;
+  let thinkingKey: string | undefined;
+  let anchorColumns = currentColumns();
+  const cacheLimit = Math.max(0, Math.floor(options.cacheBytes ?? 1024 * 1024));
+  const details = new Map<string, string>();
+  let cacheUsed = 0;
+  let cacheTruncated = false;
+  /** 按真实块/工具身份累计安全文本，连关联键也计入上限，不保存原事件或无限空记录。 */
+  const cache = (key: string, text: string): void => {
+    const keyCost = details.has(key) ? 0 : Buffer.byteLength(key);
+    const remaining = Math.max(0, cacheLimit - cacheUsed - keyCost);
+    let retained = '';
+    let bytes = 0;
+    for (const character of text) {
+      const size = Buffer.byteLength(character);
+      if (bytes + size > remaining) {
+        cacheTruncated = true;
+        break;
+      }
+      retained += character;
+      bytes += size;
+    }
+    if (!retained) {
+      if (text) cacheTruncated = true;
+      return;
+    }
+    details.set(key, (details.get(key) ?? '') + retained);
+    cacheUsed += bytes + keyCost;
+  };
+  const processDetail = (key: string, text: string): void => {
+    const safe = sanitizeUntrustedOutput(text);
+    cache(key, safe);
+    if (detail === 'detailed') {
+      markToolLinesStale();
+      write(safe);
+    }
+  };
   let renderedModelError: ModelErrorInfo | undefined;
   let summaryFailure: ModelErrorInfo | undefined;
   const pendingTools = new Map<string, PendingToolLine>();
@@ -191,12 +249,18 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
   const finishThinking = (): void => {
     if (!isThinking) return;
     isThinking = false;
+    thinkingKey = undefined;
     markToolLinesStale();
     write(`${isTTY ? `${ESC}[0m` : ''}\n\n`);
   };
 
   return {
     render(event: SessionEvent): void {
+      if (finished) return;
+      if (currentColumns() !== anchorColumns) {
+        markToolLinesStale();
+        anchorColumns = currentColumns();
+      }
       if (
         event.type === 'compaction_start' ||
         event.type === 'compaction_finish' ||
@@ -223,7 +287,14 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
           `\n上下文超限: 估算 ${event.usedTokens} / 输入预算 ${event.inputBudget}。当前任务保持原文，请选择更大窗口或拆分任务。\n`,
         );
       } else if (event.type === 'session_resumed' || event.type === 'session_switched') {
+        markToolLinesStale();
         write(`\n活动会话: ${sanitizeUntrustedOutput(event.conversationId)}\n`);
+      } else if (event.type === 'skill_loaded') {
+        finishThinking();
+        markToolLinesStale();
+        write(
+          `\n技能已加载: ${sanitizeToolName(event.source.name)} (${event.source.caller}, ${event.persistence})\n`,
+        );
       } else if (event.type === 'step_log') {
         if (debug) {
           const time = new Date(event.log.timestamp).toLocaleTimeString();
@@ -242,11 +313,17 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
       } else if (event.type === 'thinking_delta') {
         if (!isThinking) {
           isThinking = true;
+          thinkingKey = event.blockId
+            ? `thinking:${event.blockId}`
+            : `thinking:${++thinkingSequence}`;
           markToolLinesStale();
-          write(`${color('💭 思考过程:', 90, isTTY)}\n`);
+          write(
+            `${color(detail === 'detailed' ? '💭 思考过程:' : isTTY ? '💭 思考中（Ctrl+O 查看本轮详情）' : '💭 思考中', 90, isTTY)}\n`,
+          );
+          cache(thinkingKey, '\n💭 思考过程:\n');
         }
         markToolLinesStale();
-        write(color(sanitizeUntrustedOutput(event.thinking), 90, isTTY));
+        processDetail(event.blockId ? `thinking:${event.blockId}` : thinkingKey!, event.thinking);
       } else if (event.type === 'text_delta') {
         finishThinking();
         markToolLinesStale();
@@ -263,10 +340,15 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
         if (isTTY) {
           if (interactiveToolLines.length === 0) write('\n');
           interactiveToolLines.push(event.id);
+          if (interactiveToolLines.length > 8) markToolLinesStale();
           write(
             `${color(formatToolLine(invocation, '…', undefined, currentColumns()), 33, true)}\n`,
           );
         }
+        processDetail(
+          `tool:${event.id}`,
+          `\n⚙ ${safeToolName} [${sanitizeToolName(event.id)}] 输入:\n${formatToolDetail(event.input)}\n`,
+        );
       } else if (event.type === 'tool_finish') {
         const pending = pendingTools.get(event.id);
         const invocation = pending?.invocation ?? sanitizeToolName(event.name);
@@ -297,6 +379,10 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
           interactiveToolLines.length = 0;
           toolLinesRewritable = true;
         }
+        processDetail(
+          `tool:${event.id}`,
+          `\n⚙ ${sanitizeToolName(event.name)} [${sanitizeToolName(event.id)}] ${event.isError ? '错误' : '结果'}:\n${formatToolDetail(event.result)}\n`,
+        );
       } else if (event.type === 'run_finish') {
         finishThinking();
         const metrics = event.metrics;
@@ -307,6 +393,8 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
             `\n${color('本次请求失败，未获得完整答复。可以在当前会话重试；已完成的工具结果仍保留。', 31, isTTY)}\n`,
           );
         }
+        if (metrics.status === 'aborted') write('\n任务已中止；已完成工具结果保留。\n');
+        markToolLinesStale();
         const branch = getGitBranch();
         const segments: FooterSegment[] = [];
         if (metrics.failure)
@@ -348,6 +436,7 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
         summaryFailure = undefined;
       } else if (event.type === 'error') {
         finishThinking();
+        markToolLinesStale();
         const info =
           event.modelError ??
           (event.error instanceof ModelError
@@ -364,10 +453,26 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
     },
 
     finish(): void {
-      if (isThinking) {
-        isThinking = false;
-        write(`${isTTY ? `${ESC}[0m` : ''}\n`);
-      }
+      if (finished) return;
+      finishThinking();
+      markToolLinesStale();
+      finished = true;
+      details.clear();
+      pendingTools.clear();
+      interactiveToolLines.length = 0;
+    },
+    invalidateAnchor: markToolLinesStale,
+    toggleDetail(): void {
+      if (!isTTY || finished) return;
+      finishThinking();
+      markToolLinesStale();
+      detail = detail === 'summary' ? 'detailed' : 'summary';
+      if (detail === 'detailed') {
+        write('\n── 本轮过程详情快照 ──\n');
+        for (const text of details.values()) write(text);
+        if (cacheTruncated) write('\n[过程缓存已截断；完整内容仍按 Core 历史规则保留]\n');
+        write('\n── 后续过程以详细模式输出 ──\n');
+      } else write('\n── 后续过程以摘要模式输出；已显示详情保留在滚动历史 ──\n');
     },
   };
 }
