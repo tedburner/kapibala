@@ -55,7 +55,7 @@
 
 ## 🚀 极速测试与启动 (One-Minute Quickstart)
 
-需要 Node.js 20 或更高版本。**v0.0.4 已发布**（原生多协议与场景模型路由），历史会话与压缩说明对应 v0.0.3。发布内容见 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/v0.0.4)；调试当前源码请使用 `pnpm dev`。
+需要 Node.js 20 或更高版本。**v0.0.5 已发布**（技能体系与过程输出折叠），技能发现、`/skills` / `/skill` 与过程详情入口见 [技能使用和宿主边界](docs/skills.md)，兼容边界见 [迁移说明](docs/migration/v0.0.5.md)，证据见 [验收记录](docs/verification/v0.0.5.md)。发布内容见 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/v0.0.5)；调试当前源码请使用 `pnpm dev`。
 
 ### 从 npm 安装使用
 
