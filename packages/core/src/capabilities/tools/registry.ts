@@ -60,6 +60,12 @@ export class ToolRegistry {
     return this.tools.get(name);
   }
 
+  /** 注销指定名称及来源记录；调用方须核对实例身份，不能移除同名替代工具。 */
+  unregister(name: string): void {
+    this.tools.delete(name);
+    this.toolSources.delete(name);
+  }
+
   /** 未命中时抛 ToolNotFound，并携带当前全部可用名称辅助模型自纠。 */
   resolve(name: string): Tool {
     const tool = this.tools.get(name);

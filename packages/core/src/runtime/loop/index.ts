@@ -32,6 +32,7 @@ import type {
 import { stableSerialize } from '../../types/serialization.js';
 import type { ToolExecutor } from '../executor/index.js';
 
+/** 循环宿主配置；请求投影与在途预算只操作临时视图，历史仍按完整工具事务追加。 */
 export interface AgentLoopOptions {
   /** 本次交互身份，内部步骤仍独立编号。 */
   interactionId?: string;
@@ -44,6 +45,8 @@ export interface AgentLoopOptions {
   prepareRequest?: RequestPreparation;
   /** 每次收到 usage 后回调；attemptId 标识 run:step:attempt，便于按尝试归因。 */
   onUsage?: (request: ModelRequest, usage: Usage, attemptId: string) => Promise<void>;
+  /** 在途批次预算视图；含当前 assistant 和已完成结果，不能作为落盘或授权依据，闭合后清空；回调不得抛错。 */
+  onToolBatchUpdate?: (messages: readonly CanonicalMessage[]) => void;
   provider: ModelProvider;
   executor: ToolExecutor;
   tools: ToolRegistry;
@@ -74,6 +77,7 @@ export class AgentLoop {
   private readonly projectHistory?: AgentLoopOptions['projectHistory'];
   private readonly prepareRequest?: RequestPreparation;
   private readonly onUsage?: AgentLoopOptions['onUsage'];
+  private readonly onToolBatchUpdate?: AgentLoopOptions['onToolBatchUpdate'];
   private readonly provider: ModelProvider;
   private readonly executor: ToolExecutor;
   private readonly tools: ToolRegistry;
@@ -95,6 +99,7 @@ export class AgentLoop {
     this.projectHistory = options.projectHistory;
     this.prepareRequest = options.prepareRequest;
     this.onUsage = options.onUsage;
+    this.onToolBatchUpdate = options.onToolBatchUpdate;
     this.provider = options.provider;
     this.executor = options.executor;
     this.tools = options.tools;
@@ -622,10 +627,22 @@ export class AgentLoop {
       const progressQueue: SessionEvent[] = [];
       let progressWake: (() => void) | undefined;
       let toolsFinished = false;
-      const toolRun = this.executor.runAll(toolCalls, (progress) => {
-        progressQueue.push({ type: 'tool_progress', ...progress });
-        progressWake?.();
-      });
+      const budgetMessages = this.onToolBatchUpdate ? [structuredClone(assistantMessage)] : [];
+      this.onToolBatchUpdate?.(budgetMessages);
+      const toolRun = this.executor.runAll(
+        toolCalls,
+        (progress) => {
+          progressQueue.push({ type: 'tool_progress', ...progress });
+          progressWake?.();
+        },
+        this.onToolBatchUpdate
+          ? (result) => {
+              // 预算按 canonical 消息计数，不提前调用 Provider 装配或把半闭合事务写进正式历史。
+              budgetMessages.push({ role: 'tool', content: [result] });
+              this.onToolBatchUpdate!([...budgetMessages]);
+            }
+          : undefined,
+      );
       void toolRun.then(
         () => {
           toolsFinished = true;
@@ -659,6 +676,7 @@ export class AgentLoop {
           message.state = 'completed';
         }
         history.push(assistantMessage, ...toolMessages);
+        this.onToolBatchUpdate?.([]);
       }
       const toolDurationMs = Date.now() - toolStartTime;
 

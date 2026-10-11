@@ -1,5 +1,6 @@
 import { isInteractiveTerminal } from '../input-coordinator.js';
 import { PRIMARY_MODEL_ROLES, ROUTABLE_MODEL_ROLES } from '../model-bindings.js';
+import { parseSkillTask } from './skills.js';
 
 /**
  * 单个命令的静态定义：/help、注册冲突检查与运行期门禁共用的唯一事实。
@@ -51,6 +52,25 @@ const model = (args: string[]) =>
 
 /** 注册、帮助、别名、参数和状态门的唯一命令定义，不列出尚未交付的未来能力。 */
 export const COMMAND_CATALOG: readonly CommandDefinition[] = [
+  {
+    name: 'skills',
+    usage: '/skills [query]',
+    description: '搜索技能、来源、诊断和活动状态',
+    group: 'diagnostic',
+    rawTail: true,
+    mutates: () => false,
+    validate: one,
+  },
+  {
+    name: 'skill',
+    usage: '/skill <name> <task...>',
+    description: '显式加载技能并执行原始任务',
+    group: 'session',
+    rawTail: true,
+    mutates: () => true,
+    validate: (args) =>
+      args.length === 1 && parseSkillTask(args[0]) ? undefined : '请输入合法技能名和非空任务',
+  },
   {
     name: 'new',
     aliases: ['clear'],

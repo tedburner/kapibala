@@ -43,6 +43,19 @@
       "description": "模型画像列表，每个条目绑定端点、密钥来源与协议特性。这里只需写用户自己关心或自建的模型：内置清单由程序侧提供，缺什么就用代码里的那份补什么，重复声明只会制造一份会过期的快照。",
       "items": { "$ref": "#/definitions/modelProfile" }
     },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "技能默认开启。已信任项目只可关闭或增加禁用名称，不能解除全局限制。",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "disabled": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" }
+        }
+      }
+    },
     "trustedProjects": {
       "type": "array",
       "description": "已由用户永久信任的项目真实绝对路径。仅允许出现在全局配置中，项目级配置里的该字段会被忽略——否则任何仓库都能通过自行声明信任来绕过确认。",

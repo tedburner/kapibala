@@ -1,6 +1,7 @@
 import {
   type LoadSettingsOptions,
   type LoadedSettings,
+  isProjectTrusted,
   loadSettings,
   trustProject,
 } from './settings.js';
@@ -24,39 +25,68 @@ export type ProjectTrustResult =
 
 /** 注入项：interactive 与 choose 供测试或图形宿主替换终端菜单；其余继承 {@link LoadSettingsOptions}。 */
 export interface ResolveProjectTrustOptions extends LoadSettingsOptions {
+  /** 技能发现使用的项目根；缺省从 cwd 检测，不把嵌套 cwd 信任扩展为仓库信任。 */
+  projectRoot?: string;
   interactive?: boolean;
   choose?: (projectPath: string) => Promise<ProjectTrustDecision | null>;
 }
 
 /**
  * 在 CLI 边界确认项目配置的永久信任。
- * 未信任或无法交互时绝不应用项目配置，由调用方按失败状态退出。
+ * 配置未信任时退出；仅有技能的项目在拒绝或非交互时保留全局能力，排除项目技能。
  */
 export async function resolveProjectTrust(
   loaded: LoadedSettings,
   options: ResolveProjectTrustOptions = {},
 ): Promise<ProjectTrustResult> {
   const pending = loaded.pendingProject;
-  if (!pending) {
-    return { status: 'ready', loaded };
-  }
-
   const interactive = options.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
-  if (!interactive) {
-    return { status: 'non_interactive' };
+  let result = loaded;
+  let trusted = false;
+  if (pending) {
+    if (!interactive) return { status: 'non_interactive' };
+    if ((await (options.choose ?? promptProjectTrust)(pending.projectPath)) !== 'trust')
+      return { status: 'rejected' };
+    trustProject(result.settings, pending.projectPath, { homeDir: options.homeDir });
+    result = loadSettings({ cwd: options.cwd, homeDir: options.homeDir });
+    trusted = true;
   }
-
-  const choose = options.choose ?? promptProjectTrust;
-  const decision = await choose(pending.projectPath);
-  if (decision !== 'trust') {
-    return { status: 'rejected' };
+  const projectRoot = fs.realpathSync(
+    options.projectRoot ?? detectProjectRoot(options.cwd ?? process.cwd()),
+  );
+  if (
+    result.settings.skills?.enabled !== false &&
+    hasProjectSkills(projectRoot) &&
+    !isProjectTrusted(result.settings, projectRoot) &&
+    interactive
+  ) {
+    if ((await (options.choose ?? promptSkillTrust)(projectRoot)) === 'trust') {
+      trustProject(result.settings, projectRoot, { homeDir: options.homeDir });
+      result = loadSettings({ cwd: options.cwd, homeDir: options.homeDir });
+      trusted = true;
+    }
   }
+  return { status: trusted ? 'trusted' : 'ready', loaded: result };
+}
 
-  trustProject(loaded.settings, pending.projectPath, { homeDir: options.homeDir });
-  return {
-    status: 'trusted',
-    loaded: loadSettings({ cwd: options.cwd, homeDir: options.homeDir }),
-  };
+/** 技能信任沿用现有顺序输入菜单；拒绝后继续运行全局技能，不永久记录拒绝。 */
+async function promptSkillTrust(projectPath: string): Promise<ProjectTrustDecision | null> {
+  return select<ProjectTrustDecision>({
+    message: `项目包含技能指令，是否永久信任？\n  ${projectPath}`,
+    options: [
+      {
+        label: '信任项目技能',
+        value: 'trust',
+        description: '允许加载仓库中的技能正文；执行仍受权限规则约束',
+      },
+      {
+        label: '跳过项目技能',
+        value: 'reject',
+        description: '继续使用全局技能，不读取项目技能正文',
+      },
+    ],
+    defaultIndex: 1,
+  });
 }
 
 async function promptProjectTrust(projectPath: string): Promise<ProjectTrustDecision | null> {
@@ -77,3 +107,6 @@ async function promptProjectTrust(projectPath: string): Promise<ProjectTrustDeci
     defaultIndex: 1,
   });
 }
+import fs from 'node:fs';
+import { detectProjectRoot } from './project-root.js';
+import { hasProjectSkills } from './skills.js';

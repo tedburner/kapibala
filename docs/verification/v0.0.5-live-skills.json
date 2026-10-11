@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-10T10:33:59.054Z",
+  "model": "deepseek-flash",
+  "protocol": "openai-compatible",
+  "maxStepsPerTask": 5,
+  "maxOutputTokens": 768,
+  "samples": [
+    {
+      "caller": "model",
+      "status": "completed",
+      "skillLoaded": true,
+      "resourceRead": true,
+      "answerMarker": true,
+      "toolNames": ["load_skill", "read_skill_resource"],
+      "tokens": {
+        "promptTokens": 3800,
+        "completionTokens": 208,
+        "totalTokens": 4008
+      }
+    },
+    {
+      "caller": "user",
+      "status": "completed",
+      "skillLoaded": true,
+      "resourceRead": true,
+      "answerMarker": true,
+      "toolNames": ["load_skill", "read_skill_resource"],
+      "tokens": {
+        "promptTokens": 5576,
+        "completionTokens": 263,
+        "totalTokens": 5839
+      }
+    }
+  ]
+}

@@ -2,6 +2,7 @@
  * Canonical Message & Event Types for Kapibala
  */
 
+import type { SkillContentSource } from '../capabilities/skills/types.js';
 import type { ModelErrorInfo } from '../errors/index.js';
 
 /** 原生协议内容的来源；仅同一次运行、同模型和端点允许回传私有状态。 */
@@ -50,6 +51,8 @@ export type ContentBlock =
 export interface TextBlock {
   type: 'text';
   text: string;
+  /** 宿主注入技能的可选来源；只追踪正文，缺失或恢复不授予权限。 */
+  skillSource?: SkillContentSource;
   /** 源 wire Item 元数据；正文被改写后由调用方清除，不作为业务身份。 */
   protocolMeta?: ProtocolItemMetadata;
 }
@@ -69,6 +72,8 @@ export interface ToolUseBlock {
 
 export interface ToolResultBlock {
   type: 'tool_result';
+  /** 完整技能正文的宿主来源；不发送到Provider wire，不从历史恢复授权。 */
+  skillSource?: SkillContentSource;
   toolUseId: string;
   content: string;
   isError?: boolean;
@@ -217,6 +222,12 @@ export interface StepLogEntry {
  * 不应直接把本类型当作长期兼容的网络协议。
  */
 export type SessionEvent =
+  | {
+      type: 'skill_loaded';
+      source: SkillContentSource;
+      messageId: string;
+      persistence: 'memory' | 'disk';
+    }
   | {
       type: 'session_resumed';
       conversationId: string;

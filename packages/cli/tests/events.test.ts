@@ -71,7 +71,7 @@ describe('createEventRenderer tool output', () => {
       { isTTY: false },
     );
     expect(output).toContain('hello\nworld');
-    expect(output).toContain('thought');
+    expect(output).toContain('思考中');
     expect(output).toContain('bad');
     expect(output).not.toContain('\x1b');
     expect(output).not.toContain('52;c;');
@@ -201,13 +201,13 @@ describe('createEventRenderer tool output', () => {
     }
   });
 
-  it('keeps streaming the complete thinking content until folding is implemented later', () => {
+  it('streams complete public thinking when detailed output is selected', () => {
     const event: SessionEvent = {
       type: 'thinking_delta',
       thinking: 'The user asks to search for a file.',
     };
 
-    const output = renderEvents([event], { isTTY: false });
+    const output = renderEvents([event], { isTTY: false, outputDetail: 'detailed' });
 
     expect(output).toContain('💭 思考过程:');
     expect(output).toContain('The user asks to search for a file.');

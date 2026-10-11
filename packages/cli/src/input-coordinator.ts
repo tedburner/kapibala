@@ -40,9 +40,18 @@ export class CliInputCoordinator {
   private pending?: PendingQuestion;
   private lineHandler?: (line: string) => void;
   private interruptHandler?: () => void;
+  private detailToggleHandler?: () => void;
+  private completionHandler?: (line: string) => [string[], string];
+  private readonly interactionHandlers = new Set<() => void>();
   private closed = false;
   private readonly signalHandler = () => this.interrupt();
+  /** readline 对未绑定 Ctrl+O 会插入控制字节；先路由，再改为其忽略的 Escape，完全不访问秘密缓冲。 */
   private readonly keyHandler = (_value: string, key: readline.Key) => {
+    if (key?.name === 'o' && key.ctrl) {
+      key.name = 'escape';
+      if (this.interactive && !this.pending && !this.closed) this.detailToggleHandler?.();
+      return;
+    }
     if (key?.name === 'escape' && this.pending) this.cancel();
   };
 
@@ -54,7 +63,10 @@ export class CliInputCoordinator {
       Boolean((this.input as NodeJS.ReadStream).isTTY && (this.output as NodeJS.WriteStream).isTTY);
     const guardedOutput = new Writable({
       write: (chunk, _encoding, callback) => {
-        if (!this.pending?.secret) this.output.write(chunk);
+        if (!this.pending?.secret) {
+          for (const handler of this.interactionHandlers) handler();
+          this.output.write(chunk);
+        }
         callback();
       },
     });
@@ -65,6 +77,8 @@ export class CliInputCoordinator {
       input: this.input,
       output: guardedOutput,
       terminal: options.terminal ?? this.interactive,
+      completer: (line: string) =>
+        !this.pending ? (this.completionHandler?.(line) ?? [[], line]) : [[], line],
     });
     this.rl.pause();
     this.rl.on('line', (line) => {
@@ -79,11 +93,14 @@ export class CliInputCoordinator {
       this.closed = true;
       this.cancel();
       this.input.removeListener('keypress', this.keyHandler);
+      this.detailToggleHandler = undefined;
+      this.completionHandler = undefined;
+      this.interactionHandlers.clear();
       process.off('SIGINT', this.signalHandler);
       finish();
     });
     this.rl.on('SIGINT', this.signalHandler);
-    this.input.on('keypress', this.keyHandler);
+    this.input.prependListener('keypress', this.keyHandler);
     process.on('SIGINT', this.signalHandler);
   }
 
@@ -102,6 +119,28 @@ export class CliInputCoordinator {
   }
   isBusy(): boolean {
     return !!this.pending;
+  }
+
+  /** 本轮详情快捷键沿用同一输入者；独占问答与秘密输入期间完全禁用，不查看编辑缓冲。 */
+  onDetailToggle(handler: () => void): () => void {
+    this.detailToggleHandler = handler;
+    if (this.interactive) this.rl.resume();
+    return () => {
+      if (this.detailToggleHandler === handler) this.detailToggleHandler = undefined;
+    };
+  }
+
+  /** 补全读取当前会话的元数据；问答期间不补全，切换会话不缓存旧名称。 */
+  setCompleter(handler: (line: string) => [string[], string]): void {
+    this.completionHandler = handler;
+  }
+
+  /** 菜单、审批或提示符输出前通知宿主失效过程锚点，避免回写其他交互内容。 */
+  onInteraction(handler: () => void): () => void {
+    this.interactionHandlers.add(handler);
+    return () => {
+      this.interactionHandlers.delete(handler);
+    };
   }
 
   /** 使用同一 readline 问一个问题；取消、EOF、非 TTY 和同时读者均立即明确结束。 */
@@ -127,6 +166,7 @@ export class CliInputCoordinator {
         else resolve(value ?? '');
       };
       this.pending = { finish, secret: options?.secret ?? false };
+      for (const handler of this.interactionHandlers) handler();
       options?.signal?.addEventListener('abort', onAbort, { once: true });
       this.output.write(prompt);
       this.rl.resume();
@@ -141,6 +181,7 @@ export class CliInputCoordinator {
   /** 菜单在非 TTY 返回取消，不创建第二套 stdin/readline；Esc/Ctrl+C/EOF 只取消本菜单。 */
   async select<T>(config: SelectConfig<T>): Promise<T | null> {
     if (!this.interactive || !config.options.length) return null;
+    for (const handler of this.interactionHandlers) handler();
     this.output.write(`\n${config.message}\n`);
     config.options.forEach((option, index) =>
       this.output.write(
@@ -200,6 +241,7 @@ export class CliInputCoordinator {
   /** 空闲且交互时刷新提示符；忙碌期调用不打印、不打断当前问答。 */
   prompt(value: string): void {
     if (!this.closed && !this.pending && this.interactive) {
+      for (const handler of this.interactionHandlers) handler();
       this.rl.setPrompt(value);
       this.rl.prompt();
     }

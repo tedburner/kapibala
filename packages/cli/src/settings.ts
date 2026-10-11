@@ -37,6 +37,8 @@ export interface UserSettings {
   permissionRules?: PermissionRule[];
   /** 项目设置不可启用或更换命令解释器。 */
   shell?: { enabled?: boolean; preference?: ShellPreference };
+  /** 技能默认开启；项目层只可关闭或补充禁用名称，不能解除全局限制。 */
+  skills?: { enabled?: boolean; disabled?: string[] };
   /**
    * 该配置所依据的内置模型清单版本。
    * 缺失或落后于 BUILTIN_CATALOG_VERSION 时，启动阶段会执行一次目录升级（见 migrateBuiltinCatalog）。
@@ -663,6 +665,7 @@ export function saveGlobalSettings(
   options: Pick<LoadSettingsOptions, 'homeDir'> = {},
 ): string {
   validateProfileContextWindows(settings.profiles);
+  validateSkillSettings(settings.skills);
   // 盖章前先同步目录字段：若启动迁移失败（仅告警放行），后续写盘不能把旧协议字段
   // 连同新版本号一起固化进用户文件，否则迁移永不触发。
   const migrated = migrateBuiltinCatalog(settings).settings;
@@ -699,18 +702,21 @@ export function saveGlobalSettings(
   return globalPath;
 }
 
-/** 将项目真实路径永久加入全局信任列表并立即持久化。 */
+/** 只把项目真实路径写入原始全局信任列表；不将合并后的模型或项目配置反写全局。 */
 export function trustProject(
   settings: UserSettings,
   projectPath: string,
   options: Pick<LoadSettingsOptions, 'homeDir'> = {},
 ): string {
   const normalized = normalizeProjectPath(projectPath);
-  const trustedProjects = settings.trustedProjects ?? [];
+  const raw = loadGlobalSettingsForWrite(options);
+  const trustedProjects = raw.trustedProjects ?? [];
   if (!trustedProjects.some((trusted) => pathsEqual(trusted, normalized))) {
-    settings.trustedProjects = [...trustedProjects, normalized];
+    raw.trustedProjects = [...trustedProjects, normalized];
   }
-  return saveGlobalSettings(settings, options);
+  const savedPath = saveGlobalSettings(raw, options);
+  settings.trustedProjects = [...(raw.trustedProjects ?? [])];
+  return savedPath;
 }
 
 /**
@@ -991,7 +997,8 @@ function pathsEqual(left: string, right: string): boolean {
     : path.normalize(left) === path.normalize(right);
 }
 
-function isProjectTrusted(settings: UserSettings, projectPath: string): boolean {
+/** 信任匹配真实项目根的完整路径；信任子目录或父目录均不自动授权其他根。 */
+export function isProjectTrusted(settings: UserSettings, projectPath: string): boolean {
   return (settings.trustedProjects ?? []).some((trusted) => pathsEqual(trusted, projectPath));
 }
 
@@ -1000,6 +1007,7 @@ function mergeSettings(
   incoming: Partial<UserSettings>,
   allowTrustedProjects: boolean,
 ): UserSettings {
+  validateSkillSettings(incoming.skills);
   if (
     !allowTrustedProjects &&
     (incoming.permissionRules !== undefined ||
@@ -1068,6 +1076,15 @@ function mergeSettings(
       ? { ...base.modelRouting, ...incoming.modelRouting }
       : base.modelRouting,
     profiles: Array.from(profilesMap.values()),
+    skills:
+      incoming.skills || base.skills
+        ? {
+            enabled: (base.skills?.enabled ?? true) && (incoming.skills?.enabled ?? true),
+            disabled: [
+              ...new Set([...(base.skills?.disabled ?? []), ...(incoming.skills?.disabled ?? [])]),
+            ],
+          }
+        : undefined,
     // 不把 base 的版本号当作「已升级」：老配置里缺这个字段时必须继续显示为待升级，
     // 否则迁移判定的触发条件会被默认值抹平，目录永远升不上去。
     builtinCatalogVersion: incoming.builtinCatalogVersion,
@@ -1091,6 +1108,24 @@ function mergeSettings(
 
 class InvalidPermissionSettings extends Error {}
 class InvalidModelSettings extends Error {}
+
+/** 非法技能配置必须中止加载和写回，避免类型错误静默解除禁用约束。 */
+function validateSkillSettings(value: UserSettings['skills']): void {
+  if (value === undefined) return;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new InvalidPermissionSettings('skills must be an object');
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean')
+    throw new InvalidPermissionSettings('skills.enabled must be a boolean');
+  if (
+    value.disabled !== undefined &&
+    (!Array.isArray(value.disabled) ||
+      value.disabled.some(
+        (name) =>
+          typeof name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length > 64,
+      ))
+  )
+    throw new InvalidPermissionSettings('skills.disabled must contain valid skill names');
+}
 
 /** 具名解释器或用户显式提供的解释器可执行文件全路径。 */
 function isValidShellPreference(value: string): boolean {
