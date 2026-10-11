@@ -177,7 +177,8 @@ describe('cross-platform shell discovery and execution', () => {
     const saved = fs.readFileSync(result.outputFile!);
     expect(saved.length).toBeLessThanOrEqual(16 * 1024 * 1024);
     expect(() => new TextDecoder('utf8', { fatal: true }).decode(saved)).not.toThrow();
-  }, 40_000);
+    // 17 MB 级 PowerShell 管道在 CI VM（Defender 实时扫描）上可能远慢于本地，断言与速度无关。
+  }, 120_000);
 
   it('rejects commands above the 8 KiB limit before spawning', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-shell-limit-'));
