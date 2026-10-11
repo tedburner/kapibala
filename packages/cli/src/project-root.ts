@@ -2,9 +2,13 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** 优先使用 Git 工作树根作为项目指令起点；没有 Git 时退回当前目录。 */
+/**
+ * 优先使用 Git 工作树根作为项目指令起点；没有 Git 时退回当前目录。
+ * 规范化必须用 native realpath：Windows 上 JS 实现保留 8.3 短名，与信任管线
+ * （normalizeProjectPath）的长路径身份不一致，会导致已信任项目无法匹配。
+ */
 export function detectProjectRoot(cwd: string): string {
-  const current = fs.realpathSync(cwd);
+  const current = fs.realpathSync.native(cwd);
   try {
     const output = execFileSync('git', ['-C', current, 'rev-parse', '--show-toplevel'], {
       encoding: 'utf8',
@@ -12,7 +16,7 @@ export function detectProjectRoot(cwd: string): string {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    const root = fs.realpathSync(path.resolve(output));
+    const root = fs.realpathSync.native(path.resolve(output));
     const relative = path.relative(root, current);
     return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
       ? current

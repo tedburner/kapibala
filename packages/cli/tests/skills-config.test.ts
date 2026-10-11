@@ -34,11 +34,11 @@ describe('CLI skill configuration and trust', () => {
       interactive: true,
       choose,
     });
-    expect(choose).toHaveBeenCalledWith(fs.realpathSync(cwd));
+    expect(choose).toHaveBeenCalledWith(fs.realpathSync.native(cwd));
     expect(result.status).toBe('trusted');
     const raw = JSON.parse(fs.readFileSync(path.join(homeDir, '.kapibala/settings.json'), 'utf8'));
     expect(raw.profiles).toEqual([]);
-    expect(raw.trustedProjects).toEqual([fs.realpathSync(cwd)]);
+    expect(raw.trustedProjects).toEqual([fs.realpathSync.native(cwd)]);
   });
 
   it('skips untrusted project skills noninteractively while retaining global roots', async () => {
@@ -69,7 +69,7 @@ describe('CLI skill configuration and trust', () => {
     const { homeDir, cwd } = workspace();
     settingsFile(homeDir, {
       profiles: [],
-      trustedProjects: [fs.realpathSync(cwd)],
+      trustedProjects: [fs.realpathSync.native(cwd)],
       skills: { enabled: false, disabled: ['a'] },
     });
     settingsFile(cwd, { skills: { enabled: true, disabled: ['b', 'a'] } });
@@ -91,7 +91,7 @@ describe('CLI skill configuration and trust', () => {
     const nested = path.join(cwd, 'sub');
     fs.mkdirSync(nested);
     const options = getCliSkillOptions(
-      { defaultModel: 'x', profiles: [], trustedProjects: [fs.realpathSync(nested)] },
+      { defaultModel: 'x', profiles: [], trustedProjects: [fs.realpathSync.native(nested)] },
       { homeDir, cwd: nested, projectRoot: cwd },
     );
     expect(
