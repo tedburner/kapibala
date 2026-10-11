@@ -51,7 +51,8 @@ export async function resolveProjectTrust(
     result = loadSettings({ cwd: options.cwd, homeDir: options.homeDir });
     trusted = true;
   }
-  const projectRoot = fs.realpathSync(
+  // native realpath 与 normalizeProjectPath 同一长路径身份；JS 实现在 8.3 短名下会与已存信任失配。
+  const projectRoot = fs.realpathSync.native(
     options.projectRoot ?? detectProjectRoot(options.cwd ?? process.cwd()),
   );
   if (

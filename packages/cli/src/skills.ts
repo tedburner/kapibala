@@ -22,7 +22,8 @@ export function getCliSkillOptions(
   settings: UserSettings,
   options: CliSkillOptions = {},
 ): SkillOptions {
-  const projectRoot = fs.realpathSync(
+  // native realpath 与 normalizeProjectPath 同一长路径身份；JS 实现在 8.3 短名下会把已信任项目误判为未信任。
+  const projectRoot = fs.realpathSync.native(
     options.projectRoot ?? detectProjectRoot(options.cwd ?? process.cwd()),
   );
   const homeDir = options.homeDir ?? os.homedir();
