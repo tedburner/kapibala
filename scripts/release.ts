@@ -103,18 +103,29 @@ export function validateReleaseNotes(markdown: string): void {
   }
 }
 
-/** 已发布的版本不可覆盖；重试只允许跳过内容一致且 latest 正确的包，不允许回退 latest。 */
+/** registry latest 允许的完整 semver：稳定版或带预发布/构建段的号（如新包引导期的占位版本）。 */
+const SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+
+/** 已发布的版本不可覆盖；重试只允许跳过内容一致且 latest 正确的包，不允许回退 latest。
+ * registry latest 为占位/预发布版本（如新包引导期的 `0.0.0-*`）时按 semver 视为低于同号稳定版，
+ * 不阻断发布 —— latest 会在正式版本发布时被 registry 正常前移。 */
 export function planPublication(
   expected: ExpectedPackage,
   metadata: RegistryMetadata,
 ): 'publish' | 'skip' {
   const latest = metadata['dist-tags']?.latest;
   if (latest) {
-    if (!/^\d+\.\d+\.\d+$/.test(latest)) throw new Error(`Unexpected latest version: ${latest}`);
+    const latestMatch = SEMVER_PATTERN.exec(latest);
+    if (!latestMatch) throw new Error(`Unexpected latest version: ${latest}`);
     const wanted = expected.version.split('.').map(Number);
-    const current = latest.split('.').map(Number);
+    const current = [Number(latestMatch[1]), Number(latestMatch[2]), Number(latestMatch[3])];
     const differentAt = wanted.findIndex((number, i) => number !== current[i]);
-    if (differentAt >= 0 && current[differentAt] > wanted[differentAt]) {
+    if (differentAt >= 0) {
+      if (current[differentAt] > wanted[differentAt]) {
+        throw new Error(`Registry latest ${latest} is newer than ${expected.version}`);
+      }
+    } else if (latestMatch[4]) {
       throw new Error(`Registry latest ${latest} is newer than ${expected.version}`);
     }
   }

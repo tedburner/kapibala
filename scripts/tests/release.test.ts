@@ -156,6 +156,21 @@ describe('release validation', () => {
     ).toThrow(/latest/i);
   });
 
+  it('publishes past bootstrap placeholder latest tags instead of aborting', () => {
+    expect(
+      planPublication(expected, { 'dist-tags': { latest: '0.0.0-placeholder.0' }, versions: {} }),
+    ).toBe('publish');
+    expect(
+      planPublication(expected, { 'dist-tags': { latest: '0.0.3-beta.1' }, versions: {} }),
+    ).toBe('publish');
+    expect(() =>
+      planPublication(expected, { 'dist-tags': { latest: '0.0.4-beta.1' }, versions: {} }),
+    ).toThrow(/newer/i);
+    expect(() =>
+      planPublication(expected, { 'dist-tags': { latest: 'garbage~1' }, versions: {} }),
+    ).toThrow(/Unexpected/i);
+  });
+
   it('converts release-note relative links to the pinned source tag', () => {
     expect(
       createReleaseNotes(
