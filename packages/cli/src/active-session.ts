@@ -1,6 +1,8 @@
 import type {
   AgentSession,
   ManagedSession,
+  PreparedTaskContext,
+  PreparedTaskResult,
   SessionEvent,
   SessionManager,
 } from '@kiturone/kapibala';
@@ -75,6 +77,18 @@ export class ActiveSessionController {
     options?: { signal?: AbortSignal },
   ): AsyncGenerator<SessionEvent> {
     yield* this.execute((signal) => this.session.runSkill(name, task, { signal }), options?.signal);
+  }
+
+  /** 受控任务准备沿用执行门与取消句柄，消费者提前结束时等待 Session 清理后才解锁。 */
+  async *runPreparedTask(
+    task: string,
+    prepare: (context: PreparedTaskContext) => Promise<PreparedTaskResult>,
+    options?: { signal?: AbortSignal },
+  ): AsyncGenerator<SessionEvent> {
+    yield* this.execute(
+      (signal) => this.session.runPreparedTask(task, prepare, { signal }),
+      options?.signal,
+    );
   }
 
   /** 手动摘要使用同一 busy、取消和退出等待规则，不生成用户消息。 */

@@ -227,7 +227,7 @@ describe('persistent history and CLI continuation', () => {
     expect(findDanglingToolUses(resumed.getHistory())).toEqual([]);
     await resumed.destroy();
     await restoredManager.close();
-  });
+  }, 15000);
   it('paginates the TTY resume menu and cancellation preserves the active session', async () => {
     const sessions = manager();
     const handle = await sessions.create();

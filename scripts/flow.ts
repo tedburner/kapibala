@@ -25,6 +25,7 @@ type BranchPrefix = (typeof BRANCH_PREFIXES)[number];
 const VERSION_MANIFEST_FILES = [
   'package.json',
   'packages/core/package.json',
+  'packages/mcp/package.json',
   'packages/cli/package.json',
 ] as const;
 const CLI_VERSION_FILE = 'packages/cli/src/version.ts';
@@ -103,7 +104,7 @@ export function parseTargetVersion(arg: string | undefined, current: string): st
 }
 
 /**
- * 三个 package.json 的版本字段推进。
+ * 四个 package.json 的版本字段推进。
  * 只对版本字段做定点文本替换，其余字节原样保留：整份 JSON.stringify 重序列化会把
  * biome 期望保持单行的短数组（如 "files": ["dist"]）展开成多行，让 lint 门禁在发布路径上失败。
  */

@@ -48,11 +48,27 @@ export type ContentBlock =
   | RedactedThinkingBlock
   | ProviderStateBlock;
 
+/**
+ * 宿主准备受控 Prompt 时的来源元数据（v1）。
+ * 用于追踪 Prompt 来源、版本与内容摘要；不保存认证值或重复保存原始参数，
+ * 不发送到 Provider wire，不从历史恢复授权。
+ */
+export interface PromptContentSource {
+  version: 1;
+  server: string;
+  name: string;
+  scope?: string;
+  contentDigest?: string;
+  configIdentity?: string;
+}
+
 export interface TextBlock {
   type: 'text';
   text: string;
   /** 宿主注入技能的可选来源；只追踪正文，缺失或恢复不授予权限。 */
   skillSource?: SkillContentSource;
+  /** 宿主注入受控 Prompt 的可选来源；只追踪正文与审计摘要，缺失或恢复不授予权限。 */
+  promptSource?: PromptContentSource;
   /** 源 wire Item 元数据；正文被改写后由调用方清除，不作为业务身份。 */
   protocolMeta?: ProtocolItemMetadata;
 }
@@ -70,6 +86,20 @@ export interface ToolUseBlock {
   protocolMeta?: ProtocolItemMetadata;
 }
 
+/**
+ * canonical 工具结果的可选 v1 执行事实元数据。
+ * 适配器按发送证据先记录 dispatchOutcome，执行器在发生本地钩子、校验、转换或审计失败时附加 hostError。
+ * 随 canonical 结果持久化；不直接上 Provider wire，不从历史中推断不存在的事实。
+ */
+export interface ToolResultExecution {
+  version: 1;
+  dispatchOutcome: 'not_sent' | 'succeeded' | 'failed' | 'unknown';
+  hostError?: {
+    phase: 'validation' | 'projection' | 'hook' | 'audit';
+    code: string;
+  };
+}
+
 export interface ToolResultBlock {
   type: 'tool_result';
   /** 完整技能正文的宿主来源；不发送到Provider wire，不从历史恢复授权。 */
@@ -83,6 +113,12 @@ export interface ToolResultBlock {
   errorCode?: string;
   /** 不代表自动重试，只描述调用方应如何处理该错误。 */
   retryPolicy?: 'never' | 'immediate' | 'backoff' | 'after_user_action';
+  /**
+   * 可选 v1 执行事实元数据。
+   * 适配器按发送证据先记录 dispatchOutcome，执行器在发生本地钩子、校验、转换或审计失败时附加 hostError。
+   * 随 canonical 结果持久化；不直接上 Provider wire，不从历史中推断不存在的事实。
+   */
+  execution?: ToolResultExecution;
 }
 
 export interface ThinkingBlock {
@@ -308,6 +344,14 @@ export type SessionEvent =
       usage?: Usage;
       ttftMs?: number;
       durationMs?: number;
+    }
+  | {
+      type: 'mcp_prompt_loaded';
+      server: string;
+      name: string;
+      persistence: 'disk' | 'memory';
+      promptSource: PromptContentSource;
+      runId?: string;
     }
   | { type: 'turn_finish'; turn: number; usage?: Usage; metrics: TurnMetrics }
   | { type: 'run_finish'; metrics: RunMetrics }

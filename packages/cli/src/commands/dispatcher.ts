@@ -33,6 +33,13 @@ export interface CommandContext {
   renderEvent?: (event: import('@kiturone/kapibala').SessionEvent) => void;
   /** 宿主按本轮渲染与活动会话取消规则消费技能运行流；只读命令不得调用。 */
   runSkill?: (name: string, task: string) => Promise<void>;
+  /** 宿主按受控准备与活动会话取消规则消费提示词任务流；只读命令不得调用。 */
+  runPreparedTask?: (
+    task: string,
+    prepare: (
+      context: import('@kiturone/kapibala').PreparedTaskContext,
+    ) => Promise<import('@kiturone/kapibala').PreparedTaskResult>,
+  ) => Promise<void>;
 }
 
 /** 命令处理器：args 已按定义切分（rawTail 命令为单元素）；抛错由 dispatcher 统一捕获输出。 */

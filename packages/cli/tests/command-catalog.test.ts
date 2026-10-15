@@ -87,4 +87,16 @@ describe('unified slash command contract', () => {
     );
     expect(console.log).toHaveBeenCalledTimes(2);
   });
+
+  it('declares delivered MCP commands and does not claim unreleased features (Resources, OAuth, full TUI)', () => {
+    const names = COMMAND_CATALOG.map((c) => c.name);
+    expect(names).toContain('mcp');
+    expect(names).toContain('prompts');
+    expect(names).toContain('prompt');
+    expect(names).toContain('plugins');
+    expect(names).not.toContain('resources');
+    expect(names).not.toContain('resource');
+    expect(names).not.toContain('oauth');
+    expect(names).not.toContain('tui');
+  });
 });

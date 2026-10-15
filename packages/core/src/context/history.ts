@@ -109,6 +109,10 @@ export function normalizeHistory(input: readonly CanonicalMessage[]): Normalized
         isError: true,
         errorCode: 'OUTCOME_UNKNOWN',
         retryPolicy: 'after_user_action',
+        execution: {
+          version: 1,
+          dispatchOutcome: 'unknown',
+        },
       };
       content.push(repair);
       result.repairs.push({

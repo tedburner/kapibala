@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Capability } from '../tools/index.js';
+import type { Capability, ToolExecutionIdentity } from '../tools/index.js';
 import type { ShellScope } from './permissions.js';
 
 /**
@@ -21,6 +21,10 @@ export interface ApprovalRequest {
   input: Record<string, unknown>;
   rootDir: string;
   shell?: ShellScope;
+  /**
+   * 本次调用的外部执行身份；深度哈希纳入审批缓存键，断连重连或目录变更后旧会话批准自动失效。
+   */
+  executionIdentity?: ToolExecutionIdentity;
   /** 宿主是否允许本次请求写入会话级允许缓存；deny_session 的缓存不受此限制。 */
   sessionAllowed: boolean;
 }
@@ -56,6 +60,7 @@ export class SessionApprovalCache {
           request.input,
           request.rootDir,
           request.shell ?? null,
+          request.executionIdentity ?? null,
         ]),
       )
       .digest('hex');

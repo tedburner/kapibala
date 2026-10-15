@@ -5,12 +5,15 @@
     "baseUrl": ".",
     "types": ["node"],
     "paths": {
-      "@kiturone/kapibala": ["./packages/core/src/index.ts"]
+      "@kiturone/kapibala": ["./packages/core/src/index.ts"],
+      "@kiturone/kapibala-mcp": ["./packages/mcp/src/index.ts"]
     }
   },
   "include": [
     "packages/core/src/**/*",
     "packages/core/tests/**/*",
+    "packages/mcp/src/**/*",
+    "packages/mcp/tests/**/*",
     "packages/cli/src/**/*",
     "packages/cli/tests/**/*",
     "examples/**/*",

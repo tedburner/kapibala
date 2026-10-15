@@ -73,6 +73,7 @@ describe('version bumping', () => {
     for (const file of [
       'package.json',
       'packages/core/package.json',
+      'packages/mcp/package.json',
       'packages/cli/package.json',
     ]) {
       fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
@@ -90,6 +91,7 @@ describe('version bumping', () => {
     for (const file of [
       'package.json',
       'packages/core/package.json',
+      'packages/mcp/package.json',
       'packages/cli/package.json',
     ]) {
       fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });

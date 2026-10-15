@@ -125,6 +125,19 @@ export function formatToolInvocation(name: string, input: Record<string, unknown
     return `Edit ${path} · 替换 ${[...target].length} 字符`;
   }
 
+  if (name.startsWith('mcp__')) {
+    const parts = name.split('__');
+    if (parts.length >= 3) {
+      const server = parts[1];
+      const toolName = parts.slice(2).join('__');
+      const entries = Object.entries(input)
+        .slice(0, 3)
+        .map(([key, value]) => `${sanitizeText(key)}=${formatGenericValue(key, value)}`);
+      const payload = entries.length > 0 ? ` ${entries.join(' ')}` : '';
+      return truncate(`[MCP: ${sanitizeText(server)}] ${sanitizeText(toolName)}${payload}`, 120);
+    }
+  }
+
   const entries = Object.entries(input)
     .slice(0, 3)
     .map(([key, value]) => `${sanitizeText(key)}=${formatGenericValue(key, value)}`);

@@ -93,8 +93,9 @@ jobs:
           echo "RELEASE_DIR=$release_dir" >> "$GITHUB_ENV"
           mkdir -p "$release_dir"
           pnpm -C packages/core pack --pack-destination "$release_dir"
+          pnpm -C packages/mcp pack --pack-destination "$release_dir"
           pnpm -C packages/cli pack --pack-destination "$release_dir"
-      - name: Publish Core then CLI using npm trusted publishing
+      - name: Publish Core, MCP, then CLI using npm trusted publishing
         run: node scripts/release.ts publish "$RELEASE_TAG" "$RELEASE_DIR"
       - name: Verify installation from the public registry
         run: node scripts/release.ts smoke "$RELEASE_TAG" "$RUNNER_TEMP/kapibala-registry-smoke"
@@ -104,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/release.ts notes "$RELEASE_TAG" "$RELEASE_DIR/release-notes.md"
-          assets=("$RELEASE_DIR/kiturone-kapibala-$RELEASE_VERSION.tgz" "$RELEASE_DIR/kiturone-kapibala-cli-$RELEASE_VERSION.tgz" "$RELEASE_DIR/SHA256SUMS.txt")
+          assets=("$RELEASE_DIR/kiturone-kapibala-$RELEASE_VERSION.tgz" "$RELEASE_DIR/kiturone-kapibala-mcp-$RELEASE_VERSION.tgz" "$RELEASE_DIR/kiturone-kapibala-cli-$RELEASE_VERSION.tgz" "$RELEASE_DIR/SHA256SUMS.txt")
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest

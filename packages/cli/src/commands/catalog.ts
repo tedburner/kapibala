@@ -50,8 +50,74 @@ const model = (args: string[]) =>
     ? undefined
     : '模型参数或子命令不正确';
 
+const mcp = (args: string[]) => {
+  if (args.length === 0) return undefined;
+  const sub = args[0];
+  if (['tools', 'reconnect', 'enable', 'disable'].includes(sub)) {
+    return args.length === 2 && args[1].trim() ? undefined : `用法: /mcp ${sub} <server>`;
+  }
+  return '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server>]';
+};
+
+/**
+ * 解析 /prompt 原始输入行，提取 `<server>/<name>` 与可选参数。
+ */
+export function parsePromptInvocation(
+  input: string,
+): { promptId: string; rawArgs?: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const spaceIdx = trimmed.search(/\s/);
+  const promptId = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
+  const rawArgs = spaceIdx === -1 ? undefined : trimmed.slice(spaceIdx).trim();
+
+  const slashIdx = promptId.indexOf('/');
+  if (slashIdx <= 0 || slashIdx === promptId.length - 1) {
+    return null;
+  }
+  return { promptId, rawArgs: rawArgs && rawArgs.length > 0 ? rawArgs : undefined };
+}
+
 /** 注册、帮助、别名、参数和状态门的唯一命令定义，不列出尚未交付的未来能力。 */
 export const COMMAND_CATALOG: readonly CommandDefinition[] = [
+  {
+    name: 'plugins',
+    aliases: ['plugin'],
+    usage: '/plugins [name]',
+    description: '查看当前会话已挂载的扩展插件与能力贡献清单',
+    group: 'diagnostic',
+    mutates: () => false,
+    validate: one,
+  },
+  {
+    name: 'mcp',
+    usage: '/mcp [tools <server> | reconnect <server> | enable <server> | disable <server>]',
+    description: '查看 MCP 服务状态、已注册工具或重连/开关当前会话服务',
+    group: 'diagnostic',
+    mutates: (args) => args.length > 0 && ['reconnect', 'enable', 'disable'].includes(args[0]),
+    validate: mcp,
+  },
+  {
+    name: 'prompts',
+    usage: '/prompts [query]',
+    description: '搜索 MCP 提示词模板与参数',
+    group: 'diagnostic',
+    rawTail: true,
+    mutates: () => false,
+    validate: one,
+  },
+  {
+    name: 'prompt',
+    usage: '/prompt <server/name> [arguments-json]',
+    description: '执行 MCP 提示词模板任务',
+    group: 'session',
+    rawTail: true,
+    mutates: () => true,
+    validate: (args) =>
+      args.length === 1 && parsePromptInvocation(args[0])
+        ? undefined
+        : '请输入合法提示词标识 <server>/<name> 及可选参数',
+  },
   {
     name: 'skills',
     usage: '/skills [query]',

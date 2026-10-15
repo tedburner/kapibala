@@ -130,6 +130,38 @@ export function validateProtocolContent(content: readonly ContentBlock[]): void 
         invalidState();
       }
     }
+    if (block.type === 'tool_result' && 'execution' in block && block.execution !== undefined) {
+      const ex = block.execution;
+      if (
+        !ex ||
+        typeof ex !== 'object' ||
+        ex.version !== 1 ||
+        !['not_sent', 'succeeded', 'failed', 'unknown'].includes(ex.dispatchOutcome) ||
+        (ex.hostError !== undefined &&
+          (!ex.hostError ||
+            typeof ex.hostError !== 'object' ||
+            !['validation', 'projection', 'hook', 'audit'].includes(ex.hostError.phase) ||
+            typeof ex.hostError.code !== 'string' ||
+            !ex.hostError.code))
+      )
+        invalidState();
+    }
+    if (block.type === 'text' && 'promptSource' in block && block.promptSource !== undefined) {
+      const ps = block.promptSource;
+      if (
+        !ps ||
+        typeof ps !== 'object' ||
+        ps.version !== 1 ||
+        typeof ps.server !== 'string' ||
+        !ps.server ||
+        typeof ps.name !== 'string' ||
+        !ps.name ||
+        (ps.scope !== undefined && typeof ps.scope !== 'string') ||
+        (ps.contentDigest !== undefined && typeof ps.contentDigest !== 'string') ||
+        (ps.configIdentity !== undefined && typeof ps.configIdentity !== 'string')
+      )
+        invalidState();
+    }
     validatedBlocks.set(block, true);
   }
   validatedContents.set(content as object, true);

@@ -1,0 +1,45 @@
+{
+  "name": "@kiturone/kapibala-mcp",
+  "version": "0.0.5",
+  "description": "Model Context Protocol (MCP) client ecosystem adapter for Kapibala",
+  "license": "MIT",
+  "author": "tedburner",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tedburner/kapibala.git",
+    "directory": "packages/mcp"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "@kiturone/kapibala": "workspace:*",
+    "@modelcontextprotocol/client": "2.3.1"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.3"
+  }
+}

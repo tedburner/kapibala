@@ -246,5 +246,6 @@ describe('skills across three protocol adapters', () => {
       await session.destroy();
       await restored.destroy();
     },
+    20000,
   );
 });

@@ -4,7 +4,7 @@ import {
   visibleTools,
 } from '../../capabilities/security/permissions.js';
 import { toToolDefinition } from '../../capabilities/tools/index.js';
-import type { ToolRegistry } from '../../capabilities/tools/registry.js';
+import type { ToolRegistry, ToolRegistrySnapshot } from '../../capabilities/tools/registry.js';
 import {
   AbortError,
   ContextOverflowError,
@@ -49,7 +49,7 @@ export interface AgentLoopOptions {
   onToolBatchUpdate?: (messages: readonly CanonicalMessage[]) => void;
   provider: ModelProvider;
   executor: ToolExecutor;
-  tools: ToolRegistry;
+  tools: ToolRegistry | ToolRegistrySnapshot;
   hooks: HookRegistry;
   systemPrompt?: string;
   /** 单次 run 的最大 turn 数，耗尽时以 error 事件收尾；缺省 20。 */
@@ -80,7 +80,7 @@ export class AgentLoop {
   private readonly onToolBatchUpdate?: AgentLoopOptions['onToolBatchUpdate'];
   private readonly provider: ModelProvider;
   private readonly executor: ToolExecutor;
-  private readonly tools: ToolRegistry;
+  private readonly tools: ToolRegistry | ToolRegistrySnapshot;
   private readonly hooks: HookRegistry;
   private readonly systemPrompt?: string;
   private readonly maxSteps: number;
@@ -130,6 +130,8 @@ export class AgentLoop {
     // while 条件自然退出 = 每一轮都以工具调用收尾直到步数耗尽，需要显式告知消费方。
     let completed = false;
     let overflowRetried = false;
+    const toolSnapshot: ToolRegistrySnapshot =
+      'snapshot' in this.tools ? this.tools.snapshot() : this.tools;
 
     while (step < this.maxSteps) {
       step++;
@@ -144,7 +146,7 @@ export class AgentLoop {
       let request: ModelRequest = {
         systemPrompt: this.systemPrompt,
         messages: structuredClone(this.projectHistory?.(history) ?? history),
-        tools: visibleTools(this.tools.list(), this.getMode(), this.permissionRules).map(
+        tools: visibleTools(toolSnapshot.list(), this.getMode(), this.permissionRules).map(
           toToolDefinition,
         ),
         signal: this.signal,
@@ -155,7 +157,33 @@ export class AgentLoop {
       const beforeModelHooks = this.hooks.get('model:before');
       const hookCtx = { signal: this.signal };
       for (const hook of beforeModelHooks) {
-        request = await hook(hookCtx, request);
+        const modified = await hook(hookCtx, request);
+        if (modified) {
+          request = modified;
+        }
+      }
+      if (request.tools) {
+        for (const t of request.tools) {
+          const original = toolSnapshot.get(t.name);
+          if (!original) {
+            throw new ModelError(`Hook injected tool '${t.name}' not present in snapshot`, {
+              stage: 'request',
+              retryable: false,
+            });
+          }
+          if (
+            t.description !== original.description ||
+            JSON.stringify(t.parameters) !== JSON.stringify(original.parameters)
+          ) {
+            throw new ModelError(
+              `Hook mutated tool definition for '${t.name}' (description or parameters drifted from snapshot)`,
+              {
+                stage: 'request',
+                retryable: false,
+              },
+            );
+          }
+        }
       }
       if (this.prepareRequest) request = yield* this.prepareRequest(request, history);
 
