@@ -11,8 +11,8 @@ import {
   type PermissionRule,
   type SessionMode,
 } from '../../capabilities/security/permissions.js';
-import type { Tool, ToolContext } from '../../capabilities/tools/index.js';
-import type { ToolRegistry } from '../../capabilities/tools/registry.js';
+import type { Tool, ToolContext, ToolExecutionIdentity } from '../../capabilities/tools/index.js';
+import type { ToolRegistry, ToolRegistrySnapshot } from '../../capabilities/tools/registry.js';
 import { KapibalaError } from '../../errors/index.js';
 import type { HookRegistry } from '../../extensibility/hooks/registry.js';
 import {
@@ -20,7 +20,7 @@ import {
   commandAuditSummary,
   createLogId,
 } from '../../extensibility/logging/index.js';
-import type { ToolResultBlock, ToolUseBlock } from '../../types/index.js';
+import type { ToolResultBlock, ToolResultExecution, ToolUseBlock } from '../../types/index.js';
 
 /** ToolExecutor 的构造项；审计写入需要 eventLogger 与 sessionId 同时提供，否则不产生审计。 */
 /** 宿主运行级硬限制；优先于模式、审批及缓存，文案和字段不得携带凭据。 */
@@ -40,7 +40,7 @@ export interface ExecutorOptions {
     input: Record<string, unknown>,
     result: ToolResultBlock,
   ) => void | Promise<void>;
-  tools: ToolRegistry;
+  tools: ToolRegistry | ToolRegistrySnapshot;
   hooks: HookRegistry;
   /** 工具执行的绝对根目录；路径解析与审批均以此为基准。 */
   rootDir: string;
@@ -71,7 +71,7 @@ const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
 export class ToolExecutor {
   private readonly hardDenial?: ExecutorOptions['hardDenial'];
   private readonly onToolResult?: ExecutorOptions['onToolResult'];
-  private readonly tools: ToolRegistry;
+  private readonly tools: ToolRegistry | ToolRegistrySnapshot;
   private readonly hooks: HookRegistry;
   private readonly rootDir: string;
   private readonly signal?: AbortSignal;
@@ -159,6 +159,7 @@ export class ToolExecutor {
       message: string,
       errorCode: string,
       retryPolicy: ToolResultBlock['retryPolicy'] = 'never',
+      execution?: ToolResultExecution,
     ): ToolResultBlock => ({
       type: 'tool_result',
       toolUseId: call.id,
@@ -167,6 +168,10 @@ export class ToolExecutor {
       errorCode,
       retryPolicy,
       durationMs: Math.max(0, Date.now() - startedAt),
+      execution: execution ?? {
+        version: 1,
+        dispatchOutcome: 'not_sent',
+      },
     });
     const audit = async (event: string, fields: Record<string, unknown> = {}): Promise<void> => {
       if (!this.eventLogger || !this.sessionId) return;
@@ -187,6 +192,11 @@ export class ToolExecutor {
         'Audit unavailable; tool was not started',
         'AUDIT_UNAVAILABLE',
         'after_user_action',
+        {
+          version: 1,
+          dispatchOutcome: 'not_sent',
+          hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
+        },
       );
     }
 
@@ -199,6 +209,11 @@ export class ToolExecutor {
           'Audit unavailable; tool was not started',
           'AUDIT_UNAVAILABLE',
           'after_user_action',
+          {
+            version: 1,
+            dispatchOutcome: 'not_sent',
+            hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
+          },
         );
       }
       return failure(
@@ -223,6 +238,10 @@ export class ToolExecutor {
             content: decision.result,
             isError: decision.isError ?? false,
             durationMs: Math.max(0, Date.now() - startedAt),
+            execution: {
+              version: 1,
+              dispatchOutcome: 'not_sent',
+            },
           };
         }
       }
@@ -233,10 +252,28 @@ export class ToolExecutor {
       } catch {
         /* Execution has not begun. */
       }
-      return failure('Tool preparation failed', 'HOOK_ERROR');
+      return failure('Tool preparation failed', 'HOOK_ERROR', 'never', {
+        version: 1,
+        dispatchOutcome: 'not_sent',
+        hostError: { phase: 'hook', code: 'HOOK_ERROR' },
+      });
     }
 
-    let tool: ReturnType<ToolRegistry['resolve']>;
+    /** 深度冻结对象及其嵌套属性，防御执行期间外部或插件篡改。 */
+    function deepFreeze<T>(obj: T): T {
+      if (obj === null || typeof obj !== 'object' || Object.isFrozen(obj)) {
+        return obj;
+      }
+      Object.freeze(obj);
+      for (const key of Object.keys(obj as Record<string, unknown>)) {
+        deepFreeze((obj as Record<string, unknown>)[key]);
+      }
+      return obj;
+    }
+
+    const finalInput: Record<string, unknown> = deepFreeze(structuredClone(currentInput));
+
+    let tool: Tool;
     try {
       tool = this.tools.resolve(call.name);
     } catch (error: unknown) {
@@ -250,12 +287,53 @@ export class ToolExecutor {
       return failure(
         known?.safeMessage ?? 'Requested tool is unavailable',
         known?.code ?? 'TOOL_NOT_FOUND',
+        'never',
+        {
+          version: 1,
+          dispatchOutcome: 'not_sent',
+        },
       );
     }
+
+    try {
+      const validation = tool.validateInput?.(finalInput);
+      if (validation && !validation.valid) {
+        try {
+          await audit('tool.decided', { decision: 'deny', decisionSource: 'validation' });
+          await audit('tool.finished', { status: 'failed', errorCode: 'INVALID_INPUT' });
+        } catch {
+          /* Execution has not begun. */
+        }
+        return failure(
+          validation.message || 'Tool input validation failed',
+          'INVALID_INPUT',
+          'never',
+          {
+            version: 1,
+            dispatchOutcome: 'not_sent',
+            hostError: { phase: 'validation', code: 'INVALID_INPUT' },
+          },
+        );
+      }
+    } catch (err: unknown) {
+      try {
+        await audit('tool.decided', { decision: 'deny', decisionSource: 'validation' });
+        await audit('tool.finished', { status: 'failed', errorCode: 'INVALID_INPUT' });
+      } catch {
+        /* Execution has not begun. */
+      }
+      const msg = err instanceof Error ? err.message : 'Tool input validation error';
+      return failure(msg || 'Tool input validation error', 'INVALID_INPUT', 'never', {
+        version: 1,
+        dispatchOutcome: 'not_sent',
+        hostError: { phase: 'validation', code: 'INVALID_INPUT' },
+      });
+    }
+
     try {
       return await this.executeResolved(
         call,
-        currentInput,
+        finalInput,
         tool,
         startedAt,
         audit,
@@ -273,20 +351,25 @@ export class ToolExecutor {
         'Tool outcome is unknown after an executor failure',
         'OUTCOME_UNKNOWN',
         'after_user_action',
+        {
+          version: 1,
+          dispatchOutcome: 'unknown',
+        },
       );
     }
   }
 
   private async executeResolved(
     call: ToolUseBlock,
-    currentInput: Record<string, unknown>,
-    tool: ReturnType<ToolRegistry['resolve']>,
+    finalInput: Record<string, unknown>,
+    tool: Tool,
     startedAt: number,
     audit: (event: string, fields?: Record<string, unknown>) => Promise<void>,
     failure: (
       content: string,
       errorCode: string,
       retryPolicy?: ToolResultBlock['retryPolicy'],
+      execution?: ToolResultExecution,
     ) => ToolResultBlock,
     hookCtx: { signal?: AbortSignal; logger?: (msg: string) => void },
     onProgress?: (event: {
@@ -298,7 +381,7 @@ export class ToolExecutor {
   ): Promise<ToolResultBlock> {
     let shell: ReturnType<NonNullable<typeof tool.approvalScope>> | undefined;
     try {
-      shell = tool.approvalScope?.(currentInput, this.rootDir);
+      shell = tool.approvalScope?.(finalInput, this.rootDir);
     } catch {
       try {
         await audit('tool.decided', { decision: 'deny', decisionSource: 'invalid_target' });
@@ -308,23 +391,37 @@ export class ToolExecutor {
       }
       return failure('Invalid tool execution target', 'INVALID_TARGET');
     }
+    let executionIdentity: ToolExecutionIdentity | undefined;
+    try {
+      executionIdentity = tool.executionIdentity?.(finalInput, this.rootDir);
+    } catch {
+      try {
+        await audit('tool.decided', { decision: 'deny', decisionSource: 'invalid_identity' });
+        await audit('tool.finished', { status: 'failed', errorCode: 'INVALID_TARGET' });
+      } catch {
+        /* Execution has not begun. */
+      }
+      return failure('Invalid tool execution identity', 'INVALID_TARGET');
+    }
     let auditFields: Record<string, unknown> = {};
     for (let attempt = 0; attempt < 2; attempt++) {
       const request: ApprovalRequest = {
         toolName: call.name,
         capabilities: tool.metadata?.permissions ?? [],
-        input: currentInput,
+        input: finalInput,
         rootDir: this.rootDir,
         ...(shell ? { shell } : {}),
+        ...(executionIdentity ? { executionIdentity } : {}),
         // 解释器内建查询与内容已绑定摘要的工作区直引脚本可确认不受外部脚本变更影响，
         // 允许会话级批准；其余 shell 命令仅允许单次批准。
+        // 非 shell 工具（含深度绑定 executionIdentity 的外部工具）允许会话级批准。
         sessionAllowed:
           !shell ||
           /^(?:pwd|get-location)$/i.test(shell.command.trim()) ||
           shell.scriptDigest !== undefined,
       };
       const repeatKey = createHash('sha256')
-        .update(stableJsonStringify([call.name, currentInput]))
+        .update(stableJsonStringify([call.name, finalInput]))
         .digest('hex');
       if (this.neverFailures.has(repeatKey)) {
         try {
@@ -335,6 +432,11 @@ export class ToolExecutor {
             'Audit unavailable; tool was not started',
             'AUDIT_UNAVAILABLE',
             'after_user_action',
+            {
+              version: 1,
+              dispatchOutcome: 'not_sent',
+              hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
+            },
           );
         }
         return failure(
@@ -342,7 +444,7 @@ export class ToolExecutor {
           'REPEAT_BLOCKED',
         );
       }
-      const hardDenied = this.hardDenial?.(tool, currentInput);
+      const hardDenied = this.hardDenial?.(tool, finalInput);
       const cached = this.approvalCache.get(request);
       const decision = this.policy.decide({
         hardDenied: hardDenied !== undefined,
@@ -382,7 +484,14 @@ export class ToolExecutor {
             executionFingerprint: shell.executionFingerprint,
             ...commandAuditSummary(shell.command),
           }
-        : {};
+        : executionIdentity
+          ? {
+              serverIdentity: executionIdentity.serverIdentity,
+              connectionGeneration: executionIdentity.connectionGeneration,
+              catalogEpoch: executionIdentity.catalogEpoch,
+              toolDigest: executionIdentity.toolDigest,
+            }
+          : {};
       try {
         await audit('tool.decided', {
           decision: permitted ? 'allow' : 'deny',
@@ -396,6 +505,11 @@ export class ToolExecutor {
           'Audit unavailable; tool was not started',
           'AUDIT_UNAVAILABLE',
           'after_user_action',
+          {
+            version: 1,
+            dispatchOutcome: 'not_sent',
+            hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
+          },
         );
       }
       if (!permitted || this.signal?.aborted) {
@@ -403,7 +517,11 @@ export class ToolExecutor {
         try {
           await audit('tool.finished', { status: 'denied', errorCode: code });
         } catch {
-          return failure('Audit result unavailable', 'AUDIT_UNAVAILABLE', 'after_user_action');
+          return failure('Audit result unavailable', 'AUDIT_UNAVAILABLE', 'after_user_action', {
+            version: 1,
+            dispatchOutcome: 'not_sent',
+            hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
+          });
         }
         return failure(
           this.signal?.aborted
@@ -417,7 +535,7 @@ export class ToolExecutor {
       }
       if (shell) {
         try {
-          const next = tool.approvalScope?.(currentInput, this.rootDir);
+          const next = tool.approvalScope?.(finalInput, this.rootDir);
           if (next?.executionFingerprint !== shell.executionFingerprint) {
             if (attempt === 0 && next) {
               try {
@@ -427,6 +545,11 @@ export class ToolExecutor {
                   'Audit unavailable; tool was not started',
                   'AUDIT_UNAVAILABLE',
                   'after_user_action',
+                  {
+                    version: 1,
+                    dispatchOutcome: 'not_sent',
+                    hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
+                  },
                 );
               }
               shell = next;
@@ -447,6 +570,43 @@ export class ToolExecutor {
           );
         }
       }
+      if (executionIdentity) {
+        try {
+          const nextIdentity = tool.executionIdentity?.(finalInput, this.rootDir);
+          if (
+            !nextIdentity ||
+            nextIdentity.serverIdentity !== executionIdentity.serverIdentity ||
+            nextIdentity.connectionGeneration !== executionIdentity.connectionGeneration ||
+            nextIdentity.catalogEpoch !== executionIdentity.catalogEpoch ||
+            nextIdentity.toolDigest !== executionIdentity.toolDigest
+          ) {
+            await audit('tool.finished', {
+              status: 'identity_changed',
+              errorCode: 'MCP_TOOL_CHANGED',
+            });
+            return failure(
+              'Tool execution identity changed after approval',
+              'MCP_TOOL_CHANGED',
+              'after_user_action',
+              {
+                version: 1,
+                dispatchOutcome: 'not_sent',
+                hostError: { phase: 'validation', code: 'MCP_TOOL_CHANGED' },
+              },
+            );
+          }
+        } catch {
+          return failure(
+            'Tool execution identity check failed after approval',
+            'MCP_TOOL_CHANGED',
+            'after_user_action',
+            {
+              version: 1,
+              dispatchOutcome: 'not_sent',
+            },
+          );
+        }
+      }
       break;
     }
     try {
@@ -456,6 +616,11 @@ export class ToolExecutor {
         'Audit unavailable; tool was not started',
         'AUDIT_UNAVAILABLE',
         'after_user_action',
+        {
+          version: 1,
+          dispatchOutcome: 'not_sent',
+          hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
+        },
       );
     }
 
@@ -463,6 +628,7 @@ export class ToolExecutor {
     let isError = false;
     let errorCode: string | undefined;
     let retryPolicy: ToolResultBlock['retryPolicy'];
+    let execution: ToolResultExecution | undefined;
     try {
       const executionController = new AbortController();
       const abortFromSession = () => executionController.abort();
@@ -486,23 +652,61 @@ export class ToolExecutor {
 
       try {
         const rawResult = tool.metadata?.managesTimeout
-          ? await tool.execute(currentInput, toolCtx)
+          ? await tool.execute(finalInput, toolCtx)
           : await this.withTimeout(
-              tool.execute(currentInput, toolCtx),
+              tool.execute(finalInput, toolCtx),
               call.name,
               executionController,
             );
-        outputStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult, null, 2);
-        if (
-          call.name === 'run_command' &&
-          typeof rawResult === 'object' &&
-          rawResult !== null &&
-          'exitCode' in rawResult &&
-          rawResult.exitCode !== 0
-        ) {
-          isError = true;
-          errorCode = 'COMMAND_EXIT_NONZERO';
-          retryPolicy = 'never';
+        if (typeof tool.toExecutionResult === 'function') {
+          try {
+            const converted = tool.toExecutionResult(rawResult);
+            outputStr = converted.content;
+            isError = converted.isError ?? false;
+            errorCode = converted.errorCode;
+            retryPolicy = converted.retryPolicy;
+            execution = converted.execution ?? {
+              version: 1,
+              dispatchOutcome: isError ? 'failed' : 'succeeded',
+            };
+          } catch (convErr: unknown) {
+            isError = true;
+            errorCode = 'MCP_RESULT_INVALID';
+            retryPolicy = 'after_user_action';
+            outputStr =
+              convErr instanceof Error ? convErr.message : 'Tool result projection failed';
+            execution = {
+              version: 1,
+              dispatchOutcome: 'succeeded',
+              hostError: {
+                phase: 'projection',
+                code: 'MCP_RESULT_INVALID',
+              },
+            };
+          }
+        } else {
+          outputStr =
+            typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult, null, 2);
+          if (
+            call.name === 'run_command' &&
+            typeof rawResult === 'object' &&
+            rawResult !== null &&
+            'exitCode' in rawResult &&
+            rawResult.exitCode !== 0
+          ) {
+            isError = true;
+            errorCode = 'COMMAND_EXIT_NONZERO';
+            retryPolicy = 'never';
+            execution = {
+              version: 1,
+              dispatchOutcome: 'failed',
+            };
+          } else {
+            execution = {
+              version: 1,
+              dispatchOutcome: 'succeeded',
+            };
+          }
         }
       } finally {
         this.signal?.removeEventListener('abort', abortFromSession);
@@ -513,6 +717,15 @@ export class ToolExecutor {
       outputStr = known?.safeMessage ?? 'Tool execution failed';
       errorCode = known?.code ?? 'TOOL_FAILED';
       retryPolicy = known?.retryPolicy ?? 'never';
+      const outcome =
+        known?.dispatchOutcome ??
+        (errorCode === 'OUTCOME_UNKNOWN' || (known && known.retryPolicy === 'after_user_action')
+          ? 'unknown'
+          : 'failed');
+      execution = {
+        version: 1,
+        dispatchOutcome: outcome,
+      };
     }
 
     const resultBlock: ToolResultBlock = {
@@ -521,6 +734,7 @@ export class ToolExecutor {
       content: outputStr,
       isError,
       ...(errorCode ? { errorCode, retryPolicy } : {}),
+      execution,
     };
     if (resultBlock.isError && resultBlock.errorCode) {
       resultBlock.content = JSON.stringify({
@@ -535,7 +749,7 @@ export class ToolExecutor {
       for (const hook of this.hooks.get('tool:after')) {
         await hook(
           hookCtx,
-          { id: call.id, name: call.name, input: currentInput },
+          { id: call.id, name: call.name, input: finalInput },
           { output: outputStr, isError },
         );
       }
@@ -548,13 +762,21 @@ export class ToolExecutor {
       resultBlock.isError = true;
       resultBlock.errorCode = 'HOOK_ERROR';
       resultBlock.retryPolicy = 'after_user_action';
+      resultBlock.execution = {
+        version: 1,
+        dispatchOutcome: resultBlock.execution?.dispatchOutcome ?? 'failed',
+        hostError: {
+          phase: 'hook',
+          code: 'HOOK_ERROR',
+        },
+      };
     }
 
     resultBlock.durationMs = Math.max(0, Date.now() - startedAt);
     if (resultBlock.isError && resultBlock.retryPolicy === 'never') {
       this.neverFailures.add(
         createHash('sha256')
-          .update(stableJsonStringify([call.name, currentInput]))
+          .update(stableJsonStringify([call.name, finalInput]))
           .digest('hex'),
       );
     }
@@ -566,14 +788,26 @@ export class ToolExecutor {
         durationMs: resultBlock.durationMs,
       });
     } catch {
-      return failure(
-        'Tool outcome is unknown because the audit result could not be written',
-        'OUTCOME_UNKNOWN',
-        'after_user_action',
-      );
+      resultBlock.isError = true;
+      resultBlock.errorCode = 'OUTCOME_UNKNOWN';
+      resultBlock.retryPolicy = 'after_user_action';
+      resultBlock.content = JSON.stringify({
+        code: 'OUTCOME_UNKNOWN',
+        retryPolicy: 'after_user_action',
+        message: 'Tool outcome is unknown because the audit result could not be written',
+      });
+      resultBlock.execution = {
+        version: 1,
+        dispatchOutcome: resultBlock.execution?.dispatchOutcome ?? 'succeeded',
+        hostError: {
+          phase: 'audit',
+          code: 'AUDIT_UNAVAILABLE',
+        },
+      };
+      return resultBlock;
     }
 
-    await this.onToolResult?.(tool, currentInput, resultBlock);
+    await this.onToolResult?.(tool, finalInput, resultBlock);
     return resultBlock;
   }
 

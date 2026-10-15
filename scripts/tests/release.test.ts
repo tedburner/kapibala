@@ -1,22 +1,35 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type Manifest,
   createReleaseNotes,
   isPropagationLag,
   nextVersion,
   planPublication,
   readRegistry,
+  readWorkspaceVersion,
   validateNpmVersion,
   validateRelease,
   validateReleaseNotes,
 } from '../release.js';
 
-const manifests = [
+const manifests: Manifest[] = [
   { name: 'kapibala-monorepo', version: '0.0.4' },
   { name: '@kiturone/kapibala', version: '0.0.4' },
   {
-    name: '@kiturone/kapibala-cli',
+    name: '@kiturone/kapibala-mcp',
     version: '0.0.4',
     dependencies: { '@kiturone/kapibala': 'workspace:*' },
+  },
+  {
+    name: '@kiturone/kapibala-cli',
+    version: '0.0.4',
+    dependencies: {
+      '@kiturone/kapibala': 'workspace:*',
+      '@kiturone/kapibala-mcp': 'workspace:*',
+    },
   },
 ];
 const expected = { name: '@kiturone/kapibala', version: '0.0.4', integrity: 'sha512-test' };
@@ -51,10 +64,32 @@ describe('release validation', () => {
     expect(() =>
       validateRelease(
         'v0.0.4',
-        [manifests[0], { ...manifests[1], version: '0.0.3' }, manifests[2]],
+        [manifests[0], { ...manifests[1], version: '0.0.3' }, manifests[2], manifests[3]],
         '0.0.4',
       ),
     ).toThrow(/version/i);
+    expect(() =>
+      validateRelease(
+        'v0.0.4',
+        [manifests[0], manifests[1], { ...manifests[2], version: '0.0.3' }, manifests[3]],
+        '0.0.4',
+      ),
+    ).toThrow(/version/i);
+    expect(() =>
+      validateRelease('v0.0.4', [manifests[0], manifests[1], manifests[3]], '0.0.4'),
+    ).toThrow(/match/i);
+    expect(() =>
+      validateRelease(
+        'v0.0.4',
+        [
+          manifests[0],
+          manifests[1],
+          { name: '@kiturone/wrong-pkg', version: '0.0.4' },
+          manifests[3],
+        ],
+        '0.0.4',
+      ),
+    ).toThrow(/Unexpected release package names/i);
   });
 
   it('rejects malformed, prerelease and non-decimal-position tags', () => {
@@ -130,6 +165,44 @@ describe('release validation', () => {
     ).toBe(
       '[Migration](https://github.com/tedburner/kapibala/blob/v0.0.4/docs/migration/v0.0.4.md) [Web](https://example.com)',
     );
+  });
+
+  it('verifies all 5 canonical version sources and fails when any is missing or inconsistent', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kapibala-release-'));
+    try {
+      const manifests = [
+        'package.json',
+        'packages/core/package.json',
+        'packages/mcp/package.json',
+        'packages/cli/package.json',
+      ];
+      for (const file of manifests) {
+        fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+        fs.writeFileSync(path.join(root, file), '{"version":"0.0.6"}\n');
+      }
+      fs.mkdirSync(path.join(root, 'packages/cli/src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, 'packages/cli/src/version.ts'),
+        "export const CLI_VERSION = '0.0.6';\n",
+      );
+
+      // 5 处全一致时成功返回
+      expect(readWorkspaceVersion(root)).toBe('0.0.6');
+
+      // 改变任意一处（例如 packages/mcp/package.json），必须报错
+      fs.writeFileSync(path.join(root, 'packages/mcp/package.json'), '{"version":"0.0.5"}\n');
+      expect(() => readWorkspaceVersion(root)).toThrow(/inconsistent/i);
+
+      // 恢复后改变 CLI_VERSION，必须报错
+      fs.writeFileSync(path.join(root, 'packages/mcp/package.json'), '{"version":"0.0.6"}\n');
+      fs.writeFileSync(
+        path.join(root, 'packages/cli/src/version.ts'),
+        "export const CLI_VERSION = '0.0.5';\n",
+      );
+      expect(() => readWorkspaceVersion(root)).toThrow(/inconsistent/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -103,7 +103,22 @@ describe('AgentSession 消息级落盘', () => {
     const sessionEnd = vi.fn();
     session.hooks.on('session:end', sessionEnd);
 
-    await session.use({ name: 'fixture-plugin', setup: vi.fn(), teardown });
+    const pluginInstance = {
+      name: 'fixture-plugin',
+      version: '1.0.0',
+      description: 'Test plugin',
+      contributes: {
+        commands: [{ name: 'test-cmd', description: 'desc' }],
+        skillsRoots: ['/skills'],
+      },
+      setup: vi.fn(),
+      teardown,
+    };
+    await session.use(pluginInstance);
+    expect(session.getPlugins()).toHaveLength(1);
+    expect(session.getPlugins()[0].name).toBe('fixture-plugin');
+    expect(session.getPlugins()[0].contributes?.commands?.[0].name).toBe('test-cmd');
+
     await session.destroy();
     await session.destroy();
 

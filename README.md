@@ -44,6 +44,7 @@
 - 🛡️ **安全沙箱与能力隔离 (PathSandbox)**：工具能力分层（`fs:read`、`fs:write`、`exec`、`net:outbound` 等）；沙箱强制校验工作区物理路径，防御 `../` 越界与 Symlink 穿透。内置工具：`read_file`、`write_file`、`edit_file`、`glob`、`grep`。
 - 💾 **独立历史会话与可恢复投影（v0.0.3）**：受管 CLI 每会话一份版本化 JSONL，user / assistant / tool_result 消息级串行落盘，列表使用可重建缓存。尾部残片隔离后修复，中部损坏或未知版本明确拒绝；缺失工具结果以 OUTCOME_UNKNOWN 修复，不重放工具。剪裁与摘要保留原文，检查点先 fsync 提交再激活；普通追加不宣称跨消息原子事务。
 - 🔀 **原生多协议与场景模型路由（v0.0.4）**：Anthropic Messages、OpenAI Responses 与 Chat Completions 兼容层共享同一 AgentSession、工具事务与 canonical 历史；Profile 显式选择协议，错误不自动降级。`planning` / `execution` / `fast` 角色在整个 run 固定绑定，输出预算可覆盖，思考内容以结构化事件透出。
+- 🔌 **受控 MCP 生态接入（v0.0.6）**：独立公共包 `@kiturone/kapibala-mcp` 以 Stdio 与 Streamable HTTP 双传输接入同一 `AgentSession`；服务启动授权与工具调用授权分离，非 TTY 环境拒绝未经审批的进程启动；工具统一映射为 `mcp__<server>__<tool>` 并按来源原子上下线，整个 run 使用同一份不可变声明；HTTP 传输对私网与保留网段硬拦截并二次复核 socket 远端地址；结果与 Prompt 来源以可选 `mcpSource` / `promptSource` v1 消息级落盘，发往模型时剥离，严格保持工具事务闭合。Core 运行时第三方依赖仍为 0。
 - 📊 **细粒度步骤日志与关键性能指标**：每一执行阶段派发结构化日志事件（请求发起、首 Token 到达、流式结束、工具调用起止、单轮结束）。默认底栏展示 Git 分支、总耗时、上下文占用、本轮输入/输出 Token 与工具耗时；`--debug` 追加 **TTFT** 与模型耗时。
 - 🧾 **可信执行（v0.0.2）**：默认写入脱敏的结构化运行日志与逐工具审批审计，记录人工批准、规则或模式自动批准、拒绝及操作结果；`--debug` 仅增加开发诊断。`Approval`、`Plan`、`Auto`、`FullAccess` 共享执行前授权门，`FullAccess` 只能在本次会话显式选择，且仍受显式规则和路径约束。
 - 💻 **跨平台命令工具（v0.0.2）**：`run_command` 默认注册，每条命令仍需按当前模式审批或裁决；解释器发现只用 `PATH` 与运行时探针，Windows 自动按 native Bash → WSL → PowerShell 兜底（不写死安装路径），其他平台使用 Bash，也可用 `--shell` 指定解释器或其全路径、用 `--disable-shell` 关闭。命令进程以当前系统用户权限运行，不受文件工具的 PathSandbox 限制。
@@ -55,7 +56,7 @@
 
 ## 🚀 极速测试与启动 (One-Minute Quickstart)
 
-需要 Node.js 20 或更高版本。**v0.0.5 已发布**（技能体系与过程输出折叠），技能发现、`/skills` / `/skill` 与过程详情入口见 [技能使用和宿主边界](docs/skills.md)，兼容边界见 [迁移说明](docs/migration/v0.0.5.md)，证据见 [验收记录](docs/verification/v0.0.5.md)。发布内容见 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/v0.0.5)；调试当前源码请使用 `pnpm dev`。
+需要 Node.js 20 或更高版本。**v0.0.6 已发布**（受控 MCP 生态接入与独立扩展包 `@kiturone/kapibala-mcp`），配置、授权与命令入口见 [MCP 使用指南](docs/mcp.md)，兼容边界见 [迁移说明](docs/migration/v0.0.6.md)，证据见 [验收记录](docs/verification/v0.0.6.md)。上一版的技能体系与过程输出折叠见 [技能使用和宿主边界](docs/skills.md)。发布内容见 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/v0.0.6)；调试当前源码请使用 `pnpm dev`。
 
 ### 从 npm 安装使用
 
@@ -69,9 +70,12 @@ kpbl
 
 # 在自己的 Node.js / TypeScript 项目中使用 Core SDK
 npm install @kiturone/kapibala
+
+# 需要 MCP 生态扩展时加装独立扩展包（依赖 Core，CLI 已内置挂载）
+npm install @kiturone/kapibala @kiturone/kapibala-mcp
 ```
 
-包页面：[CLI](https://www.npmjs.com/package/@kiturone/kapibala-cli) · [Core SDK](https://www.npmjs.com/package/@kiturone/kapibala)。
+包页面：[CLI](https://www.npmjs.com/package/@kiturone/kapibala-cli) · [Core SDK](https://www.npmjs.com/package/@kiturone/kapibala) · [MCP 扩展包](https://www.npmjs.com/package/@kiturone/kapibala-mcp)。
 
 后续版本支持推送标签后由 GitHub Actions 自动校验、打包、发布 npm 并创建 GitHub Release；首次配置与失败重试见 [自动发布说明](docs/releases/publishing.md)。
 
@@ -121,6 +125,7 @@ pnpm build && node packages/cli/dist/bin.js
   --permission <mode>    本次会话权限: approval|plan|auto|full-access
   --shell <kind>         命令解释器: auto|bash|pwsh|powershell
   --disable-shell        关闭默认命令工具
+  --no-mcp               停用 MCP 生态服务与提示词
   --continue             继续当前项目最近有内容的会话
   --resume <id>          按完整 ID 或唯一前缀恢复会话
   -v, --version          查看当前版本
@@ -214,6 +219,15 @@ pnpm build && node packages/cli/dist/bin.js
 | `/status` | 打印当前会话已载入工具列表及运行状态 | `/status` |
 | `/logs [count]` | 最近 1–100 条运行与审批日志，默认 20 条 | `/logs 20` |
 | `/instructions` | 查看当前加载的项目指令来源 | `/instructions` |
+| `/skills [query]` | 检索已发现且已信任的技能清单（不加载正文） | `/skills pdf` |
+| `/skill <name> <task...>` | 按技能名加载其说明并提交任务 | `/skill pdf-review 检查这份设计` |
+| `/plugins [name]` | 查看已挂载插件及其能力贡献；指定名字看明细 | `/plugins mcp` |
+| `/mcp` | 查看已配置服务清单、连接状态与能力统计 | `/mcp` |
+| `/mcp tools <server>` | 列出该服务导出的工具及只读安全标记 | `/mcp tools git-tools` |
+| `/mcp reconnect <server>` | 沿用当前已解析配置安全重连（代次单调递增） | `/mcp reconnect git-tools` |
+| `/mcp enable\|disable <server>` | 会话内启停该服务的工具，纯内存生效、忙碌时拦截 | `/mcp disable git-tools` |
+| `/prompts [query]` | 检索已就绪服务的 Prompt 模板元数据（不预取正文） | `/prompts review` |
+| `/prompt <server/name> [arguments-json]` | 受控获取模板并作为单条 user 消息进入任务执行流 | `/prompt git-tools/commit "topic=docs"` |
 | `/help [command]` | 与注册共用命令目录、别名和参数规则 | `/help resume` |
 | `/exit` 或 `/quit` | 退出交互终端（**裸输入 `exit` / `quit` 亦可，无需斜杠**） | `/exit` |
 

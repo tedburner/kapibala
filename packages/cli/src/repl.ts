@@ -92,6 +92,12 @@ export async function startREPL(options: REPLOptions): Promise<void> {
         ? options.controller.runSkill(name, task, { signal })
         : session().runSkill(name, task, { signal }),
     );
+  context.runPreparedTask = (task, prepare) =>
+    runTask((signal) =>
+      options.controller
+        ? options.controller.runPreparedTask(task, prepare, { signal })
+        : session().runPreparedTask(task, prepare, { signal }),
+    );
   context.onExit = requestExit;
   input.onInterrupt(() => {
     activeRenderer?.invalidateAnchor();

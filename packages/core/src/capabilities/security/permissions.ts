@@ -61,6 +61,7 @@ const CAPABILITIES = new Set<Capability>([
   'net:outbound',
   'env:read',
   'agent:spawn',
+  'external:call',
 ]);
 
 /** 拒绝含糊的 Shell 前缀/通配符和结构不完整的规则。 */

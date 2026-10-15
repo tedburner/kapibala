@@ -77,8 +77,18 @@ const TERMINAL_SEQUENCE = new RegExp(
   'g',
 );
 
-/** 过滤模型和错误消息中的终端控制序列，保留正文的换行与制表符。 */
-function sanitizeUntrustedOutput(value: string): string {
+/**
+ * 过滤不可信外部文本中的终端控制序列与非法控制字符，保留换行与制表符。
+ *
+ * 保证与约束：
+ * - 剥离 ANSI 转义序列、OSC 标题序列及 C0/C1 控制字符，防止终端注入向量与界面篡改；
+ * - 完整保留制表符（\t）与换行符（\n）；
+ * - 纯字符串操作，不分配系统资源，绝不抛出异常。
+ *
+ * @param value - 待净化的不可信外部字符串。
+ * @returns 已清除所有终端转义控制序列的安全文本。
+ */
+export function sanitizeUntrustedOutput(value: string): string {
   let safe = '';
   for (const character of value.replace(TERMINAL_SEQUENCE, '')) {
     const codePoint = character.codePointAt(0) ?? 0;
@@ -92,7 +102,20 @@ function sanitizeUntrustedOutput(value: string): string {
   return safe;
 }
 
-function color(text: string, code: number, enabled: boolean): string {
+/**
+ * 根据终端能力受控为文本添加 ANSI 色彩控制序列。
+ *
+ * 保证与约束：
+ * - 当 enabled 为 true 时包裹 ANSI 色彩码并在末尾以 reset（\x1b[0m）闭合；
+ * - 当 enabled 为 false（非 TTY、管道或重定向环境）时原样返回 text，绝不输出任何 ESC 字节；
+ * - 调用方应基于 isTTY 门控传入 enabled，防止管道消费乱码。
+ *
+ * @param text - 待着色的文本内容。
+ * @param code - ANSI SGR 代码（如 1 为粗体，31 为红，32 为绿，36 为青，90 为灰）。
+ * @param enabled - 是否允许输出 ANSI 控制序列。
+ * @returns 格式化后的安全文本。
+ */
+export function color(text: string, code: number, enabled: boolean): string {
   return enabled ? `${ESC}[${code}m${text}${ESC}[0m` : text;
 }
 
@@ -295,6 +318,21 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
         write(
           `\n技能已加载: ${sanitizeToolName(event.source.name)} (${event.source.caller}, ${event.persistence})\n`,
         );
+      } else if (event.type === 'mcp_prompt_loaded') {
+        finishThinking();
+        markToolLinesStale();
+        if (detail === 'detailed') {
+          const digest = event.promptSource.contentDigest
+            ? event.promptSource.contentDigest.slice(0, 8)
+            : '无';
+          write(
+            `\nMCP 提示词已加载: ${sanitizeUntrustedOutput(event.server)}/${sanitizeUntrustedOutput(event.name)} (摘要: ${digest}, 存储: ${event.persistence})\n`,
+          );
+        } else {
+          write(
+            `\nMCP 提示词已加载: ${sanitizeUntrustedOutput(event.server)}/${sanitizeUntrustedOutput(event.name)}\n`,
+          );
+        }
       } else if (event.type === 'step_log') {
         if (debug) {
           const time = new Date(event.log.timestamp).toLocaleTimeString();

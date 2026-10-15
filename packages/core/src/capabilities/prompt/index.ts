@@ -3,7 +3,7 @@ import type { InstructionSource } from '../instructions/index.js';
 import { type SkillCatalog, formatSkillCatalog } from '../skills/catalog.js';
 import type { SkillRegistry } from '../skills/registry.js';
 import type { Tool } from '../tools/index.js';
-import type { ToolRegistry } from '../tools/registry.js';
+import type { ToolRegistry, ToolRegistrySnapshot } from '../tools/registry.js';
 
 /** 分层提示选项；目录受实际工具定义和请求剩余空间约束，不能用同名工具冒充加载能力。 */
 export interface PromptAssemblerOptions {
@@ -13,7 +13,7 @@ export interface PromptAssemblerOptions {
   contextWindow?: number;
   skillBudgetTokens?: number;
   /** 提供时才生成 L2 工具清单段；缺省表示本次运行不向模型展示任何工具。 */
-  tools?: ToolRegistry;
+  tools?: ToolRegistry | ToolRegistrySnapshot;
   /** L3 环境段展示的工作区根目录；文件工具的沙箱边界与其保持一致。 */
   rootDir: string;
   agentName?: string;
@@ -31,7 +31,7 @@ export interface PromptAssemblerOptions {
  */
 export class PromptAssembler {
   private readonly options: PromptAssemblerOptions;
-  private readonly tools?: ToolRegistry;
+  private readonly tools?: ToolRegistry | ToolRegistrySnapshot;
   private readonly rootDir: string;
   private readonly agentName: string;
   private readonly customInstructions?: string;

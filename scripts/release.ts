@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-interface Manifest {
+export interface Manifest {
   name: string;
   version: string;
   dependencies?: Record<string, string>;
@@ -26,10 +26,15 @@ interface ExpectedPackage {
 }
 
 const registry = 'https://registry.npmjs.org';
-const packageNames = ['@kiturone/kapibala', '@kiturone/kapibala-cli'];
+const packageNames = [
+  '@kiturone/kapibala',
+  '@kiturone/kapibala-mcp',
+  '@kiturone/kapibala-cli',
+] as const;
 const versionManifestFiles = [
   'package.json',
   'packages/core/package.json',
+  'packages/mcp/package.json',
   'packages/cli/package.json',
 ];
 
@@ -45,15 +50,19 @@ export function validateNpmVersion(version: string): void {
   }
 }
 
-/** 发布标签、三个清单与 CLI 展示版本必须一致；只接受十进制位进位的稳定版本。 */
+/** 发布标签、四个清单与 CLI 展示版本必须一致；只接受十进制位进位的稳定版本。 */
 export function validateRelease(tag: string, manifests: Manifest[], cliVersion: string): string {
   if (!/^v(0|[1-9]\d*)\.[0-9]\.[0-9]$/.test(tag)) throw new Error(`Invalid release tag: ${tag}`);
   const version = tag.slice(1);
-  if (manifests.length !== 3 || manifests.some((manifest) => manifest.version !== version)) {
+  if (manifests.length !== 4 || manifests.some((manifest) => manifest.version !== version)) {
     throw new Error('Release tag and package versions must match');
   }
   if (cliVersion !== version) throw new Error('CLI display version must match the release tag');
-  if (manifests[1].name !== packageNames[0] || manifests[2].name !== packageNames[1]) {
+  if (
+    manifests[1].name !== packageNames[0] ||
+    manifests[2].name !== packageNames[1] ||
+    manifests[3].name !== packageNames[2]
+  ) {
     throw new Error('Unexpected release package names');
   }
   return version;
@@ -219,7 +228,13 @@ async function publish(root: string, tag: string, directory: string): Promise<vo
     if (name === packageNames[0] && Object.keys(manifest.dependencies ?? {}).length)
       throw new Error('Core must have zero runtime dependencies');
     if (name === packageNames[1] && manifest.dependencies?.[packageNames[0]] !== version)
-      throw new Error('Packed CLI must depend on the exact Core version; use pnpm pack');
+      throw new Error('Packed MCP must depend on the exact Core version; use pnpm pack');
+    if (
+      name === packageNames[2] &&
+      (manifest.dependencies?.[packageNames[0]] !== version ||
+        manifest.dependencies?.[packageNames[1]] !== version)
+    )
+      throw new Error('Packed CLI must depend on the exact Core and MCP versions; use pnpm pack');
     const entries = run('tar', ['-tzf', file], true).trim().split(/\r?\n/);
     if (
       entries.some(
@@ -237,7 +252,7 @@ async function publish(root: string, tag: string, directory: string): Promise<vo
       sha256: createHash('sha256').update(content).digest('hex'),
     };
   });
-  // 两个包均通过预检后才写入 registry；顺序固定为 Core → CLI。
+  // 三个包均通过预检后才写入 registry；顺序固定为 Core → MCP → CLI。
   const plans = await Promise.all(
     packages.map(async (entry) => planPublication(entry, await readRegistry(entry.name))),
   );
@@ -309,7 +324,7 @@ async function smokeInstall(root: string, tag: string, directory: string): Promi
       await new Promise((resolve) => setTimeout(resolve, SMOKE_INSTALL_DELAY_MS));
     }
   }
-  const cliBin = path.join(directory, 'node_modules', packageNames[1], 'dist', 'bin.js');
+  const cliBin = path.join(directory, 'node_modules', packageNames[2], 'dist', 'bin.js');
   if (run('node', [cliBin, '--version'], true).trim() !== `kpbl v${version}`)
     throw new Error(`Registry-installed CLI version mismatch: expected kpbl v${version}`);
   run('node', [cliBin, '--help'], true);
@@ -328,6 +343,25 @@ async function smokeInstall(root: string, tag: string, directory: string): Promi
     [
       '-e',
       'const assert = require("node:assert/strict"); assert.equal(typeof require("@kiturone/kapibala").AgentSession, "function")',
+    ],
+    true,
+    directory,
+  );
+  run(
+    'node',
+    [
+      '--input-type=module',
+      '-e',
+      'import assert from "node:assert/strict"; import * as mcp from "@kiturone/kapibala-mcp"; assert.equal(typeof mcp.McpServerManager, "function"); assert.equal(typeof mcp.createMcpPlugin, "function")',
+    ],
+    true,
+    directory,
+  );
+  run(
+    'node',
+    [
+      '-e',
+      'const assert = require("node:assert/strict"); assert.equal(typeof require("@kiturone/kapibala-mcp").McpServerManager, "function")',
     ],
     true,
     directory,

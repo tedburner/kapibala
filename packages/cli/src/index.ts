@@ -10,12 +10,16 @@ import { helpCommand } from './commands/help.js';
 import { historyCommand, newCommand, renameCommand, resumeCommand } from './commands/history.js';
 import { instructionsCommand } from './commands/instructions.js';
 import { logsCommand } from './commands/logs.js';
+import { mcpCommand } from './commands/mcp.js';
 import { modeCommand } from './commands/mode.js';
 import { modelCommand } from './commands/model.js';
+import { pluginsCommand } from './commands/plugins.js';
+import { promptCommand, promptsCommand } from './commands/prompts.js';
 import { settingsCommand } from './commands/settings.js';
 import { skillCommand, skillsCommand } from './commands/skills.js';
 import { statusCommand } from './commands/status.js';
 import { CliInputCoordinator } from './input-coordinator.js';
+import { attachMcpToSession, resolveCliMcpOptions } from './mcp.js';
 import { CliModelBindings, parsePrimaryModelRole } from './model-bindings.js';
 import { runOneShot } from './oneshot.js';
 import { detectProjectRoot } from './project-root.js';
@@ -25,6 +29,7 @@ import { openStartupSession, validateSessionStartup } from './session-startup.js
 import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
+  isProjectTrusted,
   loadSettings,
   migrateGlobalSettingsCatalog,
   resolveApiKey,
@@ -59,7 +64,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       'resume',
       'output-detail',
     ],
-    boolean: ['help', 'version', 'debug', 'disable-shell', 'continue'],
+    boolean: ['help', 'version', 'debug', 'disable-shell', 'continue', 'mcp'],
+    default: { mcp: true },
     alias: { m: 'model', h: 'help', v: 'version', p: 'prompt' },
   });
 
@@ -86,6 +92,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   --permission <mode>    本次会话权限: approval|plan|auto|full-access
   --shell <kind>         解释器: auto|bash|wsl|pwsh|powershell 或解释器全路径
   --disable-shell        关闭默认命令工具
+  --no-mcp               停用 MCP 生态服务与提示词
   --continue             续答当前项目最近有内容的会话
   --resume <id>          按完整 ID 或唯一前缀恢复会话
   -v, --version          查看当前版本
@@ -241,6 +248,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `[kapibala] 命令解释器不可用，本次禁用 run_command: ${(error as Error).message}`,
       );
     }
+    const isTrusted =
+      trustResult.status === 'trusted' || isProjectTrusted(settings, manager.project.projectRoot);
+    const mcpOptions = resolveCliMcpOptions({
+      projectRoot: manager.project.projectRoot,
+      isProjectTrusted: isTrusted,
+      noMcp: args.mcp === false || Boolean(args['no-mcp']),
+    });
+    for (const diag of mcpOptions.diagnostics) {
+      if (diag.severity === 'error') {
+        console.error(`\x1b[31m[kapibala] MCP 配置错误: ${diag.message}\x1b[0m`);
+      } else if (diag.severity === 'warning') {
+        console.error(`\x1b[33m[kapibala] MCP 配置警告: ${diag.message}\x1b[0m`);
+      }
+    }
     try {
       await manager.importLegacy();
       const initialHandle =
@@ -268,6 +289,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         });
         for (const tool of builtinTools.list()) created.tools.register(tool);
         models.attach(created, controller ? models.selectedRole : requestedRole);
+        try {
+          await attachMcpToSession(
+            created,
+            mcpOptions,
+            inputCoordinator,
+            inputCoordinator.interactive,
+          );
+        } catch (attachErr: unknown) {
+          const msg = attachErr instanceof Error ? attachErr.message : String(attachErr);
+          console.error(`[kapibala] MCP 启动异常，已降级会话启动: ${msg}`);
+        }
         return created;
       };
       const initial = await factory(initialHandle);
@@ -305,6 +337,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         instructions: instructionsCommand,
         skills: skillsCommand,
         skill: skillCommand,
+        plugins: pluginsCommand,
+        mcp: mcpCommand,
+        prompts: promptsCommand,
+        prompt: promptCommand,
         help: helpCommand,
         exit: async (_args, context) => {
           await context.onExit();

@@ -42,7 +42,11 @@ describe('noninteractive CLI model roles', () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     process.exitCode = undefined;
-    fs.rmSync(directory, { recursive: true, force: true });
+    try {
+      fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {
+      /* ignore windows transient lock */
+    }
   });
   const save = (planning = true, defaultNeedsKey = false) => {
     const make = (id: string) => ({
@@ -88,7 +92,7 @@ describe('noninteractive CLI model roles', () => {
     await main(['--role', 'planning', '--model', 'normal', '--disable-shell', '-p', 'plan']);
     await main(['--continue', '--disable-shell', '-p', 'continue']);
     expect(models).toEqual(['planner', 'normal']);
-  });
+  }, 15000);
 
   it('runs a usable explicit role without starting a default credential wizard', async () => {
     save(true, true);

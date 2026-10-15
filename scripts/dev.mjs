@@ -12,7 +12,15 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -218,53 +226,94 @@ function readWorkspacePackages() {
   return found;
 }
 
+/** 读取指定目录 package.json 中声明的 workspace 依赖名称集合。 */
+function readWorkspaceDependencies(dir) {
+  const manifest = join(dir, 'package.json');
+  if (!existsSync(manifest)) return new Set();
+  try {
+    const json = JSON.parse(readFileSync(manifest, 'utf8'));
+    const deps = { ...json.dependencies, ...json.devDependencies };
+    const wsDeps = new Set();
+    for (const [name, version] of Object.entries(deps)) {
+      if (
+        typeof version === 'string' &&
+        (version.startsWith('workspace:') || name.startsWith('@kiturone/'))
+      ) {
+        wsDeps.add(name);
+      }
+    }
+    return wsDeps;
+  } catch {
+    return new Set();
+  }
+}
+
 /**
- * 修复 workspace 软链（Windows 上的已知坑）。
+ * 修复 workspace 软链与三包拓扑（Windows 上的已知坑）。
  *
  * 现象：本机 pnpm 为 workspace 依赖创建链接时会「成功」返回，但产物是一个空目录
- * 而非真实链接，于是运行时 `import '@kiturone/kapibala'` 报 ERR_MODULE_NOT_FOUND。
- * 普通（非 workspace）依赖的链接不受影响。
+ * 或失效链接，于是运行时 `import '@kiturone/...'` 报 ERR_MODULE_NOT_FOUND。
  *
- * 处理：仅针对「已存在于 node_modules 下、但既不是链接、又完全为空」的目录，
- * 删掉后用 junction 重建（junction 在此环境无需管理员权限，已验证可用）。
- * 非空目录一律不动，避免误伤 pnpm 的正常产出。
+ * 处理：
+ * 1. 动态收集 packages/* 下所有工作区包（CLI、MCP、Core）及根目录。
+ * 2. 遍历依赖持有者（ROOT 及各 package），检查其声明的 workspace 依赖与已存链接健康状态。
+ * 3. 针对「悬空失效链接」、「退化为空目录」或「声明了依赖但链接缺失/损坏」的情况，
+ *    在 Windows 下使用 native junction（非 Windows 使用 dir symlink）自愈重建。
+ * 4. 显式保证三包拓扑（CLI -> MCP、MCP -> Core、CLI -> Core、ROOT -> workspace 依赖）真实可达。
  */
 function repairWorkspaceLinks() {
   const packages = readWorkspacePackages();
   if (packages.length === 0) return [];
 
-  // 可能引用 workspace 包的 node_modules：仓库根 + 各 workspace 包自身
   const holders = [ROOT, ...packages.map((p) => p.dir)];
   const repaired = [];
 
   for (const holder of holders) {
-    for (const pkg of packages) {
-      const link = join(holder, 'node_modules', ...pkg.name.split('/'));
-      if (!existsSync(link)) continue;
+    const declaredDeps = readWorkspaceDependencies(holder);
 
-      let stat;
+    for (const pkg of packages) {
+      if (pkg.dir === holder) continue;
+
+      const link = join(holder, 'node_modules', ...pkg.name.split('/'));
+      const isDeclared = declaredDeps.has(pkg.name);
+
+      let stat = null;
       try {
         stat = lstatSync(link);
       } catch {
-        continue;
-      }
-      // 已是真实链接则无需处理
-      if (stat.isSymbolicLink()) continue;
-      // 只处理空目录：非空说明是正常产物（如拷贝安装），不动
-      try {
-        if (readdirSync(link).length > 0) continue;
-      } catch {
-        continue;
+        // 路径不存在
       }
 
+      // 如果既没有此路径，也没有声明依赖，跳过
+      if (!stat && !isDeclared) continue;
+
+      let isHealthy = false;
+      if (stat) {
+        if (existsSync(join(link, 'package.json'))) {
+          isHealthy = true;
+        } else if (stat.isDirectory() && !stat.isSymbolicLink()) {
+          try {
+            if (readdirSync(link).length > 0) isHealthy = true;
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      // 若已经健康，无需处理
+      if (isHealthy) continue;
+
       try {
-        rmSync(link, { recursive: true, force: true });
+        if (stat) {
+          rmSync(link, { recursive: true, force: true });
+        }
+        mkdirSync(dirname(link), { recursive: true });
         symlinkSync(pkg.dir, link, IS_WINDOWS ? 'junction' : 'dir');
         if (existsSync(join(link, 'package.json'))) {
           repaired.push(`${relative(holder)} -> ${pkg.name}`);
         }
       } catch (err) {
-        warn(`重建 ${pkg.name} 链接失败: ${err.message}`);
+        warn(`重建 ${pkg.name} 链接失败 (${relative(holder)}): ${err.message}`);
       }
     }
   }

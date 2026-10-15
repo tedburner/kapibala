@@ -28,11 +28,22 @@
 | **v0.0.3** | **历史会话、消息生命周期与上下文管理**（已发布；[发布说明](releases/v0.0.3.md)，[验收记录](verification/v0.0.3.md)） | 以 Pi 会话投影与滚动摘要为主体：独立版本化 JSONL、稳定 ID、SessionManager、历史列表与分支提示，默认新建及显式恢复；规范完整工具事务；保守读取/搜索结果剪裁 → 增量摘要，借鉴 Codex 恢复一致性，各级先提交后激活；摘要首尾截断与总预算、真实文件操作详情、可恢复失败熔断、稳定序列化与效果实测；完整保护当前任务和最近成功交互，超限停止，任务内部压缩后续再做；Core 六大领域重构及命令统一 | Core + CLI 增量 |
 | **v0.0.4** | **多协议与场景模型路由**（已发布；[发布说明](releases/v0.0.4.md)，[验收记录](verification/v0.0.4.md)） | Anthropic 原生 Messages、OpenAI 原生 Responses、现有 Chat Completions 兼容层加固；共享合法历史与完整工具事务，扩展 `default` / `summary` 路由并落地 `fast` / `planning` / `execution` 显式场景选择，提供结构化思考事件基础；小模型意图分类留待后续 | Core + CLI 增量 |
 | **v0.0.5** | **技能体系与过程输出折叠**（已发布；[发布说明](releases/v0.0.5.md)，[验收记录](verification/v0.0.5.md)） | 有界 SkillRegistry、按需加载、受控资源、来源落盘与只收紧权限；`/skills` / `/skill`、技能名 Tab、Ctrl+O、完整详情重定向；[迁移说明](migration/v0.0.5.md) | Core + CLI 增量 |
-| **v0.0.6** | **MCP 生态扩展** | 独立包接入 Stdio，再扩展 HTTP；MCP 工具按 source 动态批量上下线，装载受项目信任与权限策略约束；MCP Prompt 注册为可搜索的用户命令 | `@kiturone/kapibala-mcp` |
-| **v0.0.7** | **会话增强与多智能体** | 基于 v0.0.3 的独立会话、Envelope 因果 `parentId` 与基本 SessionManager，增强跨项目全文检索、历史分叉（DAG 树）、归档与多会话协调；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理权限只继承或收紧 | Core + 宿主增量 |
-| **v0.0.8** | **产品化终端体验** | 现代 TUI、共享前端 ViewModel、多任务状态、可扩展状态栏与流式渲染；统一 `/` 命令面板聚合内置 Slash 命令、Skills 与 MCP Prompt（模糊匹配、Tab 补全、Esc 关闭，原始 MCP Tool 不进菜单）；思考过程完成后折叠且可展开 | 独立包 + CLI 增量 |
-| **v0.0.9** | **本地客户端契约与发布前加固** | 版本化 wire DTO、本地守护进程和一种受控本地传输；完成审计、预算、宿主隔离与兼容性测试。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
+| **v0.0.6** | **MCP 生态扩展**（已发布；[发布说明](releases/v0.0.6.md)，[验收记录](verification/v0.0.6.md)，[迁移说明](migration/v0.0.6.md)） | 独立包接入 Stdio 与 Streamable HTTP；工具按 source 原子上下线、run 稳定声明与即时撤销，启动和调用分别授权；Prompt 可搜索并由固定 `/prompt` 入口调用；缓存压缩专项另行排期 | `@kiturone/kapibala-mcp` |
+| **v0.0.7** | **会话增强与多智能体** | 基于 v0.0.3 的独立会话、Envelope 因果 `parentId` 与基本 SessionManager，增强跨项目全文检索、历史分叉（DAG 树）、归档与多会话协调；清理 Core 对全局 `process.cwd()` 的隐式依赖，实现多工作区并发隔离；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理权限只继承或收紧 | Core + 宿主增量 |
+| **v0.0.8** | **产品化终端体验** | 现代 TUI、共享前端 ViewModel（供终端与桌面端通用复用）、多任务状态、可扩展状态栏与流式渲染；统一 `/` 命令面板聚合内置 Slash 命令、Skills 与 MCP Prompt（模糊匹配、Tab 补全、Esc 关闭，原始 MCP Tool 不进菜单）；思考过程完成后折叠且可展开 | 独立包 + CLI 增量 |
+| **v0.0.9** | **本地客户端契约与发布前加固** | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；完成审计、预算、宿主隔离与兼容性测试。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
 | **v0.1.0** | **阶段性整合版本** | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约，完成迁移验证与发布流程；不新增客户端类型或运行时子系统 | CLI + Core SDK + 扩展包 |
+| **v0.1.1** | **跨平台桌面客户端 (Electron)** | 基于 Electron 的现代化跨平台桌面客户端（Windows / macOS / Linux）；前端采用现代 Web 技术栈复用流式渲染与 ViewModel，主进程直连复用 Headless Core 与 MCP 模块；支持系统托盘、全局呼出快捷键、富文本思考过程与工具调用交互 | 独立桌面包 (`packages/desktop`) |
+
+
+### v0.0.6 已确认交付边界（2026-10-15）
+
+- MCP 生态以独立公共包 `@kiturone/kapibala-mcp` 交付，保持 Core 纯粹 Headless 且零外部运行时依赖。三包依赖拓扑由架构门禁与自愈脚本全量约束。
+- 支持 Stdio 与 Streamable HTTP（SSE）双传输。内置跨平台进程树强制回收与 RFC 1918 私网拦截；启动授权与工具调用授权分离，非 TTY 环境拒绝未经审批的 Stdio 服务启动。
+- 工具统一映射为 `mcp__<server>__<tool>` 命名空间并在终端格式化展示；敏感参数自动脱敏为 `[REDACTED]`。
+- 历史会话记录可选 `mcpSource` v1 元数据，发送外部模型 wire 时剥离，严格保持历史闭合不变量。
+- 新增 `/mcp`、`/mcp tools`、`/mcp reconnect`、`/mcp enable/disable` 管理命令，新增 `/prompts` 与 `/prompt` 受控模板调用；提供 `--no-mcp` 宿主禁用开关。
+- 本地全量门禁（100 个测试文件 / 943 项通过、3 项因 Windows 符号链接权限跳过）、独立 tarball 安装冒烟（`scripts/v0.0.6-pack-smoke.ts`）及真实 CLI 平台回归（`scripts/v0.0.6-platform-check.mjs`）全部通过。外部 npm Trusted Publisher 配置属远端发布前置。规划阶段不修改版本号。
 
 ### v0.0.4 已确认规划范围（2026-10-05）
 
@@ -65,10 +76,66 @@
 
 验收时应确认折叠/展开不会遗漏流式输出，不会影响 SessionEvent 消费、消息落盘、工具结果闭合与会话恢复。
 
-## v0.0.6 — 缓存友好的上下文压缩（规划补充，2026-09-28）
+## 缓存友好的上下文压缩（专项增强与实测待排期）
+
+> 原为 2026-09-28 的 v0.0.6 补充规划；2026-10-13 方案优化后，专项增强与实测移出 v0.0.6 MCP 交付，目标版本待定。以下目标保留，不标记完成；既有上下文压缩和完整事务规则不撤销，具体已交付边界仍以 v0.0.3/v0.0.4 记录为准。MCP 目录稳定不等于缓存专项验收通过。
 
 - **目标**：在现有上下文压缩基础上，提高压缩后续轮次对 DeepSeek 等服务端前缀缓存的复用机会；优先保证上下文质量与长度约束，不以缓存命中率替代压缩目标。
 - **投影规则**：原始消息历史和落盘记录保持不变；压缩只改变发送给模型的投影。每次压缩形成一个固定的摘要检查点，后续轮次在其后追加最近的完整消息；仅在下一次确需压缩时更新检查点。保持固定指令及可复用内容的顺序和序列化稳定，避免无关动态字段插入请求前缀。
 - **工具事务**：压缩边界不得拆开 `tool_use` 与对应 `tool_result`；恢复、取消和失败轮次继续遵守既有 canonical 历史规则。
 - **缓存预期**：摘要替换旧历史后，首次请求不保证命中被替换部分的旧缓存；新前缀建立后，后续请求才有机会复用。缓存由服务端管理，Kapibala 不实现本地模型 KV 缓存，也不承诺命中率。
 - **验证与观测**：在 Provider 返回相关用量时记录缓存命中和未命中 token 数，比较压缩前、压缩后首轮及后续轮次的输入量、缓存命中、费用和响应质量；对不提供缓存用量的 Provider 保持兼容。
+
+---
+
+## 🖥️ 跨平台桌面客户端规划（Electron，v0.1.1）
+
+> 选型确立于 2026-10-15：基于工程务实性、全栈 TypeScript 一致性与 AI 编程生态（Monaco Editor、node-pty 原生终端、Shiki 高亮、IME 输入法成熟度），选用 **Electron** 作为 Kapibala 跨平台桌面客户端（Windows / macOS / Linux）核心底座。主进程直接复用已有 TypeScript Headless Core 与 MCP 模块，以极高研发效率交付高品质桌面体验。
+
+### 1. 架构定位与设计模式
+
+- **严格遵守 Headless Core 原则**：桌面客户端作为独立包 `packages/desktop`（`@kiturone/kapibala-desktop`）交付，Core 保持 0 外部运行时依赖与纯粹 Headless。
+- **主进程（Main Process，Node.js 环境）直连引擎**：
+  - 主进程作为宿主直接 `import { AgentSession } from '@kiturone/kapibala'` 与 `@kiturone/kapibala-mcp`；
+  - 零 Rust 胶水代码，零 Sidecar 进程管理、端口分配与鉴权握手成本；
+  - 负责原生窗口生命周期、系统托盘（System Tray）、全局快捷键唤醒、原生菜单与系统通知；
+  - 调度文件 IO 与子进程，天然支持集成 `node-pty` 提供工业级交互式终端能力。
+- **安全隔离桥接（Preload & ContextBridge）**：
+  - 严格开启 `contextIsolation: true` 与 `sandbox: true`；
+  - 主进程与渲染进程之间通过强类型 IPC（Typed IPC / TRPC）通道传输规范的 `SessionEvent` 与控制信令，渲染进程无 Node 原生特权。
+- **渲染进程（Renderer Process，Web 前端）**：
+  - 采用 React / Vite / Tailwind CSS，复用 v0.0.8 沉淀的前端 ViewModel；
+  - 实现流畅的流式 Markdown 打字机、Thinking 推理块折叠/展开、代码语法高亮与工具调用审批卡片。
+
+### 2. 面向桌面客户端的关键技术调整（顺应路线图演进）
+
+1. **工作区上下文彻底参数化（消除 `process.cwd()` 隐式依赖，v0.0.7~v0.0.8 落实）**：
+   - `AgentSession`、`PathSandbox` 以及内置文件与命令工具一律由显式注入的 `workspaceRoot` 与 `executionCwd` 驱动；
+   - 彻底解除全局进程环境依赖，支持桌面端在单进程内同时托管多个独立项目的工作区会话，互不串扰。
+2. **事件 DTO 版本化与双向 RPC 控制信令（v0.0.9 落实）**：
+   - 将 `SessionEvent` 规范化为结构稳定的数据传输对象（`WireSessionEvent`，版本号显式声明）；
+   - 扩展双向控制流：工具执行前审批通过带唯一 `requestId` 和超时控制的 `approval_requested` 信令发起，渲染层弹窗确认后回发 `approval_response` 闭环；窗口异常或超时自动安全熔断。
+3. **跨平台进程树强制回收与生命周期守卫（v0.0.9 ~ v0.1.1 落实）**：
+   - 主进程统一管理工具命令子进程生命周期；
+   - 任务中断或客户端退出时，统一通过 Windows Job Object / `taskkill /T /F` 与 macOS/POSIX 进程组 `kill(-pid, SIGKILL)` 深度回收所有子命令进程树，杜绝孤儿进程后台残留。
+
+### 3. 分阶段实施路径
+
+| 阶段 | 关联版本 | 交付重点 |
+|---|---|---|
+| **准备阶段：路径解耦与前端抽象** | **v0.0.7 ~ v0.0.8** | 消除 Core 内对 `process.cwd()` 的隐式依赖；在终端产品化演进中抽象出共享前端 `ViewModel`（流式 Markdown、Thinking 块折叠、工具参数脱敏展示），供 TUI 与桌面端双向复用。 |
+| **第一阶段：通信契约与双向信令** | **v0.0.9** | 规范化版本化事件 DTO；实现本地守护进程与双向审批 RPC 信令通道，为主进程与多宿主提供统一的通信契约。 |
+| **第二阶段：稳定整合与全量门禁** | **v0.1.0** | 冻结 Core 公共 API 与本地客户端通信协议，完成多平台宿主隔离与回归测试，不引入新客户端业务。 |
+| **第三阶段：桌面客户端核心交付** | **v0.1.1** | 初始化 `packages/desktop`（`@kiturone/kapibala-desktop`）；构建 Electron 主进程与 Typed IPC 桥接；接入 Web 前端流式对话、历史抽屉与弹窗审批；交付 Win（NSIS / 免安装压缩包）与 Mac（DMG）安装包。 |
+| **第四阶段：体验增强与自动更新** | **v0.1.x+** | 接入 `electron-updater` 增量自动更新；配置 macOS Apple Notarization 公证与 Windows 代码签名流水线；支持全局快捷键呼出小窗与拖拽文件输入。 |
+
+### 4. Windows 与 macOS 平台差异适配基线
+
+- **路径一致性**：文件与工作区交互严格采用 `fs.realpathSync.native` 规范化绝对路径，杜绝 Windows 8.3 短路径别名与 macOS 路径失配。
+- **窗口与生命周期体验**：
+  - **macOS**：隐藏默认标题栏并保留原生交通灯控制区（`hiddenInset`），支持毛玻璃背景质感（Vibrancy）；关闭主窗口保持 Dock 常驻，按 `Cmd+Q` 彻底退出并安全回收所有进程树。
+  - **Windows**：原生支持 Snap Layout 窗口吸附布局与深色/浅色模式自适应；支持最小化到系统托盘（System Tray）并在后台保持状态。
+- **安全与权限边界**：工具调用执行前授权与沙箱拦截逻辑统一由 Core 侧裁决，桌面端仅作为用户审批与交互展示通道，不私设越权通道。
+
+
+

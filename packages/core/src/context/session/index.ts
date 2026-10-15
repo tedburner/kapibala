@@ -21,9 +21,11 @@ import { type PreparedSkill, SkillRuntime } from '../../capabilities/skills/load
 import { SkillRegistry } from '../../capabilities/skills/registry.js';
 import { skillDigest, skillFailure } from '../../capabilities/skills/scanner.js';
 import type { SkillOptions } from '../../capabilities/skills/types.js';
-import { ToolRegistry } from '../../capabilities/tools/registry.js';
+import type { Tool } from '../../capabilities/tools/index.js';
+import { ToolRegistry, type ToolRegistrySnapshot } from '../../capabilities/tools/registry.js';
 import {
   AbortError,
+  ContextOverflowError,
   KapibalaError,
   ModelError,
   type ModelErrorInfo,
@@ -52,15 +54,42 @@ import { SimpleModelRouter, resolveContextWindow } from '../../models/router.js'
 import { ToolExecutor } from '../../runtime/executor/index.js';
 import { AgentLoop } from '../../runtime/loop/index.js';
 import { cancellableGenerator } from '../../types/cancellation.js';
-import type {
-  CanonicalMessage,
-  ContextUsage,
-  ModelRequest,
-  RunMetrics,
-  SessionEvent,
-  TurnMetrics,
-  Usage,
+import {
+  type CanonicalMessage,
+  type ContentBlock,
+  type ContextUsage,
+  type ModelRequest,
+  type PromptContentSource,
+  type RunMetrics,
+  type SessionEvent,
+  type TextBlock,
+  type TurnMetrics,
+  type Usage,
+  isTextBlock,
 } from '../../types/index.js';
+
+/**
+ * 任务准备上下文；提供当前会话取消信号、runId 与不可变工具快照。
+ */
+export interface PreparedTaskContext {
+  signal?: AbortSignal;
+  runId: string;
+  tools: ToolRegistrySnapshot;
+}
+
+/**
+ * 任务准备产物；包含要附加到 User 消息的内容块，以及提交前的身份复核回调。
+ */
+export interface PreparedTaskResult {
+  /** 任务附加内容块或纯文本（如 Prompt 内容或技能正文）。 */
+  content: ContentBlock[] | string;
+  /** 可选来源元数据；仅在 content 为 string 时由宿主自动包装为带来源的 TextBlock。 */
+  promptSource?: PromptContentSource;
+  /** 最终提交前核对准备身份；若在此期间目录变化或连接重置，返回 false 拒绝提交并零发送闭合。 */
+  verifyIdentity?: () => boolean | Promise<boolean>;
+  /** 可选技能名称；存在时按显式技能流程处理。 */
+  skillName?: string;
+}
 import {
   type TokenEstimator,
   UnicodeTokenEstimator,
@@ -344,6 +373,15 @@ export class AgentSession {
   }
 
   /**
+   * 获取当前会话已成功挂载的扩展插件只读列表。
+   *
+   * 保证返回当前状态的独立切片，外部修改不污染内部挂载表。
+   */
+  getPlugins(): readonly AgentPlugin[] {
+    return [...this.plugins];
+  }
+
+  /**
    * 空闲时原子替换角色的模型绑定；本方法不改变当前角色或工具权限。
    * @param profile 模型协议、请求目标和输出预算。
    * @param role 被配置的主任务或摘要角色。
@@ -419,6 +457,11 @@ export class AgentSession {
 
   getMode(): SessionMode {
     return this.mode;
+  }
+
+  /** 获取当前会话生效的权限规则列表。 */
+  getPermissionRules(): readonly PermissionRule[] {
+    return this.permissionRules;
   }
 
   /** 返回最近一次成功装载的来源路径，不暴露指令正文。 */
@@ -571,11 +614,32 @@ export class AgentSession {
     );
   }
 
+  /**
+   * 受控任务准备入口：在同一运行锁内异步准备文本块/来源，预算和存储成功后才进入模型。
+   *
+   * @param task 用户显式任务正文（或命令描述）。
+   * @param prepare 异步任务准备函数；在锁内执行，若准备失败或取消则释放锁且零 append。
+   * @param options 可选中止信号与显式主任务角色。
+   * @returns 结构化事件的异步流。
+   * @throws {SessionBusyError} 当前会话忙碌时抛出。
+   */
+  runPreparedTask(
+    task: string,
+    prepare: (context: PreparedTaskContext) => Promise<PreparedTaskResult>,
+    options?: { signal?: AbortSignal; role?: PrimaryModelRole },
+  ): AsyncIterable<SessionEvent> {
+    return cancellableGenerator(
+      (signal) => this.runOperation(task, { signal, role: options?.role }, undefined, prepare),
+      options?.signal,
+    );
+  }
+
   /** 单次任务执行主体；调用方 return 的中止与 finally 清理由外层统一协调。 */
   private async *runOperation(
     userInput: string,
     options?: { signal?: AbortSignal; role?: PrimaryModelRole },
     skillName?: string,
+    prepare?: (context: PreparedTaskContext) => Promise<PreparedTaskResult>,
   ): AsyncGenerator<SessionEvent> {
     this.assertIdle('start another run');
     const role = options?.role ?? this.primaryRole;
@@ -666,13 +730,31 @@ export class AgentSession {
         profile.contextWindow,
         profile.maxOutputTokens,
       ).inputBudget;
+      const toolSnapshot = this.tools.snapshot();
+      let prepared: PreparedTaskResult | undefined;
+      if (prepare) {
+        prepared = await prepare({ signal: options?.signal, runId, tools: toolSnapshot });
+        if (options?.signal?.aborted) throw new AbortError();
+        if (prepared.skillName) skillName = prepared.skillName;
+      }
       await this.skillRegistry?.refresh(options?.signal);
       this.skillRuntime?.syncTools();
+
+      const extraPreparedTokens = prepared?.content
+        ? typeof prepared.content === 'string'
+          ? estimateSkillTokens(prepared.content)
+          : prepared.content
+              .filter(isTextBlock)
+              .reduce((sum, b) => sum + estimateSkillTokens(b.text), 0)
+        : 0;
+
       // 在途预算与真实请求共用同一装配器：目录按实际窗口预算生成，估算不再低估目录成本。
       const promptAssembler = this.createPromptAssembler(
         profile,
         this.context.project(this.history),
-        32 + estimateSkillTokens(userInput),
+        32 + estimateSkillTokens(userInput) + extraPreparedTokens,
+        toolSnapshot.list(),
+        toolSnapshot,
       );
       this.skillRuntime?.begin(
         runId,
@@ -683,7 +765,7 @@ export class AgentSession {
             messages: [...this.context.project(this.history), ...budgetToolMessages],
             tools:
               previousRequest?.tools ??
-              visibleTools(this.tools.list(), this.mode, this.permissionRules).map((tool) => ({
+              visibleTools(toolSnapshot.list(), this.mode, this.permissionRules).map((tool) => ({
                 name: tool.name,
                 description: tool.description,
                 parameters: tool.parameters,
@@ -693,7 +775,7 @@ export class AgentSession {
             0,
             inputBudget -
               (this.estimator ?? new UnicodeTokenEstimator()).estimate(current).total -
-              (previousRequest ? 0 : estimateSkillTokens(userInput) + 32),
+              (previousRequest ? 0 : estimateSkillTokens(userInput) + extraPreparedTokens + 32),
           );
         },
         () => previousRequest?.messages ?? this.context.project(this.history),
@@ -704,6 +786,58 @@ export class AgentSession {
           throw skillFailure('SKILL_INVALID_INPUT', '显式技能需要有效名称和任务，且宿主需启用技能');
         await this.authorizeSkill(skillName, runId, options?.signal);
         preparedSkill = await this.skillRuntime.prepare(skillName, 'user', options?.signal);
+      }
+
+      // 最终提交前复核准备身份以拒绝通知/取消竞态
+      if (prepared?.verifyIdentity) {
+        const valid = await prepared.verifyIdentity();
+        if (!valid) {
+          throw new KapibalaError('Task preparation identity changed before commit', {
+            code: 'MCP_PROMPT_CHANGED',
+            retryPolicy: 'never',
+          });
+        }
+      }
+
+      // 1. 组装并校验 User 消息
+      const userContent: ContentBlock[] = [{ type: 'text', text: userInput }];
+      if (preparedSkill)
+        userContent.push({
+          type: 'text',
+          text: preparedSkill.text,
+          skillSource: preparedSkill.source,
+        });
+      if (prepared?.content) {
+        if (typeof prepared.content === 'string') {
+          userContent.push({
+            type: 'text',
+            text: prepared.content,
+            ...(prepared.promptSource ? { promptSource: prepared.promptSource } : {}),
+          });
+        } else {
+          userContent.push(...prepared.content);
+        }
+      }
+      const userMessage: CanonicalMessage = {
+        id: createMessageId(),
+        interactionId: runId,
+        state: 'completed',
+        role: 'user',
+        content: userContent,
+        timestamp: Date.now(),
+      };
+
+      // 预算预检：首先确保当前任务本身（系统提示词 + 该单条任务消息）未超出模型输入预算上限；
+      // 若单条任务本身即超限，任何上下文压缩都无法容纳，立即零追加拒绝以防截断破坏语义。
+      const taskBudgetCheck = (this.estimator ?? new UnicodeTokenEstimator()).estimate({
+        systemPrompt: promptAssembler.assemble(),
+        messages: [userMessage],
+      }).total;
+      if (taskBudgetCheck > inputBudget) {
+        throw new ContextOverflowError(400, {
+          message: 'Prepared task content exceeds context input budget',
+          stage: 'request',
+        });
       }
 
       this.totalTurns++;
@@ -720,26 +854,40 @@ export class AgentSession {
       }
       runStarted = true;
 
-      // 1. 组装并记录 User 消息
-      const userMessage: CanonicalMessage = {
-        id: createMessageId(),
-        interactionId: runId,
-        state: 'completed',
-        role: 'user',
-        content: [{ type: 'text', text: userInput }],
-        timestamp: Date.now(),
-      };
-      if (preparedSkill)
-        userMessage.content.push({
-          type: 'text',
-          text: preparedSkill.text,
-          skillSource: preparedSkill.source,
-        });
-
       if (this.store) {
         await this.store.append(userMessage);
       }
       this.history.push(userMessage);
+      if (prepared?.promptSource) {
+        const persistence = this.store ? 'disk' : 'memory';
+        yield {
+          type: 'mcp_prompt_loaded',
+          server: prepared.promptSource.server,
+          name: prepared.promptSource.name,
+          persistence,
+          promptSource: prepared.promptSource,
+          runId,
+        };
+        try {
+          await this.eventLogger.recordAudit({
+            level: 'info',
+            event: 'mcp.prompt_loaded',
+            sessionId: this.sessionId,
+            runId,
+            fields: {
+              server: prepared.promptSource.server,
+              promptName: prepared.promptSource.name,
+              contentDigest: prepared.promptSource.contentDigest,
+              persistence,
+            },
+          });
+        } catch (auditErr: unknown) {
+          // 审计写入异常不破坏已落盘的会话
+          const msg = `MCP prompt audit recording failed: ${auditErr instanceof Error ? auditErr.message : String(auditErr)}`;
+          this.logger?.(msg);
+          this.onDiagnostic?.(msg);
+        }
+      }
       if (preparedSkill && this.skillRuntime) {
         this.skillRuntime.acceptUser(preparedSkill);
         for (const event of await this.commitSkills(runId)) yield event;
@@ -754,7 +902,7 @@ export class AgentSession {
       const executor = new ToolExecutor({
         hardDenial: (tool) => this.skillRuntime?.denial(tool),
         onToolResult: (tool, _input, result) => this.skillRuntime?.acceptResult(tool, result),
-        tools: this.tools,
+        tools: toolSnapshot,
         hooks: this.hooks,
         rootDir: this.rootDir,
         signal: options?.signal,
@@ -944,7 +1092,7 @@ export class AgentSession {
         },
         provider: provider,
         executor,
-        tools: this.tools,
+        tools: toolSnapshot,
         hooks: this.hooks,
         systemPrompt: assembledSystemPrompt,
         maxSteps: this.maxSteps,
@@ -1184,11 +1332,14 @@ export class AgentSession {
     profile: ModelProfile,
     messages: readonly CanonicalMessage[],
     extraTokens = 0,
+    toolList?: Tool[],
+    toolRegistry?: ToolRegistry | ToolRegistrySnapshot,
   ): PromptAssembler {
-    const tools = visibleTools(this.tools.list(), this.mode, this.permissionRules);
+    const registry = toolRegistry ?? this.tools;
+    const tools = visibleTools(toolList ?? registry.list(), this.mode, this.permissionRules);
     const options = {
       skills: this.skillRegistry,
-      tools: this.tools,
+      tools: registry,
       rootDir: this.rootDir,
       customInstructions: this.customSystemPrompt,
       instructionSources: this.instructionSnapshot?.sources,

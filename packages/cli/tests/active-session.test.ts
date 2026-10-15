@@ -90,4 +90,53 @@ describe('active session controller', () => {
     fail = false;
     await controller.close();
   });
+
+  it('retains the old active session and releases target when factory or required plugin setup fails', async () => {
+    let failSetup = false;
+    const manager = new SessionManager({
+      cwd: directory,
+      homeDirectory: path.join(directory, 'home'),
+    });
+    const handle = await manager.create();
+    const factory = async (target: typeof handle) => {
+      const created = new AgentSession({
+        defaultProfile: profile,
+        defaultProvider: new ScriptedProvider([
+          [{ type: 'text_delta', text: 'done' }, { type: 'message_stop' }],
+        ]),
+        store: target.store,
+        rootDir: directory,
+      });
+      await created.use({
+        name: 'required-test',
+        setup: async () => {
+          if (failSetup) throw new Error('Required MCP service failed to start');
+        },
+      });
+      return created;
+    };
+    const session = await factory(handle);
+    await session.init();
+    const controller = new ActiveSessionController({
+      manager,
+      factory,
+      current: { handle, session },
+    });
+
+    const originalSession = controller.session;
+    failSetup = true;
+
+    // 目标 session setup 失败
+    await expect(controller.newSession()).rejects.toThrow(/Required MCP service failed to start/);
+
+    // 保证旧 session 依然保持活动，且能继续正常工作
+    expect(controller.session).toBe(originalSession);
+    let gotResponse = false;
+    for await (const event of controller.run('are you alive?')) {
+      if (event.type === 'text_delta') gotResponse = true;
+    }
+    expect(gotResponse).toBe(true);
+
+    await controller.close();
+  });
 });

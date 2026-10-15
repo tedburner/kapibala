@@ -91,4 +91,61 @@ describe('Headless Core architecture boundary', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('detects Core dependencies on MCP package or MCP sources', () => {
+    const violations = findCoreHostBoundaryViolations([
+      {
+        file: 'mcp-import.ts',
+        source: "import { createMcpPlugin } from '@kiturone/kapibala-mcp';",
+      },
+      {
+        file: 'relative-mcp.ts',
+        source: "import { McpServerManager } from '../../../mcp/src/manager.js';",
+      },
+    ]);
+
+    expect(violations.map((violation) => violation.rule)).toEqual([
+      'mcp-dependency',
+      'mcp-dependency',
+    ]);
+  });
+
+  it('detects MCP dependencies on CLI, Core internal private paths, and direct terminal IO', async () => {
+    const { findMcpBoundaryViolations } = await import('../scripts/check-host-boundary.js');
+    const violations = findMcpBoundaryViolations([
+      { file: 'mcp-cli.ts', source: "import { main } from '@kiturone/kapibala-cli';" },
+      {
+        file: 'mcp-core-internal.ts',
+        source: "import { AgentSession } from '@kiturone/kapibala/src/context/session/index.js';",
+      },
+      {
+        file: 'mcp-core-rel.ts',
+        source: "import { AgentSession } from '../../core/src/index.js';",
+      },
+      { file: 'mcp-terminal.ts', source: 'console.log("mcp terminal log");' },
+      { file: 'mcp-stdout.ts', source: 'process.stdout.write("hello");' },
+    ]);
+
+    expect(violations.map((violation) => violation.rule)).toEqual([
+      'cli-dependency',
+      'core-internal',
+      'core-internal',
+      'terminal-io',
+      'terminal-io',
+    ]);
+  });
+
+  it('verifies that Core has zero runtime dependencies in package.json', async () => {
+    const { checkCoreZeroRuntimeDependencies } = await import('../scripts/check-host-boundary.js');
+    const corePkgPath = path.resolve('packages/core/package.json');
+    const result = checkCoreZeroRuntimeDependencies(corePkgPath);
+    expect(result.valid).toBe(true);
+    expect(result.dependencies).toEqual([]);
+  });
+
+  it('keeps current MCP source independent from CLI and internal Core imports', async () => {
+    const { scanMcpBoundary } = await import('../scripts/check-host-boundary.js');
+    const mcpSourceDir = path.resolve('packages/mcp/src');
+    expect(scanMcpBoundary(mcpSourceDir)).toEqual([]);
+  });
 });

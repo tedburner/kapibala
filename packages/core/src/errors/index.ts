@@ -187,6 +187,7 @@ export class KapibalaError extends Error {
   readonly code: string;
   readonly retryPolicy: 'never' | 'immediate' | 'backoff' | 'after_user_action';
   readonly safeMessage: string;
+  readonly dispatchOutcome?: 'not_sent' | 'succeeded' | 'failed' | 'unknown';
 
   constructor(
     message: string,
@@ -194,6 +195,7 @@ export class KapibalaError extends Error {
       code?: string;
       retryPolicy?: 'never' | 'immediate' | 'backoff' | 'after_user_action';
       safeMessage?: string;
+      dispatchOutcome?: 'not_sent' | 'succeeded' | 'failed' | 'unknown';
     },
   ) {
     super(message);
@@ -201,6 +203,27 @@ export class KapibalaError extends Error {
     this.code = options?.code ?? 'INTERNAL_ERROR';
     this.retryPolicy = options?.retryPolicy ?? 'never';
     this.safeMessage = options?.safeMessage ?? 'Operation failed';
+    this.dispatchOutcome = options?.dispatchOutcome;
+  }
+}
+
+/** 工具向外部发送前在微任务复核或状态检查中被撤销/拒绝；dispatchOutcome 固定 not_sent。 */
+export class PreDispatchError extends KapibalaError {
+  constructor(
+    message: string,
+    options?: {
+      code?: string;
+      retryPolicy?: 'never' | 'after_user_action';
+      safeMessage?: string;
+    },
+  ) {
+    super(message, {
+      code: options?.code ?? 'PRE_DISPATCH_FAILED',
+      retryPolicy: options?.retryPolicy ?? 'never',
+      safeMessage: options?.safeMessage ?? 'Tool execution was aborted before dispatch',
+      dispatchOutcome: 'not_sent',
+    });
+    this.name = 'PreDispatchError';
   }
 }
 
