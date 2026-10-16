@@ -9,6 +9,7 @@ import {
   nextVersion,
   planPublication,
   readRegistry,
+  readServedVersion,
   readWorkspaceVersion,
   validateNpmVersion,
   validateRelease,
@@ -227,6 +228,27 @@ describe('public registry lookup', () => {
     expect(await readRegistry(expected.name, fetcher)).toEqual({ versions: {} });
     fetcher.mockResolvedValue(new Response('unavailable', { status: 503 }));
     await expect(readRegistry(expected.name, fetcher)).rejects.toThrow(/503/);
+  });
+
+  it('reports exactly what the install-only abbreviated packument serves', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ 'dist-tags': { latest: '0.0.3' }, versions: { '0.0.3': {} } }),
+          { headers: { 'cache-control': 'public, max-age=300', age: '291' } },
+        ),
+      );
+    const served = await readServedVersion(expected.name, fetcher);
+    expect(served).toContain('latest=0.0.3');
+    expect(served).toContain('age=291');
+    expect(served).toContain('max-age=300');
+    // 探测必须与 npm CLI 同形：不带缓存穿透查询串，否则读到的是自己的回源结果而非边缘供给内容。
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `https://registry.npmjs.org/${encodeURIComponent(expected.name)}`,
+    );
+    fetcher.mockRejectedValue(new Error('tls timeout'));
+    expect(await readServedVersion(expected.name, fetcher)).toContain('probe failed');
   });
 
   it('rejects malformed metadata and propagates transport failures before publishing', async () => {

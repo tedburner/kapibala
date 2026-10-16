@@ -293,13 +293,54 @@ export function isPropagationLag(message: string): boolean {
   return /ETARGET|notarget/i.test(message);
 }
 
-const SMOKE_INSTALL_ATTEMPTS = 10;
+/**
+ * smoke 安装的重试预算。
+ *
+ * npm CLI 与 registry 边缘对 packument 都按 `cache-control: public, max-age=300` 缓存，
+ * 所以"发布已成功、安装仍报 ETARGET"最长可以连续拖到两轮 TTL（约 10 分钟）；
+ * 预算小于该窗口会把一次纯粹的传播延迟误报成发布失败。
+ */
+const SMOKE_INSTALL_ATTEMPTS = 20;
 const SMOKE_INSTALL_DELAY_MS = 30_000;
 
 /**
- * 在隔离目录从公共 registry 安装双包并验收 CLI 版本、帮助输出与 SDK ESM/CJS 导出。
- * registry API 确认可见后，CDN 边缘对 packument 的缓存仍可能落后数分钟；安装报
- * ETARGET/notarget 视为传播延迟并按有限次退避重试，其余错误立即中止，不掩盖真实故障。
+ * 读取 `npm install` 真正消费的**简化 packument**（`Accept: application/vnd.npm.install-v1+json`）。
+ *
+ * 为什么单独读它：简化文档与 `npm view` / 发布预检用的全量文档是**两条不同的缓存键**，
+ * 全量文档已经前移 latest 时，简化文档仍可能由旧边缘副本供给 —— 只查全量文档无法解释安装失败。
+ * 这里刻意不加缓存穿透查询串，保持与 npm CLI 完全相同的请求形态，返回的就是边缘真实供给的内容。
+ *
+ * @param name 包名
+ * @param fetcher 可注入的 fetch，供单测替换
+ * @returns 一行可判定的证据：latest、age 与 cache-control；探测本身失败也只描述事实，不抛错
+ */
+export async function readServedVersion(
+  name: string,
+  fetcher: typeof fetch = fetch,
+): Promise<string> {
+  try {
+    const response = await fetcher(`${registry}/${encodeURIComponent(name)}`, {
+      headers: { Accept: 'application/vnd.npm.install-v1+json' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) return `HTTP ${response.status}`;
+    const metadata = (await response.json()) as RegistryMetadata;
+    return `latest=${metadata['dist-tags']?.latest ?? 'none'} age=${response.headers.get('age') ?? '-'} cache-control=${response.headers.get('cache-control') ?? '-'}`;
+  } catch (error) {
+    return `probe failed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/**
+ * 在隔离目录从公共 registry 安装三包并验收 CLI 版本、帮助输出与 SDK ESM/CJS 导出。
+ *
+ * 边界与为什么：
+ * - registry 写入确认后，CDN 边缘与 npm 本地缓存都可能继续供给不含新版本的旧 packument，
+ *   因此安装报 ETARGET/notarget 只视为传播延迟并按固定间隔重试，其余错误立即中止，不掩盖真实故障；
+ * - `--prefer-online` 让 npm 每次向 registry 校验元数据，避免本次发布流程早前的 npm 调用
+ *   把「发布前的旧 packument」写进 `~/.npm` 缓存后，验收阶段被本地副本持续遮蔽；
+ * - 重试耗尽时错误信息附带三包简化文档的 latest/age/cache-control，
+ *   让红灯可直接区分「边缘还没供给」与「CLI 侧解析问题」，无需重跑猜测试。
  */
 async function smokeInstall(root: string, tag: string, directory: string): Promise<void> {
   const version = checkWorkspace(root, tag);
@@ -318,6 +359,7 @@ async function smokeInstall(root: string, tag: string, directory: string): Promi
     '--no-audit',
     '--no-fund',
     '--package-lock=false',
+    '--prefer-online',
     '--registry',
     registry,
     ...packageNames.map((name) => `${name}@${version}`),
@@ -328,7 +370,15 @@ async function smokeInstall(root: string, tag: string, directory: string): Promi
       break;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (attempt >= SMOKE_INSTALL_ATTEMPTS || !isPropagationLag(message)) throw error;
+      if (!isPropagationLag(message)) throw error;
+      if (attempt >= SMOKE_INSTALL_ATTEMPTS) {
+        const evidence = await Promise.all(
+          packageNames.map(async (name) => `${name}: ${await readServedVersion(name)}`),
+        );
+        throw new Error(
+          `Registry smoke install cannot see ${version} after ${SMOKE_INSTALL_ATTEMPTS} attempts; ${evidence.join(' | ')}`,
+        );
+      }
       console.log(
         `Registry CDN has not served ${version} yet (attempt ${attempt}/${SMOKE_INSTALL_ATTEMPTS}); retrying in ${SMOKE_INSTALL_DELAY_MS / 1000}s`,
       );
