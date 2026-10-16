@@ -40,6 +40,7 @@ describe('CLI role command contract', () => {
     };
     const host = new CliModelBindings(settings, profile);
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: host.defaultBinding.profile,
       defaultProvider: host.defaultBinding.provider,
       eventLogger: { record: async () => {}, recordAudit: async () => {} } as never,

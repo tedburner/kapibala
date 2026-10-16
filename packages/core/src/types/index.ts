@@ -148,6 +148,16 @@ export interface Usage {
 /** canonical 消息角色；'tool' 仅用于工具结果消息，wire 角色转换只发生在请求投影阶段。 */
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
+/** 子代理通知背景消息的来源元数据；仅用于去重与审计，不发送到 Provider wire。 */
+export interface SubagentSourceMetadata {
+  readonly eventId: string;
+  readonly agentId: string;
+  readonly rootTaskId: string;
+  readonly role: string;
+  readonly status: string;
+  readonly originBranchId: string;
+}
+
 /**
  * 协议无关的历史真源；wire 格式只在请求投影时出现。
  * 不变量：assistant 消息中的 tool_use 进入历史后，对应 tool_result 消息必须紧跟其后。
@@ -164,6 +174,8 @@ export interface CanonicalMessage {
   role: MessageRole;
   content: ContentBlock[];
   timestamp?: number;
+  /** 子代理通知背景消息来源元数据（仅用于审计与收件箱幂等去重）。 */
+  subagentSource?: SubagentSourceMetadata;
 }
 
 /** 判别并收窄为文本块。 */

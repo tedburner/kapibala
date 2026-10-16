@@ -1,11 +1,22 @@
+import fs from 'node:fs';
 import path from 'node:path';
-import { AgentSession, SessionManager, type SessionMode, ToolRegistry } from '@kiturone/kapibala';
+import {
+  AgentRuntime,
+  AgentSession,
+  SessionManager,
+  type SessionMode,
+  ToolRegistry,
+} from '@kiturone/kapibala';
 import minimist from 'minimist';
 import { ActiveSessionController } from './active-session.js';
+import { agentsCommand } from './commands/agents.js';
+import { archiveCommand } from './commands/archive.js';
+import { branchCommand } from './commands/branch.js';
 import { COMMAND_CATALOG } from './commands/catalog.js';
 import { clearCommand } from './commands/clear.js';
 import { compactCommand, contextCommand } from './commands/context.js';
 import { type CommandContext, CommandDispatcher } from './commands/dispatcher.js';
+import { forkCommand } from './commands/fork.js';
 import { helpCommand } from './commands/help.js';
 import { historyCommand, newCommand, renameCommand, resumeCommand } from './commands/history.js';
 import { instructionsCommand } from './commands/instructions.js';
@@ -35,6 +46,7 @@ import {
   resolveApiKey,
 } from './settings.js';
 import { getCliSkillOptions } from './skills.js';
+import { createCliSubagentRunner } from './subagent-runner.js';
 import { registerBuiltinTools } from './tool-registration.js';
 import { CliApprovalChannel } from './ui/approval.js';
 import { parseOutputDetail } from './ui/events.js';
@@ -199,15 +211,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `角色 ${requestedRole} 的模型 '${roleProfile.id}' 没有可用密钥，请先配置厂商密钥。`,
       );
   }
+  const startupCwd = fs.realpathSync.native(path.resolve(process.cwd()));
   const manager = new SessionManager({
-    cwd: process.cwd(),
+    workspaceRoot: startupCwd,
+    cwd: startupCwd,
     onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
   });
   let controller: ActiveSessionController | undefined;
+  let agentRuntime: AgentRuntime | undefined;
   const inputCoordinator = new CliInputCoordinator();
   try {
-    // 显式目标先验证和锁定；错误 ID 不启动密钥向导或创建替代会话。
-    const restoredHandle = args.resume === undefined ? undefined : await manager.open(args.resume);
+    const restoredHandle =
+      args.resume === undefined
+        ? undefined
+        : await manager.open(args.resume, { autoUpgradeLegacy: true });
     if (
       requestedRole === 'default' &&
       !activeApiKey &&
@@ -232,15 +249,29 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       requestedRole !== 'default',
       { [requestedRole]: temporaryOverrides },
     );
-    const approvalChannel = new CliApprovalChannel();
-    const builtinTools = new ToolRegistry();
     const preference = args.shell ?? settings.shell?.preference ?? 'auto';
     if (!isValidShellPreference(preference)) throw new Error(`Unknown shell: ${preference}`);
+    const isTrusted =
+      trustResult.status === 'trusted' || isProjectTrusted(settings, manager.project.projectRoot);
+    agentRuntime = new AgentRuntime({
+      runner: createCliSubagentRunner({
+        manager,
+        models,
+        settings,
+        preference,
+        isTrusted,
+      }),
+      validateModelOverride: (modelId: string) => settings.profiles.some((p) => p.id === modelId),
+      outboxPath: path.join(manager.project.projectRoot, '.kapibala', 'outbox.jsonl'),
+    });
+    const approvalChannel = new CliApprovalChannel();
+    const builtinTools = new ToolRegistry();
     try {
       registerBuiltinTools(builtinTools, {
         cwd: process.cwd(),
         shell: preference,
         disableShell: args['disable-shell'] || settings.shell?.enabled === false,
+        runtime: agentRuntime,
       });
     } catch (error: unknown) {
       if (preference !== 'auto') throw error;
@@ -248,8 +279,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `[kapibala] 命令解释器不可用，本次禁用 run_command: ${(error as Error).message}`,
       );
     }
-    const isTrusted =
-      trustResult.status === 'trusted' || isProjectTrusted(settings, manager.project.projectRoot);
     const mcpOptions = resolveCliMcpOptions({
       projectRoot: manager.project.projectRoot,
       isProjectTrusted: isTrusted,
@@ -277,9 +306,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           defaultProvider: models.defaultBinding.provider,
           store: handle.store,
           conversationId: handle.conversationId,
-          rootDir: process.cwd(),
+          workspaceRoot: manager.project.projectRoot,
+          executionCwd: startupCwd,
+          rootDir: manager.project.projectRoot,
           projectRoot: manager.project.projectRoot,
-          cwd: process.cwd(),
+          cwd: startupCwd,
           gitBranch: manager.project.gitBranch,
           logger: args.debug ? (message) => console.error(`[DEBUG] ${message}`) : undefined,
           onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
@@ -342,6 +373,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         prompts: promptsCommand,
         prompt: promptCommand,
         help: helpCommand,
+        branch: branchCommand,
+        fork: forkCommand,
+        archive: archiveCommand,
+        agents: agentsCommand,
         exit: async (_args, context) => {
           await context.onExit();
         },
@@ -354,6 +389,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         },
         controller: active,
         dispatcher,
+        runtime: agentRuntime,
         settings,
         settingsPath: sourcePath,
         onModelSwitched: (newProfileId) => {
@@ -398,6 +434,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         approvalChannel,
       });
     } finally {
+      if (agentRuntime) await agentRuntime.close();
       if (controller) await controller.close();
       else await manager.close();
     }

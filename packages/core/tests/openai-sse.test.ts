@@ -122,6 +122,7 @@ describe('OpenAICompatibleProvider', () => {
       } as Response;
     });
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: {
         id: 'deepseek-flash',
         name: 'DeepSeek',

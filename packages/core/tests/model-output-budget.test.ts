@@ -142,7 +142,10 @@ describe('purpose output budgets', () => {
     'rejects invalid profile output ceiling %s in every purpose before model requests',
     async (maxOutputTokens) => {
       expect(() => createContextBudget('1M', maxOutputTokens)).toThrow(/output/i);
-      const manager = new ContextManager({ conversationId: 'budget-fixture' });
+      const manager = new ContextManager({
+        conversationId: 'budget-fixture',
+        projectRoot: process.cwd(),
+      });
       await expect(
         prepared(manager.prepare(request.messages, request, { ...profile, maxOutputTokens })),
       ).rejects.toThrow(/output/i);
@@ -162,7 +165,10 @@ describe('purpose output budgets', () => {
   it.each([4096, 16384, 32768, 2048])(
     'uses Profile ceiling %s consistently in prepared request and context inspection',
     async (maxOutputTokens) => {
-      const manager = new ContextManager({ conversationId: 'budget-fixture' });
+      const manager = new ContextManager({
+        conversationId: 'budget-fixture',
+        projectRoot: process.cwd(),
+      });
       const selected = { ...profile, maxOutputTokens };
       const result = await prepared(manager.prepare(request.messages, request, selected));
       expect(result.maxTokens).toBe(maxOutputTokens);
@@ -174,7 +180,10 @@ describe('purpose output budgets', () => {
   );
 
   it('uses a lower explicit request ceiling for both reserve and provider field', async () => {
-    const manager = new ContextManager({ conversationId: 'budget-fixture' });
+    const manager = new ContextManager({
+      conversationId: 'budget-fixture',
+      projectRoot: process.cwd(),
+    });
     const selected = { ...profile, maxOutputTokens: 32768 };
     const lower = { ...request, maxTokens: 1536 };
     const result = await prepared(manager.prepare(request.messages, lower, selected));
@@ -184,7 +193,10 @@ describe('purpose output budgets', () => {
   });
 
   it('prevents request overrides from raising the Profile ceiling', async () => {
-    const manager = new ContextManager({ conversationId: 'budget-fixture' });
+    const manager = new ContextManager({
+      conversationId: 'budget-fixture',
+      projectRoot: process.cwd(),
+    });
     const selected = { ...profile, maxOutputTokens: 2048 };
     const result = await prepared(
       manager.prepare(request.messages, { ...request, maxTokens: 32768 }, selected),
@@ -196,7 +208,10 @@ describe('purpose output budgets', () => {
   it.each([0, -1, 1.1, Number.NaN, Number.POSITIVE_INFINITY])(
     'rejects invalid request override %s even when Profile ceiling is valid',
     async (maxTokens) => {
-      const manager = new ContextManager({ conversationId: 'budget-fixture' });
+      const manager = new ContextManager({
+        conversationId: 'budget-fixture',
+        projectRoot: process.cwd(),
+      });
       const invalid = { ...request, maxTokens };
       await expect(
         prepared(

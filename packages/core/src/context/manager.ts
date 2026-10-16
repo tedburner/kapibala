@@ -4,6 +4,7 @@ import {
   AbortError,
   ContextBudgetError,
   ContextStorageError,
+  KapibalaError,
   ModelError,
   describeModelError,
 } from '../errors/index.js';
@@ -162,8 +163,8 @@ export interface ContextManagerOptions {
   onDiagnostic?: (message: string) => void;
   /** 摘要角色绑定来源；缺省时跳过二级摘要，仅保留一级剪裁。 */
   router?: ModelRouter;
-  /** 转发给文件观察提取；项目根不作为历史工具相对路径的推断依据。 */
-  projectRoot?: string;
+  /** 转发给文件观察提取；必须显式指定物理项目根绝对路径，禁止缺省隐式回退。 */
+  projectRoot: string;
   /** 当前已注册的内置工具名集合；剪裁白名单只认可其中的内置只读工具。 */
   builtInToolNames?: () => ReadonlySet<string>;
   /** 每个摘要 attempt 的使用量回调；在候选校验前触发，失败摘要仍计消耗。 */
@@ -182,6 +183,12 @@ export class ContextManager {
   private readonly persistence: ContextSnapshot['persistence'];
 
   constructor(private readonly options: ContextManagerOptions) {
+    if (!options.projectRoot) {
+      throw new KapibalaError('Project root is required for ContextManager', {
+        code: 'WORKSPACE_ROOT_REQUIRED',
+        safeMessage: '必须显式指定项目根路径',
+      });
+    }
     this.estimator = options.estimator ?? new UnicodeTokenEstimator();
     this.persistence = !options.store
       ? 'memory'
@@ -453,7 +460,7 @@ export class ContextManager {
           if (request.signal?.aborted) throw new AbortError();
           const service = new SummaryService({
             router: this.options.router,
-            projectRoot: this.options.projectRoot ?? '.',
+            projectRoot: this.options.projectRoot,
             estimator: this.estimator,
             onUsage: async (attemptId, usage, modelId) => {
               await this.commit('usage', {
@@ -737,7 +744,7 @@ export class ContextManager {
         return false;
       const expectedDetails = extractFileDetails(
         history.slice(previousEnd + 1, end + 1),
-        this.options.projectRoot ?? process.cwd(),
+        this.options.projectRoot,
         this.checkpoint?.details,
       );
       if (stableSerialize(checkpoint.details) !== stableSerialize(expectedDetails)) return false;

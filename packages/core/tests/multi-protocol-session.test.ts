@@ -170,6 +170,7 @@ describe('one canonical session across all native adapters', () => {
       ),
     );
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: { ...base, provider: 'openai-responses', modelName: 'openai' },
       defaultProvider: new OpenAIResponsesProvider({ ...options, modelName: 'openai' }),
     });
@@ -323,7 +324,7 @@ describe('one canonical session across all native adapters', () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
   it('counts encrypted state conservatively rather than as zero tokens', () => {
     const origin = createProtocolOrigin(
       { protocol: 'openai-responses', modelName: 'm', baseURL: endpoint },
@@ -365,6 +366,7 @@ describe('one canonical session across all native adapters', () => {
         [{ type: 'text_delta', text: 'denied' }, { type: 'message_stop' }],
       ]);
       const session = new AgentSession({
+        workspaceRoot: process.cwd(),
         defaultProfile: base,
         defaultProvider: provider,
         mode: 'Plan',

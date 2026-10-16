@@ -39,6 +39,7 @@ describe('explicit scenario routing', () => {
       ],
     ]);
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: profile,
       defaultProvider: fallback,
       mode: 'Plan',
@@ -59,7 +60,11 @@ describe('explicit scenario routing', () => {
   });
   it('rejects an unbound explicit role before recording input or requesting default', async () => {
     const provider = new CaptureProvider([]);
-    const session = new AgentSession({ defaultProfile: profile, defaultProvider: provider });
+    const session = new AgentSession({
+      workspaceRoot: process.cwd(),
+      defaultProfile: profile,
+      defaultProvider: provider,
+    });
     await expect(drain(session, 'fast')).rejects.toThrow(/not configured/);
     expect(provider.captured).toHaveLength(0);
     expect(session.getHistory()).toEqual([]);
@@ -68,7 +73,11 @@ describe('explicit scenario routing', () => {
   it('selection is explicit, idle only, and ordinary runs use default', async () => {
     const fallback = new CaptureProvider([]);
     const planner = new CaptureProvider([]);
-    const session = new AgentSession({ defaultProfile: profile, defaultProvider: fallback });
+    const session = new AgentSession({
+      workspaceRoot: process.cwd(),
+      defaultProfile: profile,
+      defaultProvider: fallback,
+    });
     session.switchModel({ ...profile, id: 'planner' }, 'planning', planner);
     expect(session.getModelRole()).toBe('default');
     await drain(session);
@@ -84,6 +93,7 @@ describe('explicit scenario routing', () => {
     const provider = new CaptureProvider([]) as CaptureProvider & ModelProvider;
     Object.defineProperty(provider, 'credentialsReady', { value: false });
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: profile,
       defaultProvider: new CaptureProvider([]),
     });

@@ -34,6 +34,7 @@ describe('Step Logs and TurnMetrics', () => {
 
   it('should emit step_log and turn_finish with TurnMetrics', async () => {
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: profile,
       defaultProvider: new MockMetricProvider(),
     });
@@ -92,7 +93,11 @@ describe('Step Logs and TurnMetrics', () => {
         },
       ],
     ]);
-    const session = new AgentSession({ defaultProfile: profile, defaultProvider: provider });
+    const session = new AgentSession({
+      workspaceRoot: process.cwd(),
+      defaultProfile: profile,
+      defaultProvider: provider,
+    });
     for (const tool of makeEchoToolRegistry().list()) session.tools.register(tool);
 
     const runFinishes: any[] = [];
@@ -140,6 +145,7 @@ describe('Step Logs and TurnMetrics', () => {
       ],
     ]);
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: { ...profile, contextWindow: '1M' },
       defaultProvider: provider,
     });
@@ -162,7 +168,11 @@ describe('Step Logs and TurnMetrics', () => {
     const provider = new ScriptedProvider([
       [{ type: 'text_delta', text: 'done' }, { type: 'message_stop' }],
     ]);
-    const session = new AgentSession({ defaultProfile: profile, defaultProvider: provider });
+    const session = new AgentSession({
+      workspaceRoot: process.cwd(),
+      defaultProfile: profile,
+      defaultProvider: provider,
+    });
 
     for await (const _event of session.run('provider without usage')) {
       // consume the full run
@@ -194,6 +204,7 @@ describe('Step Logs and TurnMetrics', () => {
     ]);
     let requests = 0;
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: { ...profile, contextWindow: '1M' },
       defaultProvider: {
         name: 'failed-metrics',
@@ -223,12 +234,14 @@ describe('Step Logs and TurnMetrics', () => {
     expect(
       () =>
         new AgentSession({
+          workspaceRoot: process.cwd(),
           defaultProfile: { ...profile, contextWindow: -1 },
           defaultProvider: new MockMetricProvider(),
         }),
     ).toThrow(/contextWindow/i);
 
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: profile,
       defaultProvider: new MockMetricProvider(),
     });
@@ -254,7 +267,11 @@ describe('Step Logs and TurnMetrics', () => {
       ],
       [{ type: 'text_delta', text: 'recovered' }, { type: 'message_stop' }],
     ]);
-    const session = new AgentSession({ defaultProfile: mutableProfile, defaultProvider: provider });
+    const session = new AgentSession({
+      workspaceRoot: process.cwd(),
+      defaultProfile: mutableProfile,
+      defaultProvider: provider,
+    });
     let invalidateProfile = true;
     session.hooks.on('model:after', async () => {
       if (invalidateProfile) mutableProfile.contextWindow = -1;
@@ -283,6 +300,7 @@ describe('Step Logs and TurnMetrics', () => {
       ],
     ]);
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: profile,
       defaultProvider: provider,
       maxSteps: 1,

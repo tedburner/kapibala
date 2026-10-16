@@ -52,7 +52,11 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   context.confirm = (prompt) => input.confirm(prompt);
   context.select = (config) => input.select(config);
   options.approvalChannel?.bind((request, signal) => input.approve(request, signal));
-  const statusRenderer = createEventRenderer({ debug, outputDetail: options.outputDetail });
+  const statusRenderer = createEventRenderer({
+    debug,
+    outputDetail: options.outputDetail,
+    runtime: context.runtime,
+  });
   context.renderEvent = (event) => statusRenderer.render(event);
   const busy = () => options.controller?.isBusy() ?? session().isBusy();
   const prompt = () =>
@@ -69,7 +73,11 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   const runTask = async (operation: (signal: AbortSignal) => AsyncIterable<SessionEvent>) => {
     const abort = new AbortController();
     fallbackAbort = abort;
-    const renderer = createEventRenderer({ debug, outputDetail: options.outputDetail });
+    const renderer = createEventRenderer({
+      debug,
+      outputDetail: options.outputDetail,
+      runtime: context.runtime,
+    });
     activeRenderer = renderer;
     const unbindToggle = input.onDetailToggle(() => renderer.toggleDetail());
     const unbindInteraction = input.onInteraction(() => renderer.invalidateAnchor());

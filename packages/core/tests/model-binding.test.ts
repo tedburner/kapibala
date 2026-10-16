@@ -24,20 +24,32 @@ describe('model bindings', () => {
     { baseURL: 'http://other/v1' },
     { provider: 'anthropic' as const },
   ])('rejects mismatched replacement and retains the old binding: %j', (override) => {
-    const session = new AgentSession({ defaultProfile: profile, defaultProvider: makeProvider() });
+    const session = new AgentSession({
+      workspaceRoot: process.cwd(),
+      defaultProfile: profile,
+      defaultProvider: makeProvider(),
+    });
     expect(() => session.switchModel({ ...profile, ...override })).toThrow(/binding|provider/i);
     expect(session.getActiveProfile()).toMatchObject(profile);
   });
 
   it('rejects an explicitly supplied mismatched provider', () => {
-    const session = new AgentSession({ defaultProfile: profile, defaultProvider: makeProvider() });
+    const session = new AgentSession({
+      workspaceRoot: process.cwd(),
+      defaultProfile: profile,
+      defaultProvider: makeProvider(),
+    });
     expect(() =>
       session.switchModel({ ...profile, modelName: 'other' }, 'planning', makeProvider()),
     ).toThrow(/binding|provider/i);
   });
 
   it('allows label changes with an unchanged request target', () => {
-    const session = new AgentSession({ defaultProfile: profile, defaultProvider: makeProvider() });
+    const session = new AgentSession({
+      workspaceRoot: process.cwd(),
+      defaultProfile: profile,
+      defaultProvider: makeProvider(),
+    });
     session.switchModel({ ...profile, name: 'Renamed' });
     expect(session.getActiveProfile().name).toBe('Renamed');
   });

@@ -161,7 +161,15 @@ export class CliInputCoordinator {
         options?.signal?.removeEventListener('abort', onAbort);
         (this.rl as unknown as { line: string }).line = '';
         (this.rl as unknown as { cursor: number }).cursor = 0;
-        if (secret) this.output.write('\n');
+        if (secret) {
+          this.output.write('\n');
+          if (this.secretOutputBuffer.length > 0) {
+            for (const chunk of this.secretOutputBuffer) {
+              this.output.write(chunk);
+            }
+            this.secretOutputBuffer.length = 0;
+          }
+        }
         if (error) reject(error);
         else resolve(value ?? '');
       };
@@ -171,6 +179,28 @@ export class CliInputCoordinator {
       this.output.write(prompt);
       this.rl.resume();
     });
+  }
+
+  private readonly secretOutputBuffer: string[] = [];
+
+  /**
+   * 当前是否处于不回显的秘密输入状态（如录入 API Key）。
+   */
+  isSecret(): boolean {
+    return Boolean(this.pending?.secret);
+  }
+
+  /**
+   * 写入受守卫保护的终端输出。
+   * 若当前处于秘密输入中，自动将输出缓冲，直到秘密输入完成再按序刷新至终端，
+   * 避免后台任务事件打断或泄漏秘密输入提示。
+   */
+  writeGuarded(chunk: string): void {
+    if (this.isSecret()) {
+      this.secretOutputBuffer.push(chunk);
+      return;
+    }
+    this.output.write(chunk);
   }
 
   /** 密钥输入不回显，也不转发为后续菜单、审批或聊天输入。 */

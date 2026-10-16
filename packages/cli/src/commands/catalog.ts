@@ -59,6 +59,59 @@ const mcp = (args: string[]) => {
   return '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server>]';
 };
 
+const history = (args: string[]) => {
+  if (args.length === 0) return undefined;
+  if (args[0] === '--tree' || args[0] === '--agents') {
+    return args.length === 1 ? undefined : '选项 --tree 与 --agents 不接受额外参数';
+  }
+  if (args[0] === '--all') {
+    return args.length === 1 || (args.length === 2 && /^[1-9]\d*$/.test(args[1]))
+      ? undefined
+      : '用法: /history --all [页码]';
+  }
+  if (args[0] === '--search' || args[0] === '-s') {
+    return args.length >= 2 ? undefined : '用法: /history --search <关键词>';
+  }
+  return integer(args);
+};
+
+const branch = (args: string[]) => {
+  if (args.length === 0) return undefined;
+  if (args[0] === 'switch') {
+    return args.length === 2 && args[1].trim() ? undefined : '用法: /branch switch <branchId>';
+  }
+  if (args[0] === 'create') {
+    return args.length >= 2 && args[1].trim()
+      ? undefined
+      : '用法: /branch create <recordId> [branchName]';
+  }
+  if (args.length <= 2) return undefined;
+  return '用法: /branch [recordId [name]] | /branch switch <branchId>';
+};
+
+const archive = (args: string[]) => {
+  if (args.length === 0)
+    return '用法: /archive <id> | /archive list [page] | /archive restore <id>';
+  if (args[0] === 'list') {
+    return args.length === 1 || (args.length === 2 && /^[1-9]\d*$/.test(args[1]))
+      ? undefined
+      : '用法: /archive list [page]';
+  }
+  if (args[0] === 'restore') {
+    return args.length === 2 && args[1].trim() ? undefined : '用法: /archive restore <id>';
+  }
+  return args.length === 1 ? undefined : '用法: /archive <id>';
+};
+
+const agents = (args: string[]) => {
+  if (args.length === 0) return undefined;
+  const sub = args[0];
+  if (sub === 'show' || sub === 'cancel' || sub === 'collect') {
+    return args.length === 2 && args[1].trim() ? undefined : `用法: /agents ${sub} <agentId>`;
+  }
+  return '用法: /agents [show <id> | cancel <id> | collect <id>]';
+};
+
 /**
  * 解析 /prompt 原始输入行，提取 `<server>/<name>` 与可选参数。
  */
@@ -156,11 +209,45 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'history',
-    usage: '/history [page]',
-    description: '按项目查看历史，每页 20 项',
+    usage:
+      '/history [page] | /history --all [page] | /history --search <query> | /history --tree | /history --agents',
+    description: '查看或全文检索历史；支持跨项目、因果树与子代理任务',
     group: 'session',
     mutates: () => false,
-    validate: (args) => integer(args),
+    validate: history,
+  },
+  {
+    name: 'branch',
+    usage: '/branch [recordId [name]] | /branch switch <branchId>',
+    description: '查看、创建或切换历史因果持久分支',
+    group: 'session',
+    mutates: (args) => args.length > 0,
+    validate: branch,
+  },
+  {
+    name: 'fork',
+    usage: '/fork [title]',
+    description: '从当前活动路径导出全新独立会话',
+    group: 'session',
+    rawTail: true,
+    mutates: () => true,
+    validate: one,
+  },
+  {
+    name: 'archive',
+    usage: '/archive <id> | /archive list [page] | /archive restore <id>',
+    description: '查看已归档会话或逻辑归档/恢复指定会话',
+    group: 'session',
+    mutates: (args) => args[0] !== 'list',
+    validate: archive,
+  },
+  {
+    name: 'agents',
+    usage: '/agents [show <id> | cancel <id> | collect <id>]',
+    description: '查看后台子代理任务树状态、取消或收集结果',
+    group: 'diagnostic',
+    mutates: (args) => args[0] === 'cancel' || args[0] === 'collect',
+    validate: agents,
   },
   {
     name: 'rename',

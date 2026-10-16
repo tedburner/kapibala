@@ -326,6 +326,7 @@ describe('MCP Prompt End-to-End runPreparedTask & Events Integration', () => {
 
     // 创建内存 AgentSession 执行 runPreparedTask
     const agentSession = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: dummyProfile,
       defaultProvider: dummyProvider,
     });
@@ -400,6 +401,7 @@ describe('MCP Prompt End-to-End runPreparedTask & Events Integration', () => {
     };
 
     const agentSession = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: dummyProfile,
       defaultProvider: mockProvider as any,
       store: failingStore,

@@ -29,12 +29,26 @@
 | **v0.0.4** | **多协议与场景模型路由**（已发布；[发布说明](releases/v0.0.4.md)，[验收记录](verification/v0.0.4.md)） | Anthropic 原生 Messages、OpenAI 原生 Responses、现有 Chat Completions 兼容层加固；共享合法历史与完整工具事务，扩展 `default` / `summary` 路由并落地 `fast` / `planning` / `execution` 显式场景选择，提供结构化思考事件基础；小模型意图分类留待后续 | Core + CLI 增量 |
 | **v0.0.5** | **技能体系与过程输出折叠**（已发布；[发布说明](releases/v0.0.5.md)，[验收记录](verification/v0.0.5.md)） | 有界 SkillRegistry、按需加载、受控资源、来源落盘与只收紧权限；`/skills` / `/skill`、技能名 Tab、Ctrl+O、完整详情重定向；[迁移说明](migration/v0.0.5.md) | Core + CLI 增量 |
 | **v0.0.6** | **MCP 生态扩展**（已发布；[发布说明](releases/v0.0.6.md)，[验收记录](verification/v0.0.6.md)，[迁移说明](migration/v0.0.6.md)） | 独立包接入 Stdio 与 Streamable HTTP；工具按 source 原子上下线、run 稳定声明与即时撤销，启动和调用分别授权；Prompt 可搜索并由固定 `/prompt` 入口调用；缓存压缩专项另行排期 | `@kiturone/kapibala-mcp` |
-| **v0.0.7** | **会话增强与多智能体** | 基于 v0.0.3 的独立会话、Envelope 因果 `parentId` 与基本 SessionManager，增强跨项目全文检索、历史分叉（DAG 树）、归档与多会话协调；清理 Core 对全局 `process.cwd()` 的隐式依赖，实现多工作区并发隔离；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理权限只继承或收紧 | Core + 宿主增量 |
+| **v0.0.7** | **会话增强与多智能体**（已发布；[发布说明](releases/v0.0.7.md)，[验收记录](verification/v0.0.7.md)，[迁移说明](migration/v0.0.7.md)） | 基于 v0.0.3 的独立会话、Envelope 因果 `parentId` 与基本 SessionManager，增强跨项目全文检索、历史分叉（DAG 树）、归档与子代理任务树观测；清理 Core 对全局 `process.cwd()` 的隐式依赖，强制显式 `workspaceRoot`；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理权限只继承或收紧。Worktree 物理隔离、审批冒泡与任务树 Token 分层账本明确未交付 | Core + 宿主增量 |
 | **v0.0.8** | **产品化终端体验** | 现代 TUI、共享前端 ViewModel（供终端与桌面端通用复用）、多任务状态、可扩展状态栏与流式渲染；统一 `/` 命令面板聚合内置 Slash 命令、Skills 与 MCP Prompt（模糊匹配、Tab 补全、Esc 关闭，原始 MCP Tool 不进菜单）；思考过程完成后折叠且可展开 | 独立包 + CLI 增量 |
 | **v0.0.9** | **本地客户端契约与发布前加固** | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；完成审计、预算、宿主隔离与兼容性测试。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
 | **v0.1.0** | **阶段性整合版本** | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约，完成迁移验证与发布流程；不新增客户端类型或运行时子系统 | CLI + Core SDK + 扩展包 |
 | **v0.1.1** | **跨平台桌面客户端 (Electron)** | 基于 Electron 的现代化跨平台桌面客户端（Windows / macOS / Linux）；前端采用现代 Web 技术栈复用流式渲染与 ViewModel，主进程直连复用 Headless Core 与 MCP 模块；支持系统托盘、全局呼出快捷键、富文本思考过程与工具调用交互 | 独立桌面包 (`packages/desktop`) |
 
+
+### v0.0.7 已确认交付边界（2026-10-16）
+
+- 彻底移除 Core 内部对隐式 `process.cwd()` 的依赖，`AgentSession` 构造要求显式 `workspaceRoot` 绝对路径（缺少抛出 `WORKSPACE_ROOT_REQUIRED`），Windows 路径规范化统一走 `fs.realpathSync.native`；
+- `PathSandbox` 重构为会话持有实例，引入 `WorkspaceLeaseCoordinator`（单例 `sharedWorkspaceLeaseCoordinator`）互斥写租约；架构门禁与单测阻止隐式目录操作；
+- 会话升级为 Schema v2 Envelope，分离物理时序与因果链（`parentId`/`branchId`），解耦三大版本号；存量 v1 日志只读保护，`open` 与 `continueRecent` 默认自动创建 `_v2` 升级副本；
+- 持久分支支持 `selectBranch`、`createBranch` 与 `forkSession` 导出独立会话（剥离来源 `upgradeIdentity`、导入历史不计费）；因果回溯校验工具闭合，严禁未闭合工具事务分叉，识别 `history_repair` 叠加记录并拒绝以全局控制记录作为切点；
+- 引入 `AgentRuntime` 后台任务调度器，管理子代理状态机，`spawn_agent` 受理即刻闭合父工具事务；`SubagentOutbox` 以追加日志耐久保存终态与 ACK 并可读回，`SessionInbox` 按 `eventId` 幂等写入父历史；
+- 通知投递为显式拉取：`/agents collect <id>` 注入来源分支，异分支拒绝并提示切换；空闲自动唤醒投递本版未接入；
+- 层级安全限额与权限求交：`deriveChildPolicy` 以父会话真实模式、规则与工具表逐轴收紧求交，内置 5 类角色预设与场景模型路由，`modelOverride` 受理前校验；Plan 模式硬拦截 `agent:spawn`；最大深度熔断与树级槽位/累计额度生效；
+- `CrossProjectSessionCatalog` 支持跨项目全局会话扫描、有界正则 worker（复用单 worker + 随剩余 deadline 收缩超时）熔断检索；支持 `archive_state` 逻辑归档与恢复，运行中会话硬拦截归档；
+- 扩展 CLI 命令：`/history`（--tree/--search/--all/--agents）、`/branch`、`/fork`、`/archive`、`/agents`；终端底栏子代理紧凑状态行与 Ctrl+O 展开详情，秘密输入期间自动缓冲后台异步输出；
+- 本版明确未交付（相关未接线组件已删除）：Git Worktree 物理隔离（`isolation:'worktree'` 受理前显式拒绝）、父终端审批冒泡队列、跨任务树 Token 分层账本、空闲自动投递、`branchWithSummary` 跨分支摘要注入；
+- 全量门禁（112 个测试文件 / 1033 项通过、3 项因 Windows 符号链接权限跳过）通过；进程回收用例按平台分支，本机 Windows `taskkill /T /F` 分支实测通过。
 
 ### v0.0.6 已确认交付边界（2026-10-15）
 

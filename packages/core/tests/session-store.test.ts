@@ -71,6 +71,8 @@ describe('versioned session store', () => {
       ...JSON.parse(lines[1]),
       recordId: 'different',
       parentId: JSON.parse(lines[1]).recordId,
+      seq: 2,
+      prevRecordId: JSON.parse(lines[1]).recordId,
     };
     fs.writeFileSync(file, `${lines.join('\n')}\n${JSON.stringify(duplicate)}\n`);
     await expect(SessionStore.open(file)).rejects.toThrow(/Duplicate message/);

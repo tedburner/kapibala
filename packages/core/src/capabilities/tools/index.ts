@@ -1,6 +1,8 @@
 import type { ToolDefinition, ToolResultExecution } from '../../types/index.js';
 import type { ShellScope } from '../security/permissions.js';
-export type { ToolDefinition, ToolResultExecution };
+import type { PathSandbox } from '../security/sandbox.js';
+import type { ParentPolicySnapshot } from '../security/subagent-policy.js';
+export type { ToolDefinition, ToolResultExecution, ParentPolicySnapshot };
 
 /** 执行能力的最小分类；权限规则、模式裁决与工具元数据声明共用这一词汇表。 */
 export type Capability =
@@ -50,13 +52,33 @@ export interface ToolMetadata {
 
 /** 工具执行期由宿主注入的运行环境；信号取消后工具应尽快清理在途资源再返回。 */
 export interface ToolContext {
-  /** 本次执行的沙箱根目录；文件类工具以此为界解析相对路径并拒绝越界。 */
+  /** 显式工作区物理根路径，经 native realpath 规范化。 */
+  workspaceRoot?: string;
+  /** 显式命令执行工作目录绝对路径（位于 workspaceRoot 内部）。 */
+  executionCwd?: string;
+  /** 会话持有的 PathSandbox 独占实例；文件类工具优先使用此沙箱。 */
+  sandbox?: PathSandbox;
+  /** 兼容别名：本次执行的沙箱根目录；等同于 workspaceRoot。 */
   rootDir: string;
   signal?: AbortSignal;
   logger?: (message: string) => void;
   /** 命令工具在真实进程创建后调用；审计失败时须先回收进程再报告结果未知。 */
   onProcessSpawned?: () => Promise<void>;
   onProgress?: (progress: { elapsedMs: number; outputBytes: number }) => void;
+  /** 子代理调度与后台执行上下文字段。 */
+  sessionId?: string;
+  branchId?: string;
+  runId?: string;
+  toolCallId?: string;
+  depth?: number;
+  agentId?: string;
+  rootTaskId?: string;
+  /** 父事务提交成功后的回调注册器；仅当整批工具消息持久化落盘后才调用。 */
+  onCommitted?: (action: () => void | Promise<void>) => void;
+  /** 任务准备失败或父事务未持久化时的回滚清理动作注册器。 */
+  onRollback?: (action: () => void | Promise<void>) => void;
+  /** 父级会话有效安全策略快照（用于派生子代理时的真实基线求交）。 */
+  parentPolicy?: ParentPolicySnapshot;
 }
 
 /**
@@ -74,7 +96,7 @@ export interface Tool<TInput = Record<string, unknown>, TOutput = unknown> {
   readonly parameters: Record<string, unknown>; // JSON Schema
   readonly metadata?: ToolMetadata;
   /** 声明本次输入的精确执行目标，供审批展示与执行前指纹复核；无固定执行目标的工具不实现。 */
-  approvalScope?(input: TInput, rootDir: string): ShellScope;
+  approvalScope?(input: TInput, rootDir: string, executionCwd?: string): ShellScope;
   /** 本次执行身份；审批缓存与执行前复核消费，缺省保持旧工具规则。 */
   executionIdentity?(input: TInput, rootDir: string): ToolExecutionIdentity;
   /** 无副作用地校验最终参数，不修改参数、不访问远端；异常与拒绝均阻止审批和发送。 */

@@ -47,6 +47,7 @@ describe('CLI explicit protocol and role bindings', () => {
     );
     const binding = host.defaultBinding;
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: binding.profile,
       defaultProvider: binding.provider,
       eventLogger: { record: async () => {}, recordAudit: async () => {} } as never,
@@ -114,6 +115,7 @@ describe('CLI explicit protocol and role bindings', () => {
     const binding = createModelBinding(target, { profiles: [target] });
     expect(binding.profile.baseURL).toBe('https://overridden.example/v1');
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: binding.profile,
       defaultProvider: binding.provider,
       eventLogger: { record: async () => {}, recordAudit: async () => {} } as never,
@@ -131,6 +133,7 @@ describe('CLI explicit protocol and role bindings', () => {
     const host = new CliModelBindings(settings, target);
     const binding = host.defaultBinding;
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: binding.profile,
       defaultProvider: binding.provider,
       eventLogger: { record: async () => {}, recordAudit: async () => {} } as never,
@@ -161,6 +164,7 @@ describe('CLI explicit protocol and role bindings', () => {
     );
     const binding = host.defaultBinding;
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: binding.profile,
       defaultProvider: binding.provider,
       eventLogger: { record: async () => {}, recordAudit: async () => {} } as never,
@@ -187,6 +191,7 @@ describe('CLI explicit protocol and role bindings', () => {
     const host = new CliModelBindings(settings, normal, undefined, true);
     expect(host.defaultBinding.provider.credentialsReady).toBe(false);
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: host.defaultBinding.profile,
       defaultProvider: host.defaultBinding.provider,
       eventLogger: { record: async () => {}, recordAudit: async () => {} } as never,
@@ -209,6 +214,7 @@ describe('CLI explicit protocol and role bindings', () => {
     const host = new CliModelBindings(settings, normal);
     const makeSession = () =>
       new AgentSession({
+        workspaceRoot: process.cwd(),
         defaultProfile: host.defaultBinding.profile,
         defaultProvider: host.defaultBinding.provider,
         eventLogger: { record: async () => {}, recordAudit: async () => {} } as never,
@@ -236,6 +242,7 @@ describe('CLI explicit protocol and role bindings', () => {
     const host = new CliModelBindings(settings, normal);
     const oldDefault = host.defaultBinding.provider;
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: host.defaultBinding.profile,
       defaultProvider: oldDefault,
       eventLogger: { record: async () => {}, recordAudit: async () => {} } as never,
@@ -266,6 +273,7 @@ describe('CLI explicit protocol and role bindings', () => {
     };
     const host = new CliModelBindings(settings, { ...normal, baseURL: 'https://gw-b.example/v1' });
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: host.defaultBinding.profile,
       defaultProvider: host.defaultBinding.provider,
       eventLogger: { record: async () => {}, recordAudit: async () => {} } as never,

@@ -18,6 +18,17 @@ describe('Headless Core architecture boundary', () => {
       ]),
     ).toMatchObject([{ rule: 'runtime-context' }]);
   });
+
+  it('rejects implicit process.cwd() usage in Core', () => {
+    expect(
+      findCoreHostBoundaryViolations([
+        {
+          file: 'src/context/some-file.ts',
+          source: 'const current = process.cwd();',
+        },
+      ]),
+    ).toMatchObject([{ rule: 'runtime-context' }]);
+  });
   it('detects terminal rendering and CLI dependencies', () => {
     const violations = findCoreHostBoundaryViolations([
       { file: 'stdout.ts', source: 'process.stdout.write("hello");' },

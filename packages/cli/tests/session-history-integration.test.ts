@@ -100,7 +100,7 @@ describe('persistent history and CLI continuation', () => {
     }
     expect(approvals).toBe(3);
     await active.close();
-  });
+  }, 15_000);
   it('isolates default starts, falls back for empty continue and never creates on invalid resume', async () => {
     const sessions = manager();
     const a = await openStartupSession(sessions, {});

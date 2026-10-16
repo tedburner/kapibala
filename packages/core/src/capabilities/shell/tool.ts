@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { isPathInside, toNativePhysicalPath } from '../../context/workspace.js';
 import { KapibalaError } from '../../errors/index.js';
 import { commandAuditSummary, executionFingerprint } from '../../extensibility/logging/index.js';
 import type { ShellScope } from '../security/permissions.js';
@@ -85,11 +86,24 @@ function utf8Prefix(bytes: Buffer, limit: number): Buffer {
   return bytes.subarray(0, end);
 }
 
-function effectiveCwd(input: RunCommandInput, rootDir: string): string {
-  const requested = input.cwd ? path.resolve(rootDir, input.cwd) : rootDir;
-  const real = fs.realpathSync(requested);
-  if (!fs.statSync(real).isDirectory())
+function effectiveCwd(
+  input: RunCommandInput,
+  rootDir: string,
+  defaultExecutionCwd?: string,
+): string {
+  const baseDir = defaultExecutionCwd ?? rootDir;
+  const requested = input.cwd
+    ? path.isAbsolute(input.cwd)
+      ? input.cwd
+      : path.resolve(baseDir, input.cwd)
+    : baseDir;
+  const real = toNativePhysicalPath(requested);
+  if (!fs.existsSync(real) || !fs.statSync(real).isDirectory()) {
     throw new Error('Command working directory is not a directory');
+  }
+  if (!isPathInside(rootDir, real)) {
+    throw new Error(`Command working directory escapes workspace: '${real}' outside '${rootDir}'`);
+  }
   return real;
 }
 
@@ -125,9 +139,8 @@ function directScriptDigest(
     : /^\.\/([A-Za-z0-9_./-]+\.ps1)$/i.exec(normalized);
   if (!match) return undefined;
   try {
-    const script = fs.realpathSync(path.resolve(cwd, match[1]!));
-    const relative = path.relative(cwd, script);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) return undefined;
+    const script = toNativePhysicalPath(path.resolve(cwd, match[1]!));
+    if (!isPathInside(cwd, script)) return undefined;
     const stat = fs.statSync(script);
     if (!stat.isFile() || stat.size > 1024 * 1024) return undefined;
     return createHash('sha256')
@@ -388,14 +401,15 @@ export function createRunCommandTool(
       },
       required: ['command'],
     },
-    approvalScope(input, rootDir): ShellScope {
+    approvalScope(input, rootDir, executionCwd?): ShellScope {
       validateCommand(input);
-      const cwd = effectiveCwd(input, rootDir);
+      const cwd = effectiveCwd(input, rootDir, executionCwd);
       const timeoutMs = effectiveTimeout(input);
       const scriptDigest = directScriptDigest(input.command, environment.kind, cwd);
       const stat = fs.statSync(environment.executable);
+      const executablePath = toNativePhysicalPath(environment.executable);
       const executableDigest = createHash('sha256')
-        .update(JSON.stringify([environment.executable, stat.size, stat.mtimeMs]))
+        .update(JSON.stringify([executablePath, stat.size, stat.mtimeMs]))
         .digest('hex');
       const environmentDigest = createHash('sha256')
         .update(JSON.stringify(limitedEnvironment(environment.kind)))
@@ -403,7 +417,7 @@ export function createRunCommandTool(
       return {
         command: input.command,
         interpreter: environment.kind,
-        executablePath: environment.executable,
+        executablePath,
         cwd,
         executableDigest,
         ...(scriptDigest ? { scriptDigest } : {}),
@@ -429,7 +443,7 @@ export function createRunCommandTool(
           safeMessage: 'Command was not started because the run was aborted',
         });
       }
-      const cwd = effectiveCwd(input, ctx.rootDir);
+      const cwd = effectiveCwd(input, ctx.workspaceRoot ?? ctx.rootDir, ctx.executionCwd);
       const timeoutMs = effectiveTimeout(input);
       cleanupCommandResults(ctx.rootDir);
       const nativeGroup = createNativeBashGroup(environment);
