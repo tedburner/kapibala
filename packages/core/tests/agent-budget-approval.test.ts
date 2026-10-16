@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import {
   DEFAULT_MAX_SUBAGENT_DEPTH,
   type ParentPolicySnapshot,
@@ -7,6 +10,16 @@ import {
 import type { Tool } from '../src/capabilities/tools/index.js';
 import { AgentRuntime } from '../src/runtime/agent/runtime.js';
 import { MAX_ACTIVE_TASKS_PER_TREE, MAX_TOTAL_TASKS_PER_TREE } from '../src/runtime/agent/types.js';
+
+/**
+ * 任务树用的工作区身份必须是当前平台真实的绝对路径：写死盘符（如 `F:/Project`）在 POSIX runner 上
+ * 不是绝对路径，会先在 toNativePhysicalPath 处以 CONFIG_INVALID 失败，测不到容量与深度熔断本身。
+ */
+const treeWorkspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-agent-tree-'));
+
+afterAll(() => {
+  fs.rmSync(treeWorkspaceRoot, { recursive: true, force: true });
+});
 
 describe('Agent 任务树容量槽位与深度熔断', () => {
   it('原子容量槽位与累计上限熔断：满 4 槽拒绝并发，满 16 累计永久拒绝', async () => {
@@ -26,8 +39,8 @@ describe('Agent 任务树容量槽位与深度熔断', () => {
       runId: 'run-1',
       toolCallId: 'call_root',
       depth: 0,
-      workspaceRoot: 'F:/Project',
-      executionCwd: 'F:/Project',
+      workspaceRoot: treeWorkspaceRoot,
+      executionCwd: treeWorkspaceRoot,
     };
 
     // 1. 连续预留 4 个活动槽位（达到单树上限）
@@ -132,8 +145,8 @@ describe('Agent 任务树容量槽位与深度熔断', () => {
       mode: 'Auto',
       rules: [],
       availableTools: mockTools,
-      workspaceRoot: 'F:/Project/workspace',
-      executionCwd: 'F:/Project/workspace',
+      workspaceRoot: treeWorkspaceRoot,
+      executionCwd: treeWorkspaceRoot,
       currentDepth: 0,
       maxDepth: DEFAULT_MAX_SUBAGENT_DEPTH, // 3
     };

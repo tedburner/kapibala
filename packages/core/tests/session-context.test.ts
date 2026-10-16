@@ -22,7 +22,9 @@ const profile: ModelProfile = {
 describe('managed session lifecycle and request isolation', () => {
   let directory: string;
   beforeEach(() => {
-    directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-context-'));
+    // 折叠成 native 长路径身份：Windows runner 的 os.tmpdir() 可能是 8.3 短名，
+    // 而会话落盘的 modifiedFiles 一律经 fs.realpathSync.native 规范化，两边写法不同会让期望值假红。
+    directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-context-')));
   });
   afterEach(() => fs.rmSync(directory, { recursive: true, force: true }));
   it('retains file execution paths across subdirectory resumes and checkpoint recovery', async () => {

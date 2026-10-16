@@ -405,7 +405,9 @@ export class CrossProjectSessionCatalog {
         break;
       }
 
-      if (Date.now() > deadline) {
+      // 用 >= 而非 >：timeoutMs 为 0（预算已耗尽）时 Date.now() 可能与 deadline 落在同一毫秒，
+      // 严格大于会让搜索"零文件也宣称完整"，部分结果标记变成不可复现的竞态。
+      if (Date.now() >= deadline) {
         isPartial = true;
         partialReasons.push('search_timeout');
         break;
@@ -567,7 +569,7 @@ export class CrossProjectSessionCatalog {
           break;
         }
 
-        if (params.deadline && Date.now() > params.deadline) {
+        if (params.deadline && Date.now() >= params.deadline) {
           isPartial = true;
           partialReason = 'search_timeout';
           break;

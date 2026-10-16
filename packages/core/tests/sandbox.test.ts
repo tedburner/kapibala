@@ -50,6 +50,17 @@ function detectLinkSupport(): { file: boolean; dir: boolean } {
 
 const linkSupport = detectLinkSupport();
 
+/**
+ * 创建临时目录并立刻折叠成 native 物理长路径身份。
+ *
+ * 为什么必须折叠：PathSandbox 按契约用 `fs.realpathSync.native` 规范化根路径，
+ * 而 Windows runner 的 `os.tmpdir()` 常是 8.3 短名（`C:\Users\RUNNER~1\…`）。
+ * 测试若继续拿原始短名拼期望值，就会把"同一目录的两种写法"误判成越界或路径不等。
+ */
+function canonicalTempDir(prefix: string): string {
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
 /** 建立一个指向 target 的目录链接：优先真符号链接，Windows 无权限时退化为 junction */
 function linkDirectory(target: string, linkPath: string): void {
   try {
@@ -63,7 +74,7 @@ function linkDirectory(target: string, linkPath: string): void {
 }
 
 describe('PathSandbox (词法校验)', () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-sandbox-test-'));
+  const tempDir = canonicalTempDir('kpbl-sandbox-test-');
   const sandbox = new PathSandbox({ rootDir: tempDir });
 
   afterAll(() => {
@@ -107,8 +118,8 @@ describe.skipIf(!linkSupport.dir)('PathSandbox (越界目录链接穿透)', () =
   let outsideDir: string;
 
   beforeEach(() => {
-    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-sandbox-root-'));
-    outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-sandbox-outside-'));
+    rootDir = canonicalTempDir('kpbl-sandbox-root-');
+    outsideDir = canonicalTempDir('kpbl-sandbox-outside-');
     linkDirectory(outsideDir, path.join(rootDir, 'linkDir'));
   });
 
@@ -157,8 +168,8 @@ describe.skipIf(!linkSupport.file)('PathSandbox (越界文件符号链接穿透)
   let outsideDir: string;
 
   beforeEach(() => {
-    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-sandbox-file-root-'));
-    outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-sandbox-file-outside-'));
+    rootDir = canonicalTempDir('kpbl-sandbox-file-root-');
+    outsideDir = canonicalTempDir('kpbl-sandbox-file-outside-');
   });
 
   afterEach(() => {

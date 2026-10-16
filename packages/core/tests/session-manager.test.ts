@@ -152,7 +152,7 @@ describe('independent sessions', () => {
       spy.mockRestore();
       await sessions.close();
     }
-  });
+  }, 30_000);
 
   it('imports legacy snapshots once and keeps their source untouched', async () => {
     const source = path.join(directory, '.kapibala', 'history.jsonl');

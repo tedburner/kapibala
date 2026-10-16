@@ -387,7 +387,11 @@ describe('cross-platform shell discovery and execution', () => {
   }, 15_000);
 
   it('applies all four modes and exact command rules before real execution', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-shell-modes-'));
+    // 根路径先折叠成 native 长路径：会话侧执行目录已按 fs.realpathSync.native 规范化，
+    // 精确 allow 规则的 cwd 必须与同一身份比较，否则 8.3 短名 runner 上规则永远不命中。
+    const root = fs.realpathSync.native(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-shell-modes-')),
+    );
     directories.push(root);
     const environment = detectShell({ cwd: root });
     const tools = new ToolRegistry();

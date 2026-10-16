@@ -270,9 +270,10 @@ export const globTool = defineTool({
   },
   async execute(input: { pattern: string; subDirectory?: string }, ctx) {
     const sandbox = resolveToolSandbox(ctx);
-    const searchRoot = input.subDirectory
-      ? sandbox.resolveSafePath(input.subDirectory)
-      : ctx.rootDir;
+    // 枚举根与相对化基准都取沙箱的 native 物理根：宿主传入的 rootDir 可能是 Windows 8.3 短名或
+    // 软链接别名，与 resolveSafePath 的长路径身份混用会让 path.relative 产出 "../.." 逃逸串。
+    const relBase = sandbox.workspaceRoot;
+    const searchRoot = input.subDirectory ? sandbox.resolveSafePath(input.subDirectory) : relBase;
 
     if (!fs.existsSync(searchRoot)) {
       throw new ToolError(`Directory not found: ${input.subDirectory ?? '.'}`);
@@ -289,7 +290,7 @@ export const globTool = defineTool({
           continue;
         }
         const fullPath = path.join(currentDir, entry.name);
-        const relPath = path.relative(ctx.rootDir, fullPath).replace(/\\/g, '/');
+        const relPath = path.relative(relBase, fullPath).replace(/\\/g, '/');
 
         if (entry.isDirectory()) {
           walk(fullPath);
@@ -334,7 +335,10 @@ export const grepTool = defineTool({
   async execute(input: { pattern: string; path?: string }, ctx) {
     if (ctx.signal?.aborted) throw new AbortError();
     const sandbox = resolveToolSandbox(ctx);
-    const target = input.path ? sandbox.resolveSafePath(input.path) : ctx.rootDir;
+    // 与 list_dir 同理：命中行的相对路径必须以沙箱 native 物理根为基准，否则短名/软链接别名根
+    // 会渲染成 "../../…" 这种对模型无意义且无法回读的路径。
+    const relBase = sandbox.workspaceRoot;
+    const target = input.path ? sandbox.resolveSafePath(input.path) : relBase;
 
     if (!fs.existsSync(target)) {
       throw new ToolError(`Path not found: ${input.path ?? '.'}`);
@@ -351,7 +355,7 @@ export const grepTool = defineTool({
       const maxLineBytes = 512 * 1024;
       const maxOutputBytes = 512 * 1024;
       const stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
-      const relPath = path.relative(ctx.rootDir, filePath).replace(/\\/g, '/');
+      const relPath = path.relative(relBase, filePath).replace(/\\/g, '/');
       let lineNumber = 0;
       let pending = '';
       let skippingLongLine = false;
