@@ -4,16 +4,15 @@ import { AbortError, ToolError } from '../../../errors/index.js';
 import { PathSandbox } from '../../security/sandbox.js';
 import { defineTool } from '../index.js';
 
-// PathSandbox 会缓存 rootDir 的 realpath，按 rootDir 复用实例避免每次调用重建缓存
-const sandboxCache = new Map<string, PathSandbox>();
+import type { ToolContext } from '../index.js';
 
-function getSandbox(rootDir: string): PathSandbox {
-  let sandbox = sandboxCache.get(rootDir);
-  if (!sandbox) {
-    sandbox = new PathSandbox({ rootDir });
-    sandboxCache.set(rootDir, sandbox);
-  }
-  return sandbox;
+/**
+ * 优先复用调用上下文由 AgentSession 持有的 PathSandbox 独占实例，
+ * 缺失时根据上下文根路径创建独立实例，杜绝全局模块级单例缓存串扰。
+ */
+function resolveToolSandbox(ctx: ToolContext): PathSandbox {
+  if (ctx.sandbox) return ctx.sandbox;
+  return new PathSandbox({ workspaceRoot: ctx.workspaceRoot ?? ctx.rootDir });
 }
 
 // 1. read_file
@@ -43,7 +42,7 @@ export const readFileTool = defineTool({
     required: ['path'],
   },
   async execute(input: { path: string; startLine?: number; endLine?: number }, ctx) {
-    const sandbox = getSandbox(ctx.rootDir);
+    const sandbox = resolveToolSandbox(ctx);
     const safePath = sandbox.resolveSafePath(input.path);
 
     if (!fs.existsSync(safePath)) {
@@ -173,7 +172,7 @@ export const writeFileTool = defineTool({
     required: ['path', 'content'],
   },
   async execute(input: { path: string; content: string }, ctx) {
-    const sandbox = getSandbox(ctx.rootDir);
+    const sandbox = resolveToolSandbox(ctx);
     const safePath = sandbox.resolveSafePath(input.path);
 
     const dir = path.dirname(safePath);
@@ -213,7 +212,7 @@ export const editFileTool = defineTool({
     required: ['path', 'targetContent', 'replacementContent'],
   },
   async execute(input: { path: string; targetContent: string; replacementContent: string }, ctx) {
-    const sandbox = getSandbox(ctx.rootDir);
+    const sandbox = resolveToolSandbox(ctx);
     const safePath = sandbox.resolveSafePath(input.path);
 
     if (!fs.existsSync(safePath)) {
@@ -270,7 +269,7 @@ export const globTool = defineTool({
     required: ['pattern'],
   },
   async execute(input: { pattern: string; subDirectory?: string }, ctx) {
-    const sandbox = getSandbox(ctx.rootDir);
+    const sandbox = resolveToolSandbox(ctx);
     const searchRoot = input.subDirectory
       ? sandbox.resolveSafePath(input.subDirectory)
       : ctx.rootDir;
@@ -334,7 +333,7 @@ export const grepTool = defineTool({
   },
   async execute(input: { pattern: string; path?: string }, ctx) {
     if (ctx.signal?.aborted) throw new AbortError();
-    const sandbox = getSandbox(ctx.rootDir);
+    const sandbox = resolveToolSandbox(ctx);
     const target = input.path ? sandbox.resolveSafePath(input.path) : ctx.rootDir;
 
     if (!fs.existsSync(target)) {

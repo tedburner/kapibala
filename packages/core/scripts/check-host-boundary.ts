@@ -49,6 +49,12 @@ const RULES: Array<{
     pattern: /\\(?:x1b|u001b)/i,
     message: 'Core 不得包含 ANSI 转义或终端渲染内容。',
   },
+  {
+    rule: 'runtime-context',
+    pattern: /\bprocess\.cwd\(\)/,
+    message:
+      'Core 严禁隐式读取当前工作目录 process.cwd()；必须由宿主显式注入 workspaceRoot 与 executionCwd。',
+  },
 ];
 
 export type McpBoundaryRule = 'cli-dependency' | 'core-internal' | 'terminal-io';

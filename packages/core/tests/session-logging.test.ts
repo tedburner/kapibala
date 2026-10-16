@@ -38,6 +38,7 @@ describe('normal-mode structured logging', () => {
     ]);
     let requests = 0;
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: profile,
       defaultProvider: {
         name: 'failed-stream',
@@ -76,6 +77,7 @@ describe('normal-mode structured logging', () => {
     const audit = new MemorySink();
     const diagnostics: string[] = [];
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: profile,
       defaultProvider: new ScriptedProvider([
         [
@@ -108,6 +110,7 @@ describe('normal-mode structured logging', () => {
     const operation = new MemorySink();
     const audit = new MemorySink();
     const session = new AgentSession({
+      workspaceRoot: process.cwd(),
       defaultProfile: profile,
       defaultProvider: new ScriptedProvider([
         [

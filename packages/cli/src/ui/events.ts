@@ -36,6 +36,8 @@ export interface EventRendererOptions {
    * 传函数可在每次渲染时动态取值（跟随终端 resize）；传数字则固定不变。
    */
   columns?: number | (() => number);
+  /** 可选注入的后台任务运行时，用于在状态栏与详情快照中展示子代理状态。 */
+  runtime?: import('@kiturone/kapibala').AgentRuntime;
 }
 
 /** 会话事件渲染契约：render 逐事件输出，finish 收尾（幂等，异常路径可重复调用）。 */
@@ -211,6 +213,7 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
     },
     isTTY = Boolean(process.stdout.isTTY),
     columns = () => process.stdout.columns ?? 120,
+    runtime = options.runtime,
   } = options;
   const currentColumns = (): number => (typeof columns === 'function' ? columns() : columns);
   let isThinking = false;
@@ -458,6 +461,19 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
           text: `工具: ${metrics.toolCalls}次/${formatDuration(metrics.toolDurationMs)}`,
           dropPriority: 3,
         });
+        if (runtime) {
+          const activeTasks = runtime
+            .listTasks()
+            .filter((t) =>
+              ['preparing', 'accepted', 'running', 'waiting_children'].includes(t.status),
+            );
+          if (activeTasks.length > 0) {
+            segments.push({
+              text: `🤖 子代理: ${activeTasks.length}个运行中`,
+              dropPriority: 2,
+            });
+          }
+        }
         if (debug) {
           segments.push({
             text: `模型耗时: ${(metrics.modelDurationMs / 1_000).toFixed(2)}s`,
@@ -509,6 +525,17 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
         write('\n── 本轮过程详情快照 ──\n');
         for (const text of details.values()) write(text);
         if (cacheTruncated) write('\n[过程缓存已截断；完整内容仍按 Core 历史规则保留]\n');
+        if (runtime) {
+          const tasks = runtime.listTasks();
+          if (tasks.length > 0) {
+            write('\n── 后台子代理任务状态 ──\n');
+            for (const t of tasks) {
+              write(
+                `  • [${t.agentId}] (${t.role}) ${t.status} | 来源分支: ${t.origin.originBranchId} | 深度: ${t.origin.depth}\n`,
+              );
+            }
+          }
+        }
         write('\n── 后续过程以详细模式输出 ──\n');
       } else write('\n── 后续过程以摘要模式输出；已显示详情保留在滚动历史 ──\n');
     },

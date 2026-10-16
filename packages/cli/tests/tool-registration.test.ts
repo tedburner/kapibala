@@ -28,4 +28,31 @@ describe('CLI builtin tool registration', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('registers agent management tools declaring agent:spawn capability when runtime is provided', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-agent-reg-'));
+    try {
+      const { AgentRuntime } = require('@kiturone/kapibala');
+      const runtime = new AgentRuntime();
+      const registry = new ToolRegistry();
+      registerBuiltinTools(registry, { cwd: root, runtime, disableShell: true });
+
+      const spawn = registry.get('spawn_agent');
+      const list = registry.get('list_agents');
+      const wait = registry.get('wait_agent');
+      const cancel = registry.get('cancel_agent');
+
+      expect(spawn).toBeDefined();
+      expect(list).toBeDefined();
+      expect(wait).toBeDefined();
+      expect(cancel).toBeDefined();
+
+      expect(spawn?.metadata?.permissions).toContain('agent:spawn');
+      expect(list?.metadata?.permissions).toContain('agent:spawn');
+      expect(wait?.metadata?.permissions).toContain('agent:spawn');
+      expect(cancel?.metadata?.permissions).toContain('agent:spawn');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

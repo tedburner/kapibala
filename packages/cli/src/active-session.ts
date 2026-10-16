@@ -62,7 +62,44 @@ export class ActiveSessionController {
 
   /** 完整 ID 或唯一前缀恢复；目标加载失败保持当前实例和存储绑定。 */
   async resume(id: string): Promise<void> {
-    await this.switchTo(() => this.manager.open(id));
+    await this.switchTo(() => this.manager.open(id, { autoUpgradeLegacy: true }));
+  }
+
+  /**
+   * 重新加载当前会话（用于持久分支切换或状态变更后，重新初始化 AgentSession 并重构内存因果投影）。
+   */
+  async reloadCurrent(): Promise<void> {
+    if (this.closed || this.closing) throw new Error('Active session controller is closing');
+    await this.pendingOperation;
+    await this.pendingSwitch;
+    let finish: () => void = () => {};
+    this.pendingSwitch = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    this.switching = true;
+    try {
+      const prepared = await this.options.factory(this.handle);
+      await prepared.init();
+      const previousSession = this.session;
+      this.current = { handle: this.handle, session: prepared };
+      try {
+        await previousSession.destroy?.();
+      } catch {
+        /* 忽略旧实例清理异常 */
+      }
+      try {
+        this.options.onSwitched?.({
+          type: 'session_switched',
+          conversationId: this.handle.conversationId,
+          previousConversationId: this.handle.conversationId,
+        });
+      } catch {
+        this.report('Session reloaded; host notification failed');
+      }
+    } finally {
+      this.switching = false;
+      finish();
+    }
   }
 
   /** 运行当前任务，同时拥有取消与退出等待句柄；不在切换期间缓存旧实例。 */

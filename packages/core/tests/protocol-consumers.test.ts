@@ -154,6 +154,7 @@ describe('protocol state consumers', () => {
     };
     const manager = new ContextManager({
       conversationId: 'projection',
+      projectRoot: process.cwd(),
       router: new SimpleModelRouter(nativeProfile, provider),
       estimator,
     });

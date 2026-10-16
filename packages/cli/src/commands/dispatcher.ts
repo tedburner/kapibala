@@ -33,6 +33,8 @@ export interface CommandContext {
   renderEvent?: (event: import('@kiturone/kapibala').SessionEvent) => void;
   /** 宿主按本轮渲染与活动会话取消规则消费技能运行流；只读命令不得调用。 */
   runSkill?: (name: string, task: string) => Promise<void>;
+  /** 后台子代理任务树运行时调度器，供 /agents 等命令直接查询与调度。 */
+  runtime?: import('@kiturone/kapibala').AgentRuntime;
   /** 宿主按受控准备与活动会话取消规则消费提示词任务流；只读命令不得调用。 */
   runPreparedTask?: (
     task: string,

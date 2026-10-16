@@ -1,4 +1,4 @@
-import { sanitizeSessionTitle } from '@kiturone/kapibala';
+import { CrossProjectSessionCatalog, sanitizeSessionTitle } from '@kiturone/kapibala';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
 
 function controller(ctx: CommandContext) {
@@ -6,9 +6,130 @@ function controller(ctx: CommandContext) {
   return ctx.controller;
 }
 
-/** 按项目分页列出缓存元数据，不切换、重放工具或改变最近活动时间。 */
+/**
+ * 分页或高级检索列出会话历史。
+ * 支持：
+ * - `/history [page]`：按当前项目分页查看历史；
+ * - `/history --all [page]`：跨项目列出所有全局会话历史；
+ * - `/history --search <query>` 或 `/history -s <query>`：有界全文检索会话内容并展示匹配片段与可续答边界；
+ * - `/history --tree`：展示当前会话的分支因果拓扑；
+ * - `/history --agents`：展示当前会话相关的子代理历史任务。
+ */
 export const historyCommand: CommandHandler = async (args, ctx) => {
   const active = controller(ctx);
+
+  // 1. 因果树视图: /history --tree
+  if (args.includes('--tree')) {
+    const store = active.handle.store;
+    if (typeof store.getBranches !== 'function') {
+      console.log('当前会话存储格式不支持因果分支树查看。');
+      return;
+    }
+    const branches = await store.getBranches();
+    const activeBranchId = store.getActiveBranchId?.() ?? 'main';
+    console.log(`会话因果分支拓扑树 [${active.session.conversationId}]:`);
+    for (const b of branches) {
+      const isCurrent = b.branchId === activeBranchId;
+      const marker = isCurrent ? '*' : ' ';
+      console.log(`${marker} 分支 [${b.branchId}] | 消息数: ${b.messageCount}`);
+      console.log(
+        `    └─ 叶子: ${b.leafRecordId} | 创建时间: ${new Date(b.createdAt).toISOString()}`,
+      );
+    }
+    return;
+  }
+
+  // 2. 子代理历史任务: /history --agents
+  if (args.includes('--agents')) {
+    const runtime = ctx.runtime;
+    if (!runtime) {
+      console.log('当前运行时未启用子代理后台调度器。');
+      return;
+    }
+    const tasks = runtime.listTasks();
+    console.log(`当前会话关联的子代理历史任务（共 ${tasks.length} 项）:`);
+    for (const t of tasks) {
+      console.log(
+        `• [${t.agentId}] (${t.role}) 状态: ${t.status} | 深度: ${t.origin.depth} | 描述: ${sanitizeSessionTitle(t.description, 60)}`,
+      );
+    }
+    if (tasks.length === 0) {
+      console.log('暂无子代理历史任务。');
+    }
+    return;
+  }
+
+  // 3. 全文检索: /history --search <query> 或 /history -s <query>
+  const searchIndex = args.findIndex((arg) => arg === '--search' || arg === '-s');
+  if (searchIndex !== -1) {
+    const queryParts = args.slice(searchIndex + 1).filter((arg) => arg !== '--all');
+    const query = queryParts.join(' ').trim();
+    if (!query) {
+      console.log('用法: /history --search <关键词>');
+      return;
+    }
+    const isAll = args.includes('--all');
+    const catalog = new CrossProjectSessionCatalog({
+      onDiagnostic: (msg) => console.error(`[kapibala catalog] ${msg}`),
+    });
+
+    const projectFilter = isAll ? undefined : active.manager.project.projectRoot;
+    const response = await catalog.search(query, {
+      project: projectFilter,
+    });
+
+    const scopeDesc = isAll ? '全局跨项目' : `当前项目 (${active.manager.project.projectRoot})`;
+    console.log(
+      `全文检索 "${query}" [${scopeDesc}] 命中 ${response.hits.length} 项（扫描 ${response.totalSessionsScanned} 个会话，${response.totalRecordsScanned} 条记录）:`,
+    );
+    for (const hit of response.hits) {
+      const resumeBadge = hit.canResume ? '✓ 可续答' : '✗ 只读边界';
+      const timeStr = new Date(hit.timestamp).toISOString();
+      console.log(
+        `\n• 会话: ${hit.conversationId} | 分支: ${hit.branchId} | 角色: ${hit.role} | ${timeStr} [${resumeBadge}]`,
+      );
+      console.log(`  匹配内容: ${sanitizeSessionTitle(hit.snippet, 120)}`);
+    }
+    if (response.hits.length === 0) {
+      console.log('未找到包含该关键词的会话内容。');
+    }
+    if (response.isPartial) {
+      console.log(`\n[提示: 检索受保护机制截断: ${response.partialReasons?.join('; ')}]`);
+    }
+    return;
+  }
+
+  // 4. 全局跨项目列表: /history --all [page]
+  if (args.includes('--all')) {
+    const pageArg = args.find((arg) => arg !== '--all');
+    const pageNum = pageArg ? Number(pageArg) : 1;
+    const catalog = new CrossProjectSessionCatalog();
+    const allEntries = await catalog.scanSessions();
+    allEntries.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+
+    const pageSize = 20;
+    const total = allEntries.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(Math.max(1, pageNum), totalPages);
+    const startIdx = (currentPage - 1) * pageSize;
+    const pagedEntries = allEntries.slice(startIdx, startIdx + pageSize);
+
+    console.log(`全局跨项目历史会话 ${currentPage}/${totalPages}（共 ${total} 项，每页 20 项）:`);
+    for (const item of pagedEntries) {
+      const isCurrent = item.conversationId === active.session.conversationId;
+      const marker = isCurrent ? '*' : ' ';
+      const proj = sanitizeSessionTitle(item.projectRoot, 35);
+      console.log(
+        `${marker} ${item.conversationId} | ${proj} | ${new Date(item.lastActivityAt).toISOString()} | ${item.messageCount} 条 | ${sanitizeSessionTitle(item.title)}`,
+      );
+    }
+    if (pagedEntries.length === 0) {
+      console.log('本页没有历史会话。');
+    }
+    return;
+  }
+
+  // 5. 默认按当前项目分页查看历史
   const page = await active.manager.list(args[0] ? Number(args[0]) : 1);
   console.log(`历史会话 ${page.page}/${page.pages}（${page.total} 项，每页 20 项）`);
   for (const item of page.items)

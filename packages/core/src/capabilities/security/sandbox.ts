@@ -1,80 +1,91 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isPathInside, toNativePhysicalPath } from '../../context/workspace.js';
 import { ToolError } from '../../errors/index.js';
 
-/** 路径沙箱配置；rootDir 是所有文件访问的词法与物理边界。 */
+export { isPathInside, toNativePhysicalPath };
+
+/** 路径沙箱配置；workspaceRoot 是所有文件访问的词法与物理边界。 */
 export interface SandboxConfig {
-  rootDir: string;
+  /** 显式工作区物理根路径。 */
+  workspaceRoot?: string;
+  /** 兼容别名：等同于 workspaceRoot。 */
+  rootDir?: string;
   /**
-   * v0.0.1 恒为严格模式：任何解析后落在 rootDir 之外的物理路径一律拒绝，
-   * 不存在 fail-open 开关。该字段为 v0.0.2 权限引擎预留，当前不改变校验行为。
+   * 严格模式：任何解析后落在 workspaceRoot 之外的物理路径一律拒绝，
+   * 不存在 fail-open 开关。
    */
   allowSymlinks?: boolean;
 }
 
-function tryRealpath(target: string): string | undefined {
+function tryNativeRealpath(target: string): string | undefined {
   try {
-    return fs.realpathSync(target);
+    return fs.realpathSync.native(target);
   } catch {
     return undefined;
   }
 }
 
 /**
- * 把文件访问限制在 rootDir 内：先做词法归一化检查，再展开符号链接做物理检查，两层都通过才放行。
- * 实例会缓存 rootDir 的物理路径，应按 rootDir 复用实例，而不是每次调用新建。
+ * 把文件访问限制在 workspaceRoot 内：先做词法归一化检查，再展开符号链接与 Windows 短名做物理检查，两层都通过才放行。
+ * 由 AgentSession 会话持有独立实例，避免全局单例缓存串扰。
  */
 export class PathSandbox {
+  /** 显式工作区绝对物理根路径。 */
+  readonly workspaceRoot: string;
+  /** 兼容别名：等同于 workspaceRoot。 */
   readonly rootDir: string;
   readonly allowSymlinks: boolean;
   private cachedRealRootDir?: string;
 
   constructor(config: SandboxConfig) {
-    this.rootDir = path.resolve(config.rootDir);
+    const raw = config.workspaceRoot ?? config.rootDir;
+    if (!raw) {
+      throw new ToolError('Sandbox workspace root is required');
+    }
+    this.workspaceRoot = toNativePhysicalPath(raw);
+    this.rootDir = this.workspaceRoot;
     this.allowSymlinks = config.allowSymlinks ?? false;
   }
 
   /**
-   * rootDir 的物理路径。rootDir 自身可能是一个符号链接(如 macOS 的 /var → /private/var)，
-   * 必须先归一化，否则物理路径与 rootDir 比较时会产生误判。
+   * workspaceRoot 的物理路径。经过 toNativePhysicalPath 展开符号链接与 8.3 短名。
    */
   private get realRootDir(): string {
     if (this.cachedRealRootDir === undefined) {
-      this.cachedRealRootDir = tryRealpath(this.rootDir) ?? this.rootDir;
+      this.cachedRealRootDir = tryNativeRealpath(this.workspaceRoot) ?? this.workspaceRoot;
     }
     return this.cachedRealRootDir;
   }
 
   /**
    * 检查并解析安全路径
-   * 1. 解析相对路径为相对于 rootDir 的绝对路径
-   * 2. 词法检查：`..` 归一化后必须仍在 rootDir 内
-   * 3. 物理检查：解析符号链接后的真实路径必须仍在 rootDir 内
+   * 1. 解析相对路径为相对于 workspaceRoot 的绝对路径
+   * 2. 词法检查：`..` 归一化后必须仍在 workspaceRoot 内
+   * 3. 物理检查：解析符号链接与短名后的真实物理路径必须仍在 workspaceRoot 内
    */
   resolveSafePath(targetPath: string): string {
     if (!targetPath || typeof targetPath !== 'string') {
       throw new ToolError('Invalid path: path must be a non-empty string');
     }
 
-    // 处理绝对路径或相对路径
+    // 处理绝对路径或相对路径（相对路径以 workspaceRoot 为基准）
     const resolvedPath = path.isAbsolute(targetPath)
       ? path.resolve(targetPath)
-      : path.resolve(this.rootDir, targetPath);
+      : path.resolve(this.workspaceRoot, targetPath);
 
     // 词法检查：规范化相对路径判定
-    const relative = path.relative(this.rootDir, resolvedPath);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    if (!isPathInside(this.workspaceRoot, resolvedPath)) {
       throw new ToolError(
-        `Access denied: path '${targetPath}' escapes root directory '${this.rootDir}'`,
+        `Access denied: path '${targetPath}' escapes root directory '${this.workspaceRoot}'`,
       );
     }
 
     // 物理检查：必须对"目标尚不存在"的路径同样生效
     const physicalPath = this.toPhysicalPath(resolvedPath);
-    const physicalRelative = path.relative(this.realRootDir, physicalPath);
-    if (physicalRelative.startsWith('..') || path.isAbsolute(physicalRelative)) {
+    if (!isPathInside(this.realRootDir, physicalPath)) {
       throw new ToolError(
-        `Access denied: path '${targetPath}' resolves outside root directory '${this.rootDir}' (via symlink)`,
+        `Access denied: path '${targetPath}' resolves outside root directory '${this.workspaceRoot}' (via symlink)`,
       );
     }
 
@@ -105,7 +116,7 @@ export class PathSandbox {
       if (stat) {
         // 用 realpath 展开符号链接；悬挂符号链接(目标不存在)会在这里失败，
         // 而 writeFileSync 这类调用会顺着它在外部落盘，因此必须直接拒绝。
-        const real = tryRealpath(probe);
+        const real = tryNativeRealpath(probe);
         if (real === undefined) {
           throw new ToolError(
             `Access denied: cannot resolve real path for '${resolvedPath}' (broken or unresolvable symlink)`,

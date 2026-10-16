@@ -14,7 +14,8 @@ export async function openStartupSession(
   options: { continue?: boolean; resume?: string },
 ): Promise<ManagedSession> {
   validateSessionStartup(options);
-  if (options.resume !== undefined) return manager.open(options.resume);
+  if (options.resume !== undefined)
+    return manager.open(options.resume, { autoUpgradeLegacy: true });
   if (options.continue) return manager.continueRecent();
   return manager.create();
 }

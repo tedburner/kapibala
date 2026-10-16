@@ -7,10 +7,17 @@ import {
   stableJsonStringify,
 } from '../../capabilities/security/approval.js';
 import {
+  type WorkspaceLeaseCoordinator,
+  type WorkspaceWriteLease,
+  isWriteOperation,
+} from '../../capabilities/security/lease.js';
+import {
   PermissionPolicy,
   type PermissionRule,
   type SessionMode,
 } from '../../capabilities/security/permissions.js';
+import type { PathSandbox } from '../../capabilities/security/sandbox.js';
+import type { ParentPolicySnapshot } from '../../capabilities/security/subagent-policy.js';
 import type { Tool, ToolContext, ToolExecutionIdentity } from '../../capabilities/tools/index.js';
 import type { ToolRegistry, ToolRegistrySnapshot } from '../../capabilities/tools/registry.js';
 import { KapibalaError } from '../../errors/index.js';
@@ -42,6 +49,14 @@ export interface ExecutorOptions {
   ) => void | Promise<void>;
   tools: ToolRegistry | ToolRegistrySnapshot;
   hooks: HookRegistry;
+  /** 显式工作区物理根路径，经 native realpath 规范化；缺省回退到 rootDir。 */
+  workspaceRoot?: string;
+  /** 显式命令执行工作目录绝对路径（位于 workspaceRoot 内部）；缺省回退到 rootDir。 */
+  executionCwd?: string;
+  /** 会话持有的 PathSandbox 独占实例；文件类工具优先使用此沙箱。 */
+  sandbox?: PathSandbox;
+  /** 共享工作区写租约协调器；并发写入互斥保护。 */
+  leaseCoordinator?: WorkspaceLeaseCoordinator;
   /** 工具执行的绝对根目录；路径解析与审批均以此为基准。 */
   rootDir: string;
   /** 会话级取消信号；与 cancel() 的内部信号合并生效。 */
@@ -52,6 +67,10 @@ export interface ExecutorOptions {
   eventLogger?: EventLogger;
   sessionId?: string;
   runId?: string;
+  branchId?: string;
+  rootTaskId?: string;
+  depth?: number;
+  agentId?: string;
   /** 固定模式或每次裁决时读取的取值函数；宿主可中途切换。 */
   mode?: SessionMode | (() => SessionMode);
   permissionRules?: readonly PermissionRule[];
@@ -73,6 +92,10 @@ export class ToolExecutor {
   private readonly onToolResult?: ExecutorOptions['onToolResult'];
   private readonly tools: ToolRegistry | ToolRegistrySnapshot;
   private readonly hooks: HookRegistry;
+  private readonly workspaceRoot: string;
+  private readonly executionCwd: string;
+  private readonly sandbox?: PathSandbox;
+  private readonly leaseCoordinator?: WorkspaceLeaseCoordinator;
   private readonly rootDir: string;
   private readonly signal?: AbortSignal;
   private readonly logger?: (msg: string) => void;
@@ -80,6 +103,12 @@ export class ToolExecutor {
   private readonly eventLogger?: EventLogger;
   private readonly sessionId?: string;
   private readonly runId?: string;
+  private readonly branchId?: string;
+  private readonly rootTaskId?: string;
+  private readonly depth?: number;
+  private readonly agentId?: string;
+  private readonly committedActions: Array<() => void | Promise<void>> = [];
+  private readonly rollbackActions: Array<() => void | Promise<void>> = [];
   private readonly mode: SessionMode | (() => SessionMode);
   private readonly permissionRules: readonly PermissionRule[];
   private readonly approvalChannel?: ApprovalChannel;
@@ -93,6 +122,10 @@ export class ToolExecutor {
     this.onToolResult = options.onToolResult;
     this.tools = options.tools;
     this.hooks = options.hooks;
+    this.workspaceRoot = options.workspaceRoot ?? options.rootDir;
+    this.executionCwd = options.executionCwd ?? options.rootDir;
+    this.sandbox = options.sandbox;
+    this.leaseCoordinator = options.leaseCoordinator;
     this.rootDir = options.rootDir;
     this.signal = options.signal
       ? AbortSignal.any([options.signal, this.cancellation.signal])
@@ -102,10 +135,43 @@ export class ToolExecutor {
     this.eventLogger = options.eventLogger;
     this.sessionId = options.sessionId;
     this.runId = options.runId;
+    this.branchId = options.branchId;
+    this.rootTaskId = options.rootTaskId;
+    this.depth = options.depth;
+    this.agentId = options.agentId;
     this.mode = options.mode ?? 'Approval';
     this.permissionRules = options.permissionRules ?? [];
     this.approvalChannel = options.approvalChannel;
     this.approvalCache = options.approvalCache ?? new SessionApprovalCache();
+  }
+
+  /**
+   * 父工具事务提交成功后调用，按注册顺序执行所有提交动作。
+   * 动作执行成功后逐项清理对应回滚动作，若某项失败保留剩余回滚动作。
+   */
+  async commit(): Promise<void> {
+    while (this.committedActions.length > 0) {
+      const action = this.committedActions.shift()!;
+      await action();
+      this.rollbackActions.shift();
+    }
+    this.rollbackActions.length = 0;
+  }
+
+  /**
+   * 父工具事务提交失败或取消时调用，按逆序执行所有回滚清理动作。
+   */
+  async rollback(): Promise<void> {
+    const actions = [...this.rollbackActions].reverse();
+    this.committedActions.length = 0;
+    this.rollbackActions.length = 0;
+    for (const action of actions) {
+      try {
+        await action();
+      } catch {
+        /* 忽略回滚错误 */
+      }
+    }
   }
 
   /** 中止本轮正在等待或执行的工具；调用方仍须等待 runAll 完成资源回收及结果审计。 */
@@ -152,7 +218,7 @@ export class ToolExecutor {
     }) => void,
     forcedDeny = false,
   ): Promise<ToolResultBlock> {
-    call.executionRoot = path.resolve(this.rootDir);
+    call.executionRoot = path.resolve(this.workspaceRoot);
     const startedAt = Date.now();
     const operationId = createLogId();
     const failure = (
@@ -381,7 +447,7 @@ export class ToolExecutor {
   ): Promise<ToolResultBlock> {
     let shell: ReturnType<NonNullable<typeof tool.approvalScope>> | undefined;
     try {
-      shell = tool.approvalScope?.(finalInput, this.rootDir);
+      shell = tool.approvalScope?.(finalInput, this.rootDir, this.executionCwd);
     } catch {
       try {
         await audit('tool.decided', { decision: 'deny', decisionSource: 'invalid_target' });
@@ -535,7 +601,7 @@ export class ToolExecutor {
       }
       if (shell) {
         try {
-          const next = tool.approvalScope?.(finalInput, this.rootDir);
+          const next = tool.approvalScope?.(finalInput, this.rootDir, this.executionCwd);
           if (next?.executionFingerprint !== shell.executionFingerprint) {
             if (attempt === 0 && next) {
               try {
@@ -638,9 +704,22 @@ export class ToolExecutor {
         this.signal?.addEventListener('abort', abortFromSession, { once: true });
       }
       const toolCtx: ToolContext = {
+        workspaceRoot: this.workspaceRoot,
+        executionCwd: this.executionCwd,
+        sandbox: this.sandbox,
         rootDir: this.rootDir,
         signal: executionController.signal,
         logger: this.logger,
+        sessionId: this.sessionId,
+        runId: this.runId,
+        branchId: this.branchId,
+        toolCallId: call.id,
+        rootTaskId: this.rootTaskId,
+        depth: this.depth,
+        agentId: this.agentId,
+        parentPolicy: this.deriveParentPolicySnapshot(),
+        onCommitted: (action) => this.committedActions.push(action),
+        onRollback: (action) => this.rollbackActions.push(action),
         onProgress: (progress) => onProgress?.({ id: call.id, name: call.name, ...progress }),
         ...(shell
           ? {
@@ -650,7 +729,16 @@ export class ToolExecutor {
           : {}),
       };
 
+      let lease: WorkspaceWriteLease | undefined;
       try {
+        if (this.leaseCoordinator && isWriteOperation(tool)) {
+          lease = await this.leaseCoordinator.acquire(
+            this.workspaceRoot,
+            this.sessionId ?? 'anonymous',
+            { signal: executionController.signal },
+          );
+        }
+
         const rawResult = tool.metadata?.managesTimeout
           ? await tool.execute(finalInput, toolCtx)
           : await this.withTimeout(
@@ -710,6 +798,7 @@ export class ToolExecutor {
         }
       } finally {
         this.signal?.removeEventListener('abort', abortFromSession);
+        lease?.release();
       }
     } catch (err: unknown) {
       isError = true;
@@ -839,5 +928,20 @@ export class ToolExecutor {
       }, this.toolTimeoutMs);
     });
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  /**
+   * 构建当前会话在派生时刻的父权限策略快照。
+   */
+  private deriveParentPolicySnapshot(): ParentPolicySnapshot {
+    const currentMode = typeof this.mode === 'function' ? this.mode() : this.mode;
+    return {
+      mode: currentMode,
+      rules: this.permissionRules,
+      availableTools: this.tools.list(),
+      workspaceRoot: this.workspaceRoot,
+      executionCwd: this.executionCwd,
+      currentDepth: this.depth ?? 0,
+    };
   }
 }

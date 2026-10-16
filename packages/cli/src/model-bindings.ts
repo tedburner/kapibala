@@ -159,6 +159,11 @@ export class CliModelBindings {
     return this.bindings.get('default')!;
   }
 
+  /** 查询指定模型角色是否已成功绑定。 */
+  hasRole(role: ModelRole): boolean {
+    return this.bindings.has(role);
+  }
+
   /** 为新建或恢复的 Session 应用有效绑定及本进程明确选择，不从历史恢复角色。 */
   attach(session: AgentSession, role: PrimaryModelRole = this.selectedRole): void {
     for (const [role, binding] of this.bindings)

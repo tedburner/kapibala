@@ -9,12 +9,17 @@ import {
   SessionApprovalCache,
 } from '../../capabilities/security/approval.js';
 import {
+  type WorkspaceLeaseCoordinator,
+  sharedWorkspaceLeaseCoordinator,
+} from '../../capabilities/security/lease.js';
+import {
   PermissionPolicy,
   type PermissionRule,
   type SessionMode,
   validatePermissionRules,
   visibleTools,
 } from '../../capabilities/security/permissions.js';
+import { PathSandbox } from '../../capabilities/security/sandbox.js';
 import { estimateSkillTokens } from '../../capabilities/skills/catalog.js';
 import { inspectSkillContent } from '../../capabilities/skills/content.js';
 import { type PreparedSkill, SkillRuntime } from '../../capabilities/skills/loader.js';
@@ -101,6 +106,7 @@ import { ContextManager, type ContextSnapshot } from '../manager.js';
 import { resolveSessionProject } from '../session-manager.js';
 import { supportsSessionState } from '../session-store.js';
 import type { MessageStore } from '../store/index.js';
+import { resolveWorkspaceContext } from '../workspace.js';
 
 /** AgentSession 的构造配置；除主任务绑定外均可缺省，缺省行为见各字段。 */
 export interface SessionConfig {
@@ -117,7 +123,11 @@ export interface SessionConfig {
   defaultProvider: ModelProvider;
   /** 消息级落盘通道；支持状态能力的 Store 额外启用持久压缩与交互终态。 */
   store?: MessageStore;
-  /** 工具执行与会话基目录；projectRoot/cwd 缺省沿用此值。 */
+  /** 文件访问与沙箱隔离的物理根绝对路径，经 native realpath 规范化；缺失时抛出 WORKSPACE_ROOT_REQUIRED。 */
+  workspaceRoot?: string;
+  /** 默认命令执行目录绝对路径，必须位于 workspaceRoot 内部；缺省为 workspaceRoot。 */
+  executionCwd?: string;
+  /** 工具执行与会话基目录兼容别名；与 workspaceRoot 冲突时失败。 */
   rootDir?: string;
   systemPrompt?: string;
   maxSteps?: number;
@@ -128,13 +138,25 @@ export interface SessionConfig {
   mode?: SessionMode;
   permissionRules?: readonly PermissionRule[];
   approvalChannel?: ApprovalChannel;
+  /** 项目根路径；缺省为 workspaceRoot。 */
   projectRoot?: string;
+  /** 兼容别名：执行目录。 */
   cwd?: string;
   userInstructionsPath?: string;
   /** 未提供时使用默认日志 sink 的审计目录；init 时恢复不完整审计。 */
   auditRecoveryDirectory?: string;
   /** 接收普通运行日志失败的脱敏诊断；诊断失败也不得中断问答或替代审计。 */
   onDiagnostic?: (message: string) => void;
+  /** 会话持有的沙箱实例；缺省基于 workspaceRoot 自动创建独占实例。 */
+  sandbox?: PathSandbox;
+  /** 共享工作区写租约协调器；缺省使用全局共享单例。 */
+  leaseCoordinator?: WorkspaceLeaseCoordinator;
+  /** 父任务或任务树根 ID，用于多智能体任务层级限制与追踪。 */
+  rootTaskId?: string;
+  /** 当前子会话在代理树中的深度，根会话为 0。 */
+  depth?: number;
+  /** 当前子会话对应的 agentId。 */
+  agentId?: string;
 }
 
 /** getStats 返回的统计快照；全部字段为独立副本，宿主修改不影响会话内部状态。 */
@@ -177,9 +199,19 @@ export class AgentSession {
   private summaryUsage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   private readonly summaryAttempts = new Set<string>();
   private readonly accountedAttempts = new Set<string>();
+  /** 文件访问与沙箱隔离的物理根绝对路径，经 native realpath 规范化。 */
+  readonly workspaceRoot: string;
+  /** 默认命令执行目录绝对路径，必须位于 workspaceRoot 内部。 */
+  readonly executionCwd: string;
+  /** 规范化项目身份哈希。 */
+  readonly projectKey: string;
+  /** 工具执行与会话基目录兼容别名；语义等同于 workspaceRoot。 */
   readonly rootDir: string;
   readonly tools: ToolRegistry;
   readonly hooks: HookRegistry;
+  /** 会话持有的独占路径沙箱实例。 */
+  readonly sandbox: PathSandbox;
+  private readonly leaseCoordinator: WorkspaceLeaseCoordinator;
   private readonly router: SimpleModelRouter;
   private readonly store?: MessageStore;
   private readonly customSystemPrompt?: string;
@@ -196,6 +228,9 @@ export class AgentSession {
   private readonly userInstructionsPath?: string;
   private instructionSnapshot?: InstructionSnapshot;
   private readonly auditRecoveryDirectory?: string;
+  private readonly rootTaskId?: string;
+  private readonly depth: number;
+  private readonly agentId?: string;
 
   private history: CanonicalMessage[] = [];
   private totalTurns = 0;
@@ -221,7 +256,21 @@ export class AgentSession {
     this.onDiagnostic = config.onDiagnostic;
     this.gitBranch = config.gitBranch;
     resolveContextWindow(config.defaultProfile.contextWindow);
-    this.rootDir = config.rootDir ?? process.cwd();
+    const resolvedWorkspace = resolveWorkspaceContext({
+      workspaceRoot: config.workspaceRoot,
+      rootDir: config.rootDir,
+      executionCwd: config.executionCwd,
+      cwd: config.cwd,
+      projectRoot: config.projectRoot,
+    });
+    this.workspaceRoot = resolvedWorkspace.workspaceRoot;
+    this.executionCwd = resolvedWorkspace.executionCwd;
+    this.rootDir = resolvedWorkspace.workspaceRoot;
+    this.projectRoot = resolvedWorkspace.projectRoot;
+    this.cwd = resolvedWorkspace.executionCwd;
+    this.projectKey = resolvedWorkspace.projectKey;
+    this.sandbox = config.sandbox ?? new PathSandbox({ workspaceRoot: this.workspaceRoot });
+    this.leaseCoordinator = config.leaseCoordinator ?? sharedWorkspaceLeaseCoordinator;
     this.tools = new ToolRegistry();
     if (config.skills) {
       this.skillRegistry = new SkillRegistry(config.skills);
@@ -268,8 +317,6 @@ export class AgentSession {
     this.mode = config.mode ?? 'Approval';
     this.permissionRules = config.permissionRules ?? [];
     this.approvalChannel = config.approvalChannel;
-    this.projectRoot = config.projectRoot ?? this.rootDir;
-    this.cwd = config.cwd ?? this.rootDir;
     this.userInstructionsPath = config.userInstructionsPath;
     const sinks = config.eventLogger ? undefined : createDefaultLogSinks(config.loggingDirectory);
     const eventLogger =
@@ -286,6 +333,9 @@ export class AgentSession {
         eventLogger.recordAudit({ ...input, conversationId: this.persistentId }),
     };
     this.auditRecoveryDirectory = config.auditRecoveryDirectory ?? sinks?.auditSink.directory;
+    this.rootTaskId = config.rootTaskId;
+    this.depth = config.depth ?? 0;
+    this.agentId = config.agentId;
     this.context = this.createContextManager();
   }
 
@@ -319,7 +369,7 @@ export class AgentSession {
         this.persistentId = state.header.conversationId;
         this.totalTurns = state.records.filter((r) => r.type === 'run_started').length;
         for (const record of state.records.filter(
-          (r) => r.type === 'usage' && r.payload.role === 'primary',
+          (r) => r.type === 'usage' && r.payload.role === 'primary' && !r.payload.importedFromFork,
         )) {
           this.accountUsage(
             String(record.payload.attemptId),
@@ -327,7 +377,7 @@ export class AgentSession {
           );
         }
         for (const record of state.records.filter(
-          (r) => r.type === 'usage' && r.payload.role === 'summary',
+          (r) => r.type === 'usage' && r.payload.role === 'summary' && !r.payload.importedFromFork,
         )) {
           this.accountSummaryUsage(
             String(record.payload.attemptId),
@@ -336,7 +386,10 @@ export class AgentSession {
         }
         this.usageKnown =
           !this.history.some((m) => m.role === 'assistant') ||
-          (state.records.some((r) => r.type === 'usage' && r.payload.role === 'primary') &&
+          (state.records.some(
+            (r) =>
+              r.type === 'usage' && r.payload.role === 'primary' && !r.payload.importedFromFork,
+          ) &&
             !state.records.some(
               (r) => r.type === 'run_finished' && r.payload.usageKnown === false,
             ));
@@ -379,6 +432,17 @@ export class AgentSession {
    */
   getPlugins(): readonly AgentPlugin[] {
     return [...this.plugins];
+  }
+
+  /**
+   * 获取当前会话绑定的路径沙箱实例。
+   *
+   * 保证：
+   * - 返回由当前会话独立持有的 PathSandbox 实例，其根目录严格绑定到当前会话的 workspaceRoot；
+   * - 外部通过此沙箱执行路径规范化与逃逸校验时，遵循 native realpath 解析语义。
+   */
+  getSandbox(): PathSandbox {
+    return this.sandbox;
   }
 
   /**
@@ -904,12 +968,25 @@ export class AgentSession {
         onToolResult: (tool, _input, result) => this.skillRuntime?.acceptResult(tool, result),
         tools: toolSnapshot,
         hooks: this.hooks,
+        workspaceRoot: this.workspaceRoot,
+        executionCwd: this.executionCwd,
+        sandbox: this.sandbox,
+        leaseCoordinator: this.leaseCoordinator,
         rootDir: this.rootDir,
         signal: options?.signal,
         logger: this.logger,
         eventLogger: this.eventLogger,
         sessionId: this.sessionId,
         runId,
+        branchId:
+          this.store &&
+          'getActiveBranchId' in this.store &&
+          typeof (this.store as any).getActiveBranchId === 'function'
+            ? (this.store as any).getActiveBranchId()
+            : 'main',
+        rootTaskId: this.rootTaskId ?? `root-${this.sessionId}`,
+        depth: this.depth,
+        agentId: this.agentId,
         mode: () => this.mode,
         permissionRules: this.permissionRules,
         approvalChannel: this.approvalChannel,
@@ -1182,6 +1259,7 @@ export class AgentSession {
             pendingAssistantPersisted = true;
             await this.persistToolMessages(event.messages);
             persistedHistoryLength = this.history.length;
+            await executor.commit();
             const skillEvents = await this.commitSkills(runId);
 
             const releasable = pendingEvents;
@@ -1196,6 +1274,7 @@ export class AgentSession {
             await this.persistAssistant(event);
           } else if (event.type === 'tool_messages') {
             await this.persistToolMessages(event.messages);
+            await executor.commit();
           }
           if (event.type === 'message_stop' || event.type === 'tool_messages') {
             persistedHistoryLength = this.history.length;
@@ -1205,6 +1284,7 @@ export class AgentSession {
         loopCompleted = true;
       } catch (error: unknown) {
         loopFailed = true;
+        await executor.rollback();
         if (pendingAssistant && !pendingPersistenceStarted) {
           const interruptedMessages = pendingClosedInMemory
             ? pendingToolMessages
@@ -1221,9 +1301,12 @@ export class AgentSession {
       } finally {
         // 早退时 Loop 的 finally 已等待工具并闭合历史，但不会再发出落盘事件。
         // 仅追加正常落盘游标之后的消息，避免重复已完成的事务或重试失败的写入。
-        if (!loopCompleted && !loopFailed && this.store) {
-          for (const message of this.history.slice(persistedHistoryLength)) {
-            await this.store.append(message);
+        if (!loopCompleted && !loopFailed) {
+          await executor.rollback();
+          if (this.store) {
+            for (const message of this.history.slice(persistedHistoryLength)) {
+              await this.store.append(message);
+            }
           }
         }
       }

@@ -382,6 +382,7 @@ describe('Anthropic ordered streaming', () => {
         ...finish('pause_turn'),
       ]);
       const session = new AgentSession({
+        workspaceRoot: process.cwd(),
         defaultProfile: {
           id: 'claude',
           name: 'Claude',

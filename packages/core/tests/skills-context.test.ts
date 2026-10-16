@@ -84,6 +84,7 @@ describe('skill context lifecycle', () => {
     ]);
     const manager = new ContextManager({
       conversationId: 'active-skills',
+      projectRoot: process.cwd(),
       router: new SimpleModelRouter(profile, provider),
     });
     const prepared = await drain(
@@ -102,6 +103,7 @@ describe('skill context lifecycle', () => {
     };
     const manager = new ContextManager({
       conversationId: 'failed-summary',
+      projectRoot: process.cwd(),
       router: new SimpleModelRouter(profile, provider),
     });
     const prepared = await drain(
@@ -148,6 +150,7 @@ describe('skill context lifecycle', () => {
     ]);
     const manager = new ContextManager({
       conversationId: 'skills',
+      projectRoot: process.cwd(),
       router: new SimpleModelRouter(profile, provider),
     });
     const prepared = await drain(

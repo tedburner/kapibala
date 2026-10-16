@@ -46,6 +46,7 @@
 - 🔀 **原生多协议与场景模型路由（v0.0.4）**：Anthropic Messages、OpenAI Responses 与 Chat Completions 兼容层共享同一 AgentSession、工具事务与 canonical 历史；Profile 显式选择协议，错误不自动降级。`planning` / `execution` / `fast` 角色在整个 run 固定绑定，输出预算可覆盖，思考内容以结构化事件透出。
 - 🔌 **受控 MCP 生态接入（v0.0.6）**：独立公共包 `@kiturone/kapibala-mcp` 以 Stdio 与 Streamable HTTP 双传输接入同一 `AgentSession`；服务启动授权与工具调用授权分离，非 TTY 环境拒绝未经审批的进程启动；工具统一映射为 `mcp__<server>__<tool>` 并按来源原子上下线，整个 run 使用同一份不可变声明；HTTP 传输对私网与保留网段硬拦截并二次复核 socket 远端地址；结果与 Prompt 来源以可选 `mcpSource` / `promptSource` v1 消息级落盘，发往模型时剥离，严格保持工具事务闭合。Core 运行时第三方依赖仍为 0。
 - 📊 **细粒度步骤日志与关键性能指标**：每一执行阶段派发结构化日志事件（请求发起、首 Token 到达、流式结束、工具调用起止、单轮结束）。默认底栏展示 Git 分支、总耗时、上下文占用、本轮输入/输出 Token 与工具耗时；`--debug` 追加 **TTFT** 与模型耗时。
+- 🌳 **因果分支会话与后台多智能体（v0.0.7）**：会话日志升级为 Schema v2 Envelope，物理时序（`seq`/`prevRecordId`）与因果链（`parentId`/`branchId`）分离，支持 `/branch` 分叉切换、`/fork` 导出独立会话与 `/archive` 逻辑归档；存量 v1 历史严格只读，续答时自动创建 `_v2` 副本。Core 全面废除隐式 `process.cwd()`，`AgentSession` 必须显式传入 `workspaceRoot`，Windows 路径身份统一 `fs.realpathSync.native`，沙箱与会话写租约按会话持有。后台子代理由 `AgentRuntime` 调度，自动注册 `spawn_agent` / `list_agents` / `wait_agent` / `cancel_agent`，`deriveChildPolicy` 以父会话真实模式、规则与工具表逐轴求交（权限只减不增，Plan 模式硬拦截 `agent:spawn`），深度 3、活动槽位 4、累计 16、步数 15、超时 5 分钟熔断，终态通知以追加日志耐久保存并由 `/agents collect` 幂等注入父会话。Git Worktree 物理隔离、审批冒泡与任务树 Token 分层账本本版未交付。
 - 🧾 **可信执行（v0.0.2）**：默认写入脱敏的结构化运行日志与逐工具审批审计，记录人工批准、规则或模式自动批准、拒绝及操作结果；`--debug` 仅增加开发诊断。`Approval`、`Plan`、`Auto`、`FullAccess` 共享执行前授权门，`FullAccess` 只能在本次会话显式选择，且仍受显式规则和路径约束。
 - 💻 **跨平台命令工具（v0.0.2）**：`run_command` 默认注册，每条命令仍需按当前模式审批或裁决；解释器发现只用 `PATH` 与运行时探针，Windows 自动按 native Bash → WSL → PowerShell 兜底（不写死安装路径），其他平台使用 Bash，也可用 `--shell` 指定解释器或其全路径、用 `--disable-shell` 关闭。命令进程以当前系统用户权限运行，不受文件工具的 PathSandbox 限制。
 - 🧩 **Headless Core 与多宿主复用**：`@kiturone/kapibala` 只负责模型、循环、工具、历史、Hook 与结构化 `SessionEvent`，不包含任何终端 / GUI 组件；TUI、桌面、Web 等宿主消费同一套事件流。`pnpm check-architecture` 已加入 lint 门禁，防止 Core 反向依赖宿主。
@@ -56,7 +57,7 @@
 
 ## 🚀 极速测试与启动 (One-Minute Quickstart)
 
-需要 Node.js 20 或更高版本。**v0.0.6 已发布**（受控 MCP 生态接入与独立扩展包 `@kiturone/kapibala-mcp`），配置、授权与命令入口见 [MCP 使用指南](docs/mcp.md)，兼容边界见 [迁移说明](docs/migration/v0.0.6.md)，证据见 [验收记录](docs/verification/v0.0.6.md)。上一版的技能体系与过程输出折叠见 [技能使用和宿主边界](docs/skills.md)。发布内容见 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/v0.0.6)；调试当前源码请使用 `pnpm dev`。
+需要 Node.js 20 或更高版本。**v0.0.7 已发布**（因果分支会话、显式工作区身份与后台多智能体运行时），能力清单见 [发布说明](docs/releases/v0.0.7.md)，Schema v2 与显式 `workspaceRoot` 的兼容边界见 [迁移说明](docs/migration/v0.0.7.md)，证据与未交付项见 [验收记录](docs/verification/v0.0.7.md)。MCP 生态的配置、授权与命令入口见 [MCP 使用指南](docs/mcp.md)，技能体系见 [技能使用和宿主边界](docs/skills.md)。发布内容见 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/v0.0.7)；调试当前源码请使用 `pnpm dev`。
 
 ### 从 npm 安装使用
 
@@ -211,7 +212,15 @@ pnpm build && node packages/cli/dist/bin.js
 | `/settings`、`/config` | 查看配置；default 设置下次启动模型，setup 打开向导 | `/settings default deepseek-flash` |
 | `/new`、`/clear` | 保留旧文件并新建独立会话 | `/new` |
 | `/history [page]` | 当前项目历史，每页 20 项 | `/history 2` |
-| `/resume [id]` | 选择历史或按 ID/唯一前缀续答 | `/resume` |
+| `/history --tree` | 展示当前会话的分支因果树 | `/history --tree` |
+| `/history --search <query>` | 跨项目全文检索（分词、`"短语"`、`project:` / `branch:` / `tag:` 限定） | `/history --search "并发调度"` |
+| `/history --all [page]` | 跨项目全局会话漫游 | `/history --all 2` |
+| `/history --agents` | 列出后台子代理任务树 | `/history --agents` |
+| `/resume [id]` | 选择历史或按 ID/唯一前缀续答（v1 历史续答前自动升级副本） | `/resume` |
+| `/branch`、`/branch switch <branchId>`、`/branch <recordId> [name]` | 列出分支、切换活动分支、以指定记录为切点分叉并自动切换；未闭合工具事务拒绝分叉 | `/branch msg-12 perf-lab` |
+| `/fork [title]` | 把当前活动分支导出为独立新会话并切换，导入历史不计入新会话费用 | `/fork 性能实验` |
+| `/archive <id>`、`/archive list [page]`、`/archive restore <id>` | 逻辑归档、浏览归档清单与恢复；运行中会话禁止归档 | `/archive list` |
+| `/agents`、`/agents show <id>`、`/agents cancel <id>`、`/agents collect <id>` | 观测任务树、查看明细、取消任务、把终态通知注入来源分支（异分支拒绝） | `/agents collect a1b2` |
 | `/rename <title>` | 修改当前会话标题 | `/rename 上下文设计` |
 | `/context` | 查看保护范围、预算、剪裁与有效检查点 | `/context` |
 | `/compact` | 空闲时手动摘要旧完整交互 | `/compact` |

@@ -59,6 +59,7 @@ class SignedProvider extends ScriptedProvider implements ModelProvider {
 }
 function setup(provider = new SignedProvider([]), toolBehavior?: () => string) {
   const session = new AgentSession({
+    workspaceRoot: process.cwd(),
     defaultProfile: {
       id: 'claude',
       name: 'Claude',

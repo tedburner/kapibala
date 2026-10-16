@@ -43,9 +43,23 @@ describe('unified slash command contract', () => {
       handlers.set(definition.name, handler);
       dispatcher.registerDefinition(definition, handler);
     }
+    const historyUsage = COMMAND_CATALOG.find((c) => c.name === 'history')!.usage;
     const invalidInputs = [
       ['/compact unexpected', '不接受参数。用法: /compact'],
-      ['/history 0', '参数必须为范围内的正整数。用法: /history [page]'],
+      ['/history 0', `参数必须为范围内的正整数。用法: ${historyUsage}`],
+      ['/history --tree extra', `选项 --tree 与 --agents 不接受额外参数。用法: ${historyUsage}`],
+      [
+        '/branch a b c d',
+        `用法: /branch [recordId [name]] | /branch switch <branchId>。用法: ${COMMAND_CATALOG.find((c) => c.name === 'branch')!.usage}`,
+      ],
+      [
+        '/archive',
+        `用法: /archive <id> | /archive list [page] | /archive restore <id>。用法: ${COMMAND_CATALOG.find((c) => c.name === 'archive')!.usage}`,
+      ],
+      [
+        '/agents unexpected_sub',
+        `用法: /agents [show <id> | cancel <id> | collect <id>]。用法: ${COMMAND_CATALOG.find((c) => c.name === 'agents')!.usage}`,
+      ],
       ['/logs 101', '参数必须为范围内的正整数。用法: /logs [count]'],
       [
         '/settings unexpected',
@@ -94,6 +108,10 @@ describe('unified slash command contract', () => {
     expect(names).toContain('prompts');
     expect(names).toContain('prompt');
     expect(names).toContain('plugins');
+    expect(names).toContain('branch');
+    expect(names).toContain('fork');
+    expect(names).toContain('archive');
+    expect(names).toContain('agents');
     expect(names).not.toContain('resources');
     expect(names).not.toContain('resource');
     expect(names).not.toContain('oauth');
