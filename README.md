@@ -252,7 +252,7 @@ pnpm build && node packages/cli/dist/bin.js
 
 ## 🧩 SDK 使用指南 (`@kiturone/kapibala`)
 
-`@kiturone/kapibala` 是独立的 Headless Agent 核心包。本文示例使用 v0.0.4：
+`@kiturone/kapibala` 是独立的 Headless Agent 核心包。本文示例使用 v0.0.7（自本版起 `AgentSession` 必须显式传入绝对 `workspaceRoot`，Core 不再回退 `process.cwd()`）：
 
 ```bash
 npm install @kiturone/kapibala@0.0.4
@@ -286,8 +286,9 @@ const provider = new OpenAICompatibleProvider({
   modelName: profile.modelName,
 });
 
-// 3. 构造 Session 会话门面
+// 3. 构造 Session 会话门面（workspaceRoot 必填且必须是绝对路径）
 const session = new AgentSession({
+  workspaceRoot: process.cwd(),
   defaultProfile: profile,
   defaultProvider: provider,
   systemPrompt: 'You are an expert AI assistant powered by Kapibala.',
@@ -365,13 +366,14 @@ session.tools.register(weatherTool);
 ```typescript
 import { AgentSession, SessionManager } from '@kiturone/kapibala';
 
-// v0.0.3：创建独立会话并持有单写者锁；续答用 manager.open(id)。
-const manager = new SessionManager({ cwd: process.cwd() });
+// 创建独立会话并持有单写者锁；续答用 manager.open(id)，v1 旧历史自动创建 _v2 升级副本。
+const workspaceRoot = process.cwd();
+const manager = new SessionManager({ workspaceRoot });
 const handle = await manager.create();
 const session = new AgentSession({
   defaultProfile: profile, defaultProvider: provider,
   store: handle.store, conversationId: handle.conversationId,
-  rootDir: process.cwd(),
+  workspaceRoot,
 });
 
 // Hook 观察不代表授权；执行器还会裁决最终参数。

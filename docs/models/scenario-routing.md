@@ -60,10 +60,10 @@ kpbl --model deepseek-flash --role planning -p "检查代码"
 
 ## SDK
 
-SDK 宿主为每个角色提供匹配的 Profile 和 Provider，再显式选择主任务角色。以下示例假定已有 `defaultProfile`、`defaultProvider`、`planningProfile`、`planningProvider`、`executionProfile`、`executionProvider` 和事件消费者：
+SDK 宿主为每个角色提供匹配的 Profile 和 Provider，再显式选择主任务角色。以下示例假定已有绝对路径 `workspaceRoot`、`defaultProfile`、`defaultProvider`、`planningProfile`、`planningProvider`、`executionProfile`、`executionProvider` 和事件消费者：
 
 ```ts
-const session = new AgentSession({ defaultProfile, defaultProvider });
+const session = new AgentSession({ workspaceRoot, defaultProfile, defaultProvider });
 session.switchModel(planningProfile, 'planning', planningProvider);
 session.switchModel(executionProfile, 'execution', executionProvider);
 await session.init();
