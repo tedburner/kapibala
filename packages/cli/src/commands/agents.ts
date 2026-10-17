@@ -1,3 +1,4 @@
+import { resolveCommandOutput } from '../host/command-output.js';
 /**
  * @fileoverview 后台子代理任务树管理命令（/agents）。
  *
@@ -24,7 +25,7 @@ import type { CommandContext, CommandHandler } from './dispatcher.js';
 export const agentsCommand: CommandHandler = async (args, ctx) => {
   const runtime = ctx.runtime;
   if (!runtime) {
-    console.log('当前运行时未启用子代理后台调度器。');
+    resolveCommandOutput(ctx).log('当前运行时未启用子代理后台调度器。');
     return;
   }
 
@@ -32,10 +33,10 @@ export const agentsCommand: CommandHandler = async (args, ctx) => {
   if (args.length === 0) {
     const tasks = runtime.listTasks();
     if (tasks.length === 0) {
-      console.log('当前没有任何后台子代理任务。');
+      resolveCommandOutput(ctx).log('当前没有任何后台子代理任务。');
       return;
     }
-    console.log(`后台子代理任务列表（共 ${tasks.length} 个任务）:`);
+    resolveCommandOutput(ctx).log(`后台子代理任务列表（共 ${tasks.length} 个任务）:`);
     for (const t of tasks) {
       const indent = '  '.repeat(Math.max(0, t.origin.depth - 1));
       const statusIcon =
@@ -52,7 +53,7 @@ export const agentsCommand: CommandHandler = async (args, ctx) => {
           : t.startedAt
             ? ` [运行中 ${Math.round((Date.now() - t.startedAt) / 1000)}s]`
             : '';
-      console.log(
+      resolveCommandOutput(ctx).log(
         `${indent}${statusIcon} [${t.agentId}] (${t.role}) ${t.status}${duration} — ${sanitizeSessionTitle(t.description, 60)}`,
       );
     }
@@ -65,56 +66,62 @@ export const agentsCommand: CommandHandler = async (args, ctx) => {
   // 2. 查看详情: /agents show <id>
   if (sub === 'show') {
     if (!targetId) {
-      console.log('用法: /agents show <agentId>');
+      resolveCommandOutput(ctx).log('用法: /agents show <agentId>');
       return;
     }
     const task = runtime.getTask(targetId);
     if (!task) {
-      console.error(`❌ 未找到指定的子代理任务: ${targetId}`);
+      resolveCommandOutput(ctx).error(`❌ 未找到指定的子代理任务: ${targetId}`);
       return;
     }
-    console.log(`── 子代理任务详情 [${task.agentId}] ──`);
-    console.log(`状态: ${task.status}`);
-    console.log(`角色: ${task.role}`);
-    console.log(`描述: ${task.description}`);
-    console.log(`模型: ${task.modelId ?? '默认场景路由'}`);
-    console.log(`深度: ${task.origin.depth} (父: ${task.origin.parentAgentId ?? '根会话'})`);
-    console.log(`根任务 ID: ${task.origin.rootTaskId}`);
-    console.log(`来源会话 / 分支: ${task.origin.parentSessionId} / ${task.origin.originBranchId}`);
-    console.log(`创建时间: ${new Date(task.createdAt).toISOString()}`);
-    if (task.startedAt) console.log(`启动时间: ${new Date(task.startedAt).toISOString()}`);
-    if (task.finishedAt) console.log(`结束时间: ${new Date(task.finishedAt).toISOString()}`);
-    if (task.summary) console.log(`结果摘要:\n${task.summary}`);
-    if (task.error) console.log(`错误信息: ${task.error}`);
+    resolveCommandOutput(ctx).log(`── 子代理任务详情 [${task.agentId}] ──`);
+    resolveCommandOutput(ctx).log(`状态: ${task.status}`);
+    resolveCommandOutput(ctx).log(`角色: ${task.role}`);
+    resolveCommandOutput(ctx).log(`描述: ${task.description}`);
+    resolveCommandOutput(ctx).log(`模型: ${task.modelId ?? '默认场景路由'}`);
+    resolveCommandOutput(ctx).log(
+      `深度: ${task.origin.depth} (父: ${task.origin.parentAgentId ?? '根会话'})`,
+    );
+    resolveCommandOutput(ctx).log(`根任务 ID: ${task.origin.rootTaskId}`);
+    resolveCommandOutput(ctx).log(
+      `来源会话 / 分支: ${task.origin.parentSessionId} / ${task.origin.originBranchId}`,
+    );
+    resolveCommandOutput(ctx).log(`创建时间: ${new Date(task.createdAt).toISOString()}`);
+    if (task.startedAt)
+      resolveCommandOutput(ctx).log(`启动时间: ${new Date(task.startedAt).toISOString()}`);
+    if (task.finishedAt)
+      resolveCommandOutput(ctx).log(`结束时间: ${new Date(task.finishedAt).toISOString()}`);
+    if (task.summary) resolveCommandOutput(ctx).log(`结果摘要:\n${task.summary}`);
+    if (task.error) resolveCommandOutput(ctx).log(`错误信息: ${task.error}`);
     return;
   }
 
   // 3. 取消任务: /agents cancel <id>
   if (sub === 'cancel') {
     if (!targetId) {
-      console.log('用法: /agents cancel <agentId>');
+      resolveCommandOutput(ctx).log('用法: /agents cancel <agentId>');
       return;
     }
     await runtime.cancelTask(targetId, 'User cancelled via /agents cancel');
-    console.log(`已成功请求取消子代理任务及其所有后代: ${targetId}`);
+    resolveCommandOutput(ctx).log(`已成功请求取消子代理任务及其所有后代: ${targetId}`);
     return;
   }
 
   // 4. 收集结果: /agents collect <id>
   if (sub === 'collect') {
     if (!targetId) {
-      console.log('用法: /agents collect <agentId>');
+      resolveCommandOutput(ctx).log('用法: /agents collect <agentId>');
       return;
     }
     const task = runtime.getTask(targetId);
     if (!task) {
-      console.error(`❌ 未找到指定的子代理任务: ${targetId}`);
+      resolveCommandOutput(ctx).error(`❌ 未找到指定的子代理任务: ${targetId}`);
       return;
     }
     // 优先检查来源分支，异分支绝对拒绝收集
     const store = ctx.controller?.handle.store;
     if (!store) {
-      console.error('❌ 当前会话存储通道不可用，无法收集任务结果。');
+      resolveCommandOutput(ctx).error('❌ 当前会话存储通道不可用，无法收集任务结果。');
       return;
     }
     const currentBranchId =
@@ -122,7 +129,7 @@ export const agentsCommand: CommandHandler = async (args, ctx) => {
         ? store.getActiveBranchId()
         : 'main';
     if (task.origin.originBranchId !== currentBranchId) {
-      console.log(
+      resolveCommandOutput(ctx).log(
         `⚠️ 该任务来源于分支 [${task.origin.originBranchId}]，当前活动分支为 [${currentBranchId}]。请先切换至来源分支再收集: /branch switch ${task.origin.originBranchId}`,
       );
       return;
@@ -133,7 +140,9 @@ export const agentsCommand: CommandHandler = async (args, ctx) => {
       task.status === 'preparing' ||
       task.status === 'waiting_children'
     ) {
-      console.log(`⏳ 任务 ${targetId} 仍处于 ${task.status} 状态，尚未产生终态结果。`);
+      resolveCommandOutput(ctx).log(
+        `⏳ 任务 ${targetId} 仍处于 ${task.status} 状态，尚未产生终态结果。`,
+      );
       return;
     }
 
@@ -146,12 +155,14 @@ export const agentsCommand: CommandHandler = async (args, ctx) => {
     const newlyConsumed = await inbox.consume(notification);
     outbox.acknowledge(notification.eventId);
     if (newlyConsumed) {
-      console.log(`✅ 任务 ${targetId} 已在来源分支 [${currentBranchId}] 成功收集并持久化至历史。`);
+      resolveCommandOutput(ctx).log(
+        `✅ 任务 ${targetId} 已在来源分支 [${currentBranchId}] 成功收集并持久化至历史。`,
+      );
     } else {
-      console.log(`ℹ️ 任务 ${targetId} 此前已完成收集落盘，无需重复消费。`);
+      resolveCommandOutput(ctx).log(`ℹ️ 任务 ${targetId} 此前已完成收集落盘，无需重复消费。`);
     }
     return;
   }
 
-  console.log('用法: /agents [show <id> | cancel <id> | collect <id>]');
+  resolveCommandOutput(ctx).log('用法: /agents [show <id> | cancel <id> | collect <id>]');
 };

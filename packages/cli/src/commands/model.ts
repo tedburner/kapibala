@@ -1,5 +1,6 @@
 import { type ModelProfile, type ModelRole, resolveContextWindow } from '@kiturone/kapibala';
 import { persistDefaultModel, persistModelRole } from '../default-model.js';
+import { resolveCommandOutput } from '../host/command-output.js';
 import { isInteractiveTerminal } from '../input-coordinator.js';
 import {
   ROUTABLE_MODEL_ROLES,
@@ -65,7 +66,7 @@ export async function updateModelApiKey(
   const secretReader = (options.secretReader ?? ctx.readSecret)!;
   const apiKey = (await secretReader(`请输入 ${profile.name} 的新 API Key: `)).trim();
   if (!apiKey) {
-    console.log('\x1b[33mAPI Key 为空，已取消更新。\x1b[0m');
+    resolveCommandOutput(ctx).log('\x1b[33mAPI Key 为空，已取消更新。\x1b[0m');
     return false;
   }
 
@@ -86,8 +87,10 @@ export async function updateModelApiKey(
     const active = ctx.session.getActiveProfile();
     if (credentialGroup(active) === credentialGroup(profile)) ctx.onModelSwitched(active.id);
   }
-  console.log(`\x1b[32m✔ 已更新 '${profile.name}' 的 API Key：${savedPath}\x1b[0m`);
-  console.log(
+  resolveCommandOutput(ctx).log(
+    `\x1b[32m✔ 已更新 '${profile.name}' 的 API Key：${savedPath}\x1b[0m`,
+  );
+  resolveCommandOutput(ctx).log(
     `\x1b[90m  ${describeCredentialGroup(profile)} 下的其它模型将自动复用该密钥，无需重复输入。\x1b[0m`,
   );
   return true;
@@ -101,13 +104,15 @@ async function ensureApiKey(
   if (resolved) {
     if (resolved.source === 'shared') {
       // 让隐式复用显式可见：否则用户会误以为该模型有自己的密钥，更新时找错入口
-      console.log(
+      resolveCommandOutput(ctx).log(
         `\x1b[90m🔑 复用 ${describeCredentialGroup(profile)} 的 API Key（来自 '${resolved.fromProfileId}'）\x1b[0m`,
       );
     }
     return true;
   }
-  console.log(`\x1b[33m模型 '${profile.name}' 尚未配置 API Key，请先补录。\x1b[0m`);
+  resolveCommandOutput(ctx).log(
+    `\x1b[33m模型 '${profile.name}' 尚未配置 API Key，请先补录。\x1b[0m`,
+  );
   return updateModelApiKey(profile, ctx);
 }
 
@@ -140,7 +145,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     const role = parsePrimaryModelRole(args[1]);
     if (!ctx.onRoleSelected) throw new Error('当前宿主不支持模型角色选择');
     ctx.onRoleSelected(role);
-    console.log(`✔ 当前主任务角色: ${role}`);
+    resolveCommandOutput(ctx).log(`✔ 当前主任务角色: ${role}`);
     return;
   }
   if (ROUTABLE_MODEL_ROLES.includes(target as never)) {
@@ -152,7 +157,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     createModelBinding(profile, ctx.settings);
     persistModelRole(profile, role, ctx.settings);
     ctx.onRoleBound(role, profile.id);
-    console.log(`✔ 已绑定 ${role}: ${profile.name} (${profile.id})`);
+    resolveCommandOutput(ctx).log(`✔ 已绑定 ${role}: ${profile.name} (${profile.id})`);
     return;
   }
 
@@ -161,11 +166,11 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     const profileId = args[1] ?? ctx.session.getActiveProfile().id;
     const profile = ctx.settings.profiles.find((candidate) => candidate.id === profileId);
     if (!profile) {
-      console.log(`\x1b[31m未找到模型 Profile '${profileId}'。\x1b[0m`);
+      resolveCommandOutput(ctx).log(`\x1b[31m未找到模型 Profile '${profileId}'。\x1b[0m`);
       return;
     }
     if (profile.apiKeyEnv === API_KEY_ENV_NONE) {
-      console.log(`\x1b[90m模型 '${profile.name}' 不需要 API Key。\x1b[0m`);
+      resolveCommandOutput(ctx).log(`\x1b[90m模型 '${profile.name}' 不需要 API Key。\x1b[0m`);
       return;
     }
     await updateModelApiKey(profile, ctx);
@@ -183,11 +188,11 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     const defaultId = args[1];
     const found = ctx.settings.profiles.find((p) => p.id === defaultId);
     if (!found) {
-      console.log(`\x1b[31m未找到模型 Profile '${defaultId}'。\x1b[0m`);
+      resolveCommandOutput(ctx).log(`\x1b[31m未找到模型 Profile '${defaultId}'。\x1b[0m`);
       return;
     }
     persistDefaultModel(found, ctx.settings);
-    console.log(`\x1b[32m✔ 已将 '${found.name}' 设为全局默认模型。\x1b[0m`);
+    resolveCommandOutput(ctx).log(`\x1b[32m✔ 已将 '${found.name}' 设为全局默认模型。\x1b[0m`);
     return;
   }
 
@@ -195,7 +200,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
   if (target) {
     const profile = ctx.settings.profiles.find((p) => p.id === target);
     if (!profile) {
-      console.log(
+      resolveCommandOutput(ctx).log(
         `\x1b[31m未找到模型 Profile '${target}'。直接输入 /model 打开分级选择菜单。\x1b[0m`,
       );
       return;
@@ -204,18 +209,21 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     if (!(await ensureApiKey(profile, ctx))) return;
 
     ctx.onModelSwitched(profile.id);
-    console.log(`\x1b[32m✔ 已切换至模型: ${profile.name} (${profile.modelName})\x1b[0m`);
+    resolveCommandOutput(ctx).log(
+      `\x1b[32m✔ 已切换至模型: ${profile.name} (${profile.modelName})\x1b[0m`,
+    );
     return;
   }
 
   // 4. 若无参数输入 `/model`：启动两步分级交互菜单 (第一步选 Provider，第二步选具体模型)
   const active = ctx.session.getActiveProfile();
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.log(
+    resolveCommandOutput(ctx).log(
       `当前角色: ${ctx.session.getModelRole?.() ?? 'default'} | 模型: ${active.id} (${active.name})`,
     );
-    for (const profile of ctx.settings.profiles) console.log(`  ${profile.id}: ${profile.name}`);
-    console.log('使用 /model <id> 切换模型。');
+    for (const profile of ctx.settings.profiles)
+      resolveCommandOutput(ctx).log(`  ${profile.id}: ${profile.name}`);
+    resolveCommandOutput(ctx).log('使用 /model <id> 切换模型。');
     return;
   }
   if (!ctx.select) throw new Error('交互输入不可用，请使用 /model <id>');
@@ -276,13 +284,13 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
 
     if (chosenProvider === '__action_set_default__') {
       persistDefaultModel(active, ctx.settings);
-      console.log(`\x1b[32m✔ 已将 '${active.name}' 保存为全局默认模型。\x1b[0m`);
+      resolveCommandOutput(ctx).log(`\x1b[32m✔ 已将 '${active.name}' 保存为全局默认模型。\x1b[0m`);
       return;
     }
 
     if (chosenProvider === '__action_update_key__') {
       if (active.apiKeyEnv === API_KEY_ENV_NONE) {
-        console.log(`\x1b[90m模型 '${active.name}' 不需要 API Key。\x1b[0m`);
+        resolveCommandOutput(ctx).log(`\x1b[90m模型 '${active.name}' 不需要 API Key。\x1b[0m`);
       } else {
         await updateModelApiKey(active, ctx);
       }
@@ -342,7 +350,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     }
 
     if (chosenModel === active.id && (ctx.session.getModelRole?.() ?? 'default') === 'default') {
-      console.log(`\x1b[90m当前已在使用模型 '${active.name}'。\x1b[0m`);
+      resolveCommandOutput(ctx).log(`\x1b[90m当前已在使用模型 '${active.name}'。\x1b[0m`);
       return;
     }
 
@@ -351,7 +359,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     if (targetProfile) {
       if (!(await ensureApiKey(targetProfile, ctx))) return;
       ctx.onModelSwitched(targetProfile.id);
-      console.log(
+      resolveCommandOutput(ctx).log(
         `\x1b[32m✔ 已切换至模型: ${targetProfile.name} (${targetProfile.modelName})\x1b[0m`,
       );
     }

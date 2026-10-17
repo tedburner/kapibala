@@ -1,3 +1,4 @@
+import { resolveCommandOutput } from '../host/command-output.js';
 /**
  * @fileoverview 独立会话导出命令（/fork）。
  *
@@ -36,5 +37,7 @@ export const forkCommand: CommandHandler = async (args, ctx) => {
   await active.resume(forked.conversationId);
 
   const titleDesc = title ? `（标题: ${sanitizeSessionTitle(title)}）` : '';
-  console.log(`已成功从会话 ${currentId} 导出独立新会话: ${forked.conversationId}${titleDesc}`);
+  resolveCommandOutput(ctx).log(
+    `已成功从会话 ${currentId} 导出独立新会话: ${forked.conversationId}${titleDesc}`,
+  );
 };

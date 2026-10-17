@@ -1,3 +1,4 @@
+import { resolveCommandOutput } from '../host/command-output.js';
 /**
  * @fileoverview 会话逻辑归档与恢复命令（/archive）。
  *
@@ -29,7 +30,9 @@ export const archiveCommand: CommandHandler = async (args, ctx) => {
   const active = getController(ctx);
 
   if (args.length === 0) {
-    console.log('用法: /archive <id> | /archive list [page] | /archive restore <id>');
+    resolveCommandOutput(ctx).log(
+      '用法: /archive <id> | /archive list [page] | /archive restore <id>',
+    );
     return;
   }
 
@@ -39,14 +42,14 @@ export const archiveCommand: CommandHandler = async (args, ctx) => {
     const page = await active.manager.list(pageNum, { includeArchived: true });
     const archivedItems = page.items.filter((item) => item.archived);
 
-    console.log(`已归档会话列表（当前页包含 ${archivedItems.length} 项）:`);
+    resolveCommandOutput(ctx).log(`已归档会话列表（当前页包含 ${archivedItems.length} 项）:`);
     for (const item of archivedItems) {
-      console.log(
+      resolveCommandOutput(ctx).log(
         `[归档] ${item.conversationId} | ${new Date(item.lastActivityAt).toISOString()} | ${item.messageCount} 条 | ${sanitizeSessionTitle(item.title)}`,
       );
     }
     if (archivedItems.length === 0) {
-      console.log('没有找到已归档的会话。');
+      resolveCommandOutput(ctx).log('没有找到已归档的会话。');
     }
     return;
   }
@@ -55,27 +58,31 @@ export const archiveCommand: CommandHandler = async (args, ctx) => {
   if (args[0] === 'restore') {
     const targetId = args[1]?.trim();
     if (!targetId) {
-      console.log('用法: /archive restore <id>');
+      resolveCommandOutput(ctx).log('用法: /archive restore <id>');
       return;
     }
     await active.manager.restoreSession(targetId);
-    console.log(`已成功恢复会话 ${targetId}，现在可使用 /resume ${targetId} 继续对话。`);
+    resolveCommandOutput(ctx).log(
+      `已成功恢复会话 ${targetId}，现在可使用 /resume ${targetId} 继续对话。`,
+    );
     return;
   }
 
   // 3. 归档指定会话: /archive <id>
   const targetId = args[0].trim();
   if (targetId === active.session.conversationId) {
-    console.error('❌ 当前会话正在使用中，活动会话禁止归档。请先新建或切换会话后再归档。');
+    resolveCommandOutput(ctx).error(
+      '❌ 当前会话正在使用中，活动会话禁止归档。请先新建或切换会话后再归档。',
+    );
     return;
   }
 
   try {
     await active.manager.archiveSession(targetId);
-    console.log(`已成功归档会话: ${targetId}（后续默认历史列表将自动排除）`);
+    resolveCommandOutput(ctx).log(`已成功归档会话: ${targetId}（后续默认历史列表将自动排除）`);
   } catch (error) {
     if (error instanceof KapibalaError && error.code === 'SESSION_IN_USE') {
-      console.error('❌ 该会话正在被其他进程使用，禁止归档。');
+      resolveCommandOutput(ctx).error('❌ 该会话正在被其他进程使用，禁止归档。');
       return;
     }
     throw error;

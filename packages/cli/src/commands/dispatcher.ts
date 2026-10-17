@@ -1,5 +1,7 @@
 import type { AgentSession, ModelRole, PrimaryModelRole } from '@kiturone/kapibala';
 import type { ActiveSessionController } from '../active-session.js';
+import { resolveCommandOutput } from '../host/command-output.js';
+import type { CommandOutput } from '../host/command-output.js';
 import type { UserSettings } from '../settings.js';
 import type { SelectConfig } from '../ui/select.js';
 import type { CommandDefinition } from './catalog.js';
@@ -11,6 +13,8 @@ import type { CommandDefinition } from './catalog.js';
 export interface CommandContext {
   session: AgentSession;
   settings: UserSettings;
+  /** 宿主接收命令结果与诊断；缺省保留文本模式 stdout/stderr，不影响秘密输入端口。 */
+  output?: CommandOutput;
   /** 实际生效的配置文件路径；仅使用内置默认（未加载文件）时缺省。 */
   settingsPath?: string;
   /** 模型切换已在宿主侧生效（含设置重载与绑定重建）后回调。 */
@@ -143,7 +147,7 @@ export class CommandDispatcher {
 
     const handler = this.handlers.get(command);
     if (!handler) {
-      console.log(`未知命令: /${command}。输入 /help 查看支持的命令。`);
+      resolveCommandOutput(ctx).log(`未知命令: /${command}。输入 /help 查看支持的命令。`);
       return true;
     }
 
@@ -167,7 +171,7 @@ export class CommandDispatcher {
         if (mutating) this.mutationActive = false;
       }
     } catch (err: unknown) {
-      console.log(`命令执行失败: ${(err as Error).message}`);
+      resolveCommandOutput(ctx).log(`命令执行失败: ${(err as Error).message}`);
     }
 
     return true;

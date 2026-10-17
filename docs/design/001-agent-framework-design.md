@@ -818,7 +818,7 @@ kapibala/
 | **v0.0.5** | skill 机制:SkillRegistry、渐进式披露、`load_skill`、来源与权限约束;向宿主暴露可搜索的 Skill 名称、描述、来源、参数提示和用户可调用性元数据,CLI 展示当前加载/调用的 Skill 名称 | `skills/` + L2.5 层 + `model:before` | core 内增量 |
 | **v0.0.6** | MCP(stdio → http),受项目信任和权限策略约束;CLI 保留并展示 MCP server/tool 命名空间,MCP Prompt 以名称、描述、来源和参数提示注册为用户命令 | Plugin + `registerSource` 动态上下线 + MCP Prompt Registry | **独立包 `@kiturone/kapibala-mcp`** |
 | **v0.0.7** | 基于 v0.0.3 基本会话能力增强跨项目全文检索、历史分叉、归档与多会话协调,再交付 sub-agent;权限继承收紧与工作区隔离测试通过后才发布 `spawn_agent` | 会话索引增强 + 多会话协调 + 注册 `spawn_agent` 工具 | core + 宿主增量 |
-| **v0.0.8** | 产品化终端体验:TUI、共享前端 ViewModel、多任务状态、可扩展状态栏、流式渲染;统一 `/` 命令面板对 Slash 命令、用户可调用的 Skills 与 MCP Prompt 做稳定模糊匹配,展示名称/描述/来源;默认可见 3 条但可滚动浏览全部结果,支持上下键、Enter、Tab 与 Esc,原始 MCP Tool 不进入菜单;思考过程生成时完整展示,完成后折叠且可展开 | `SessionEvent` 消费者 + CommandDispatcher/SkillRegistry/MCP Prompt Registry 查询接口 + CLI/TUI Host Adapter | 独立包 + CLI 增量 |
+| **v0.0.8** | 产品化终端体验:TUI、共享前端 ViewModel、多任务状态、可扩展状态栏、流式渲染;统一 `/` 命令面板对 Slash 命令、用户可调用的 Skills 与 MCP Prompt 做稳定模糊匹配,展示名称/描述/来源;默认可见 3 条但可滚动浏览全部结果,支持上下键、Enter、Tab 与 Esc,原始 MCP Tool 不进入菜单;思考过程生成时完整展示,完成后折叠且可通过键盘展开 | `SessionEvent` 消费者 + CommandDispatcher/SkillRegistry/MCP Prompt Registry 查询接口 + CLI/TUI Host Adapter | CLI 内部模块增量,不新增包 |
 | **v0.0.9** | 本地客户端契约与发布前加固:版本化 wire DTO、本地守护进程和一种受控本地传输;审计、预算、宿主隔离与兼容性测试。桌面/Web/移动及远程接入在契约稳定后推进,远程接入先具备认证与授权 | 事件传输适配 + 宿主隔离 + 兼容性测试 | core + 本地宿主适配 |
 | **v0.1.0** | 阶段性整合:稳定已交付的 Core API、事件协议和本地客户端契约,完成迁移验证与发布流程,不新增运行时子系统 | 全部已落地扩展点的集成验收 | CLI + Core SDK + 扩展包 |
 

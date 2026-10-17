@@ -1,3 +1,4 @@
+import { resolveCommandOutput } from '../host/command-output.js';
 /**
  * @fileoverview /plugins 与 /plugin 命令：查看当前会话已挂载的扩展插件与能力贡献清单
  *
@@ -24,7 +25,9 @@ export const pluginsCommand: CommandHandler = async (args: string[], ctx: Comman
   const plugins = ctx.session.getPlugins();
 
   if (plugins.length === 0) {
-    console.log('当前会话未挂载任何扩展插件（可通过配置文件或启动参数启用扩展生态）。');
+    resolveCommandOutput(ctx).log(
+      '当前会话未挂载任何扩展插件（可通过配置文件或启动参数启用扩展生态）。',
+    );
     return;
   }
 
@@ -34,33 +37,39 @@ export const pluginsCommand: CommandHandler = async (args: string[], ctx: Comman
   if (queryName) {
     const matched = plugins.find((p) => p.name.toLowerCase() === queryName);
     if (!matched) {
-      console.log(`未找到扩展插件: '${queryName}'。输入 /plugins 查看已挂载插件列表。`);
+      resolveCommandOutput(ctx).log(
+        `未找到扩展插件: '${queryName}'。输入 /plugins 查看已挂载插件列表。`,
+      );
       return;
     }
 
     const isTTY = Boolean(process.stdout.isTTY);
-    console.log(
+    resolveCommandOutput(ctx).log(
       `\n🧩 扩展插件详情: ${color(matched.name, 1, isTTY)} (v${matched.version ?? 'unknown'})`,
     );
     if (matched.description) {
-      console.log(`  描述: ${matched.description}`);
+      resolveCommandOutput(ctx).log(`  描述: ${matched.description}`);
     }
 
     const contrib = matched.contributes;
     if (contrib?.commands && contrib.commands.length > 0) {
-      console.log(`\n  🛠 贡献命令（共 ${contrib.commands.length} 个）：`);
+      resolveCommandOutput(ctx).log(`\n  🛠 贡献命令（共 ${contrib.commands.length} 个）：`);
       for (const cmd of contrib.commands) {
-        console.log(`    · ${color(`/${cmd.name}`, 1, isTTY)}: ${cmd.description}`);
+        resolveCommandOutput(ctx).log(
+          `    · ${color(`/${cmd.name}`, 1, isTTY)}: ${cmd.description}`,
+        );
         if (cmd.usage) {
-          console.log(`      用法: ${cmd.usage}`);
+          resolveCommandOutput(ctx).log(`      用法: ${cmd.usage}`);
         }
       }
     }
 
     if (contrib?.skillsRoots && contrib.skillsRoots.length > 0) {
-      console.log(`\n  📚 附加技能根目录（共 ${contrib.skillsRoots.length} 个）：`);
+      resolveCommandOutput(ctx).log(
+        `\n  📚 附加技能根目录（共 ${contrib.skillsRoots.length} 个）：`,
+      );
       for (const root of contrib.skillsRoots) {
-        console.log(`    · ${root}`);
+        resolveCommandOutput(ctx).log(`    · ${root}`);
       }
     }
 
@@ -68,41 +77,47 @@ export const pluginsCommand: CommandHandler = async (args: string[], ctx: Comman
     const mcpPlugin = getSessionMcpPlugin(ctx.session);
     if (mcpPlugin && mcpPlugin.name === matched.name) {
       const statuses = mcpPlugin.manager.getAllStatuses();
-      console.log(`\n  🐾 MCP 运行状态概况（共 ${statuses.length} 个配置服务）：`);
+      resolveCommandOutput(ctx).log(
+        `\n  🐾 MCP 运行状态概况（共 ${statuses.length} 个配置服务）：`,
+      );
       for (const s of statuses) {
         const toolCount = mcpPlugin.manager.getServerTools(s.name).length;
         const promptCount = mcpPlugin.promptRegistry.getPromptsByServer(s.name).length;
-        console.log(
+        resolveCommandOutput(ctx).log(
           `    · ${s.name}: ${s.connectionState} (Tools: ${toolCount}, Prompts: ${promptCount})`,
         );
       }
     }
-    console.log('');
+    resolveCommandOutput(ctx).log('');
     return;
   }
 
   // 2. 全量插件列表模式
   const isTTY = Boolean(process.stdout.isTTY);
-  console.log(`\n🧩 当前会话已挂载扩展插件清单（共 ${plugins.length} 个）：`);
+  resolveCommandOutput(ctx).log(`\n🧩 当前会话已挂载扩展插件清单（共 ${plugins.length} 个）：`);
   for (const p of plugins) {
     const ver = p.version ? `(v${p.version})` : '';
-    console.log(`  · ${color(p.name, 1, isTTY)} ${ver}`);
+    resolveCommandOutput(ctx).log(`  · ${color(p.name, 1, isTTY)} ${ver}`);
     if (p.description) {
-      console.log(`    描述: ${p.description}`);
+      resolveCommandOutput(ctx).log(`    描述: ${p.description}`);
     }
 
     const cmds = p.contributes?.commands;
     if (cmds && cmds.length > 0) {
       const cmdNames = cmds.map((c) => `/${c.name}`).join(', ');
-      console.log(`    贡献命令: ${color(cmdNames, 36, isTTY)}`);
+      resolveCommandOutput(ctx).log(`    贡献命令: ${color(cmdNames, 36, isTTY)}`);
     }
 
     const mcpPlugin = getSessionMcpPlugin(ctx.session);
     if (mcpPlugin && mcpPlugin.name === p.name) {
       const statuses = mcpPlugin.manager.getAllStatuses();
       const readyCount = statuses.filter((s) => s.connectionState === 'ready').length;
-      console.log(`    生态概况: ${statuses.length} 个 MCP 服务 (已就绪 ${readyCount} 个)`);
+      resolveCommandOutput(ctx).log(
+        `    生态概况: ${statuses.length} 个 MCP 服务 (已就绪 ${readyCount} 个)`,
+      );
     }
   }
-  console.log('\n提示: 使用 /plugins <name> 查看特定插件的详细贡献清单与运行状态。\n');
+  resolveCommandOutput(ctx).log(
+    '\n提示: 使用 /plugins <name> 查看特定插件的详细贡献清单与运行状态。\n',
+  );
 };

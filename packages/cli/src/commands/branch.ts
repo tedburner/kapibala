@@ -1,3 +1,4 @@
+import { resolveCommandOutput } from '../host/command-output.js';
 /**
  * @fileoverview 分支创建、切换与查看命令（/branch）。
  *
@@ -33,17 +34,17 @@ export const branchCommand: CommandHandler = async (args, ctx) => {
   // 1. 无参：列出当前会话的所有分支
   if (args.length === 0) {
     if (typeof store.getBranches !== 'function') {
-      console.log('当前会话存储格式不支持持久分支操作。');
+      resolveCommandOutput(ctx).log('当前会话存储格式不支持持久分支操作。');
       return;
     }
     const branches = await store.getBranches();
     const activeBranchId = store.getActiveBranchId?.() ?? 'main';
-    console.log(`会话分支列表（共 ${branches.length} 个分支）:`);
+    resolveCommandOutput(ctx).log(`会话分支列表（共 ${branches.length} 个分支）:`);
     for (const b of branches) {
       const isCurrent = b.branchId === activeBranchId;
       const marker = isCurrent ? '*' : ' ';
       const created = new Date(b.createdAt).toISOString();
-      console.log(
+      resolveCommandOutput(ctx).log(
         `${marker} ${b.branchId} | 消息数: ${b.messageCount} | 叶子记录: ${b.leafRecordId} | 创建时间: ${created}`,
       );
     }
@@ -54,7 +55,7 @@ export const branchCommand: CommandHandler = async (args, ctx) => {
   if (args[0] === 'switch') {
     const targetBranchId = args[1]?.trim();
     if (!targetBranchId) {
-      console.log('用法: /branch switch <branchId>');
+      resolveCommandOutput(ctx).log('用法: /branch switch <branchId>');
       return;
     }
     try {
@@ -64,10 +65,10 @@ export const branchCommand: CommandHandler = async (args, ctx) => {
       await store.selectBranch(targetBranchId);
       // 切换成功后通过 reloadCurrent 重新加载内存因果投影
       await active.reloadCurrent();
-      console.log(`已成功切换至分支: ${targetBranchId}`);
+      resolveCommandOutput(ctx).log(`已成功切换至分支: ${targetBranchId}`);
     } catch (error) {
       if (error instanceof KapibalaError && error.code === 'UNCLOSED_TOOL_TRANSACTION_FORK') {
-        console.error(
+        resolveCommandOutput(ctx).error(
           '❌ 当前历史存在未闭合的工具事务（半事务），禁止切换分支。请等待工具调用完成。',
         );
         return;
@@ -83,7 +84,7 @@ export const branchCommand: CommandHandler = async (args, ctx) => {
   const branchName = (isExplicitCreate ? args[2] : args[1])?.trim();
 
   if (!recordId) {
-    console.log('用法: /branch [recordId [name]] | /branch switch <branchId>');
+    resolveCommandOutput(ctx).log('用法: /branch [recordId [name]] | /branch switch <branchId>');
     return;
   }
 
@@ -102,10 +103,12 @@ export const branchCommand: CommandHandler = async (args, ctx) => {
     }
     await active.reloadCurrent();
     const nameDesc = branchName ? ` (${sanitizeSessionTitle(branchName)})` : '';
-    console.log(`已成功在记录 ${recordId} 处创建并切换至新分支: ${targetBranchId}${nameDesc}`);
+    resolveCommandOutput(ctx).log(
+      `已成功在记录 ${recordId} 处创建并切换至新分支: ${targetBranchId}${nameDesc}`,
+    );
   } catch (error) {
     if (error instanceof KapibalaError && error.code === 'UNCLOSED_TOOL_TRANSACTION_FORK') {
-      console.error(
+      resolveCommandOutput(ctx).error(
         '❌ 当前历史存在未闭合的工具事务（半事务），禁止创建分支。请等待工具调用完成。',
       );
       return;

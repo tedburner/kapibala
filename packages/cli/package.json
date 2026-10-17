@@ -15,9 +15,20 @@
     "kpbl": "./dist/bin.js"
   },
   "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./view-model": {
+      "types": "./dist/view-model/index.d.ts",
+      "import": "./dist/view-model/index.js",
+      "default": "./dist/view-model/index.js"
+    },
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
+  },
   "files": ["dist"],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup --config tsup.config.ts && pnpm build:view-model",
+    "build:view-model": "tsup --config tsup.view-model.config.ts",
     "dev": "tsup --watch"
   },
   "dependencies": {

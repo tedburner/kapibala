@@ -1,3 +1,4 @@
+import { resolveCommandOutput } from '../host/command-output.js';
 import { COMMAND_CATALOG } from './catalog.js';
 import type { CommandHandler } from './dispatcher.js';
 
@@ -13,10 +14,12 @@ export const helpCommand: CommandHandler = (args, ctx) => {
     if (definitions.some((d) => !d)) throw new Error('未找到该命令');
     for (const definition of definitions) {
       if (!definition) continue;
-      console.log(`${definition.usage} — ${definition.description}`);
+      resolveCommandOutput(ctx).log(`${definition.usage} — ${definition.description}`);
       if (definition.aliases?.length)
-        console.log(`  兼容别名: ${definition.aliases.map((alias) => `/${alias}`).join(', ')}`);
-      console.log(
+        resolveCommandOutput(ctx).log(
+          `  兼容别名: ${definition.aliases.map((alias) => `/${alias}`).join(', ')}`,
+        );
+      resolveCommandOutput(ctx).log(
         `  状态: ${definition.mutates([]) || definition.mutates(['value']) ? '变更需空闲，查询读取快照' : '只读或退出等待清理'}`,
       );
     }
@@ -29,5 +32,5 @@ export const helpCommand: CommandHandler = (args, ctx) => {
     : COMMAND_CATALOG;
   if (!definitions.length) throw new Error('未找到该命令');
   for (const definition of definitions)
-    console.log(`${definition.usage} — ${definition.description}`);
+    resolveCommandOutput(ctx).log(`${definition.usage} — ${definition.description}`);
 };

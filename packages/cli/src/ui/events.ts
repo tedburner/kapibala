@@ -7,6 +7,9 @@ import {
 } from '@kiturone/kapibala';
 import { getCurrentGitBranch } from '../git.js';
 import { formatContextUsage, formatTokenCount } from './metrics.js';
+import { sanitizeUntrustedOutput } from './text-safety.js';
+/** 保留既有文本渲染器导入入口；Host 与文本模式共享同一个纯净化实现。 */
+export { sanitizeUntrustedOutput } from './text-safety.js';
 import { formatModelError, formatModelFailureSummary } from './model-errors.js';
 import {
   formatToolDetail,
@@ -73,37 +76,6 @@ interface FooterSegment {
 }
 
 const ESC = '\x1b';
-const BEL = String.fromCharCode(7);
-const TERMINAL_SEQUENCE = new RegExp(
-  `${ESC}(?:\\[[0-?]*[ -/]*[@-~]|\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\))`,
-  'g',
-);
-
-/**
- * 过滤不可信外部文本中的终端控制序列与非法控制字符，保留换行与制表符。
- *
- * 保证与约束：
- * - 剥离 ANSI 转义序列、OSC 标题序列及 C0/C1 控制字符，防止终端注入向量与界面篡改；
- * - 完整保留制表符（\t）与换行符（\n）；
- * - 纯字符串操作，不分配系统资源，绝不抛出异常。
- *
- * @param value - 待净化的不可信外部字符串。
- * @returns 已清除所有终端转义控制序列的安全文本。
- */
-export function sanitizeUntrustedOutput(value: string): string {
-  let safe = '';
-  for (const character of value.replace(TERMINAL_SEQUENCE, '')) {
-    const codePoint = character.codePointAt(0) ?? 0;
-    if (
-      (codePoint < 0x20 && codePoint !== 0x09 && codePoint !== 0x0a) ||
-      (codePoint >= 0x7f && codePoint <= 0x9f)
-    )
-      continue;
-    safe += character;
-  }
-  return safe;
-}
-
 /**
  * 根据终端能力受控为文本添加 ANSI 色彩控制序列。
  *

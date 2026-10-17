@@ -1,3 +1,4 @@
+import { resolveCommandOutput } from '../host/command-output.js';
 /**
  * @fileoverview /prompts 与 /prompt 命令：MCP 提示词模板检索与受控任务执行
  *
@@ -24,7 +25,7 @@ import type { CommandContext, CommandHandler } from './dispatcher.js';
 export const promptsCommand: CommandHandler = async (args: string[], ctx: CommandContext) => {
   const plugin = getSessionMcpPlugin(ctx.session);
   if (!plugin) {
-    console.log('当前会话未启用 MCP 生态（未配置服务或已通过 --no-mcp 禁用）。');
+    resolveCommandOutput(ctx).log('当前会话未启用 MCP 生态（未配置服务或已通过 --no-mcp 禁用）。');
     return;
   }
 
@@ -32,25 +33,27 @@ export const promptsCommand: CommandHandler = async (args: string[], ctx: Comman
   const results = plugin.promptRegistry.search(query);
 
   if (results.length === 0) {
-    console.log(query ? `未找到与 '${query}' 匹配的提示词模板。` : '当前暂无已发现的提示词模板。');
+    resolveCommandOutput(ctx).log(
+      query ? `未找到与 '${query}' 匹配的提示词模板。` : '当前暂无已发现的提示词模板。',
+    );
     return;
   }
 
   const isTTY = Boolean(process.stdout.isTTY);
-  console.log(`\n📝 MCP 提示词模板列表（共 ${results.length} 项）：`);
+  resolveCommandOutput(ctx).log(`\n📝 MCP 提示词模板列表（共 ${results.length} 项）：`);
   for (const item of results) {
-    console.log(`  · ${color(sanitizeUntrustedOutput(item.stableId), 1, isTTY)}`);
+    resolveCommandOutput(ctx).log(`  · ${color(sanitizeUntrustedOutput(item.stableId), 1, isTTY)}`);
     if (item.description) {
-      console.log(`    ${sanitizeUntrustedOutput(item.description)}`);
+      resolveCommandOutput(ctx).log(`    ${sanitizeUntrustedOutput(item.description)}`);
     }
     if (item.arguments && item.arguments.length > 0) {
       const argsDesc = item.arguments
         .map((a) => `${a.name}${a.required ? ' [必填]' : ''}`)
         .join(', ');
-      console.log(`    ${color(`参数: ${argsDesc}`, 90, isTTY)}`);
+      resolveCommandOutput(ctx).log(`    ${color(`参数: ${argsDesc}`, 90, isTTY)}`);
     }
   }
-  console.log('\n用法示例: /prompt <server/name> {"param": "value"}\n');
+  resolveCommandOutput(ctx).log('\n用法示例: /prompt <server/name> {"param": "value"}\n');
 };
 
 /**

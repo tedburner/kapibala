@@ -30,11 +30,19 @@
 | **v0.0.5** | **技能体系与过程输出折叠**（已发布；[发布说明](releases/v0.0.5.md)，[验收记录](verification/v0.0.5.md)） | 有界 SkillRegistry、按需加载、受控资源、来源落盘与只收紧权限；`/skills` / `/skill`、技能名 Tab、Ctrl+O、完整详情重定向；[迁移说明](migration/v0.0.5.md) | Core + CLI 增量 |
 | **v0.0.6** | **MCP 生态扩展**（已发布；[发布说明](releases/v0.0.6.md)，[验收记录](verification/v0.0.6.md)，[迁移说明](migration/v0.0.6.md)） | 独立包接入 Stdio 与 Streamable HTTP；工具按 source 原子上下线、run 稳定声明与即时撤销，启动和调用分别授权；Prompt 可搜索并由固定 `/prompt` 入口调用；缓存压缩专项另行排期 | `@kiturone/kapibala-mcp` |
 | **v0.0.7** | **会话增强与多智能体**（已发布；[发布说明](releases/v0.0.7.md)，[验收记录](verification/v0.0.7.md)，[迁移说明](migration/v0.0.7.md)） | 基于 v0.0.3 的独立会话、Envelope 因果 `parentId` 与基本 SessionManager，增强跨项目全文检索、历史分叉（DAG 树）、归档与子代理任务树观测；清理 Core 对全局 `process.cwd()` 的隐式依赖，强制显式 `workspaceRoot`；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理权限只继承或收紧。Worktree 物理隔离、审批冒泡与任务树 Token 分层账本明确未交付 | Core + 宿主增量 |
-| **v0.0.8** | **产品化终端体验** | 现代 TUI、共享前端 ViewModel（供终端与桌面端通用复用）、多任务状态、可扩展状态栏与流式渲染；统一 `/` 命令面板聚合内置 Slash 命令、Skills 与 MCP Prompt（模糊匹配、Tab 补全、Esc 关闭，原始 MCP Tool 不进菜单）；思考过程完成后折叠且可展开 | 独立包 + CLI 增量 |
+| **v0.0.8** | **产品化终端体验**（已实现；[发布说明](releases/v0.0.8.md)，[验收记录](verification/v0.0.8.md)，[迁移说明](migration/v0.0.8.md)） | 现代终端守护（ConPTY/CSI-u 拼包、Bracketed Paste 隔离、异常自愈恢复）、共享前端纯展示模型（`@kiturone/kapibala-cli/view-model` 导出，0 Node 依赖，WeakMap 缓存）、宿主桥接中枢与防抖分发、全量 Slash 命令结构化解耦（CommandOutput 统一输出，check-cli-boundary 门禁）、多任务状态观察（subscribeTaskChanges） | CLI 内部模块增量，不新增包 |
 | **v0.0.9** | **本地客户端契约与发布前加固** | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；完成审计、预算、宿主隔离与兼容性测试。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
 | **v0.1.0** | **阶段性整合版本** | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约，完成迁移验证与发布流程；不新增客户端类型或运行时子系统 | CLI + Core SDK + 扩展包 |
 | **v0.1.1** | **跨平台桌面客户端 (Electron)** | 基于 Electron 的现代化跨平台桌面客户端（Windows / macOS / Linux）；前端采用现代 Web 技术栈复用流式渲染与 ViewModel，主进程直连复用 Headless Core 与 MCP 模块；支持系统托盘、全局呼出快捷键、富文本思考过程与工具调用交互 | 独立桌面包 (`packages/desktop`) |
 
+
+### v0.0.8 已确认交付边界（2026-10-17）
+
+- 终端底层基础设施与输入守护：`TerminalModeGuard` 接管未捕获异常与进程退出，保障光标（`\x1b[?25h`）、备用屏（`\x1b[?1049l`）与 rawMode 可靠恢复；`TerminalInputFramer` 引入 40ms 拼包缓冲解决 ConPTY 分片，Bracketed Paste 隔离换行与快捷键并设 1MiB 上限防 DoS；`TerminalInputStream` 保证 stdin 单读者互斥；`TerminalEditor` 基于 `Intl.Segmenter` 支持 Unicode 宽字符、组合字符与历史回滚；
+- 跨端纯展示模型（`@kiturone/kapibala-cli/view-model`）：导出无副作用的展示状态与纯函数 Reducer，提供独立构建产物（`tsconfig.view-model.json` / `tsup.view-model.config.ts`），`check-view-model.ts` 门禁保证 0 Node 内置依赖，供终端与未来桌面端共享；`selectMessages` 引入 WeakMap 快照缓存；
+- 宿主桥接中枢与命令输出解耦：`SessionPresentationHost` 与 `PresentationStore` 统一订阅分发与 16ms 防抖；全量迁移 `packages/cli/src/commands/*` 20+ 内置命令至结构化 `CommandOutput`，消除运行期隐式 `console.log`，`check-cli-boundary.ts` 架构门禁强制约束；
+- 多任务状态观察：Core `AgentRuntime` 提供 `subscribeTaskChanges` 只读通知订阅，CLI 宿主 `TaskObservationHost` 实时聚合子任务并在状态模型反映进度；
+- 本版明确未交付：全屏 Ink TUI 主视图切换（阶段 D 平滑过渡至下一版）、Electron 桌面客户端包（按路线图排入 v0.1.1）、Git Worktree 物理隔离与审批冒泡队列。
 
 ### v0.0.7 已确认交付边界（2026-10-16）
 

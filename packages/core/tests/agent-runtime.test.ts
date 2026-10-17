@@ -36,6 +36,190 @@ describe('AgentRuntime and spawn launch transactions', () => {
     ...overrides,
   });
 
+  it('observes new tasks through filtered snapshots without exposing mutable runtime records', async () => {
+    const runtime = new AgentRuntime();
+    const snapshots: AgentTaskRecord[][] = [];
+    const argumentCounts: number[] = [];
+    const unsubscribe = runtime.subscribeTaskChanges((...args) => {
+      argumentCounts.push(args.length);
+      snapshots.push(
+        runtime.listTasks({ rootTaskId: 'observed-tree', parentSessionId: 'session-root' }),
+      );
+    });
+
+    try {
+      const receipt = await runtime.prepareSpawn(
+        createDefaultContext({ rootTaskId: 'observed-tree' }),
+        { description: 'Observed task', prompt: 'Inspect', role: 'explore' },
+      );
+      expect(snapshots.at(-1)?.map((task) => task.agentId)).toEqual([receipt.agentId]);
+      expect(argumentCounts).toEqual([0]);
+      const snapshot = snapshots.at(-1)?.[0];
+      expect(snapshot?.status).toBe('preparing');
+      if (!snapshot) throw new Error('Expected an observed task snapshot');
+      Reflect.set(snapshot.origin, 'originBranchId', 'changed-by-host');
+      snapshot.childAgentIds.add('changed-by-host');
+      Reflect.set(snapshot, 'description', 'changed-by-host');
+
+      const task = runtime.listTasks()[0];
+      expect(task?.origin.originBranchId).toBe('main');
+      expect(task?.childAgentIds.size).toBe(0);
+      expect(task?.description).toBe('Observed task');
+      await runtime.rollbackPreparedSpawn(receipt.agentId);
+      expect(snapshots.at(-1)?.[0]?.status).toBe('cancelled');
+    } finally {
+      unsubscribe();
+      await runtime.close();
+    }
+  });
+
+  it('observes idle-parent completion without consuming the pending result', async () => {
+    let finishRunner: () => void = () => {};
+    const runtime = new AgentRuntime({
+      runner: async () => {
+        await new Promise<void>((resolve) => {
+          finishRunner = resolve;
+        });
+        return { summary: 'Ready for explicit collection' };
+      },
+    });
+    const statuses: string[] = [];
+    let observeCompletion: () => void = () => {};
+    const completed = new Promise<void>((resolve) => {
+      observeCompletion = resolve;
+    });
+    const unsubscribe = runtime.subscribeTaskChanges(() => {
+      const task = runtime.listTasks({ rootTaskId: 'idle-parent-tree' })[0];
+      if (task) statuses.push(task.status);
+      if (task?.status === 'completed') observeCompletion();
+    });
+
+    try {
+      const receipt = await runtime.prepareSpawn(
+        createDefaultContext({ rootTaskId: 'idle-parent-tree' }),
+        { description: 'Background task', prompt: 'Inspect', role: 'explore' },
+      );
+      await runtime.activateSpawn(receipt.agentId);
+      expect(statuses).toContain('running');
+      finishRunner();
+      await completed;
+
+      expect(statuses.at(-1)).toBe('completed');
+      expect(runtime.getTask(receipt.agentId)?.summary).toBe('Ready for explicit collection');
+      expect(runtime.getOutbox().getPendingNotifications()).toHaveLength(1);
+    } finally {
+      finishRunner();
+      unsubscribe();
+      await runtime.close();
+    }
+  });
+
+  it('isolates throwing and rejecting observers from task execution and other observers', async () => {
+    const runtime = new AgentRuntime();
+    runtime.subscribeTaskChanges(() => {
+      throw new Error('Broken observer');
+    });
+    runtime.subscribeTaskChanges(async () => {
+      throw new Error('Rejected observer');
+    });
+    const statuses: string[] = [];
+    runtime.subscribeTaskChanges(() => {
+      const task = runtime.listTasks()[0];
+      if (task) statuses.push(task.status);
+    });
+
+    try {
+      const receipt = await runtime.prepareSpawn(createDefaultContext(), {
+        description: 'Task with observers',
+        prompt: 'Inspect',
+        role: 'explore',
+      });
+      await runtime.activateSpawn(receipt.agentId);
+      await runtime.waitAgents([receipt.agentId]);
+      await Promise.resolve();
+      expect(runtime.getTask(receipt.agentId)?.status).toBe('completed');
+      expect(statuses).toContain('completed');
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it('cancels each subscription independently and makes cancellation idempotent', async () => {
+    const runtime = new AgentRuntime();
+    let calls = 0;
+    const observer = () => {
+      calls++;
+    };
+    const unsubscribeFirst = runtime.subscribeTaskChanges(observer);
+    const unsubscribeSecond = runtime.subscribeTaskChanges(observer);
+    unsubscribeFirst();
+    unsubscribeFirst();
+
+    try {
+      const receipt = await runtime.prepareSpawn(createDefaultContext(), {
+        description: 'Subscription task',
+        prompt: 'Inspect',
+        role: 'explore',
+      });
+      expect(calls).toBe(1);
+      unsubscribeSecond();
+      await runtime.rollbackPreparedSpawn(receipt.agentId);
+      expect(calls).toBe(1);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it('releases observers on close and suppresses queued and future subscriptions', async () => {
+    const runtime = new AgentRuntime();
+    let calls = 0;
+    const unsubscribe = runtime.subscribeTaskChanges(() => {
+      calls++;
+    });
+    const preparing = runtime.prepareSpawn(createDefaultContext(), {
+      description: 'Closing task',
+      prompt: 'Inspect',
+      role: 'explore',
+    });
+    await runtime.close();
+    const receipt = await preparing;
+    const unsubscribeAfterClose = runtime.subscribeTaskChanges(() => {
+      calls++;
+    });
+    unsubscribe();
+    unsubscribeAfterClose();
+    await runtime.close();
+    expect(calls).toBe(0);
+    expect(runtime.getTask(receipt.agentId)?.status).toBe('cancelled');
+  });
+
+  it('honors cancellation before queued delivery and during another observer callback', async () => {
+    const runtime = new AgentRuntime();
+    let cancelledCalls = 0;
+    const unsubscribeQueued = runtime.subscribeTaskChanges(() => {
+      cancelledCalls++;
+    });
+    let unsubscribeDuringDelivery: () => void = () => {};
+    runtime.subscribeTaskChanges(() => unsubscribeDuringDelivery());
+    unsubscribeDuringDelivery = runtime.subscribeTaskChanges(() => {
+      cancelledCalls++;
+    });
+
+    try {
+      const preparing = runtime.prepareSpawn(createDefaultContext(), {
+        description: 'Cancelled observations',
+        prompt: 'Inspect',
+        role: 'explore',
+      });
+      unsubscribeQueued();
+      await preparing;
+      expect(cancelledCalls).toBe(0);
+      expect(runtime.listTasks()[0]?.status).toBe('preparing');
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it('immediately returns accepted receipt and closes tool transaction before subagent finishes', async () => {
     let runnerStarted = false;
     let finishRunner: () => void = () => {};

@@ -1,3 +1,4 @@
+import { resolveCommandOutput } from '../host/command-output.js';
 import { sanitizeToolName } from '../ui/tool-presentation.js';
 import type { CommandHandler } from './dispatcher.js';
 
@@ -11,21 +12,21 @@ export function parseSkillTask(tail: string): { name: string; task: string } | u
 /** 只读当前集合、覆盖诊断和活动状态；禁用技能仍可检查，不触发正文读取或运行。 */
 export const skillsCommand: CommandHandler = (args, ctx) => {
   const snapshot = ctx.session.getSkills(args[0] ?? '');
-  console.log('当前技能:');
-  if (!snapshot.skills.length) console.log('  无匹配技能');
+  resolveCommandOutput(ctx).log('当前技能:');
+  if (!snapshot.skills.length) resolveCommandOutput(ctx).log('  无匹配技能');
   for (const skill of snapshot.skills) {
     const active = snapshot.activations.find((item) => item.definition.name === skill.name);
-    console.log(
+    resolveCommandOutput(ctx).log(
       `  ${sanitizeToolName(skill.name)} [${skill.scope}] 用户:${skill.userInvocable ? '可用' : '禁用'} 模型:${skill.modelInvocable ? '可用' : '禁用'}${active ? ` 活动:${active.state}` : ''}`,
     );
-    console.log(`    ${sanitizeToolName(skill.description)}`);
-    console.log(
+    resolveCommandOutput(ctx).log(`    ${sanitizeToolName(skill.description)}`);
+    resolveCommandOutput(ctx).log(
       `    来源: ${sanitizeToolName(skill.filePath)}${skill.available && !skill.disabled ? '' : ` · 不可用: ${sanitizeToolName(skill.unavailableReason ?? '已禁用')}`}`,
     );
   }
-  console.log(`模型目录遗漏: ${snapshot.catalog.omitted}`);
+  resolveCommandOutput(ctx).log(`模型目录遗漏: ${snapshot.catalog.omitted}`);
   for (const diagnostic of snapshot.diagnostics)
-    console.log(
+    resolveCommandOutput(ctx).log(
       `  [${sanitizeToolName(diagnostic.code)}] ${sanitizeToolName(diagnostic.path)} · ${sanitizeToolName(diagnostic.message)}`,
     );
 };

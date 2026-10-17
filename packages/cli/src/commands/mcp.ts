@@ -1,3 +1,4 @@
+import { resolveCommandOutput } from '../host/command-output.js';
 /**
  * @fileoverview /mcp 管理命令：查看服务状态、工具列表、重连与会话级开关
  *
@@ -31,7 +32,7 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
 
   // 1. 无 MCP 插件或被宿主彻底关闭的情况
   if (!plugin) {
-    console.log('当前会话未启用 MCP 生态（未配置服务或已通过 --no-mcp 禁用）。');
+    resolveCommandOutput(ctx).log('当前会话未启用 MCP 生态（未配置服务或已通过 --no-mcp 禁用）。');
     return;
   }
 
@@ -41,12 +42,12 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
   if (args.length === 0) {
     const statuses = manager.getAllStatuses();
     if (statuses.length === 0) {
-      console.log('未发现已配置的 MCP 服务。');
+      resolveCommandOutput(ctx).log('未发现已配置的 MCP 服务。');
       return;
     }
 
     const isTTY = Boolean(process.stdout.isTTY);
-    console.log(`\n🐾 MCP 服务状态清单（共 ${statuses.length} 个服务）：`);
+    resolveCommandOutput(ctx).log(`\n🐾 MCP 服务状态清单（共 ${statuses.length} 个服务）：`);
     for (const s of statuses) {
       const connColorCode =
         s.connectionState === 'ready'
@@ -62,16 +63,18 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
       const title = color(sanitizeUntrustedOutput(s.name), 1, isTTY);
       const stateStr = color(s.connectionState, connColorCode, isTTY);
 
-      console.log(
+      resolveCommandOutput(ctx).log(
         `  · ${title}: ${stateStr}` +
           ` | Tools: ${s.toolsState} (${toolCount} 个)` +
           ` | Prompts: ${s.promptsState} (${promptCount} 个)`,
       );
       if (s.errorMessage) {
-        console.log(`    ${color(`错误: ${sanitizeUntrustedOutput(s.errorMessage)}`, 31, isTTY)}`);
+        resolveCommandOutput(ctx).log(
+          `    ${color(`错误: ${sanitizeUntrustedOutput(s.errorMessage)}`, 31, isTTY)}`,
+        );
       }
     }
-    console.log(
+    resolveCommandOutput(ctx).log(
       '\n提示: 使用 /mcp tools <server> 查看工具，或 /mcp reconnect|enable|disable <server> 管理服务。\n',
     );
     return;
@@ -83,36 +86,38 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
   // 3. /mcp tools <server>
   if (subCommand === 'tools') {
     if (!serverName) {
-      console.log('用法: /mcp tools <server>');
+      resolveCommandOutput(ctx).log('用法: /mcp tools <server>');
       return;
     }
     const statuses = manager.getAllStatuses();
     const status = statuses.find((s) => s.name === serverName);
     if (!status) {
-      console.log(`未知 MCP 服务: '${serverName}'`);
+      resolveCommandOutput(ctx).log(`未知 MCP 服务: '${serverName}'`);
       return;
     }
 
     const tools = manager.getServerTools(serverName);
     if (tools.length === 0) {
-      console.log(
+      resolveCommandOutput(ctx).log(
         `服务 '${serverName}' 暂无已注册的工具（连接状态: ${status.connectionState}, 目录状态: ${status.toolsState}）。`,
       );
       return;
     }
 
     const isTTY = Boolean(process.stdout.isTTY);
-    console.log(
+    resolveCommandOutput(ctx).log(
       `\n🛠 服务 '${sanitizeUntrustedOutput(serverName)}' 工具清单（共 ${tools.length} 个）：`,
     );
     for (const tool of tools) {
       const readOnly = tool.metadata?.readOnlyHint ? color(' [只读]', 36, isTTY) : '';
-      console.log(`  · ${color(sanitizeUntrustedOutput(tool.name), 1, isTTY)}${readOnly}`);
+      resolveCommandOutput(ctx).log(
+        `  · ${color(sanitizeUntrustedOutput(tool.name), 1, isTTY)}${readOnly}`,
+      );
       if (tool.description) {
-        console.log(`    ${sanitizeUntrustedOutput(tool.description)}`);
+        resolveCommandOutput(ctx).log(`    ${sanitizeUntrustedOutput(tool.description)}`);
       }
     }
-    console.log('');
+    resolveCommandOutput(ctx).log('');
     return;
   }
 
@@ -123,31 +128,31 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
 
   if (subCommand === 'reconnect') {
     if (!serverName) {
-      console.log('用法: /mcp reconnect <server>');
+      resolveCommandOutput(ctx).log('用法: /mcp reconnect <server>');
       return;
     }
     const statuses = manager.getAllStatuses();
     const status = statuses.find((s) => s.name === serverName);
     if (!status) {
-      console.log(`未知 MCP 服务: '${serverName}'`);
+      resolveCommandOutput(ctx).log(`未知 MCP 服务: '${serverName}'`);
       return;
     }
 
-    console.log(`正在重连 MCP 服务 '${serverName}'...`);
+    resolveCommandOutput(ctx).log(`正在重连 MCP 服务 '${serverName}'...`);
     try {
       await manager.reconnectServer(serverName);
       const updated = manager.getAllStatuses().find((s) => s.name === serverName);
       if (updated?.connectionState === 'ready') {
-        console.log(
+        resolveCommandOutput(ctx).log(
           `✔ 服务 '${serverName}' 重连成功（Tools: ${updated.toolsState}, Prompts: ${updated.promptsState}）。`,
         );
       } else {
-        console.log(
+        resolveCommandOutput(ctx).log(
           `⚠ 服务 '${serverName}' 重连后状态为: ${updated?.connectionState}（原因: ${updated?.errorMessage ?? '未知'}）。`,
         );
       }
     } catch (err: unknown) {
-      console.error(
+      resolveCommandOutput(ctx).error(
         `重连服务 '${serverName}' 失败: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
@@ -156,22 +161,24 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
 
   if (subCommand === 'enable') {
     if (!serverName) {
-      console.log('用法: /mcp enable <server>');
+      resolveCommandOutput(ctx).log('用法: /mcp enable <server>');
       return;
     }
     const statuses = manager.getAllStatuses();
     const status = statuses.find((s) => s.name === serverName);
     if (!status) {
-      console.log(`未知 MCP 服务: '${serverName}'`);
+      resolveCommandOutput(ctx).log(`未知 MCP 服务: '${serverName}'`);
       return;
     }
 
-    console.log(`正在当前会话中启用服务 '${serverName}'...`);
+    resolveCommandOutput(ctx).log(`正在当前会话中启用服务 '${serverName}'...`);
     try {
       await manager.enableServer(serverName);
-      console.log(`✔ 已在当前会话启用服务 '${serverName}'（会话临时生效，不写回配置文件）。`);
+      resolveCommandOutput(ctx).log(
+        `✔ 已在当前会话启用服务 '${serverName}'（会话临时生效，不写回配置文件）。`,
+      );
     } catch (err: unknown) {
-      console.error(
+      resolveCommandOutput(ctx).error(
         `启用服务 '${serverName}' 失败: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
@@ -180,29 +187,31 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
 
   if (subCommand === 'disable') {
     if (!serverName) {
-      console.log('用法: /mcp disable <server>');
+      resolveCommandOutput(ctx).log('用法: /mcp disable <server>');
       return;
     }
     const statuses = manager.getAllStatuses();
     const status = statuses.find((s) => s.name === serverName);
     if (!status) {
-      console.log(`未知 MCP 服务: '${serverName}'`);
+      resolveCommandOutput(ctx).log(`未知 MCP 服务: '${serverName}'`);
       return;
     }
 
-    console.log(`正在当前会话中禁用服务 '${serverName}'...`);
+    resolveCommandOutput(ctx).log(`正在当前会话中禁用服务 '${serverName}'...`);
     try {
       await manager.disableServer(serverName);
-      console.log(`✔ 已在当前会话禁用服务 '${serverName}'（会话临时生效，不写回配置文件）。`);
+      resolveCommandOutput(ctx).log(
+        `✔ 已在当前会话禁用服务 '${serverName}'（会话临时生效，不写回配置文件）。`,
+      );
     } catch (err: unknown) {
-      console.error(
+      resolveCommandOutput(ctx).error(
         `禁用服务 '${serverName}' 失败: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     return;
   }
 
-  console.log(
+  resolveCommandOutput(ctx).log(
     '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server>]',
   );
 };

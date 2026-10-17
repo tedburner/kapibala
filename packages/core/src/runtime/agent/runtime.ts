@@ -93,6 +93,9 @@ export class AgentRuntime {
   private readonly controllers = new Map<string, AbortController>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly stateListeners = new Set<() => void>();
+  /** 宿主观察订阅独立于调度等待；关闭宿主订阅不能影响任务收口。 */
+  private readonly taskChangeListeners = new Set<() => void | Promise<void>>();
+  private taskChangeNotificationPending = false;
   private readonly outbox: SubagentOutbox;
   private readonly runningPromises = new Map<string, Promise<void>>();
   private runner: SubagentSessionRunner;
@@ -133,6 +136,25 @@ export class AgentRuntime {
   getTask(agentId: string): AgentTaskRecord | undefined {
     const task = this.tasks.get(agentId);
     return task ? structuredClone(task) : undefined;
+  }
+
+  /**
+   * 订阅任务创建与状态变化；通知只表示快照可能已更新，不提供可变任务对象。
+   * 同一轮微任务内的变化可合并，不保证逐个中间状态；订阅时不主动发送通知，
+   * 宿主应先订阅，再通过 listTasks 按会话和根任务读取独立复制的快照。
+   * 监听器的同步异常与异步拒绝均隔离，不等待监听器，也不触发结果投递或父模型请求。
+   *
+   * @param listener 无参数变化监听器；应只读取展示状态，异步监听器可自行重叠执行。
+   * @returns 幂等取消函数；同一监听器的多次订阅独立取消，运行时关闭时全部释放。
+   * 已关闭的运行时不保留新订阅，返回的取消函数可安全调用。
+   */
+  subscribeTaskChanges(listener: () => void | Promise<void>): () => void {
+    if (this.isClosed) return () => {};
+    const subscription = () => listener();
+    this.taskChangeListeners.add(subscription);
+    return () => {
+      this.taskChangeListeners.delete(subscription);
+    };
   }
 
   /**
@@ -341,6 +363,7 @@ export class AgentRuntime {
         parentTask.childAgentIds.add(agentId);
       }
     }
+    this.notifyTaskChanges();
 
     const preferredRole = ROLE_PRESETS[params.role].preferredRole;
 
@@ -659,7 +682,7 @@ export class AgentRuntime {
   }
 
   /**
-   * 按过滤条件查询子代理任务列表。
+   * 按过滤条件查询子代理任务列表；每条记录深度复制，调用方修改快照不影响运行时。
    */
   listTasks(filter?: ListAgentsFilter): AgentTaskRecord[] {
     const results: AgentTaskRecord[] = [];
@@ -694,10 +717,11 @@ export class AgentRuntime {
   }
 
   /**
-   * 关闭 Runtime 并取消所有活动任务。
+   * 关闭 Runtime 并取消所有活动任务；立即释放宿主订阅，再等待任务清理收口。
    */
   async close(): Promise<void> {
     this.isClosed = true;
+    this.taskChangeListeners.clear();
     const activeTasks = Array.from(this.tasks.values()).filter((t) => isActiveTaskStatus(t.status));
     await Promise.all(activeTasks.map((t) => this.cancelTask(t.agentId, 'Runtime closing')));
     await Promise.all(Array.from(this.runningPromises.values()).map((p) => p.catch(() => {})));
@@ -737,6 +761,7 @@ export class AgentRuntime {
     }
   }
 
+  /** 先保留调度等待者的同步唤醒时序，再异步通知宿主读取任务快照。 */
   private notifyStateChange(): void {
     for (const listener of this.stateListeners) {
       try {
@@ -745,6 +770,33 @@ export class AgentRuntime {
         /* 忽略监听器内部异常 */
       }
     }
+    this.notifyTaskChanges();
+  }
+
+  /**
+   * 合并宿主变化通知，避免宿主回调同步重入任务状态转换；不改变内部等待者的唤醒时序。
+   * 派发前再次检查订阅与关闭状态，取消后的回调不会执行，观察者失败不传播至任务。
+   */
+  private notifyTaskChanges(): void {
+    if (
+      this.isClosed ||
+      this.taskChangeNotificationPending ||
+      this.taskChangeListeners.size === 0
+    ) {
+      return;
+    }
+    this.taskChangeNotificationPending = true;
+    queueMicrotask(() => {
+      this.taskChangeNotificationPending = false;
+      for (const listener of [...this.taskChangeListeners]) {
+        if (!this.taskChangeListeners.has(listener)) continue;
+        try {
+          void Promise.resolve(listener()).catch(() => {});
+        } catch {
+          /* 观察者异常不能破坏其他观察者或后台任务。 */
+        }
+      }
+    });
   }
 
   private waitForNextStateChange(signal: AbortSignal): Promise<void> {
