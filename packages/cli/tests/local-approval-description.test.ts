@@ -53,6 +53,21 @@ describe('approval descriptions', () => {
     expect(target).toContain('完整命令: echo ok\\nrm ./important\\t# end');
   });
 
+  it('escapes literal backslashes so Windows paths cannot impersonate control escapes', () => {
+    const target = describeApproval({
+      ...request('run_command', {}),
+      shell: {
+        command: 'rm .\\target',
+        cwd: 'C:\\work\\repo',
+        interpreter: 'cmd.exe',
+        executablePath: 'C:\\Windows\\cmd.exe',
+      },
+    });
+    expect(target).toBe(
+      '解释器: C:\\\\Windows\\\\cmd.exe\n工作目录: C:\\\\work\\\\repo\n完整命令: rm .\\\\target',
+    );
+  });
+
   it('describes agent tools without exposing the full prompt or secret parameters', () => {
     const spawned = describeApproval(
       request('spawn_agent', {
