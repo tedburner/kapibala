@@ -31,7 +31,7 @@
 | **v0.0.6** | **MCP 生态扩展**（已发布；[发布说明](releases/v0.0.6.md)，[验收记录](verification/v0.0.6.md)，[迁移说明](migration/v0.0.6.md)） | 独立包接入 Stdio 与 Streamable HTTP；工具按 source 原子上下线、run 稳定声明与即时撤销，启动和调用分别授权；Prompt 可搜索并由固定 `/prompt` 入口调用；缓存压缩专项另行排期 | `@kiturone/kapibala-mcp` |
 | **v0.0.7** | **会话增强与多智能体**（已发布；[发布说明](releases/v0.0.7.md)，[验收记录](verification/v0.0.7.md)，[迁移说明](migration/v0.0.7.md)） | 基于 v0.0.3 的独立会话、Envelope 因果 `parentId` 与基本 SessionManager，增强跨项目全文检索、历史分叉（DAG 树）、归档与子代理任务树观测；清理 Core 对全局 `process.cwd()` 的隐式依赖，强制显式 `workspaceRoot`；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理权限只继承或收紧。Worktree 物理隔离、审批冒泡与任务树 Token 分层账本明确未交付 | Core + 宿主增量 |
 | **v0.0.8** | **产品化终端体验**（已发布；[发布说明](releases/v0.0.8.md)，[验收记录](verification/v0.0.8.md)，[迁移说明](migration/v0.0.8.md)） | 现代终端守护（ConPTY/CSI-u 拼包、Bracketed Paste 隔离、异常自愈恢复）、共享前端纯展示模型（`@kiturone/kapibala-cli/view-model` 导出，0 Node 依赖，WeakMap 缓存）、宿主桥接中枢与防抖分发、全量 Slash 命令结构化解耦（CommandOutput 统一输出，check-cli-boundary 门禁）、多任务状态观察（subscribeTaskChanges） | CLI 内部模块增量，不新增包 |
-| **v0.0.9** | **本地客户端契约与发布前加固**（实现与本地验收完成，发布流程进行中；[发布说明](releases/v0.0.9.md)，[验收记录](verification/v0.0.9.md)，[迁移说明](migration/v0.0.9.md)） | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；已实现有界快照、审批与宿主隔离；Linux 与 Windows CI 全量门禁已通过，Windows ACL/进程树与 Node 20 等平台验收仍待补齐。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
+| **v0.0.9** | **本地客户端契约与发布前加固**（已于 2026-10-21 发布；[发布说明](releases/v0.0.9.md)，[验收记录](verification/v0.0.9.md)，[迁移说明](migration/v0.0.9.md)） | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；已实现有界快照、审批与宿主隔离；Linux 与 Windows CI 全量门禁已通过，Windows ACL/进程树与 Node 20 等平台验收仍待补齐。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
 | **v0.1.0** | **阶段性整合版本** | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约，完成迁移验证与发布流程；不新增客户端类型或运行时子系统 | CLI + Core SDK + 扩展包 |
 | **v0.1.1** | **跨平台桌面客户端 (Electron)** | 基于 Electron 的现代化跨平台桌面客户端（Windows / macOS / Linux）；前端采用现代 Web 技术栈复用流式渲染与 ViewModel，主进程直连复用 Headless Core 与 MCP 模块；支持系统托盘、全局呼出快捷键、富文本思考过程与工具调用交互 | 独立桌面包 (`packages/desktop`) |
 
@@ -40,7 +40,7 @@
 
 - CLI 内新增 protocol/client 子路径、本地 stdio/socket/pipe 宿主与 daemon/connect 入口，仍保持三个发布包；直接 CLI 兼容，协议版本独立为 1.0。
 - 会话单控制者、操作 ID 去重、审批取消和有界一致快照已实现；重连不重发写操作，不提供跨连接事件重放。工作区写租约只覆盖同一宿主。
-- 最终本地 `pnpm verify` 为 145 个测试文件、1253 项测试通过，`pnpm build`、macOS 真实 daemon/stdio 平台检查与三包 tarball 隔离安装通过；Windows ACL/进程树、Node 20 与公共 registry smoke 见 [待补齐门禁](verification/v0.0.9.md)。版本号由发布脚本统一推进；本地通过不视为远端发布完成，公共 registry 与 GitHub Release 以标签工作流结果为准。
+- 最终本地 `pnpm verify` 为 145 个测试文件、1253 项测试通过，`pnpm build`、macOS 真实 daemon/stdio 平台检查与三包 tarball 隔离安装通过；Linux/Windows CI 全量门禁通过，Windows ACL/进程树与 Node 20 见 [待补齐门禁](verification/v0.0.9.md)。发布由标签工作流完成：npm 三包 latest 为 `0.0.9`，公共 registry 安装 smoke 与 GitHub Release 资产均通过。
 
 ### v0.0.8 已确认交付边界（2026-10-17）
 
