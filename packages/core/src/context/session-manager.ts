@@ -203,20 +203,30 @@ export class SessionManager {
     }
   }
 
-  /** 每页 20 项按正文活动排序；有效 sidecar 只读元数据，不读取完整 JSONL。默认排除已归档会话。 */
+  /**
+   * 按正文活动排序分页；有效 sidecar 只读元数据，不读取完整 JSONL。默认排除已归档会话。
+   * pageSize 由调用方显式给出时必须在 1–100 之间；非法页参数直接失败，不静默修正。
+   */
   async list(
     page = 1,
-    options?: { includeArchived?: boolean },
+    options?: { includeArchived?: boolean; pageSize?: number },
   ): Promise<{ items: SessionMetadata[]; total: number; page: number; pages: number }> {
-    if (!Number.isSafeInteger(page) || page < 1)
+    const pageSize = options?.pageSize ?? 20;
+    if (
+      !Number.isSafeInteger(page) ||
+      page < 1 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    )
       throw new Error('History page must be a positive integer');
     const all = await this.allMetadata();
     const filtered = options?.includeArchived ? all : all.filter((m) => !m.archived);
     return {
-      items: filtered.slice((page - 1) * 20, page * 20),
+      items: filtered.slice((page - 1) * pageSize, page * pageSize),
       total: filtered.length,
       page,
-      pages: Math.max(1, Math.ceil(filtered.length / 20)),
+      pages: Math.max(1, Math.ceil(filtered.length / pageSize)),
     };
   }
 

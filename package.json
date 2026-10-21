@@ -12,7 +12,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm --filter \"@kiturone/kapibala*\" build",
-    "typecheck": "tsc -p tsconfig.check.json && pnpm typecheck:view-model",
+    "typecheck": "tsc -p tsconfig.check.json && pnpm typecheck:view-model && pnpm typecheck:protocol",
     "typecheck:view-model": "tsc -p packages/cli/tsconfig.view-model.json",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -20,7 +20,7 @@
     "check-cli-boundary": "tsx scripts/check-cli-boundary.ts",
     "check-view-model": "pnpm --filter @kiturone/kapibala-cli build:view-model && tsx scripts/check-view-model.ts",
     "check-secrets": "tsx scripts/check-secrets.ts",
-    "lint": "pnpm check-architecture && pnpm check-cli-boundary && pnpm check-view-model && pnpm check-secrets && biome check .",
+    "lint": "pnpm check-architecture && pnpm check-cli-boundary && pnpm check-local-boundary && pnpm check-view-model && pnpm check-secrets && biome check .",
     "format": "biome format --write .",
     "verify": "pnpm typecheck && pnpm test && pnpm lint",
     "flow": "tsx scripts/flow.ts",
@@ -28,7 +28,9 @@
     "dev": "node scripts/dev.mjs",
     "dev:build": "node scripts/dev.mjs --no-start",
     "dev:cli": "pnpm --filter \"@kiturone/kapibala-cli\" dev",
-    "link:cli": "cd packages/cli && npm link --force"
+    "link:cli": "cd packages/cli && npm link --force",
+    "typecheck:protocol": "tsc -p packages/cli/tsconfig.protocol.json",
+    "check-local-boundary": "tsx scripts/check-local-boundary.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

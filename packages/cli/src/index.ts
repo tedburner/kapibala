@@ -30,6 +30,7 @@ import { settingsCommand } from './commands/settings.js';
 import { skillCommand, skillsCommand } from './commands/skills.js';
 import { statusCommand } from './commands/status.js';
 import { CliInputCoordinator } from './input-coordinator.js';
+import { parseLocalCommand, runLocalCommand } from './local-host/entry.js';
 import { attachMcpToSession, resolveCliMcpOptions } from './mcp.js';
 import { CliModelBindings, parsePrimaryModelRole } from './model-bindings.js';
 import { runOneShot } from './oneshot.js';
@@ -64,6 +65,11 @@ function isValidShellPreference(value: string): boolean {
 
 /** 解析启动参数并管理独立会话、共享输入和退出清理；显式恢复失败不回退新建。 */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const localCommand = parseLocalCommand(argv);
+  if (localCommand) {
+    await runLocalCommand(localCommand);
+    return;
+  }
   const args = minimist(argv, {
     string: [
       'model',
@@ -87,6 +93,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
 使用方式:
   kpbl [选项] [问题/指令]
+  kpbl serve --stdio
+  kpbl daemon start|status|stop
+  kpbl connect [--workspace <path>] [--resume <id>] [-p <text>]
 
 示例:
   kpbl                             # 启动交互式会话终端 (REPL)

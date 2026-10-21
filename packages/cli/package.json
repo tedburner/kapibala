@@ -10,7 +10,9 @@
     "directory": "packages/cli"
   },
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "kpbl": "./dist/bin.js"
   },
@@ -23,13 +25,25 @@
       "default": "./dist/view-model/index.js"
     },
     "./dist/*": "./dist/*",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "import": "./dist/protocol/index.js",
+      "default": "./dist/protocol/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "default": "./dist/client/index.js"
+    }
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsup --config tsup.config.ts && pnpm build:view-model",
+    "build": "tsup --config tsup.config.ts && pnpm build:view-model && pnpm build:protocol && pnpm build:client",
     "build:view-model": "tsup --config tsup.view-model.config.ts",
-    "dev": "tsup --watch"
+    "dev": "tsup --watch",
+    "build:protocol": "tsup --config tsup.protocol.config.ts",
+    "build:client": "tsup --config tsup.client.config.ts"
   },
   "dependencies": {
     "@kiturone/kapibala": "workspace:*",
