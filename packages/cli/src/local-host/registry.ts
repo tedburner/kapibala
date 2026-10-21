@@ -13,6 +13,11 @@ import { redactText, sanitizeDisplayText } from './redaction.js';
 import { previewToolResult, summarizeToolTarget } from './tool-projection.js';
 import type { ResourceFactory, SessionResources } from './types.js';
 
+/** Windows 路径比较不区分大小写；标准化只用于身份判断，资源仍持有真实大小写。 */
+function identityPath(value: string): string {
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
 /** 活动运行在迭代结束和 Core 清理后才能清除；取消信号不等于完成。 */
 interface ActiveRun {
   id: string;
@@ -74,8 +79,8 @@ export class SessionRegistry {
     conversationId?: string,
   ): Promise<{ sessionId: string; conversationId: string }> {
     if (!path.isAbsolute(workspaceRoot)) throw new Error('WORKSPACE_ROOT_REQUIRED');
-    const physical = detectProjectRoot(workspaceRoot);
-    const root = process.platform === 'win32' ? physical.toLowerCase() : physical;
+    const root = detectProjectRoot(workspaceRoot);
+    const identity = identityPath(root);
     const operation = this.opening
       .catch(() => {})
       .then(async () => {
@@ -83,7 +88,7 @@ export class SessionRegistry {
         const existing = [...this.sessions.values()].find(
           (entry) =>
             !entry.closing &&
-            entry.workspaceRoot === root &&
+            identityPath(entry.workspaceRoot) === identity &&
             entry.resources.conversationId === conversationId,
         );
         if (existing)

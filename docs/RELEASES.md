@@ -40,7 +40,7 @@
 
 - CLI 内新增 protocol/client 子路径、本地 stdio/socket/pipe 宿主与 daemon/connect 入口，仍保持三个发布包；直接 CLI 兼容，协议版本独立为 1.0。
 - 会话单控制者、操作 ID 去重、审批取消和有界一致快照已实现；重连不重发写操作，不提供跨连接事件重放。工作区写租约只覆盖同一宿主。
-- 最终本地 `pnpm verify` 为 145 个测试文件、1252 项测试通过，`pnpm build`、macOS 真实 daemon/stdio 平台检查与三包 tarball 隔离安装通过；Linux/Windows/Node 20 与公共 registry smoke 见 [待补齐门禁](verification/v0.0.9.md)。版本号由发布脚本统一推进；本地通过不视为远端发布完成，公共 registry 与 GitHub Release 以标签工作流结果为准。
+- 最终本地 `pnpm verify` 为 145 个测试文件、1253 项测试通过，`pnpm build`、macOS 真实 daemon/stdio 平台检查与三包 tarball 隔离安装通过；Linux/Windows/Node 20 与公共 registry smoke 见 [待补齐门禁](verification/v0.0.9.md)。版本号由发布脚本统一推进；本地通过不视为远端发布完成，公共 registry 与 GitHub Release 以标签工作流结果为准。
 
 ### v0.0.8 已确认交付边界（2026-10-17）
 

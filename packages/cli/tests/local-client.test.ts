@@ -25,6 +25,9 @@ const initialization = {
   limits: { ...DEFAULT_LIMITS },
 };
 
+/** 审批展示会把字面反斜线加倍，避免与真实控制字符的可见转义混淆。 */
+const displayPath = (value: string): string => value.replaceAll('\\', '\\\\');
+
 describe('local client/server contract', () => {
   it('shows the shell execution scope instead of the workspace or raw input', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-approval-'));
@@ -79,9 +82,9 @@ describe('local client/server contract', () => {
       });
       await server.registry.get(opened.sessionId).active?.done;
       expect(targets).toHaveLength(1);
-      expect(targets[0]).toContain(cwd);
-      expect(targets[0]).toContain(executablePath);
-      expect(targets[0]).toContain('rm ./target');
+      expect(targets[0]).toContain(displayPath(cwd));
+      expect(targets[0]).toContain(displayPath(executablePath));
+      expect(targets[0]).toContain(displayPath('rm ./target'));
       expect(targets[0]).not.toContain('raw input');
     } finally {
       await client.close();
