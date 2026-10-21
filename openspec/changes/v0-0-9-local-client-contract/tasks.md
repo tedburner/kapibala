@@ -1,6 +1,6 @@
 # Tasks: v0.0.9 本地客户端契约
 
-2026-10-19：P0–P3 已编码并通过当前 macOS 门禁；P4 的 Linux/Windows/Node 20 真实验收仍待完成。先写行为测试并确认失败，再实现并通过对应测试。保持三个发布包，不自动提交。详细步骤见 [实施计划](../../../docs/superpowers/plans/2026-10-19-v0-0-9-local-client-contract.md)。
+2026-10-19：P0–P3 已编码并通过当前 macOS 门禁；P4 的 Windows ACL/进程树与 Node 20 真实验收仍待完成，Linux/Windows CI 全量门禁已通过。先写行为测试并确认失败，再实现并通过对应测试。保持三个发布包，不自动提交。详细步骤见 [实施计划](../../../docs/superpowers/plans/2026-10-19-v0-0-9-local-client-contract.md)。
 
 ## 1. P0 协议边界与构建
 
@@ -29,7 +29,7 @@
 
 ## 5. P4 发布加固
 
-- [ ] 5.1 文档、包兼容、平台真实进程与完整门禁；通过 `scripts/v0.0.9-platform-check.mjs（macOS 已通过，Linux/Windows 待验收）`，记录证据后再勾选。
+- [ ] 5.1 文档、包兼容、平台真实进程与完整门禁；通过 `scripts/v0.0.9-platform-check.mjs（macOS 真实 daemon 已通过；Linux/Windows 全量 CI 已通过，ACL/Node 20 待验收）`，记录证据后再勾选。
 
 
 ## 证据与尚未交付
