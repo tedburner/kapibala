@@ -19,12 +19,14 @@
 import {
   AgentSession,
   type AgentTaskRecord,
+  type ApprovalChannel,
   PathSandbox,
   type PrimaryModelRole,
   type SessionManager,
   type SessionMode,
   type SubagentSessionRunner,
   ToolRegistry,
+  type WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
 import { type CliModelBindings, createModelBinding } from './model-bindings.js';
 import type { UserSettings } from './settings.js';
@@ -44,6 +46,10 @@ export interface CliSubagentRunnerOptions {
   preference?: string;
   /** 项目是否受信任。 */
   isTrusted?: boolean;
+  /** 本地宿主显式传入审批与租约；不因子代理隔离绕过父宿主权限。 */
+  approvalChannel?: ApprovalChannel;
+  /** 同一宿主所有会话共享的工作区写互斥，不使用新的隐式单例。 */
+  leaseCoordinator?: WorkspaceLeaseCoordinator;
 }
 
 /**
@@ -60,6 +66,10 @@ export function createCliSubagentRunner(options: CliSubagentRunnerOptions): Suba
     // 1. 分配独立子会话存储文件与单写者句柄
     const handle = await options.manager.create();
 
+    let subSession: AgentSession | undefined;
+    let result: { summary: string; modelId?: string } | undefined;
+    let failure: unknown;
+    let succeeded = false;
     try {
       // 2. 构建独立沙箱
       const sandbox = new PathSandbox({ workspaceRoot: task.workspaceRoot });
@@ -83,7 +93,9 @@ export function createCliSubagentRunner(options: CliSubagentRunnerOptions): Suba
       const effectiveMode: SessionMode =
         (task.effectivePolicy as { mode?: SessionMode } | undefined)?.mode ?? 'Approval';
 
-      const subSession = new AgentSession({
+      subSession = new AgentSession({
+        approvalChannel: options.approvalChannel,
+        leaseCoordinator: options.leaseCoordinator,
         workspaceRoot: task.workspaceRoot,
         executionCwd: task.executionCwd,
         rootDir: task.workspaceRoot,
@@ -146,9 +158,28 @@ export function createCliSubagentRunner(options: CliSubagentRunnerOptions): Suba
         }
       }
 
-      return { summary, modelId };
-    } finally {
-      await handle.release();
+      result = { summary, modelId };
+      succeeded = true;
+    } catch (error) {
+      failure = error;
     }
+    // 子会话销毁成功后才能释放存储句柄；失败时保留单写者锁，防止重叠写入。
+    // 清理错误不覆盖主流程异常：主流程失败时抛出原错误，否则抛出首个清理错误。
+    const failures: unknown[] = [];
+    try {
+      await subSession?.destroy();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (!failures.length) {
+      try {
+        await handle.release();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (!succeeded) throw failure;
+    if (failures.length) throw failures[0];
+    return result!;
   };
 }

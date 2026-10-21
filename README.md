@@ -427,6 +427,14 @@ CLI 从 `modelRouting` 装载角色绑定，普通任务仍使用 `defaultModel`
 
 ---
 
+## 本地宿主（v0.0.9）
+
+在本仓库构建后，可使用 `kpbl daemon start` 启动本地宿主，`kpbl connect --workspace /absolute/project` 进入连接模式，`kpbl daemon stop` 等待清理并停止。非交互问答使用 `kpbl connect --workspace /absolute/project -p "解释项目结构"`；父进程托管使用 `kpbl serve --stdio`。
+
+默认 CLI 行为保持不变；仍发布 Core、CLI、MCP 三个包，CLI 新增 `protocol` 和 `client` 子路径。能力范围与预算见 [本地宿主说明](docs/local-host.md)，证据与剩余平台验收见 [v0.0.9 验收](docs/verification/v0.0.9.md)。
+
+---
+
 ## 🏗️ 架构设计
 
 ### 模块分层与依赖方向（单向依赖，禁止反向）
