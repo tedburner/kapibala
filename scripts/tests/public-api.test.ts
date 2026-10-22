@@ -1,8 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
+import { describe, expect, it, vi } from 'vitest';
 import { collectProtocolContract } from '../check-protocol-contract.js';
-import { type ApiSnapshot, diffApiSnapshots } from '../check-public-api.js';
+import {
+  type ApiSnapshot,
+  diffApiSnapshots,
+  publicApiSourceIncludes,
+} from '../check-public-api.js';
 
 const fixtures = path.resolve('scripts/fixtures/public-api');
 
@@ -23,6 +28,47 @@ const snapshot = (names: string[]): ApiSnapshot => ({
 });
 
 describe('public contract fixtures', () => {
+  it('discovers CLI sources when the Windows config and checkout are on different drives', () => {
+    const windowsJoin = path.win32.join;
+    const join = vi.spyOn(path, 'join').mockImplementation(windowsJoin);
+    let includes: string[];
+    try {
+      includes = publicApiSourceIncludes('D:\\repo');
+    } finally {
+      join.mockRestore();
+    }
+    // 使用实际编译器的文件匹配器；只替换文件系统，保留异盘绝对 glob 的解析行为。
+    const matchFiles = (ts as unknown as { matchFiles: (...args: unknown[]) => string[] })
+      .matchFiles;
+    const tree: Record<string, { files: string[]; directories: string[] }> = {
+      'D:/repo/packages/cli/src': {
+        files: ['index.ts'],
+        directories: ['client', 'protocol', 'view-model'],
+      },
+      'D:/repo/packages/cli/src/client': { files: ['index.ts'], directories: [] },
+      'D:/repo/packages/cli/src/protocol': { files: ['index.ts'], directories: [] },
+      'D:/repo/packages/cli/src/view-model': { files: ['index.ts'], directories: [] },
+    };
+    const files = matchFiles(
+      'C:/temp/api',
+      ['.ts'],
+      [],
+      includes,
+      false,
+      'D:/repo',
+      undefined,
+      (directory: string) => tree[directory.replace(/\\/g, '/')] ?? { files: [], directories: [] },
+      (directory: string) => directory.replace(/\\/g, '/'),
+    );
+    expect(files).toEqual(
+      expect.arrayContaining([
+        'D:/repo/packages/cli/src/client/index.ts',
+        'D:/repo/packages/cli/src/protocol/index.ts',
+        'D:/repo/packages/cli/src/view-model/index.ts',
+      ]),
+    );
+  });
+
   it('keeps the v0.0.9 baseline and reviewed migration consistent', () => {
     const baseline = JSON.parse(
       fs.readFileSync(path.join(fixtures, 'v0.0.9/public-api.json'), 'utf8'),

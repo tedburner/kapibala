@@ -93,6 +93,15 @@ function canonicalJson(value: unknown): unknown {
   return value;
 }
 
+/** 声明范围覆盖三包与 CLI 全模块；绝对 glob 必须使用正斜杠，否则异盘配置在 Windows 上会漏扫。 */
+export function publicApiSourceIncludes(sourceRoot: string): string[] {
+  return [
+    path.join(sourceRoot, 'packages/core/src/index.ts'),
+    path.join(sourceRoot, 'packages/mcp/src/index.ts'),
+    path.join(sourceRoot, 'packages/cli/src/**/*.ts'),
+  ].map((pattern) => pattern.replace(/\\/g, '/'));
+}
+
 function emitDeclarations(sourceRoot: string, outDir: string): void {
   const configPath = path.join(outDir, 'tsconfig.public-api.json');
   const config = {
@@ -118,11 +127,7 @@ function emitDeclarations(sourceRoot: string, outDir: string): void {
         '@kiturone/kapibala-mcp': [path.join(sourceRoot, 'packages/mcp/src/index.ts')],
       },
     },
-    include: [
-      path.join(sourceRoot, 'packages/core/src/index.ts'),
-      path.join(sourceRoot, 'packages/mcp/src/index.ts'),
-      path.join(sourceRoot, 'packages/cli/src/**/*.ts'),
-    ],
+    include: publicApiSourceIncludes(sourceRoot),
   };
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   const typescriptBin = path.join(repositoryRoot, 'node_modules/typescript/bin/tsc');
