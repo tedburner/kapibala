@@ -41,9 +41,22 @@ jobs:
           runtime: node@24
           require-lockfile: true
       - name: Build and verify
+        if: runner.os != 'Windows'
         run: pnpm dev --no-start
+      - name: Build and verify on Windows
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force .workbuddy/ci-diagnostics | Out-Null
+          pnpm dev --no-start 2>&1 | Tee-Object -FilePath .workbuddy/ci-diagnostics/build-verify.log
+          exit $LASTEXITCODE
       - name: Current-OS automated checks (independent acceptance may remain pending)
+        if: runner.os != 'Windows'
         run: pnpm verify:platform --no-build --allow-pending
+      - name: Windows automated checks (independent acceptance may remain pending)
+        if: runner.os == 'Windows'
+        run: |
+          pnpm verify:platform --no-build --allow-pending 2>&1 | Tee-Object -FilePath .workbuddy/ci-diagnostics/platform.log
+          exit $LASTEXITCODE
       - name: Verify Git Bash selection on Windows
         if: runner.os == 'Windows'
         shell: bash
@@ -51,7 +64,14 @@ jobs:
           KPBL_REQUIRE_GIT_BASH: '1'
         run: |
           export PATH="$(dirname "$(command -v bash)"):$PATH"
-          pnpm exec vitest run packages/core/tests/shell.test.ts
+          pnpm exec vitest run packages/core/tests/shell.test.ts 2>&1 | tee .workbuddy/ci-diagnostics/git-bash.log
+      - name: Preserve Windows diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-windows-node24
+          path: .workbuddy/ci-diagnostics/*.log
+          if-no-files-found: ignore
       - name: Preserve platform evidence
         if: always()
         uses: actions/upload-artifact@v7
