@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WorkspaceLeaseCoordinator } from '../../core/src/capabilities/security/lease.js';
 import { AgentRuntime, type SpawnContext } from '../../core/src/runtime/agent/index.js';
 import { TaskObservation } from '../src/host/task-observation.js';
 
@@ -14,6 +15,7 @@ describe('host task observation', () => {
     fs.rmSync(directory, { recursive: true, force: true });
   });
   const context = (overrides?: Partial<SpawnContext>): SpawnContext => ({
+    leaseCoordinator: new WorkspaceLeaseCoordinator(),
     sessionId: 'parent',
     branchId: 'main',
     rootTaskId: 'root',

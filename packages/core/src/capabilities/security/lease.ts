@@ -312,6 +312,3 @@ export class WorkspaceLeaseCoordinator {
     }
   }
 }
-
-/** 运行时共享写租约协调器单例。 */
-export const sharedWorkspaceLeaseCoordinator = new WorkspaceLeaseCoordinator();

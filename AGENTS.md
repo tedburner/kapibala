@@ -28,15 +28,16 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 ## 分支与发布流程
 
 - **日常开发在分支上进行，main 始终保持可发布**：`pnpm flow feat <topic>`（支持 `fix` / `chore` / `docs`，topic 省略时自动生成「日期-时分」名）联网成功时从最新 `origin/main` 切出，获取远端失败时从本地 `main` 切出并自动切换；任意命名用 `pnpm flow branch <name>`。合并回主干用 `git merge --no-ff <分支>`。
-- **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。自动推演下一版本（十进制位进位，`0.0.9 → 0.1.0`）、同步五处版本号（4 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 vX.Y.Z`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明必须先写好 `docs/releases/vX.Y.Z.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）。
+- **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。默认仅递增补丁段（`0.0.9 → 0.0.10`，不自动向次版本进位），次版本/主版本由显式参数选择；同步五处版本号（4 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 vX.Y.Z`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明必须先写好 `docs/releases/vX.Y.Z.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）。
 - **推送永远手动**：先 `git push origin main` 并等 main 的 Verify 工作流通过，再 `git push origin vX.Y.Z`（提前暴露门禁失败，避免移动已推送的标签）；tag 推送触发 Actions（verify → npm trusted publishing → GitHub Release）。
 - 版本推演与工作区版本读取的唯一实现在 `scripts/release.ts`（`nextVersion` / `readWorkspaceVersion`），不要在别处另写逻辑；分支与发布编排在 `scripts/flow.ts`。
+- **正式发布必须通过证据预检**：`pnpm verify:release-evidence --sha <最终候选完整SHA> --manifest <审核清单>` 检查 G-N20 / G-ACL / G-PTY / G-TREE / G-MCP / G-SOAK 的同 SHA、passed、平台覆盖与审核信息；缺项、pending、脏工作区、调试运行或短档 soak 均阻断。Release 从仓库变量 `KPBL_RELEASE_EVIDENCE` 读取人工审核的 JSON，缺失时失败；清单格式见 `docs/release-evidence.md`，禁止伪造通过证据。日常 PR 不要求这些人工专项全部完成。
 
 ## 核心不变量
 
 - **历史必须闭合**：assistant 的 `tool_use` 一旦进入历史，对应 `tool_result` 必须紧跟其后（设计文档 §4.3 / §4.4）。loop 内任何 `break` / `throw` 必须发生在该不变量满足之后。
 - 落盘是**消息级**：user / assistant / tool_result 三类消息都要经 `MessageStore.append` 落盘。
-- **工作区身份必须显式传入**：`AgentSession` 构造必须给出绝对 `workspaceRoot`（缺失抛 `WORKSPACE_ROOT_REQUIRED`），`packages/core/src` 严禁读取 `process.cwd()`（架构门禁拦截）；沙箱与写租约（`WorkspaceLeaseCoordinator`）按会话持有，不做全局单例。
+- **工作区身份必须显式传入**：`AgentSession` 构造必须给出绝对 `workspaceRoot`，兼容仅提供绝对 `rootDir` 的旧输入；两者至少有一项（都缺失抛 `WORKSPACE_ROOT_REQUIRED`），同时提供但物理身份冲突时拒绝。`packages/core/src` 严禁读取 `process.cwd()`（架构门禁拦截）；沙箱与写租约（`WorkspaceLeaseCoordinator`）按会话持有，不做全局单例。
 - 消费者提前结束事件迭代时，必须取消并等待在途工具清理、闭合并落盘工具事务后再释放 Session 锁；已完成的工具保留真实结果。
 - **Core 必须保持 Headless**：`packages/core/src` 不得依赖 CLI、直接读写终端或包含 ANSI/UI 渲染；所有宿主通过 `AgentSession` / `SessionEvent` 复用同一 Agent Harness。`pnpm check-architecture` 已并入 lint，新增宿主能力不得绕过该门禁。
 
@@ -74,10 +75,11 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - 造型铁律：口鼻必须是"上窄下宽"的钝形深色块（水豚最关键辨识特征）；不要大面积奶油色口鼻斑（会读成泰迪熊）；头不要撑满画面（会读成河马）。
 - README 抬头 `<picture>` + `prefers-color-scheme` 双主题（dark 版仅字标换暖白 `#F0E4D6`）；tagline 固定：**心如止水，稳定如初 —— AI Agent Harness**。
 
-## 当前状态（2026-10-11）
+## 当前状态（2026-10-21）
 
-- 版本号采用十进制位进位：补丁位只使用 `0–9`，`v0.0.9` 之后为 `v0.1.0`（不使用 `v0.0.10`）；后续同理。
+- 版本编号约定于 2026-10-21 更新：采用三段稳定版本，minor/patch 均允许多位整数；默认 `v0.0.9 → v0.0.10`，不逢十进位。稳定整合版为 **v0.0.10**，Electron 桌面客户端为 **v0.1.0**；历史文档中的旧编号不作为现役发布规则。
 - v0.0.1 既有能力与后续路线图见 `docs/RELEASES.md`，不在规则文件重复维护能力清单。
+- **v0.0.10 稳定整合版：实现与本地门禁完成，尚未发布**（工作区版本号仍为 `0.0.9`，升版只由 `pnpm release` 完成）。公开差异的唯一真源是 `docs/sdk-compatibility.md` + `scripts/fixtures/public-api/migration.json`；协议细节 `docs/local-protocol.md`、迁移动作 `docs/migration/v0.0.10.md`、证据与 pending 阻断 `docs/verification/v0.0.10.md`、发布说明 `docs/releases/v0.0.10.md`。三类专项门禁：`pnpm verify:compat`（v0.0.9 tarball × 候选构建四组合）、`pnpm verify:platform`（当前 OS 真实进程 + 三包隔离安装）、`pnpm verify:soak`（PR/nightly/release 分档）；新增宿主或传输能力时必须同步其断言，不允许用短档或模拟测试替代 Node 20、Windows ACL/ConPTY、POSIX PTY 与 release 长时证据。
 - v0.0.5 已于 2026-10-11 发布到 npm 与 GitHub Release：技能体系与过程输出折叠已落地——有界发现/信任、L2.5 目录预算、`load_skill` / `list_skills` / `read_skill_resource` 共享加载、allowed-tools 只收紧、`skillSource` v1 落盘、`/skills` 与 `/skill` 命令、Ctrl+O 与 `--output-detail`。迁移边界见 `docs/migration/v0.0.5.md`，使用与宿主边界见 `docs/skills.md`，远端发布验收（含两次 CI 修复）见 `docs/verification/v0.0.5.md`。
 - ⚠️ **Windows 项目路径身份统一走 `fs.realpathSync.native`**：JS `realpathSync` 保留 8.3 短名，与 `normalizeProjectPath` 的长路径信任身份失配（v0.0.4 指令目录、v0.0.5 项目信任各踩中一次）。新增任何与信任/项目根比较的路径解析都必须用 native 语义。
 - v0.0.4 已于 2026-10-07 发布到 npm 与 GitHub Release：原生 Anthropic Messages / OpenAI Responses 与 Chat Completions 兼容层接入同一 AgentSession，`planning` / `execution` / `fast` 场景路由与可覆盖输出预算已落地。迁移边界见 `docs/migration/v0.0.4.md`，远端发布验收见 `docs/verification/v0.0.4.md`。

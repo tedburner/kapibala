@@ -27,7 +27,7 @@ export const DEFAULT_LIMITS = Object.freeze({
 /**
  * 只取本机实现支持的交集；认证和能力准入由宿主执行，不因协商而授予权限。
  * `offer.capabilities` 表示客户端本次依赖的能力：任一不被支持都明确失败，
- * 服务端返回的列表即客户端可安全使用的完整集合。
+ * 返回本次声明且受支持的去重列表，不补齐服务端支持但客户端未声明的能力。
  */
 export function negotiateProtocol(offer: ProtocolOffer): ValidationResult<NegotiatedProtocol> {
   if (

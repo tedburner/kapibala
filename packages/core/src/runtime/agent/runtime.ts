@@ -16,6 +16,7 @@
  */
 
 import path from 'node:path';
+import type { WorkspaceLeaseCoordinator } from '../../capabilities/security/lease.js';
 import { isPathInside, toNativePhysicalPath } from '../../capabilities/security/sandbox.js';
 import {
   DEFAULT_MAX_SUBAGENT_DEPTH,
@@ -48,10 +49,18 @@ import {
 export type SubagentSessionRunner = (
   record: AgentTaskRecord,
   signal: AbortSignal,
+  context: SubagentRunnerContext,
 ) => Promise<{ summary: string; modelId?: string }>;
+
+/** 子任务仅在内存中接收父协调器；runner 创建子会话时必须注入，不可序列化到任务记录。 */
+export interface SubagentRunnerContext {
+  readonly leaseCoordinator: WorkspaceLeaseCoordinator;
+}
 
 /** 启动子代理时的调用方上下文。 */
 export interface SpawnContext {
+  /** 父会话实际持有的协调器；缺失时在受理和持久副作用前拒绝启动。 */
+  readonly leaseCoordinator: WorkspaceLeaseCoordinator;
   /** 根任务标识；若为根会话直接派生，可缺省由 Runtime 自动初始化。 */
   rootTaskId?: string;
   /** 父会话会话 ID。 */
@@ -89,6 +98,7 @@ export interface AgentRuntimeOptions {
  * 后台子代理任务树调度与状态机协调器。
  */
 export class AgentRuntime {
+  private readonly runnerContexts = new Map<string, SubagentRunnerContext>();
   private readonly tasks = new Map<string, AgentTaskRecord>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
@@ -181,6 +191,21 @@ export class AgentRuntime {
    * - 登记为 preparing 状态并返回 accepted 回执，使父工具事务能立刻闭合。
    */
   async prepareSpawn(context: SpawnContext, params: SpawnAgentParams): Promise<SpawnAgentReceipt> {
+    // 宿主可能从另一份 Core 模块传入同一协调器；检查所需接口，保留父会话实例身份。
+    const coordinator = context.leaseCoordinator;
+    if (
+      !coordinator ||
+      typeof coordinator !== 'object' ||
+      typeof coordinator.isLocked !== 'function' ||
+      typeof coordinator.getActiveLease !== 'function' ||
+      typeof coordinator.tryAcquire !== 'function' ||
+      typeof coordinator.acquire !== 'function'
+    ) {
+      throw new KapibalaError('Spawn requires the parent workspace lease coordinator', {
+        code: 'CONFIG_INVALID',
+        safeMessage: '必须显式传入父会话写租约协调器',
+      });
+    }
     if (this.isClosed) {
       throw new KapibalaError('AgentRuntime is closed', {
         code: 'CONFIG_INVALID',
@@ -352,6 +377,7 @@ export class AgentRuntime {
     };
 
     // 原子预留容量
+    this.runnerContexts.set(agentId, Object.freeze({ leaseCoordinator: context.leaseCoordinator }));
     this.tasks.set(agentId, taskRecord);
     this.totalActiveCount++;
     this.treeActiveCounts.set(rootTaskId, treeActive + 1);
@@ -411,6 +437,7 @@ export class AgentRuntime {
     const task = this.tasks.get(agentId);
     if (!task) return;
     if (task.status === 'preparing') {
+      this.runnerContexts.delete(agentId);
       task.status = 'cancelled';
       task.error = 'Parent transaction aborted before commit';
       task.finishedAt = Date.now();
@@ -442,7 +469,10 @@ export class AgentRuntime {
 
     let runError: Error | undefined;
     try {
-      const result = await this.runner(task, controller.signal);
+      const context = this.runnerContexts.get(task.agentId);
+      if (!context)
+        throw new KapibalaError('Runner context is unavailable', { code: 'CONFIG_INVALID' });
+      const result = await this.runner(task, controller.signal, context);
 
       // 执行期间已被取消，拒绝跃迁为 completed
       if ((task.status as AgentTaskStatus) === 'cancelling') {
@@ -507,6 +537,7 @@ export class AgentRuntime {
       // 自身运行失败时，无条件级联取消所有后代
       await this.cascadeCancelChildren(task.agentId, 'Parent task failed');
     } finally {
+      this.runnerContexts.delete(task.agentId);
       this.clearTaskTimer(task.agentId);
       this.controllers.delete(task.agentId);
 
@@ -600,6 +631,7 @@ export class AgentRuntime {
 
     // 关键：等待自身的 runner 异步退出完成资源清理（R07），增加 5 秒宽限超时保护
     const inFlight = this.runningPromises.get(agentId);
+    if (!inFlight) this.runnerContexts.delete(agentId);
     if (inFlight) {
       const GRACE_PERIOD_MS = 5000;
       let timer: NodeJS.Timeout | undefined;
@@ -730,6 +762,7 @@ export class AgentRuntime {
     }
     this.timers.clear();
     this.controllers.clear();
+    this.runnerContexts.clear();
     this.stateListeners.clear();
   }
 

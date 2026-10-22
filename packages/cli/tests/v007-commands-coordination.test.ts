@@ -8,6 +8,7 @@ import {
   KapibalaError,
   type ModelProfile,
   SessionManager,
+  WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActiveSessionController } from '../src/active-session.js';
@@ -286,6 +287,7 @@ describe('v0.0.7 CLI commands and input coordination', () => {
     // 2. 创建一个任务
     const receipt = await runtime.prepareSpawn(
       {
+        leaseCoordinator: new WorkspaceLeaseCoordinator(),
         sessionId: handle.conversationId,
         branchId: 'feature-branch',
         runId: 'run-1',
@@ -381,6 +383,7 @@ describe('v0.0.7 CLI commands and input coordination', () => {
     const receipt = await runtime.prepareSpawn(
       {
         sessionId: 'session-1',
+        leaseCoordinator: new WorkspaceLeaseCoordinator(),
         branchId: 'main',
         runId: 'run-1',
         toolCallId: 'call-1',

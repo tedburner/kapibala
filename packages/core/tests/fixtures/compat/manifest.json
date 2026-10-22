@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "file": "v1-basic.jsonl",
+      "conversationId": "compat-v1-basic",
+      "sourceSchemaVersion": 1,
+      "expectation": "upgrade",
+      "target": "independent-v2-copy",
+      "toolExecutions": 0,
+      "sourceMutation": "none",
+      "sha256": "2bdb3645f9c206afe4c20ce0b926603c92c11dfb42acb0f444a95a0c1a673c80"
+    },
+    {
+      "file": "v1-corrupt-tail.jsonl",
+      "conversationId": "compat-v1-corrupt",
+      "sourceSchemaVersion": 1,
+      "expectation": "reject",
+      "target": "none",
+      "diagnostic": "Session corrupt",
+      "toolExecutions": 0,
+      "sourceMutation": "none",
+      "sha256": "e4fcbde246001cc7823f9ba22c63d471c927ba24c2050250ede18da87f3b3d82"
+    },
+    {
+      "file": "unknown-schema.jsonl",
+      "conversationId": "compat-unknown",
+      "sourceSchemaVersion": 3,
+      "expectation": "reject",
+      "target": "none",
+      "diagnostic": "Unsupported session schema",
+      "toolExecutions": 0,
+      "sourceMutation": "none",
+      "sha256": "2a9f5392337aa7ebb672dc2f433d7b9f986452250490623d67fa8bbeef9fc2cf"
+    },
+    {
+      "file": "v2-branch.jsonl",
+      "conversationId": "compat-v2-branch",
+      "sourceSchemaVersion": 2,
+      "expectation": "read",
+      "target": "active-branch-alt",
+      "toolExecutions": 0,
+      "sourceMutation": "none",
+      "sha256": "3435eae9443768bae707fd12b5f04015e12959420361f9245528eca1ee4ac906"
+    }
+  ]
+}

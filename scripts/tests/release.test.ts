@@ -93,26 +93,38 @@ describe('release validation', () => {
     ).toThrow(/Unexpected release package names/i);
   });
 
-  it('rejects malformed, prerelease and non-decimal-position tags', () => {
+  it('accepts stable versions with multiple-digit minor and patch components', () => {
+    for (const version of ['0.0.10', '0.10.0', '12.34.56']) {
+      const matching = manifests.map((manifest) => ({ ...manifest, version }));
+      expect(validateRelease(`v${version}`, matching, version)).toBe(version);
+    }
+  });
+
+  it('rejects malformed, prerelease and leading-zero tags', () => {
     for (const tag of [
       'main',
-      'v0.0.10',
-      'v0.10.0',
+      'v0.00.10',
+      'v0.10.00',
       'v0.0.4-beta.1',
       'v00.0.4',
+      'v0.0.4\n',
       'v0.0.4\ninjected',
     ]) {
       expect(() => validateRelease(tag, manifests, '0.0.4')).toThrow(/tag/i);
     }
   });
 
-  it('carries decimal positions to the next version', () => {
+  it('increments only patch without carrying into minor or major', () => {
     expect(nextVersion('0.0.3')).toBe('0.0.4');
-    expect(nextVersion('0.0.9')).toBe('0.1.0');
+    expect(nextVersion('0.0.9')).toBe('0.0.10');
+    expect(nextVersion('0.0.10')).toBe('0.0.11');
     expect(nextVersion('0.9.0')).toBe('0.9.1');
-    expect(nextVersion('0.9.9')).toBe('1.0.0');
-    expect(nextVersion('2.9.9')).toBe('3.0.0');
-    expect(() => nextVersion('0.0.10')).toThrow(/version/i);
+    expect(nextVersion('0.9.9')).toBe('0.9.10');
+    expect(nextVersion('2.9.9')).toBe('2.9.10');
+    expect(nextVersion('12.34.99')).toBe('12.34.100');
+    expect(nextVersion('0.0.9007199254740992')).toBe('0.0.9007199254740993');
+    expect(() => nextVersion('0.00.10')).toThrow(/version/i);
+    expect(() => nextVersion('0.0.10\n')).toThrow(/version/i);
     expect(() => nextVersion('v0.0.3')).toThrow(/version/i);
   });
 
@@ -155,6 +167,22 @@ describe('release validation', () => {
         versions: { '0.0.4': existing },
       }),
     ).toThrow(/latest/i);
+  });
+
+  it('compares multi-digit registry versions without losing integer precision', () => {
+    const candidate = { ...expected, version: '0.0.9007199254740992' };
+    expect(() =>
+      planPublication(candidate, {
+        'dist-tags': { latest: '0.0.9007199254740993' },
+        versions: {},
+      }),
+    ).toThrow(/newer/i);
+    expect(
+      planPublication(
+        { ...candidate, version: '0.0.9007199254740993' },
+        { 'dist-tags': { latest: candidate.version }, versions: {} },
+      ),
+    ).toBe('publish');
   });
 
   it('publishes past bootstrap placeholder latest tags instead of aborting', () => {

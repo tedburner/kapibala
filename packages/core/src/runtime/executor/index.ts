@@ -704,6 +704,7 @@ export class ToolExecutor {
         this.signal?.addEventListener('abort', abortFromSession, { once: true });
       }
       const toolCtx: ToolContext = {
+        leaseCoordinator: this.leaseCoordinator,
         workspaceRoot: this.workspaceRoot,
         executionCwd: this.executionCwd,
         sandbox: this.sandbox,

@@ -1,13 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_LIMITS, type JsonValue } from '../protocol/index.js';
+import { DEFAULT_LIMITS, type JsonValue, type SnapshotPage } from '../protocol/index.js';
 
-/** 分块属于同一个不可变快照，cursor 是修订加位置，不能跨会话复用。 */
-export interface SnapshotPage {
-  chunk: string;
-  cursor: string | null;
-}
-
-/** 每连接有界快照缓存；新快照使同会话旧游标失效，不静默截断历史或大消息。 */
+/** 每连接有界快照缓存；分页形状由协议入口固定，游标是修订加位置且不能跨会话复用。 */
 export class SnapshotPager {
   private readonly snapshots = new Map<
     string,

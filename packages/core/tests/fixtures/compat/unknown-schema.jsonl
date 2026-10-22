@@ -1,0 +1,2 @@
+{"schemaVersion":3,"type":"header","recordId":"unknown-header","timestamp":1700000000000,"parentId":null,"payload":{"conversationId":"compat-unknown","projectRoot":"{{ROOT}}","initialCwd":"{{ROOT}}","createdAt":1700000000000}}
+{"schemaVersion":3,"type":"message","recordId":"unknown-msg-1","timestamp":1700000001000,"parentId":"unknown-header","payload":{"id":"unknown-1","role":"user","content":[{"type":"text","text":"must not be read"}]}}

@@ -115,6 +115,7 @@ export async function connectLocal(
   });
   const transport = createStdioTransport(socket, socket);
   return {
+    setLimits: (limits) => transport.setLimits(limits),
     messages: transport.messages,
     send: (message) => transport.send(message),
     async close() {

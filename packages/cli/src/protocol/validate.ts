@@ -62,8 +62,11 @@ export function isJsonData(value: unknown): boolean {
 
 /** Schema 子集校验只用于已经确认为 JSON 的输入，避免 getter 与循环造成副作用。 */
 export function matchesSchema(value: unknown, schema: WireSchema): boolean {
+  if (schema.anyOf) return schema.anyOf.some((variant) => matchesSchema(value, variant));
   if (schema.enum && !schema.enum.some((entry) => entry === value)) return false;
   switch (schema.type) {
+    case 'null':
+      return value === null;
     case 'string':
       return (
         typeof value === 'string' &&

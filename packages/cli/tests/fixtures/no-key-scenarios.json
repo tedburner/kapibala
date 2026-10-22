@@ -1,0 +1,249 @@
+{
+  "schemaVersion": 1,
+  "classes": [
+    {
+      "id": "normal-tool-transaction",
+      "title": "正常工具事务",
+      "script": "模型先返回一次 write_file 调用，再返回终态文本；工具与进程走真实实现，只有模型流由脚本提供。",
+      "hosts": ["sdk", "cli", "local-host"],
+      "protocols": ["chat", "anthropic", "responses"],
+      "assertions": ["history", "request", "wire", "effects"],
+      "expected": "三协议请求投影与历史角色闭合，目标文件写入，宿主快照展示工具事务。",
+      "evidence": [
+        {
+          "file": "packages/core/tests/no-key-model-matrix.test.ts",
+          "marker": "runs one real tool transaction over %s and consumes every scripted turn"
+        },
+        {
+          "file": "packages/cli/tests/no-key-host-matrix.test.ts",
+          "marker": "runs a real one-shot tool transaction through CliModelBindings without environment keys"
+        },
+        {
+          "file": "packages/cli/tests/no-key-host-matrix.test.ts",
+          "marker": "serves a redacted snapshot, deduplicates operation IDs, and consumes every scripted turn"
+        }
+      ]
+    },
+    {
+      "id": "multi-tool-partial-failure",
+      "title": "多工具部分失败",
+      "script": "同一批返回成功写入与越界写入两个调用，沙箱拒绝越界项后继续收尾。",
+      "hosts": ["sdk"],
+      "protocols": ["chat"],
+      "assertions": ["history", "request", "effects"],
+      "expected": "成功项真实落盘、越界项成为错误 tool_result，历史无悬挂调用且不产生外部文件。",
+      "evidence": [
+        {
+          "file": "packages/core/tests/no-key-model-matrix.test.ts",
+          "marker": "closes a partial multi-tool batch with one real failure and no outside write"
+        }
+      ]
+    },
+    {
+      "id": "execution-cancel",
+      "title": "执行取消",
+      "script": "模型流保持开启并已输出部分文本，运行方在 text_delta 期间中止。",
+      "hosts": ["sdk", "local-host"],
+      "protocols": [],
+      "assertions": ["history", "request", "effects"],
+      "expected": "在途请求关闭、运行处于 aborted、会话释放且历史只保留用户消息；宿主保持 cancelling 直到清理完成。",
+      "evidence": [
+        {
+          "file": "packages/core/tests/no-key-model-matrix.test.ts",
+          "marker": "aborts a held model stream and leaves no uncommitted assistant history"
+        },
+        {
+          "file": "packages/cli/tests/local-host-session.test.ts",
+          "marker": "keeps a cancelling run busy until its iterator completes cleanup"
+        },
+        {
+          "file": "packages/cli/tests/local-host-session.test.ts",
+          "marker": "disconnect clears control after a busy cleanup without waiting on a rejected run"
+        }
+      ]
+    },
+    {
+      "id": "consumer-early-return",
+      "title": "消费者提前 return",
+      "script": "模型流按两个文本分片输出，消费者在第一个分片后 break。",
+      "hosts": ["sdk"],
+      "protocols": ["chat"],
+      "assertions": ["history", "effects"],
+      "expected": "迭代器返回触发取消与清理，busy 释放、运行标记 aborted，未完成的 assistant 文本不进入历史。",
+      "evidence": [
+        {
+          "file": "packages/core/tests/no-key-model-matrix.test.ts",
+          "marker": "releases the session when the consumer returns before the stream finishes"
+        },
+        {
+          "file": "packages/core/tests/session-context.test.ts",
+          "marker": "records interrupted terminal after iterator return and waits before releasing busy state"
+        }
+      ]
+    },
+    {
+      "id": "approval-denial-timeout-disconnect",
+      "title": "审批拒绝/超时/断线",
+      "script": "写入工具需要审批，分别注入 deny_once、对端超时/中止以及非交互输入。",
+      "hosts": ["sdk", "cli", "local-host"],
+      "protocols": ["chat"],
+      "assertions": ["history", "wire", "effects"],
+      "expected": "拒绝以 PERMISSION_DENIED 错误事务闭合、不再追问模型且目标文件不存在；超时与断线回落为拒绝并清理审批控制。",
+      "evidence": [
+        {
+          "file": "packages/core/tests/no-key-model-matrix.test.ts",
+          "marker": "records a denied approval as a closed error transaction without touching the file"
+        },
+        {
+          "file": "packages/cli/tests/local-host-approval.test.ts",
+          "marker": "settles an uncooperative peer on timeout, abort and dispose"
+        },
+        {
+          "file": "packages/cli/tests/approval.test.ts",
+          "marker": "denies non-interactive requests"
+        },
+        {
+          "file": "packages/cli/tests/approval.test.ts",
+          "marker": "cancels a pending approval on abort"
+        }
+      ]
+    },
+    {
+      "id": "crash-recovery",
+      "title": "崩溃恢复",
+      "script": "在工具开始前与审批决策后分别模拟进程崩溃，再按落盘历史恢复会话。",
+      "hosts": ["sdk", "cli"],
+      "protocols": [],
+      "assertions": ["history", "effects"],
+      "expected": "未完成调用恢复为 OUTCOME_UNKNOWN 且不重放工具；已完成调用保持闭合，重启与压缩后事务不重复写入。",
+      "evidence": [
+        {
+          "file": "packages/core/tests/audit-recovery.test.ts",
+          "marker": "treats both pre-start and post-decision crashes as unknown, but leaves finished calls closed"
+        },
+        {
+          "file": "packages/cli/tests/session-history-integration.test.ts",
+          "marker": "A tools → B → resume A → compact → restart A preserves transactions and never replays writes"
+        }
+      ]
+    },
+    {
+      "id": "subagent-cancel-collect",
+      "title": "子代理取消/collect",
+      "script": "父运行创建子代理后分别注入父级取消与子代理空闲完成，再收集结果。",
+      "hosts": ["sdk"],
+      "protocols": [],
+      "assertions": ["history", "effects"],
+      "expected": "取消级联到全部后代并释放资源；空闲完成只收集一次结果，不重复消费待处理值。",
+      "evidence": [
+        {
+          "file": "packages/core/tests/agent-runtime.test.ts",
+          "marker": "cascades cancellation to all descendants when parent is cancelled"
+        },
+        {
+          "file": "packages/core/tests/agent-runtime.test.ts",
+          "marker": "observes idle-parent completion without consuming the pending result"
+        }
+      ]
+    },
+    {
+      "id": "skill-permission-tightening",
+      "title": "技能权限收紧",
+      "script": "技能通过多次限制叠加收紧白名单，并复用缓存审批尝试越权读取。",
+      "hosts": ["sdk"],
+      "protocols": [],
+      "assertions": ["history", "request", "effects"],
+      "expected": "多重限制取交集，缓存审批不能扩大范围；Plan 下仅真实控制读取放行，宿主拒绝仍然生效。",
+      "evidence": [
+        {
+          "file": "packages/core/tests/skills-runtime.test.ts",
+          "marker": "intersects multiple restrictions and refuses white-list escape even with cached approvals"
+        },
+        {
+          "file": "packages/core/tests/skills-runtime.test.ts",
+          "marker": "allows genuine skill control reads in Plan but preserves a host deny"
+        }
+      ]
+    },
+    {
+      "id": "mcp-revoke-teardown",
+      "title": "MCP 撤销/teardown",
+      "script": "在工具发送前撤销 MCP 授权，并对同一连接重复执行 teardown。",
+      "hosts": ["sdk"],
+      "protocols": [],
+      "assertions": ["history", "request", "effects"],
+      "expected": "撤销产出 not_sent 且零发送请求；teardown 幂等，不重复释放或破坏后续关闭。",
+      "evidence": [
+        {
+          "file": "packages/mcp/tests/review-fixes-regression.test.ts",
+          "marker": "R15: 贯穿 Core ToolExecutor 全链路，发送前撤销产出 dispatchOutcome: not_sent 且零发送"
+        },
+        {
+          "file": "packages/mcp/tests/lifecycle.test.ts",
+          "marker": "teardown is fully idempotent"
+        }
+      ]
+    },
+    {
+      "id": "compaction-failure",
+      "title": "压缩失败",
+      "script": "摘要已生成但提交失败；另一种情况是受保护内容本身已超出预算。",
+      "hosts": ["sdk"],
+      "protocols": [],
+      "assertions": ["history", "request"],
+      "expected": "提交失败不激活摘要也不计成功，原历史不被替换；受保护内容超预算时停止压缩且不调用摘要模型。",
+      "evidence": [
+        {
+          "file": "packages/core/tests/context-compaction.test.ts",
+          "marker": "does not activate a generated summary or count success when its commit fails"
+        },
+        {
+          "file": "packages/core/tests/context-compaction.test.ts",
+          "marker": "stops when protected content alone exceeds budget without calling a summary model"
+        }
+      ]
+    },
+    {
+      "id": "slow-client-large-snapshot",
+      "title": "慢客户端/大快照",
+      "script": "宿主生成大逻辑快照并按游标分块，客户端读取缓慢或在安装前超出连接内存预算。",
+      "hosts": ["cli", "local-host"],
+      "protocols": [],
+      "assertions": ["wire"],
+      "expected": "大快照分块且游标可校验；超预算快照被明确拒绝，attach 回滚控制状态而不是部分安装。",
+      "evidence": [
+        {
+          "file": "packages/cli/tests/local-snapshots.test.ts",
+          "marker": "chunks a large logical snapshot and validates session/revision cursors"
+        },
+        {
+          "file": "packages/cli/tests/local-snapshots.test.ts",
+          "marker": "refuses snapshots beyond the connection memory budget"
+        },
+        {
+          "file": "packages/cli/tests/local-client.test.ts",
+          "marker": "rolls back control when the attach snapshot exceeds the connection budget"
+        }
+      ]
+    },
+    {
+      "id": "operation-id-dedupe-redaction",
+      "title": "操作 ID 去重/跨增量凭证脱敏",
+      "script": "同一 clientOperationId 重放同一输入，再以改动输入重试；模型分片把凭证拆到多个增量中。",
+      "hosts": ["local-host"],
+      "protocols": ["responses"],
+      "assertions": ["history", "request", "wire", "effects"],
+      "expected": "重放返回同一 runId 且不新增模型请求，改动输入报 OPERATION_CONFLICT；跨增量凭证在事件流与快照中均被替换，原始密钥不出现。",
+      "evidence": [
+        {
+          "file": "packages/cli/tests/no-key-host-matrix.test.ts",
+          "marker": "serves a redacted snapshot, deduplicates operation IDs, and consumes every scripted turn"
+        },
+        {
+          "file": "packages/cli/tests/local-host-session.test.ts",
+          "marker": "deduplicates accepted operations and rejects changed inputs"
+        }
+      ]
+    }
+  ]
+}

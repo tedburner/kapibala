@@ -1,0 +1,3 @@
+{"schemaVersion":1,"type":"header","recordId":"v1-corrupt-header","timestamp":1700000000000,"parentId":null,"payload":{"conversationId":"compat-v1-corrupt","projectRoot":"{{ROOT}}","initialCwd":"{{ROOT}}","createdAt":1700000000000,"gitBranch":"main"}}
+{"schemaVersion":1,"type":"message","recordId":"v1-corrupt-msg-1","timestamp":1700000001000,"parentId":"v1-corrupt-header","payload":{"id":"v1-corrupt-1","role":"user","content":[{"type":"text","text":"truncated fixture"}],"state":"completed"}}
+{"schemaVersion":1,"type":"message","recordId":"v1-corrupt-msg-2","timestamp":1700000002000,"parentId":"v1-corrupt-msg-1","payload":{"id":"v1-corrupt-2","role":"assistant","content":[

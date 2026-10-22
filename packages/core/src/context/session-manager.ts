@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { KapibalaError } from '../errors/index.js';
+import { KapibalaError, createSessionError } from '../errors/index.js';
 import type { CanonicalMessage } from '../types/index.js';
 import { createMessageId, identifyHistory } from './history.js';
 import { readJsonlLines, syncSessionDirectory } from './jsonl-lines.js';
@@ -219,7 +219,7 @@ export class SessionManager {
       pageSize < 1 ||
       pageSize > 100
     )
-      throw new Error('History page must be a positive integer');
+      throw createSessionError('HISTORY_PAGE_INVALID', 'History page must be a positive integer');
     const all = await this.allMetadata();
     const filtered = options?.includeArchived ? all : all.filter((m) => !m.archived);
     return {
@@ -232,7 +232,8 @@ export class SessionManager {
 
   /** 解析完整 ID 或唯一前缀对应的会话文件与 ID。 */
   private resolveSession(id: string): { fileName: string; conversationId: string } {
-    if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Session not found');
+    if (!id || !/^[a-zA-Z0-9-]+$/.test(id))
+      throw createSessionError('SESSION_NOT_FOUND', 'Session not found');
     const all = fs
       .readdirSync(this.directory)
       .filter((name) => /^\d+_[a-zA-Z0-9-]+\.jsonl$/.test(name))
@@ -242,8 +243,9 @@ export class SessionManager {
       }));
     const exact = all.find((m) => m.conversationId === id || m.fileName === id);
     const matches = exact ? [exact] : all.filter((m) => m.conversationId.startsWith(id));
-    if (!matches.length) throw new Error(`Session not found: ${id}`);
-    if (matches.length !== 1) throw new Error(`Ambiguous session prefix: ${id}`);
+    if (!matches.length) throw createSessionError('SESSION_NOT_FOUND', `Session not found: ${id}`);
+    if (matches.length !== 1)
+      throw createSessionError('SESSION_ID_AMBIGUOUS', `Ambiguous session prefix: ${id}`);
     return matches[0];
   }
 
@@ -539,14 +541,19 @@ export class SessionManager {
       const matches = exact
         ? [exact]
         : all.filter((m) => m.conversationId.startsWith(idOrFileName));
-      if (!matches.length) throw new Error(`Session not found: ${idOrFileName}`);
-      if (matches.length !== 1) throw new Error(`Ambiguous session prefix: ${idOrFileName}`);
+      if (!matches.length)
+        throw createSessionError('SESSION_NOT_FOUND', `Session not found: ${idOrFileName}`);
+      if (matches.length !== 1)
+        throw createSessionError(
+          'SESSION_ID_AMBIGUOUS',
+          `Ambiguous session prefix: ${idOrFileName}`,
+        );
       sourceFileName = matches[0].fileName;
     }
 
     const sourcePath = path.join(this.directory, sourceFileName);
     if (!fs.existsSync(sourcePath)) {
-      throw new Error(`Session not found: ${idOrFileName}`);
+      throw createSessionError('SESSION_NOT_FOUND', `Session not found: ${idOrFileName}`);
     }
 
     const nativeSource = toNativePhysicalPath(sourcePath);

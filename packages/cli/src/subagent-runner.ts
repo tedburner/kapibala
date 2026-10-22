@@ -20,10 +20,12 @@ import {
   AgentSession,
   type AgentTaskRecord,
   type ApprovalChannel,
+  KapibalaError,
   PathSandbox,
   type PrimaryModelRole,
   type SessionManager,
   type SessionMode,
+  type SubagentRunnerContext,
   type SubagentSessionRunner,
   ToolRegistry,
   type WorkspaceLeaseCoordinator,
@@ -49,7 +51,7 @@ export interface CliSubagentRunnerOptions {
   /** 本地宿主显式传入审批与租约；不因子代理隔离绕过父宿主权限。 */
   approvalChannel?: ApprovalChannel;
   /** 同一宿主所有会话共享的工作区写互斥，不使用新的隐式单例。 */
-  leaseCoordinator?: WorkspaceLeaseCoordinator;
+  leaseCoordinator: WorkspaceLeaseCoordinator;
 }
 
 /**
@@ -59,10 +61,21 @@ export interface CliSubagentRunnerOptions {
  * @returns 标准的 SubagentSessionRunner 异步执行函数
  */
 export function createCliSubagentRunner(options: CliSubagentRunnerOptions): SubagentSessionRunner {
+  if (!options.leaseCoordinator)
+    throw new KapibalaError('Missing host lease coordinator', {
+      code: 'CONFIG_INVALID',
+      safeMessage: '缺少宿主写租约协调器',
+    });
   return async (
     task: AgentTaskRecord,
     signal: AbortSignal,
+    context: SubagentRunnerContext,
   ): Promise<{ summary: string; modelId?: string }> => {
+    if (context?.leaseCoordinator !== options.leaseCoordinator)
+      throw new KapibalaError('Parent and host coordinators differ', {
+        code: 'CONFIG_INVALID',
+        safeMessage: '父会话与子代理宿主写租约身份不一致',
+      });
     // 1. 分配独立子会话存储文件与单写者句柄
     const handle = await options.manager.create();
 

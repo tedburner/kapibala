@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createSessionError } from '../errors/index.js';
 
 interface LockOwner {
   nonce: string;
@@ -32,13 +33,17 @@ export class SessionLock {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       const stale = SessionLock.readOwner(lockPath);
       if (!stale || !SessionLock.isDead(stale.pid))
-        throw new Error(
+        throw createSessionError(
+          'SESSION_LOCKED',
           `Session locked by a live or unknown owner${stale ? ` (pid=${stale.pid})` : ''}`,
         );
       try {
         fs.mkdirSync(recovery);
       } catch {
-        throw new Error('Session locked: recovery in progress');
+        throw createSessionError(
+          'SESSION_RECOVERY_IN_PROGRESS',
+          'Session locked: recovery in progress',
+        );
       }
       try {
         // 恢复者身份立刻落盘：回收途中崩溃时，后续获取者可凭死亡身份清除残留，
@@ -50,7 +55,7 @@ export class SessionLock {
           current.pid !== stale.pid ||
           !SessionLock.isDead(current.pid)
         ) {
-          throw new Error('Session locked: owner changed');
+          throw createSessionError('SESSION_LOCK_OWNER_CHANGED', 'Session locked: owner changed');
         }
         // 回收协调目录阻止新持有者安装；持有者在安装前后均检查它，避免移走新锁。
         const quarantine = `${lockPath}.stale-${randomUUID()}`;
@@ -73,7 +78,8 @@ export class SessionLock {
           // EEXIST = 并行者抢先重建了锁目录；以其实际 owner 给出一致的失败语义。
           if ((installError as NodeJS.ErrnoException).code === 'EEXIST') {
             const winner = SessionLock.readOwner(lockPath);
-            throw new Error(
+            throw createSessionError(
+              'SESSION_LOCKED',
               `Session locked by a live or unknown owner${winner ? ` (pid=${winner.pid})` : ''}`,
             );
           }
@@ -111,7 +117,7 @@ export class SessionLock {
     if (this.released) return;
     const current = SessionLock.readOwner(this.lockPath);
     if (current?.nonce !== this.owner.nonce || current.pid !== this.owner.pid)
-      throw new Error('Session lock owner changed');
+      throw createSessionError('SESSION_LOCK_OWNER_CHANGED', 'Session lock owner changed');
     fs.unlinkSync(path.join(this.lockPath, 'owner.json'));
     fs.rmdirSync(this.lockPath);
     this.released = true;
@@ -152,7 +158,11 @@ export class SessionLock {
   /** 无残留或残留进程已死亡时放行；确认存活的回收进行中则明确失败。 */
   private static ensureNoLiveRecovery(recovery: string): void {
     SessionLock.clearAbandonedRecovery(recovery);
-    if (fs.existsSync(recovery)) throw new Error('Session locked: recovery in progress');
+    if (fs.existsSync(recovery))
+      throw createSessionError(
+        'SESSION_RECOVERY_IN_PROGRESS',
+        'Session locked: recovery in progress',
+      );
   }
 
   /** 仅 ESRCH 表示确定死亡；PID 复用或 EPERM 均保持原锁。 */

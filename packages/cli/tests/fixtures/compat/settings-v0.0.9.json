@@ -1,0 +1,66 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tedburner/kapibala/main/kapibala.schema.json",
+  "builtinCatalogVersion": 2,
+  "defaultModel": "deepseek-v4-flash",
+  "modelRouting": {
+    "planning": "deepseek-reasoner",
+    "execution": "deepseek-v4-flash",
+    "summary": "gpt-4o",
+    "fast": "o3-mini"
+  },
+  "profiles": [
+    {
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash (旧)",
+      "provider": "openai-compatible",
+      "baseURL": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "modelName": "deepseek-v4-flash",
+      "apiKey": "sk-deepseek-family"
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "name": "DeepSeek V4 Pro (旧)",
+      "provider": "openai-compatible",
+      "baseURL": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "modelName": "deepseek-v4-pro",
+      "apiKey": "sk-deepseek-family"
+    },
+    {
+      "id": "gpt-4o",
+      "name": "OpenAI GPT-4o (旧)",
+      "provider": "openai-compatible",
+      "baseURL": "https://api.openai.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "modelName": "gpt-4o",
+      "apiKey": "sk-openai-family"
+    },
+    {
+      "id": "custom-oneapi-a",
+      "name": "OneAPI 网关 A",
+      "provider": "openai-compatible",
+      "baseURL": "https://oneapi-a.example.com/v1",
+      "apiKeyEnv": "CUSTOM_A_KEY",
+      "modelName": "gateway-model-a",
+      "apiKey": "sk-gateway-a"
+    },
+    {
+      "id": "custom-oneapi-b",
+      "name": "OneAPI 网关 B",
+      "provider": "openai-compatible",
+      "baseURL": "https://oneapi-b.example.com/v1",
+      "apiKeyEnv": "CUSTOM_B_KEY",
+      "modelName": "gateway-model-b",
+      "apiKey": "sk-gateway-b"
+    },
+    {
+      "id": "custom-env-only",
+      "name": "仅环境变量网关",
+      "provider": "openai-compatible",
+      "baseURL": "https://env-only.example.com/v1",
+      "apiKeyEnv": "CUSTOM_ENV_KEY",
+      "modelName": "env-model"
+    }
+  ]
+}

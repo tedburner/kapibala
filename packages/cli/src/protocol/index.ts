@@ -4,3 +4,4 @@ export * from './schema.js';
 export * from './validate.js';
 export * from './version.js';
 export * from './errors.js';
+export * from './results.js';

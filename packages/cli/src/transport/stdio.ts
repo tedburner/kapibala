@@ -50,8 +50,8 @@ export function createStdioTransport(
   options: StdioTransportOptions = {},
 ): LocalTransport {
   const maxMessages = options.maxQueuedMessages ?? DEFAULT_LIMITS.maxInflightRequests;
-  const maxBytes = options.maxQueueBytes ?? DEFAULT_LIMITS.maxSendQueueBytes;
-  const maxFrame = options.maxFrameBytes ?? DEFAULT_LIMITS.maxFrameBytes;
+  let maxBytes = options.maxQueueBytes ?? DEFAULT_LIMITS.maxSendQueueBytes;
+  let maxFrame = options.maxFrameBytes ?? DEFAULT_LIMITS.maxFrameBytes;
   if (![maxMessages, maxBytes, maxFrame].every((value) => Number.isSafeInteger(value) && value > 0))
     throw new Error('Invalid transport budget');
   const decoder = new JsonlDecoder(maxFrame);
@@ -137,6 +137,29 @@ export function createStdioTransport(
     }
   };
   const transport: LocalTransport = {
+    setLimits(limits) {
+      try {
+        if (
+          stopped ||
+          ![limits.maxFrameBytes, limits.maxSendQueueBytes].every(
+            (value) => Number.isSafeInteger(value) && value > 0,
+          ) ||
+          limits.maxFrameBytes > maxFrame ||
+          limits.maxSendQueueBytes > maxBytes ||
+          queuedBytes > limits.maxSendQueueBytes ||
+          writingBytes > limits.maxSendQueueBytes ||
+          queue.some((entry) => entry.bytes > limits.maxFrameBytes)
+        )
+          throw new Error('Transport negotiated budget exceeded');
+        decoder.setLimit(limits.maxFrameBytes);
+        maxFrame = limits.maxFrameBytes;
+        maxBytes = limits.maxSendQueueBytes;
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error('Invalid transport budget');
+        finish(failure);
+        throw failure;
+      }
+    },
     messages: {
       [Symbol.asyncIterator]() {
         if (claimed) throw new Error('Transport supports one message consumer');
