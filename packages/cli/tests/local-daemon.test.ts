@@ -1,19 +1,73 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LocalClient } from '../src/client/index.js';
 import {
   getDaemonStatus,
   getLocalRuntimeDirectory,
   readDaemonMetadata,
   startDaemon,
+  stopDaemon,
 } from '../src/local-host/daemon.js';
+import * as socket from '../src/transport/socket.js';
+import type { LocalTransport } from '../src/transport/types.js';
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 describe('daemon metadata boundary', () => {
+  it.each([
+    { pid: 0, serverInstanceId: '' },
+    { pid: 17, serverInstanceId: 'previous-instance' },
+  ])('does not report healthy using a superseded metadata snapshot %j', async (initial) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-daemon-snapshot-'));
+    roots.push(root);
+    const file = path.join(fs.realpathSync.native(root), 'daemon.json');
+    const metadata = {
+      ...initial,
+      token: 'a'.repeat(64),
+      nonce: 'b'.repeat(32),
+      endpoint: { type: 'pipe', path: '\\\\.\\pipe\\kpbl-snapshot-fixture' },
+    };
+    const live = { ...metadata, pid: 42, serverInstanceId: 'live-instance' };
+    fs.writeFileSync(file, JSON.stringify(metadata), { mode: 0o600 });
+    const nativeRead = fs.readFileSync.bind(fs);
+    let updated = false;
+    vi.spyOn(fs, 'readFileSync').mockImplementation(((target, options) => {
+      if (target === file && !updated) {
+        updated = true;
+        fs.writeFileSync(file, JSON.stringify(live), { mode: 0o600 });
+        return JSON.stringify(metadata);
+      }
+      return nativeRead(target, options);
+    }) as typeof fs.readFileSync);
+    vi.spyOn(socket, 'connectLocal').mockResolvedValue({} as LocalTransport);
+    const close = vi.fn(async () => {});
+    const call = vi.fn(async (method: string) => {
+      if (method === 'host/shutdown') fs.unlinkSync(file);
+      return { alive: true, serverInstanceId: live.serverInstanceId };
+    });
+    vi.spyOn(LocalClient, 'connect').mockResolvedValue({ call, close } as unknown as LocalClient);
+    expect(await getDaemonStatus({ runtimeDir: root })).toMatchObject({
+      running: false,
+      state: 'unreachable',
+    });
+    expect(await getDaemonStatus({ runtimeDir: root })).toMatchObject({
+      running: true,
+      pid: 42,
+      serverInstanceId: 'live-instance',
+    });
+    expect(close).toHaveBeenCalledTimes(2);
+    updated = false;
+    fs.writeFileSync(file, JSON.stringify(metadata), { mode: 0o600 });
+    call.mockClear();
+    await expect(stopDaemon({ runtimeDir: root })).rejects.toThrow('Daemon instance mismatch');
+    expect(call.mock.calls.map(([method]) => method)).toEqual(['ping']);
+  });
+
   it('creates private runtime directories without replacing symlinks', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-daemon-'));
     roots.push(root);
