@@ -82,10 +82,10 @@ export function developmentBranchName(
   return `${prefix}/${slug}`;
 }
 
-/** 数值比较：a 是否严格大于 b。 */
+/** 比较已通过格式校验的稳定版本；按整数段判断，避免多位版本被字典序或浮点精度误判。 */
 export function isGreaterVersion(a: string, b: string): boolean {
-  const left = a.split('.').map(Number);
-  const right = b.split('.').map(Number);
+  const left = a.split('.').map((part) => BigInt(part));
+  const right = b.split('.').map((part) => BigInt(part));
   for (let i = 0; i < 3; i += 1) {
     if (left[i] !== right[i]) return left[i] > right[i];
   }
@@ -426,7 +426,7 @@ function printUsage(): void {
   pnpm release [version]                  等价于 pnpm flow release
 
 说明：
-  - 版本推演遵循十进制位进位：0.0.9 → 0.1.0，0.9.9 → 1.0.0
+  - 默认只递增补丁段：0.0.9 → 0.0.10；次版本/主版本通过显式参数选择
   - 发布前必须先写好 docs/releases/vX.Y.Z.md（--scaffold 可生成骨架）
   - 本工具从不推送远端：git push origin main && git push origin vX.Y.Z 由你手动执行
   - tag 推送后 Actions 自动完成 verify、npm 发布与 GitHub Release`);

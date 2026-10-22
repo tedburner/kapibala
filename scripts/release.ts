@@ -38,8 +38,8 @@ const versionManifestFiles = [
   'packages/cli/package.json',
 ];
 
-/** 与发布标签同构的稳定版本号：major 可多位，minor/patch 只允许 0–9（十进制位进位）。 */
-export const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.[0-9]\.[0-9]$/;
+/** 稳定版本的三段均允许多位非负整数；拒绝前导零、预发布段、构建段及尾随空白。 */
+export const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?![\s\S])/;
 
 /** OIDC 发布要求 npm 11.5.1 或更新版本；版本不明时拒绝继续发布。 */
 export function validateNpmVersion(version: string): void {
@@ -50,9 +50,11 @@ export function validateNpmVersion(version: string): void {
   }
 }
 
-/** 发布标签、四个清单与 CLI 展示版本必须一致；只接受十进制位进位的稳定版本。 */
+/** 发布标签、四个清单与 CLI 展示版本必须一致；版本格式统一复用稳定版本规则。 */
 export function validateRelease(tag: string, manifests: Manifest[], cliVersion: string): string {
-  if (!/^v(0|[1-9]\d*)\.[0-9]\.[0-9]$/.test(tag)) throw new Error(`Invalid release tag: ${tag}`);
+  if (!tag.startsWith('v') || !STABLE_VERSION_PATTERN.test(tag.slice(1))) {
+    throw new Error(`Invalid release tag: ${tag}`);
+  }
   const version = tag.slice(1);
   if (manifests.length !== 4 || manifests.some((manifest) => manifest.version !== version)) {
     throw new Error('Release tag and package versions must match');
@@ -68,13 +70,11 @@ export function validateRelease(tag: string, manifests: Manifest[], cliVersion: 
   return version;
 }
 
-/** 十进制位进位推演下一版本：0.0.9 → 0.1.0，0.9.9 → 1.0.0。 */
+/** 默认只增加补丁段，不向次版本或主版本进位；大整数递增不经过浮点数转换。 */
 export function nextVersion(current: string): string {
   if (!STABLE_VERSION_PATTERN.test(current)) throw new Error(`Invalid current version: ${current}`);
-  const [major, minor, patch] = current.split('.').map(Number);
-  if (patch < 9) return `${major}.${minor}.${patch + 1}`;
-  if (minor < 9) return `${major}.${minor + 1}.0`;
-  return `${major + 1}.0.0`;
+  const [major, minor, patch] = current.split('.');
+  return `${major}.${minor}.${BigInt(patch) + 1n}`;
 }
 
 /** 工作区版本唯一真源：三个清单与 CLI 展示版本必须完全一致，否则拒绝继续。 */
@@ -107,7 +107,7 @@ export function validateReleaseNotes(markdown: string): void {
 const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 
-/** 已发布的版本不可覆盖；重试只允许跳过内容一致且 latest 正确的包，不允许回退 latest。
+/** 已发布的版本不可覆盖；整数段精确比较，重试只跳过内容一致且 latest 正确的包，不允许回退 latest。
  * registry latest 为占位/预发布版本（如新包引导期的 `0.0.0-*`）时按 semver 视为低于同号稳定版，
  * 不阻断发布 —— latest 会在正式版本发布时被 registry 正常前移。 */
 export function planPublication(
@@ -118,8 +118,8 @@ export function planPublication(
   if (latest) {
     const latestMatch = SEMVER_PATTERN.exec(latest);
     if (!latestMatch) throw new Error(`Unexpected latest version: ${latest}`);
-    const wanted = expected.version.split('.').map(Number);
-    const current = [Number(latestMatch[1]), Number(latestMatch[2]), Number(latestMatch[3])];
+    const wanted = expected.version.split('.').map((part) => BigInt(part));
+    const current = [BigInt(latestMatch[1]), BigInt(latestMatch[2]), BigInt(latestMatch[3])];
     const differentAt = wanted.findIndex((number, i) => number !== current[i]);
     if (differentAt >= 0) {
       if (current[differentAt] > wanted[differentAt]) {

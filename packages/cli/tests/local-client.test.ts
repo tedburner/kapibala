@@ -213,7 +213,7 @@ describe('local client/server contract', () => {
       toolName: 'write_file',
       target: '/a',
       sessionAllowed: false,
-      expiresAt: 1,
+      expiresAt: Date.now() + 60_000,
     });
     await waiting;
     remote.notify({
@@ -247,7 +247,20 @@ describe('local client/server contract', () => {
               payload: { text: 'early' },
             },
           });
-          return { sessionId: 's', streamEpoch: 'e', serverInstanceId: 'i', seq: 0 };
+          return {
+            sessionId: 's',
+            streamEpoch: 'e',
+            serverInstanceId: 'i',
+            seq: 0,
+            controlEpoch: '',
+            conversationId: 'conv',
+            runId: null,
+            pendingApprovals: [],
+            openSessions: 1,
+            maxOpenSessions: 8,
+            chunk: JSON.stringify({ history: [], live: [] }),
+            cursor: null,
+          };
         }
         return {};
       },

@@ -6,7 +6,11 @@
     "types": ["node"],
     "paths": {
       "@kiturone/kapibala": ["./packages/core/src/index.ts"],
-      "@kiturone/kapibala-mcp": ["./packages/mcp/src/index.ts"]
+      "@kiturone/kapibala-mcp": ["./packages/mcp/src/index.ts"],
+      "@kiturone/kapibala-cli": ["./packages/cli/src/index.ts"],
+      "@kiturone/kapibala-cli/protocol": ["./packages/cli/src/protocol/index.ts"],
+      "@kiturone/kapibala-cli/client": ["./packages/cli/src/client/index.ts"],
+      "@kiturone/kapibala-cli/view-model": ["./packages/cli/src/view-model/index.ts"]
     }
   },
   "include": [

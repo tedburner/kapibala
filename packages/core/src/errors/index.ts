@@ -207,6 +207,27 @@ export class KapibalaError extends Error {
   }
 }
 
+const SESSION_SAFE_MESSAGES = {
+  SESSION_LOCKED: '会话已被其他持有者占用',
+  SESSION_RECOVERY_IN_PROGRESS: '会话正在恢复',
+  SESSION_LOCK_OWNER_CHANGED: '会话锁持有者已变化',
+  SESSION_NOT_FOUND: '未找到指定会话',
+  SESSION_ID_AMBIGUOUS: '会话前缀不唯一',
+  HISTORY_PAGE_INVALID: '历史页参数无效',
+} as const;
+
+/** 会话身份与存储锁的稳定分类；不将内部诊断文本当作机器协议。 */
+export type SessionErrorCode = keyof typeof SESSION_SAFE_MESSAGES;
+
+/** 生成固定安全文案的会话错误；内部 message 保留兼容诊断，重试必须由调用者决定。 */
+export function createSessionError(code: SessionErrorCode, message: string): KapibalaError {
+  return new KapibalaError(message, {
+    code,
+    safeMessage: SESSION_SAFE_MESSAGES[code],
+    retryPolicy: 'after_user_action',
+  });
+}
+
 /** 工具向外部发送前在微任务复核或状态检查中被撤销/拒绝；dispatchOutcome 固定 not_sent。 */
 export class PreDispatchError extends KapibalaError {
   constructor(

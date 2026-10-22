@@ -27,6 +27,7 @@ jobs:
       version: ${{ steps.source.outputs.version }}
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      KPBL_RELEASE_EVIDENCE: ${{ vars.KPBL_RELEASE_EVIDENCE }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,12 +49,17 @@ jobs:
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Require reviewed acceptance evidence for the source commit
+        env:
+          RELEASE_SHA: ${{ steps.source.outputs.sha }}
+        run: node scripts/check-release-evidence.ts --sha "$RELEASE_SHA"
 
   verify:
     needs: prepare
     uses: ./.github/workflows/verify.yml
     with:
       ref: ${{ needs.prepare.outputs.sha }}
+      soak_tier: release
 
   publish:
     needs: [prepare, verify]
@@ -65,6 +71,7 @@ jobs:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
       RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      KPBL_RELEASE_EVIDENCE: ${{ vars.KPBL_RELEASE_EVIDENCE }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -89,6 +96,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
           node scripts/release.ts check "$RELEASE_TAG"
+          node scripts/check-release-evidence.ts --sha "$RELEASE_SHA"
           release_dir="$RUNNER_TEMP/kapibala-release"
           echo "RELEASE_DIR=$release_dir" >> "$GITHUB_ENV"
           mkdir -p "$release_dir"

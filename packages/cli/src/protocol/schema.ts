@@ -1,6 +1,7 @@
 /** 支持的 JSON Schema 子集；纯数据，可供外部客户端生成文档和边界校验。 */
 export interface WireSchema {
-  type?: 'object' | 'array' | 'string' | 'integer' | 'boolean';
+  type?: 'object' | 'array' | 'string' | 'integer' | 'boolean' | 'null';
+  anyOf?: readonly WireSchema[];
   properties?: Readonly<Record<string, WireSchema>>;
   required?: readonly string[];
   additionalProperties?: false;
@@ -13,16 +14,28 @@ export interface WireSchema {
   maxItems?: number;
 }
 
-const string: WireSchema = { type: 'string', minLength: 1, maxLength: 1_048_576 };
-const id: WireSchema = { ...string, maxLength: 256 };
-const integer: WireSchema = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
-const boolean: WireSchema = { type: 'boolean' };
-const enumeration = (...values: string[]): WireSchema => ({ type: 'string', enum: values });
-const object = (properties: Record<string, WireSchema>, optional: string[] = []): WireSchema => ({
-  type: 'object',
+const string = { type: 'string', minLength: 1, maxLength: 1_048_576 } as const;
+const id = { ...string, maxLength: 256 } as const;
+const integer = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER } as const;
+const boolean = { type: 'boolean' } as const;
+const enumeration = <const Values extends readonly string[]>(...values: Values) => ({
+  type: 'string' as const,
+  enum: values,
+});
+const object = <
+  const P extends Record<string, WireSchema>,
+  const O extends readonly (keyof P & string)[] = readonly [],
+>(
+  properties: P,
+  optional?: O,
+) => ({
+  type: 'object' as const,
   properties,
-  required: Object.keys(properties).filter((key) => !optional.includes(key)),
-  additionalProperties: false,
+  required: Object.keys(properties).filter((key) => !optional?.includes(key)) as Exclude<
+    keyof P,
+    O[number]
+  >[],
+  additionalProperties: false as const,
 });
 const control = { sessionId: id, streamEpoch: id, controlEpoch: id };
 const empty = object({});
@@ -69,7 +82,7 @@ export const REQUEST_SCHEMAS = {
 } as const satisfies Record<string, WireSchema>;
 
 /** 审批响应拒绝额外字段，阻止客户端借回复改写实际工具参数。 */
-export const APPROVAL_RESPONSE_SCHEMA: WireSchema = object({
+export const APPROVAL_RESPONSE_SCHEMA = object({
   choice: enumeration('allow_once', 'allow_session', 'deny_once', 'deny_session', 'cancel'),
 });
 

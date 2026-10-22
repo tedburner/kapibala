@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { WorkspaceLeaseCoordinator } from '../src/capabilities/security/lease.js';
 import {
   DEFAULT_MAX_SUBAGENT_DEPTH,
   type ParentPolicySnapshot,
@@ -33,6 +34,7 @@ describe('Agent 任务树容量槽位与深度熔断', () => {
     const preparedIds: string[] = [];
 
     const baseContext = {
+      leaseCoordinator: new WorkspaceLeaseCoordinator(),
       sessionId: 'root-session',
       rootTaskId: 'tree-1',
       branchId: 'main',

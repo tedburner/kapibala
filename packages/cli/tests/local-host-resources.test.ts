@@ -56,7 +56,7 @@ describe('headless resource factory', () => {
           : vi.spyOn(AgentSession.prototype, 'destroy');
       cleanup.mockRejectedValueOnce(new Error('cleanup incomplete'));
       try {
-        await expect(resource.dispose()).rejects.toThrow('cleanup incomplete');
+        await expect(resource.dispose()).rejects.toMatchObject({ code: 'SESSION_CLEANUP_FAILED' });
         // 真实存储锁仍须阻止第二个写者；测试失败时也回收意外打开的句柄。
         let reopened: Awaited<ReturnType<SessionManager['open']>> | undefined;
         try {

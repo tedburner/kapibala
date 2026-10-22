@@ -7,7 +7,9 @@ import {
   type JsonValue,
   type PendingApproval,
   type SessionControl,
+  type SnapshotMetadata,
 } from '../protocol/index.js';
+import { LocalHostError } from './errors.js';
 import { SessionEventFeed } from './events.js';
 import { redactText, sanitizeDisplayText } from './redaction.js';
 import { previewToolResult, summarizeToolTarget } from './tool-projection.js';
@@ -41,19 +43,6 @@ export interface RegisteredSession {
   needsCleanup?: boolean;
   live?: { events: JsonValue[]; bytes: number; complete: boolean };
   operations: Map<string, { inputHash: string; runId: string }>;
-}
-
-/** 快照元数据；历史与活动尾部由宿主按同一修订分块，不在此重复携带。 */
-export interface SessionSnapshot extends SessionControl {
-  serverInstanceId: string;
-  seq: number;
-  conversationId: string;
-  runId: string | null;
-  /** 当前待审批摘要；观察者只读，回复仍须由控制连接完成。 */
-  pendingApprovals: PendingApproval[];
-  /** 当前宿主已打开的会话数，供控制端在接近配额前提示回收。 */
-  openSessions: number;
-  maxOpenSessions: number;
 }
 
 /** 宿主扩展审批路由，不持久化客户端身份或旧批准。 */
@@ -136,7 +125,7 @@ export class SessionRegistry {
     clientId: string,
     mode: 'control' | 'observe',
     pendingApprovals: PendingApproval[] = [],
-  ): SessionSnapshot {
+  ): SnapshotMetadata {
     const entry = this.get(sessionId);
     if (entry.closing || this.shuttingDown) throw new Error('SHUTTING_DOWN');
     if (mode === 'control') {
@@ -166,7 +155,7 @@ export class SessionRegistry {
     entry: RegisteredSession,
     clientId: string,
     pendingApprovals: PendingApproval[] = [],
-  ): SessionSnapshot {
+  ): SnapshotMetadata {
     return {
       sessionId: entry.sessionId,
       streamEpoch: entry.streamEpoch,
@@ -315,6 +304,7 @@ export class SessionRegistry {
         cleanupFailed = true;
       }
       entry.active = undefined;
+      cleanupFailed ||= Boolean(entry.needsCleanup);
       entry.needsCleanup = cleanupFailed;
       if (cleanupFailed) {
         outcome = 'failed';
@@ -332,12 +322,20 @@ export class SessionRegistry {
     return { runId, accepted: true };
   }
 
-  /** 重复取消同一在途运行幂等；不存在的运行不能误取消后续任务。 */
+  /**
+   * 仅当前 active.id 的取消可重复受理；已结束、未知或属于旧运行的 ID 均拒绝。
+   * 控制权和代际先校验，取消失败不能解除清理围栏，也不能误取消后续运行。
+   */
   async cancel(control: SessionControl, clientId: string, runId: string): Promise<void> {
     const entry = this.control(control.sessionId, clientId, control);
-    if (entry.active?.id !== runId) throw new Error('RUN_NOT_FOUND');
+    if (entry.active?.id !== runId) throw new LocalHostError('RUN_NOT_FOUND');
     entry.active.abort.abort();
-    await entry.resources.cancelChildren?.();
+    try {
+      await entry.resources.cancelChildren?.();
+    } catch (error) {
+      entry.needsCleanup = true;
+      throw new LocalHostError('SESSION_CLEANUP_FAILED', error);
+    }
   }
 
   /** 连接失效后先取消并等待在途清理，再撤销控制身份；清理错误不阻止释放控制权。 */
@@ -353,6 +351,8 @@ export class SessionRegistry {
           entry.active?.abort.abort();
           try {
             await entry.resources.cancelChildren?.();
+          } catch {
+            entry.needsCleanup = true;
           } finally {
             await entry.active?.done.catch(() => {});
             entry.controller = undefined;

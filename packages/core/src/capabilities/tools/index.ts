@@ -1,4 +1,5 @@
 import type { ToolDefinition, ToolResultExecution } from '../../types/index.js';
+import type { WorkspaceLeaseCoordinator } from '../security/lease.js';
 import type { ShellScope } from '../security/permissions.js';
 import type { PathSandbox } from '../security/sandbox.js';
 import type { ParentPolicySnapshot } from '../security/subagent-policy.js';
@@ -52,6 +53,8 @@ export interface ToolMetadata {
 
 /** 工具执行期由宿主注入的运行环境；信号取消后工具应尽快清理在途资源再返回。 */
 export interface ToolContext {
+  /** 父会话实际协调器的内存引用；spawn 必须显式传递，禁止放入模型输入或持久记录。 */
+  readonly leaseCoordinator?: WorkspaceLeaseCoordinator;
   /** 显式工作区物理根路径，经 native realpath 规范化。 */
   workspaceRoot?: string;
   /** 显式命令执行工作目录绝对路径（位于 workspaceRoot 内部）。 */

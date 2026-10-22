@@ -6,6 +6,7 @@ import {
   SessionManager,
   type SessionMode,
   ToolRegistry,
+  WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
 import minimist from 'minimist';
 import { ActiveSessionController } from './active-session.js';
@@ -262,6 +263,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (!isValidShellPreference(preference)) throw new Error(`Unknown shell: ${preference}`);
     const isTrusted =
       trustResult.status === 'trusted' || isProjectTrusted(settings, manager.project.projectRoot);
+    const leaseCoordinator = new WorkspaceLeaseCoordinator();
     agentRuntime = new AgentRuntime({
       runner: createCliSubagentRunner({
         manager,
@@ -269,6 +271,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         settings,
         preference,
         isTrusted,
+        leaseCoordinator,
       }),
       validateModelOverride: (modelId: string) => settings.profiles.some((p) => p.id === modelId),
       outboxPath: path.join(manager.project.projectRoot, '.kapibala', 'outbox.jsonl'),
@@ -310,6 +313,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         }));
       const factory = async (handle: import('@kiturone/kapibala').ManagedSession) => {
         const created = new AgentSession({
+          leaseCoordinator,
           defaultProfile: models.defaultBinding.profile,
           skills: getCliSkillOptions(settings, { projectRoot: manager.project.projectRoot }),
           defaultProvider: models.defaultBinding.provider,

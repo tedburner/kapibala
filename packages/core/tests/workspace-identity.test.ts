@@ -39,6 +39,7 @@ const dummyProfile: ModelProfile = {
 describe('Workspace Identity & Path Canonicalization (Milestone A - Task 1)', () => {
   it('throws WORKSPACE_ROOT_REQUIRED when AgentSession has neither workspaceRoot nor rootDir', () => {
     expect(() => {
+      // @ts-expect-error 验证 JS/旧式输入绕过类型后的运行时拒绝。
       new AgentSession({
         defaultProfile: dummyProfile,
         defaultProvider: new DummyProvider(),

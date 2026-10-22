@@ -52,15 +52,23 @@ describe('branch naming', () => {
 describe('version selection', () => {
   it('derives the next version or accepts an explicit greater one', () => {
     expect(parseTargetVersion(undefined, '0.0.3')).toBe('0.0.4');
+    expect(parseTargetVersion(undefined, '0.0.9')).toBe('0.0.10');
     expect(parseTargetVersion('v0.1.0', '0.0.3')).toBe('0.1.0');
+    expect(parseTargetVersion('0.0.10', '0.0.9')).toBe('0.0.10');
+    expect(parseTargetVersion('v0.1.0', '0.0.10')).toBe('0.1.0');
+    expect(parseTargetVersion('0.10.0', '0.9.9')).toBe('0.10.0');
     expect(() => parseTargetVersion('0.0.3', '0.0.3')).toThrow(/greater/i);
     expect(() => parseTargetVersion('0.0.2', '0.0.3')).toThrow(/greater/i);
-    expect(() => parseTargetVersion('0.0.10', '0.0.3')).toThrow(/version/i);
+    expect(() => parseTargetVersion('0.00.10', '0.0.3')).toThrow(/version/i);
     expect(() => parseTargetVersion('abc', '0.0.3')).toThrow(/version/i);
   });
 
   it('compares versions numerically instead of lexicographically', () => {
     expect(isGreaterVersion('0.1.0', '0.0.9')).toBe(true);
+    expect(isGreaterVersion('0.0.10', '0.0.9')).toBe(true);
+    expect(isGreaterVersion('0.1.0', '0.0.10')).toBe(true);
+    expect(isGreaterVersion('0.0.9', '0.0.10')).toBe(false);
+    expect(isGreaterVersion('0.0.9007199254740993', '0.0.9007199254740992')).toBe(true);
     expect(isGreaterVersion('1.0.0', '0.9.9')).toBe(true);
     expect(isGreaterVersion('0.0.3', '0.0.3')).toBe(false);
   });

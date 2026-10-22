@@ -25,9 +25,26 @@ export class JsonlDecoder {
   private ended = false;
   private readonly decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
-  constructor(private readonly maxFrameBytes: number = DEFAULT_LIMITS.maxFrameBytes) {
+  constructor(private maxFrameBytes: number = DEFAULT_LIMITS.maxFrameBytes) {
     if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 1)
       throw new Error('Invalid frame budget');
+  }
+
+  /** 收紧当前帧预算并释放旧的大缓冲；未完成帧已超额则拒绝，不截断已有字节。 */
+  setLimit(maxFrameBytes: number): void {
+    if (
+      !Number.isSafeInteger(maxFrameBytes) ||
+      maxFrameBytes < 1 ||
+      maxFrameBytes > this.maxFrameBytes ||
+      this.bytes > maxFrameBytes
+    )
+      throw new Error('Invalid frame budget');
+    if (this.buffer && this.buffer.length > maxFrameBytes) {
+      const next = Buffer.allocUnsafe(maxFrameBytes);
+      next.set(this.buffer.subarray(0, this.bytes));
+      this.buffer = next;
+    }
+    this.maxFrameBytes = maxFrameBytes;
   }
 
   /** 一次输入可以产出多帧，限制针对帧而非网络拼包大小；存储不持有大输入的底层视图。 */

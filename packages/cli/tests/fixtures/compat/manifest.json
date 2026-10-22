@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "file": "settings-v0.0.9.json",
+      "sourceVersion": "0.0.9",
+      "expectation": "upgrade",
+      "sourceMutation": "none",
+      "envWriteBack": "none",
+      "sha256": "81315d493ef13ea3b6180fa3f0cc4e86fa9d08180547036c782e9272007d0e78"
+    }
+  ]
+}

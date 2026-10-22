@@ -1,8 +1,10 @@
 # 📝 版本发布与路线图 (RELEASES)
 
 > 本文档承载 Kapibala 的版本号规则、各版本既有能力增强明细与版本路线图；
-> README 只保留入口链接。版本号规则：Kapibala 按十进制位进位，小版本补丁位只使用 `0–9`，
-> `v0.0.9` 的下一版本是 `v0.1.0`，不使用 `v0.0.10`；后续同理，`v0.1.9` 之后进入 `v0.2.0`。
+> README 只保留入口链接。版本规则于 2026-10-21 按用户要求调整：三段版本均允许多位非负整数，
+> 不允许前导零；默认只递增补丁段，`v0.0.9 → v0.0.10 → v0.0.11`，不逢十进位。
+> 稳定整合版由原规划 v0.1.0 调整为 **v0.0.10**，Electron 桌面客户端由原规划 v0.1.1 调整为 **v0.1.0**；
+> 次版本/主版本通过发布命令显式选择。已发布版本与历史验收记录不重命名。
 
 ---
 
@@ -32,9 +34,17 @@
 | **v0.0.7** | **会话增强与多智能体**（已发布；[发布说明](releases/v0.0.7.md)，[验收记录](verification/v0.0.7.md)，[迁移说明](migration/v0.0.7.md)） | 基于 v0.0.3 的独立会话、Envelope 因果 `parentId` 与基本 SessionManager，增强跨项目全文检索、历史分叉（DAG 树）、归档与子代理任务树观测；清理 Core 对全局 `process.cwd()` 的隐式依赖，强制显式 `workspaceRoot`；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理权限只继承或收紧。Worktree 物理隔离、审批冒泡与任务树 Token 分层账本明确未交付 | Core + 宿主增量 |
 | **v0.0.8** | **产品化终端体验**（已发布；[发布说明](releases/v0.0.8.md)，[验收记录](verification/v0.0.8.md)，[迁移说明](migration/v0.0.8.md)） | 现代终端守护（ConPTY/CSI-u 拼包、Bracketed Paste 隔离、异常自愈恢复）、共享前端纯展示模型（`@kiturone/kapibala-cli/view-model` 导出，0 Node 依赖，WeakMap 缓存）、宿主桥接中枢与防抖分发、全量 Slash 命令结构化解耦（CommandOutput 统一输出，check-cli-boundary 门禁）、多任务状态观察（subscribeTaskChanges） | CLI 内部模块增量，不新增包 |
 | **v0.0.9** | **本地客户端契约与发布前加固**（已于 2026-10-21 发布；[发布说明](releases/v0.0.9.md)，[验收记录](verification/v0.0.9.md)，[迁移说明](migration/v0.0.9.md)） | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；已实现有界快照、审批与宿主隔离；Linux 与 Windows CI 全量门禁已通过，Windows ACL/进程树与 Node 20 等平台验收仍待补齐。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
-| **v0.1.0** | **阶段性整合版本** | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约，完成迁移验证与发布流程；不新增客户端类型或运行时子系统 | CLI + Core SDK + 扩展包 |
-| **v0.1.1** | **跨平台桌面客户端 (Electron)** | 基于 Electron 的现代化跨平台桌面客户端（Windows / macOS / Linux）；前端采用现代 Web 技术栈复用流式渲染与 ViewModel，主进程直连复用 Headless Core 与 MCP 模块；支持系统托盘、全局呼出快捷键、富文本思考过程与工具调用交互 | 独立桌面包 (`packages/desktop`) |
+| **v0.0.10** | **阶段性整合版本**（实现与本地门禁完成，**未发布**；[技术方案](design/003-v0.0.10-stable-integration.md)，[验收记录](verification/v0.0.10.md)，[迁移说明](migration/v0.0.10.md)，[SDK 兼容性说明](sdk-compatibility.md)） | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约：显式工作区身份、宿主级写租约与父子协调器传递、类型化错误与取消语义、按方法具体化的客户端结果与整个连接的恢复单位；新增 `verify:compat` / `verify:platform` / `verify:soak` 三类门禁。不新增客户端类型或运行时子系统；Node 20、Windows ACL/ConPTY、POSIX PTY 与 release 档长时验收仍为发布阻断项 | CLI + Core SDK + 扩展包 |
+| **v0.1.0** | **跨平台桌面客户端 (Electron)** | 基于 Electron 的现代化跨平台桌面客户端（Windows / macOS / Linux）；前端采用现代 Web 技术栈复用流式渲染与 ViewModel，主进程直连复用 Headless Core 与 MCP 模块；支持系统托盘、全局呼出快捷键、富文本思考过程与工具调用交互 | 独立桌面包 (`packages/desktop`) |
 
+
+### v0.0.10 稳定整合与发布边界（2026-10-21）
+
+- 本版只做整合：不新增客户端形态、运行时子系统或 npm 包，不做 barrel 重构；wire 仍为 1.0，产品版本与协议版本继续解耦。
+- 9 处公开差异（根字段联合 type、删除全局租约单例、缺省独占租约、`LocalClient.call()` 结果具体化、显式 cursor 返回原始续块、attach 失败关闭整个连接、`SpawnContext`/runner 必填协调器、`LocalTransport.setLimits` 必填、清理错误类型化）逐条登记在 [SDK 兼容性说明](sdk-compatibility.md)，迁移动作见 [迁移说明](migration/v0.0.10.md)。
+- 历史与配置不需要用户执行迁移：v1 语料只读复制升级为独立 v2 副本，损坏与未知 schema 明确拒绝且零工具重放；v0.0.9 的 `settings.json` 可直接读取，目录迁移幂等。
+- 本地已完成：`pnpm verify`（157 文件 / 1337 测试）、`verify:compat`（4 组合 × 2 传输）、`verify:platform`（stdio / daemon 鉴权 / 进程树 / MCP 生命周期 / 三包隔离安装）、`verify:soak` PR 与 nightly 档。
+- 发布阻断：Node 20 真实通道、Windows ACL/ConPTY 与双 shell 进程树、POSIX 交互式 PTY、同 SHA 的 release 档 soak 与人工冻结阈值、干净提交重跑。未取得前不执行 `pnpm release 0.0.10`。
 
 ### v0.0.9 本地实现与发布边界（2026-10-21）
 
@@ -48,7 +58,7 @@
 - 跨端纯展示模型（`@kiturone/kapibala-cli/view-model`）：导出无副作用的展示状态与纯函数 Reducer，提供独立构建产物（`tsconfig.view-model.json` / `tsup.view-model.config.ts`），`check-view-model.ts` 门禁保证 0 Node 内置依赖，供终端与未来桌面端共享；`selectMessages` 引入 WeakMap 快照缓存；
 - 宿主桥接中枢与命令输出解耦：`SessionPresentationHost` 与 `PresentationStore` 统一订阅分发与 16ms 防抖；全量迁移 `packages/cli/src/commands/*` 20+ 内置命令至结构化 `CommandOutput`，消除运行期隐式 `console.log`，`check-cli-boundary.ts` 架构门禁强制约束；
 - 多任务状态观察：Core `AgentRuntime` 提供 `subscribeTaskChanges` 只读通知订阅，CLI 宿主 `TaskObservationHost` 实时聚合子任务并在状态模型反映进度；
-- 本版明确未交付：全屏 Ink TUI 主视图切换（阶段 D 平滑过渡至下一版）、Electron 桌面客户端包（按路线图排入 v0.1.1）、Git Worktree 物理隔离与审批冒泡队列。
+- 本版明确未交付：全屏 Ink TUI 主视图切换（后续单独排期）、Electron 桌面客户端包（当前路线图排入 v0.1.0）、Git Worktree 物理隔离与审批冒泡队列。
 
 ### v0.0.7 已确认交付边界（2026-10-16）
 
@@ -100,7 +110,7 @@
 
 - **v0.0.4 — 事件基础**：Anthropic 原生 Provider 将模型实际提供、允许展示的思考内容以结构化事件传给 CLI；OpenAI Responses 只在 API 明确返回可见推理摘要时提供相应展示事件，加密推理 Item 不展示。工具调用及结果继续保留完整事件；Provider 未提供或已隐藏的思考内容不由 CLI 推测生成。
 - **v0.0.5 — 默认折叠（已发布）**：CLI 默认将思考、工具调用和工具结果显示为简短摘要；TTY Ctrl+O 切换本轮详情，菜单/密钥/审批期间禁用。所有回答文本、错误、取消和权限请求完整可见；`--output-detail detailed` 提供非交互完整公开过程。当前轮次缓存最多 1 MiB，不能回收任意终端 scrollback；非 TTY detailed 流不受缓存截断。
-- **v0.1.0 — 点击展开**：在可重绘、可滚动的终端会话视图中，支持点击过程块展开或收起；同时处理鼠标事件、窗口尺寸变化、终端兼容及复制文本体验，并为不支持鼠标的环境保留键盘操作。
+- **后续终端专项，版本待定 — 点击展开**：在可重绘、可滚动的终端会话视图中，支持点击过程块展开或收起；同时处理鼠标事件、窗口尺寸变化、终端兼容及复制文本体验，并为不支持鼠标的环境保留键盘操作。此项不属于 v0.0.10 稳定整合或 v0.1.0 桌面端的默认交付范围。
 
 验收时应确认折叠/展开不会遗漏流式输出，不会影响 SessionEvent 消费、消息落盘、工具结果闭合与会话恢复。
 
@@ -116,7 +126,7 @@
 
 ---
 
-## 🖥️ 跨平台桌面客户端规划（Electron，v0.1.1）
+## 🖥️ 跨平台桌面客户端规划（Electron，v0.1.0）
 
 > 选型确立于 2026-10-15：基于工程务实性、全栈 TypeScript 一致性与 AI 编程生态（Monaco Editor、node-pty 原生终端、Shiki 高亮、IME 输入法成熟度），选用 **Electron** 作为 Kapibala 跨平台桌面客户端（Windows / macOS / Linux）核心底座。主进程直接复用已有 TypeScript Headless Core 与 MCP 模块，以极高研发效率交付高品质桌面体验。
 
@@ -143,7 +153,7 @@
 2. **事件 DTO 版本化与双向 RPC 控制信令（v0.0.9 落实）**：
    - 将 `SessionEvent` 规范化为结构稳定的数据传输对象（`WireSessionEvent`，版本号显式声明）；
    - 扩展双向控制流：工具执行前审批通过带唯一 `requestId` 和超时控制的 `approval_requested` 信令发起，渲染层弹窗确认后回发 `approval_response` 闭环；窗口异常或超时自动安全熔断。
-3. **跨平台进程树强制回收与生命周期守卫（v0.0.9 ~ v0.1.1 落实）**：
+3. **跨平台进程树强制回收与生命周期守卫（v0.0.9 ~ v0.1.0 分阶段落实）**：
    - 主进程统一管理工具命令子进程生命周期；
    - 任务中断或客户端退出时，统一通过 Windows Job Object / `taskkill /T /F` 与 macOS/POSIX 进程组 `kill(-pid, SIGKILL)` 深度回收所有子命令进程树，杜绝孤儿进程后台残留。
 
@@ -153,8 +163,8 @@
 |---|---|---|
 | **准备阶段：路径解耦与前端抽象** | **v0.0.7 ~ v0.0.8** | 消除 Core 内对 `process.cwd()` 的隐式依赖；在终端产品化演进中抽象出共享前端 `ViewModel`（流式 Markdown、Thinking 块折叠、工具参数脱敏展示），供 TUI 与桌面端双向复用。 |
 | **第一阶段：通信契约与双向信令** | **v0.0.9** | 规范化版本化事件 DTO；实现本地守护进程与双向审批 RPC 信令通道，为主进程与多宿主提供统一的通信契约。 |
-| **第二阶段：稳定整合与全量门禁** | **v0.1.0** | 冻结 Core 公共 API 与本地客户端通信协议，完成多平台宿主隔离与回归测试，不引入新客户端业务。 |
-| **第三阶段：桌面客户端核心交付** | **v0.1.1** | 初始化 `packages/desktop`（`@kiturone/kapibala-desktop`）；构建 Electron 主进程与 Typed IPC 桥接；接入 Web 前端流式对话、历史抽屉与弹窗审批；交付 Win（NSIS / 免安装压缩包）与 Mac（DMG）安装包。 |
+| **第二阶段：稳定整合与全量门禁** | **v0.0.10** | 按 [技术方案](design/003-v0.0.10-stable-integration.md)稳定 Core 公共 API 与本地客户端通信协议，完成多平台宿主隔离与回归测试，不引入新客户端业务。 |
+| **第三阶段：桌面客户端核心交付** | **v0.1.0** | 初始化 `packages/desktop`（`@kiturone/kapibala-desktop`）；构建 Electron 主进程与 Typed IPC 桥接；接入 Web 前端流式对话、历史抽屉与弹窗审批；交付 Win（NSIS / 免安装压缩包）与 Mac（DMG）安装包。 |
 | **第四阶段：体验增强与自动更新** | **v0.1.x+** | 接入 `electron-updater` 增量自动更新；配置 macOS Apple Notarization 公证与 Windows 代码签名流水线；支持全局快捷键呼出小窗与拖拽文件输入。 |
 
 ### 4. Windows 与 macOS 平台差异适配基线

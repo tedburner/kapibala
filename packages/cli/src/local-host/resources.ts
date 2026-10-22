@@ -13,6 +13,7 @@ import { createMcpPlugin } from '@kiturone/kapibala-mcp';
 import { resolveCliMcpOptions } from '../mcp.js';
 import { CliModelBindings } from '../model-bindings.js';
 import { detectProjectRoot } from '../project-root.js';
+import { toWireErrorCode } from '../protocol/index.js';
 import type { JsonValue } from '../protocol/index.js';
 import {
   BUILTIN_PROFILES,
@@ -25,6 +26,7 @@ import { getCliSkillOptions, hasProjectSkills } from '../skills.js';
 import { createCliSubagentRunner } from '../subagent-runner.js';
 import { registerBuiltinTools } from '../tool-registration.js';
 import { formatToolDetail } from '../ui/tool-presentation.js';
+import { LocalHostError } from './errors.js';
 import { StreamingRedactor, redactText } from './redaction.js';
 import type { ResourceFactory } from './types.js';
 
@@ -68,18 +70,12 @@ function publicHistory(history: CanonicalMessage[], redact: (text: string) => st
 
 /**
  * 在资源创建边界把 Core 的会话身份/锁错误规范化为稳定业务码。
- * 只转换已知前缀，其它错误保持原样，避免把配置或 IO 故障误报为可重试的锁冲突。
+ * 优先复用稳定 code 映射，旧消息仅由兼容映射兜底；其它 IO/配置故障不误报为锁冲突。
  */
 function normalizeSessionError(error: unknown): never {
-  if (error instanceof Error) {
-    if (error.message.startsWith('Session locked')) throw new Error('SESSION_BUSY');
-    if (
-      error.message === 'Session not found' ||
-      error.message.startsWith('Session not found:') ||
-      error.message.startsWith('Ambiguous session prefix:')
-    )
-      throw new Error('SESSION_NOT_FOUND');
-  }
+  const code = toWireErrorCode(error);
+  if (code === 'SESSION_BUSY' || code === 'SESSION_NOT_FOUND')
+    throw new LocalHostError(code, error);
   throw error;
 }
 
@@ -237,7 +233,7 @@ export function createResourceFactory(options: ResourceFactoryOptions = {}): Res
                 failures.push(error);
               }
             }
-            if (failures.length) throw failures[0];
+            if (failures.length) throw new LocalHostError('SESSION_CLEANUP_FAILED', failures[0]);
           })().catch((error) => {
             disposal = undefined;
             throw error;

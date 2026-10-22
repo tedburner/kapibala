@@ -187,6 +187,98 @@ describe('local host session ownership', () => {
     );
     await registry.shutdown();
   });
+  it('rejects cancelling a completed or unknown run and checks control first', async () => {
+    const registry = new SessionRegistry({ create: async () => resource() });
+    const opened = await registry.open(workspace());
+    const control = registry.attach(opened.sessionId, 'c', 'control');
+    const run = registry.start(control, 'c', 'operation', 'input');
+    await registry.get(opened.sessionId).active?.done;
+    await expect(registry.cancel(control, 'c', run.runId)).rejects.toMatchObject({
+      code: 'RUN_NOT_FOUND',
+    });
+    await expect(
+      registry.cancel({ ...control, controlEpoch: 'old' }, 'c', run.runId),
+    ).rejects.toThrow(/STALE_CONTROL/);
+    await expect(registry.cancel(control, 'c', 'unknown-run')).rejects.toMatchObject({
+      code: 'RUN_NOT_FOUND',
+    });
+    await registry.shutdown();
+  });
+  it('keeps cancellation idempotent only while the run is active, including cleanup', async () => {
+    let started!: () => void;
+    let release!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const cleaning = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const res = resource();
+    res.run = async function* (_input, signal) {
+      const aborted = new Promise<void>((resolve) =>
+        signal.addEventListener('abort', () => resolve(), { once: true }),
+      );
+      started();
+      yield { type: 'text_delta', text: 'started' };
+      await aborted;
+      await cleaning;
+    };
+    const registry = new SessionRegistry({ create: async () => res });
+    const opened = await registry.open(workspace());
+    const control = registry.attach(opened.sessionId, 'c', 'control');
+    const run = registry.start(control, 'c', 'operation', 'input');
+    const entry = registry.get(opened.sessionId);
+    const done = entry.active!.done;
+    try {
+      await running;
+      await registry.cancel(control, 'c', run.runId);
+      await registry.cancel(control, 'c', run.runId);
+      expect(entry.active?.id).toBe(run.runId);
+      release();
+      await done;
+      for (const needsCleanup of [false, true]) {
+        entry.needsCleanup = needsCleanup;
+        await expect(registry.cancel(control, 'c', run.runId)).rejects.toMatchObject({
+          code: 'RUN_NOT_FOUND',
+        });
+        expect(entry.needsCleanup).toBe(needsCleanup);
+      }
+    } finally {
+      release();
+      await registry.shutdown();
+    }
+  });
+  it('rejects cancelling an old run without aborting the newer active run', async () => {
+    const res = resource();
+    const registry = new SessionRegistry({ create: async () => res });
+    const opened = await registry.open(workspace());
+    const control = registry.attach(opened.sessionId, 'c', 'control');
+    const old = registry.start(control, 'c', 'old-operation', 'input');
+    await registry.get(opened.sessionId).active!.done;
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    res.run = async function* (_input, signal) {
+      const aborted = new Promise<void>((resolve) =>
+        signal.addEventListener('abort', () => resolve(), { once: true }),
+      );
+      started();
+      yield { type: 'text_delta', text: 'started' };
+      await aborted;
+    };
+    const current = registry.start(control, 'c', 'new-operation', 'input');
+    try {
+      await running;
+      await expect(registry.cancel(control, 'c', old.runId)).rejects.toMatchObject({
+        code: 'RUN_NOT_FOUND',
+      });
+      expect(registry.get(opened.sessionId).active?.id).toBe(current.runId);
+      expect(registry.get(opened.sessionId).active?.abort.signal.aborted).toBe(false);
+    } finally {
+      await registry.shutdown();
+    }
+  });
   it('deduplicates accepted operations and rejects changed inputs', async () => {
     const registry = new SessionRegistry({ create: async () => resource() });
     const opened = await registry.open(workspace());

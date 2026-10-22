@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "baseline": "v0.0.9",
+  "changes": {
+    "added": [
+      "cli/client:TransportLimits",
+      "cli/protocol:ClientResult",
+      "cli/protocol:ClientSnapshot",
+      "cli/protocol:InferWireSchema",
+      "cli/protocol:ProtocolLimits",
+      "cli/protocol:PublicHistoryBlock",
+      "cli/protocol:PublicHistoryMessage",
+      "cli/protocol:RESULT_SCHEMAS",
+      "cli/protocol:RESULT_SELECTORS",
+      "cli/protocol:RequestResults",
+      "cli/protocol:SnapshotBody",
+      "cli/protocol:SnapshotMetadata",
+      "cli/protocol:SnapshotPage",
+      "cli/protocol:WireResult",
+      "cli/protocol:WireSnapshot",
+      "cli/protocol:validateMethodResult",
+      "cli/protocol:validateSnapshotBody",
+      "core:SessionErrorCode",
+      "core:SessionOptions",
+      "core:SubagentRunnerContext",
+      "core:createSessionError",
+      "package:@kiturone/kapibala-cli:module:local-host/errors.d.ts",
+      "package:@kiturone/kapibala-cli:module:protocol/results.d.ts"
+    ],
+    "removed": ["core:sharedWorkspaceLeaseCoordinator"],
+    "changed": [
+      "cli/client:LocalClient",
+      "cli/client:LocalTransport",
+      "cli/protocol:APPROVAL_RESPONSE_SCHEMA",
+      "cli/protocol:EVENT_PAYLOAD_SCHEMAS",
+      "cli/protocol:REQUEST_SCHEMAS",
+      "cli/protocol:WireSchema",
+      "core:AgentRuntime",
+      "core:SessionConfig",
+      "core:SpawnContext",
+      "core:SubagentSessionRunner",
+      "core:ToolContext"
+    ]
+  }
+}

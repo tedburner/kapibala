@@ -21,6 +21,7 @@ const provider = new OpenAICompatibleProvider({
 });
 
 const session = new AgentSession({
+  workspaceRoot: process.cwd(),
   defaultProfile: profile,
   defaultProvider: provider,
 });

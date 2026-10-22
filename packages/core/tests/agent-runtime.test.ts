@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { WorkspaceLeaseCoordinator } from '../src/capabilities/security/lease.js';
 import type { ToolContext } from '../src/capabilities/tools/index.js';
 import { KapibalaError } from '../src/errors/index.js';
 import {
@@ -26,6 +27,7 @@ describe('AgentRuntime and spawn launch transactions', () => {
   });
 
   const createDefaultContext = (overrides?: Partial<SpawnContext>): SpawnContext => ({
+    leaseCoordinator: new WorkspaceLeaseCoordinator(),
     sessionId: 'session-root',
     branchId: 'main',
     runId: 'run-1',
@@ -237,6 +239,7 @@ describe('AgentRuntime and spawn launch transactions', () => {
 
     const spawnTool = createSpawnAgentTool(runtime);
     const toolCtx: ToolContext = {
+      leaseCoordinator: new WorkspaceLeaseCoordinator(),
       rootDir: directory,
       workspaceRoot: directory,
       executionCwd: directory,

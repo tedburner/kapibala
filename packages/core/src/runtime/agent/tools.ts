@@ -88,10 +88,16 @@ export function createSpawnAgentTool(
       required: ['description', 'prompt', 'role'],
     },
     async execute(input: SpawnAgentParams, ctx): Promise<SpawnAgentReceipt> {
+      if (!ctx.leaseCoordinator)
+        throw new KapibalaError('Missing parent lease coordinator', {
+          code: 'CONFIG_INVALID',
+          safeMessage: '缺少父会话写租约协调器',
+        });
       const workspaceRoot = ctx.workspaceRoot ?? ctx.rootDir;
       const executionCwd = ctx.executionCwd ?? workspaceRoot;
 
       const spawnContext: SpawnContext = {
+        leaseCoordinator: ctx.leaseCoordinator,
         rootTaskId: ctx.rootTaskId,
         sessionId: ctx.sessionId ?? 'session-default',
         branchId: ctx.branchId ?? 'main',

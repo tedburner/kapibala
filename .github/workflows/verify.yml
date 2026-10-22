@@ -9,6 +9,16 @@ on:
         description: Exact source commit to verify
         required: true
         type: string
+      soak_tier:
+        description: Soak tier to run for this source commit
+        required: false
+        default: pr
+        type: string
+      soak_baseline:
+        description: Reviewed baseline file tracked at the source commit
+        required: false
+        default: scripts/fixtures/soak/release-baseline.json
+        type: string
 
 permissions:
   contents: read
@@ -18,8 +28,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
@@ -31,6 +42,8 @@ jobs:
           require-lockfile: true
       - name: Build and verify
         run: pnpm dev --no-start
+      - name: Current-OS automated checks (independent acceptance may remain pending)
+        run: pnpm verify:platform --no-build --allow-pending
       - name: Verify Git Bash selection on Windows
         if: runner.os == 'Windows'
         shell: bash
@@ -39,3 +52,120 @@ jobs:
         run: |
           export PATH="$(dirname "$(command -v bash)"):$PATH"
           pnpm exec vitest run packages/core/tests/shell.test.ts
+      - name: Preserve platform evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: platform-${{ matrix.os }}-node24
+          path: .workbuddy/v0.0.10-platform/evidence/*.json
+          if-no-files-found: ignore
+
+  minimum-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          runtime: node@20
+          require-lockfile: true
+      - name: Record minimum runtime
+        run: |
+          node --version
+          node -e "if (Number(process.versions.node.split('.')[0]) !== 20) process.exit(1)"
+      - name: Build and verify on Node 20
+        run: pnpm dev --no-start
+      - name: Node 20 automated checks (independent acceptance may remain pending)
+        run: pnpm verify:platform --no-build --allow-pending
+      - name: Preserve Node 20 evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: platform-ubuntu-latest-node20
+          path: .workbuddy/v0.0.10-platform/evidence/*.json
+          if-no-files-found: ignore
+
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          runtime: node@24
+          require-lockfile: true
+      - name: Verify pinned v0.0.9 and candidate clients and hosts over stdio and socket
+        run: pnpm verify:compat --prepare
+      - name: Preserve compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: compatibility-node24
+          path: .workbuddy/v0.0.10-compat/evidence/*.json
+          if-no-files-found: error
+
+  soak-pr:
+    if: github.event_name != 'workflow_call' || inputs.soak_tier == 'pr'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          runtime: node@24
+          require-lockfile: true
+      - name: Build candidate
+        run: pnpm build
+      - name: PR soak (10 rounds)
+        run: pnpm verify:soak --no-build
+      - name: Preserve soak evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak-pr
+          path: .workbuddy/v0.0.10-soak/evidence/*.json
+          if-no-files-found: ignore
+
+  soak-release:
+    if: inputs.soak_tier == 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          runtime: node@24
+          require-lockfile: true
+      - name: Build candidate
+        run: pnpm build
+      - name: Require the reviewed release baseline
+        env:
+          SOAK_BASELINE: ${{ inputs.soak_baseline }}
+        run: |
+          if [ ! -f "$SOAK_BASELINE" ]; then
+            echo "Missing reviewed release baseline: $SOAK_BASELINE. See scripts/fixtures/soak/README.md."
+            exit 1
+          fi
+      - name: Release soak (1000 rounds, at least 30 minutes)
+        env:
+          SOAK_BASELINE: ${{ inputs.soak_baseline }}
+        run: pnpm verify:soak --no-build --tier release --baseline "$SOAK_BASELINE"
+      - name: Preserve soak evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak-release
+          path: .workbuddy/v0.0.10-soak/evidence/*.json
+          if-no-files-found: ignore
