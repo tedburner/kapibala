@@ -6,7 +6,7 @@
 
 采集趋势时可运行 `pnpm verify:soak:release`。缺少 `--baseline` 的运行仍保存采样证据，但结果为 `pending`、退出码为 1，不能用于发布。
 
-也可手动运行 **Soak** 工作流，选择 `tier=collect-baseline`：在与正式 release 相同的 Ubuntu 24.04 / Node 24 通道串行采集三次 1000 轮、至少 30 分钟的完整报告，分别上传 `soak-baseline-candidate-1/2/3`。采集只允许「缺少冻结阈值」这一项 pending；探针失败、轮数/时长不足、调试覆盖、脏工作区和缺少有效斜率都会阻断。采集 job 通过只表示候选数据可供审核，不表示 release soak 通过。
+也可手动运行 **Soak** 工作流，选择 `tier=collect-baseline`：在与正式 release 相同的 Ubuntu 24.04 / Node 24 通道，在同一个 runner 上连续采集三次 1000 轮、至少 30 分钟的完整报告。`soak-baseline-candidates` 资产中的 `1/2/3` 目录分别保存每轮原始报告；三次构建与运行共用同一 VM、Node 安装和 runner 镜像，避免独立矩阵 job 被分配到不同镜像。采集只允许「缺少冻结阈值」这一项 pending；探针失败、轮数/时长不足、调试覆盖、脏工作区和缺少有效斜率都会阻断。采集 job 通过只表示候选数据可供审核，不表示 release soak 通过。每轮还检查报告生成时间不早于本轮启动时间，拒绝在进程失败后复用上一轮报告；环境快照逐轮与首轮比对。
 
 首次使用前，用户需手动审核、提交并推送相关源码和 `.github/workflows/soak.yml`。GitHub 的手动工作流需要先出现在仓库默认分支（见[官方说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)）；随后可在 Actions → Soak → Run workflow 选择包含目标源码的分支及 `collect-baseline`。三次采集使用该次触发的同一 SHA；不要在采集中途改换候选，也不要推送版本标签来触发采集。
 
