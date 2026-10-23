@@ -67,12 +67,7 @@ jobs:
   collect-baseline:
     if: (github.event_name == 'workflow_dispatch' && inputs.tier == 'collect-baseline') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[collect-baseline]'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    strategy:
-      max-parallel: 1
-      fail-fast: false
-      matrix:
-        attempt: [1, 2, 3]
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v3
@@ -82,52 +77,20 @@ jobs:
           require-lockfile: true
       - name: Build candidate
         run: pnpm build
-      - name: Collect a full release run without frozen thresholds
-        id: collect
-        continue-on-error: true
-        run: pnpm verify:soak --no-build --tier release
-      - name: Validate baseline candidate (not release acceptance)
-        env:
-          COLLECTION_OUTCOME: ${{ steps.collect.outcome }}
+      - name: Collect three full release runs on one runner (not release acceptance)
         run: |
-          node --import tsx --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          import { SOAK_TIERS, assertSoakResult, slopePerRound } from './scripts/verify-soak.ts';
-          const directory = '.workbuddy/v0.0.10-soak/evidence';
-          const files = fs.readdirSync(directory).filter((name) => name.startsWith('soak-release-'));
-          assert.equal(files.length, 1, 'Expected one fresh release report');
-          const report = JSON.parse(fs.readFileSync(`${directory}/${files[0]}`, 'utf8'));
-          assert.equal(process.env.COLLECTION_OUTCOME, 'failure', 'Missing baseline must remain nonzero');
-          assert.equal(report.commit, process.env.GITHUB_SHA);
-          assert.equal(report.worktreeDirty, false);
-          assert.equal(report.debugOverride, false);
-          assert.equal(report.environment.platform, 'linux');
-          assert.equal(report.environment.arch, 'x64');
-          assert.match(report.environment.node, /^v24\./);
-          assert.equal(report.tier, 'release');
-          assert.deepEqual(report.tierConfig, SOAK_TIERS.release);
-          assert.equal(report.verdict.status, 'pending');
-          assert.deepEqual(report.verdict.failures, []);
-          assert.equal(report.verdict.pending.length, 1);
-          assert.match(report.verdict.pending[0], /^Release soak has no frozen RSS\/heap baseline;/);
-          assert.equal(report.baseline.status, 'pending');
-          assertSoakResult(report.result, SOAK_TIERS.release, 'release');
-          assert.notEqual(slopePerRound(report.result.samples, 'heapUsed'), null);
-          const rss = ['daemonRss', 'stdioRss'].map((key) => {
-            const slope = slopePerRound(report.result.samples, key);
-            if (report.result.samples.some((sample) => sample[key] !== null && sample[key] !== undefined))
-              assert.notEqual(slope, null, `${key} samples insufficient for a slope`);
-            return slope;
-          });
-          assert(rss.some((slope) => slope !== null), 'Missing host RSS slope');
-          fs.writeFileSync(`${directory}/runner-image.json`, JSON.stringify({ image: process.env.ImageOS, version: process.env.ImageVersion, node: process.version }));
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '\nBaseline candidate collected; thresholds still require review. **Release acceptance remains pending.**\n');
-          NODE
-      - name: Preserve baseline candidate
+          for soak_attempt in 1 2 3; do
+            soak_started=$(node -p 'Date.now()')
+            set +e
+            pnpm verify:soak --no-build --tier release
+            soak_status=$?
+            set -e
+            node --import tsx scripts/validate-soak-candidate.ts "$soak_attempt" "$soak_started" "$soak_status"
+          done
+      - name: Preserve baseline candidates
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: soak-baseline-candidate-${{ matrix.attempt }}
-          path: .workbuddy/v0.0.10-soak/evidence/*.json
+          name: soak-baseline-candidates
+          path: .workbuddy/v0.0.10-soak/baseline-candidates/
           if-no-files-found: error

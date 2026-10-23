@@ -124,12 +124,11 @@ export function readDaemonMetadata(runtimeDir: string): DaemonMetadata {
   }
 }
 
-/** 仅从受控私有文件取得凭证；握手与 ping 的实例身份必须和文件一致。 */
-export async function connectDaemon(
-  options: DaemonOptions = {},
+/** 连接与 ping 只使用同一元数据快照；被更新的启动占位值或旧实例不得被新连接证实为健康。 */
+async function connectDaemonSnapshot(
+  metadata: DaemonMetadata,
   clientOptions: LocalClientOptions = {},
 ): Promise<LocalClient> {
-  const metadata = readDaemonMetadata(getLocalRuntimeDirectory(options.runtimeDir));
   const transport = await connectLocal(metadata.endpoint);
   const client = await LocalClient.connect(
     transport,
@@ -159,6 +158,15 @@ export async function connectDaemon(
   }
 }
 
+/** 仅从受控私有文件取得凭证；握手与 ping 的实例身份必须和单次文件快照一致。 */
+export async function connectDaemon(
+  options: DaemonOptions = {},
+  clientOptions: LocalClientOptions = {},
+): Promise<LocalClient> {
+  const metadata = readDaemonMetadata(getLocalRuntimeDirectory(options.runtimeDir));
+  return connectDaemonSnapshot(metadata, clientOptions);
+}
+
 /** 报告可操作状态；无法连接时不通过 PID 猜测健康或自动清除陈旧记录。 */
 export async function getDaemonStatus(options: DaemonOptions = {}): Promise<DaemonStatus> {
   const root = getLocalRuntimeDirectory(options.runtimeDir);
@@ -175,7 +183,7 @@ export async function getDaemonStatus(options: DaemonOptions = {}): Promise<Daem
   }
   let client: LocalClient | undefined;
   try {
-    client = await connectDaemon({ ...options, runtimeDir: root });
+    client = await connectDaemonSnapshot(metadata);
     return {
       running: true,
       state: 'running',
@@ -324,7 +332,7 @@ export async function stopDaemon(options: DaemonOptions = {}): Promise<void> {
   const root = getLocalRuntimeDirectory(options.runtimeDir);
   const files = runtimeFiles(root);
   const metadata = readDaemonMetadata(root);
-  const client = await connectDaemon({ ...options, runtimeDir: root });
+  const client = await connectDaemonSnapshot(metadata);
   try {
     await client.call('host/shutdown', {});
   } finally {
