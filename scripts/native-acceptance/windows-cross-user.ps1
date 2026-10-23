@@ -1,6 +1,7 @@
 # 在临时普通用户中验证真实对象访问；不改被测对象的 ACL，不记录密码或文件内容。
 param([Parameter(Mandatory=$true)][string]$Config, [Parameter(Mandatory=$true)][string]$Output)
 $ErrorActionPreference = 'Stop'
+if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Temporary user creation requires the disposable hosted CI job' }
 $configValue = Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json
 $userName = 'kpbl' + [guid]::NewGuid().ToString('N').Substring(0, 10)
 $publicDir = Join-Path $env:PUBLIC ('kpbl-' + [guid]::NewGuid().ToString('N'))

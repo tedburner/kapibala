@@ -40,7 +40,7 @@ jobs:
           set -euo pipefail
           pnpm -C candidate install --frozen-lockfile
           pnpm -C candidate dev --no-verify --no-start
-          npm ci --prefix harness/scripts/native-acceptance --allow-scripts=node-pty
+          npm ci --prefix harness/scripts/native-acceptance
       - name: Real native terminal and second-user acceptance
         run: node harness/scripts/native-acceptance/probe.mjs candidate evidence
       - name: Preserve raw observations, including failures

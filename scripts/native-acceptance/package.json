@@ -2,5 +2,10 @@
   "name": "kapibala-native-acceptance",
   "private": true,
   "type": "module",
-  "dependencies": { "node-pty": "1.1.0" }
+  "dependencies": {
+    "node-pty": "1.1.0"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  }
 }
