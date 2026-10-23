@@ -34,7 +34,7 @@
 | **v0.0.7** | **会话增强与多智能体**（已发布；[发布说明](releases/v0.0.7.md)，[验收记录](verification/v0.0.7.md)，[迁移说明](migration/v0.0.7.md)） | 基于 v0.0.3 的独立会话、Envelope 因果 `parentId` 与基本 SessionManager，增强跨项目全文检索、历史分叉（DAG 树）、归档与子代理任务树观测；清理 Core 对全局 `process.cwd()` 的隐式依赖，强制显式 `workspaceRoot`；再接入 `spawn_agent`、父子追踪和角色模型绑定，子代理权限只继承或收紧。Worktree 物理隔离、审批冒泡与任务树 Token 分层账本明确未交付 | Core + 宿主增量 |
 | **v0.0.8** | **产品化终端体验**（已发布；[发布说明](releases/v0.0.8.md)，[验收记录](verification/v0.0.8.md)，[迁移说明](migration/v0.0.8.md)） | 现代终端守护（ConPTY/CSI-u 拼包、Bracketed Paste 隔离、异常自愈恢复）、共享前端纯展示模型（`@kiturone/kapibala-cli/view-model` 导出，0 Node 依赖，WeakMap 缓存）、宿主桥接中枢与防抖分发、全量 Slash 命令结构化解耦（CommandOutput 统一输出，check-cli-boundary 门禁）、多任务状态观察（subscribeTaskChanges） | CLI 内部模块增量，不新增包 |
 | **v0.0.9** | **本地客户端契约与发布前加固**（已于 2026-10-21 发布；[发布说明](releases/v0.0.9.md)，[验收记录](verification/v0.0.9.md)，[迁移说明](migration/v0.0.9.md)） | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；已实现有界快照、审批与宿主隔离；Linux 与 Windows CI 全量门禁已通过，Windows ACL/进程树与 Node 20 等平台验收仍待补齐。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
-| **v0.0.10** | **阶段性整合版本**（实现与本地门禁完成，**未发布**；[技术方案](design/003-v0.0.10-stable-integration.md)，[验收记录](verification/v0.0.10.md)，[迁移说明](migration/v0.0.10.md)，[SDK 兼容性说明](sdk-compatibility.md)） | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约：显式工作区身份、宿主级写租约与父子协调器传递、类型化错误与取消语义、按方法具体化的客户端结果与整个连接的恢复单位；新增 `verify:compat` / `verify:platform` / `verify:soak` 三类门禁。不新增客户端类型或运行时子系统；Node 20、Windows ACL/ConPTY、POSIX PTY 与 release 档长时验收仍为发布阻断项 | CLI + Core SDK + 扩展包 |
+| **v0.0.10** | **阶段性整合版本**（已于 2026-10-23 发布；[发布说明](releases/v0.0.10.md)，[技术方案](design/003-v0.0.10-stable-integration.md)，[验收记录](verification/v0.0.10.md)，[迁移说明](migration/v0.0.10.md)，[SDK 兼容性说明](sdk-compatibility.md)） | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约：显式工作区身份、宿主级写租约与父子协调器传递、类型化错误与取消语义、按方法具体化的客户端结果与整个连接的恢复单位；新增 `verify:compat` / `verify:platform` / `verify:soak` 三类门禁。不新增客户端类型或运行时子系统；Node 20、Windows 跨用户 ACL/ConPTY、POSIX PTY、双解释器进程树及 release 长跑已在同一发布 SHA 上通过并获维护者审核 | CLI + Core SDK + 扩展包 |
 | **v0.1.0** | **跨平台桌面客户端 (Electron)** | 基于 Electron 的现代化跨平台桌面客户端（Windows / macOS / Linux）；前端采用现代 Web 技术栈复用流式渲染与 ViewModel，主进程直连复用 Headless Core 与 MCP 模块；支持系统托盘、全局呼出快捷键、富文本思考过程与工具调用交互 | 独立桌面包 (`packages/desktop`) |
 
 
@@ -43,8 +43,8 @@
 - 本版只做整合：不新增客户端形态、运行时子系统或 npm 包，不做 barrel 重构；wire 仍为 1.0，产品版本与协议版本继续解耦。
 - 9 处公开差异（根字段联合 type、删除全局租约单例、缺省独占租约、`LocalClient.call()` 结果具体化、显式 cursor 返回原始续块、attach 失败关闭整个连接、`SpawnContext`/runner 必填协调器、`LocalTransport.setLimits` 必填、清理错误类型化）逐条登记在 [SDK 兼容性说明](sdk-compatibility.md)，迁移动作见 [迁移说明](migration/v0.0.10.md)。
 - 历史与配置不需要用户执行迁移：v1 语料只读复制升级为独立 v2 副本，损坏与未知 schema 明确拒绝且零工具重放；v0.0.9 的 `settings.json` 可直接读取，目录迁移幂等。
-- 本地已完成：`pnpm verify`（157 文件 / 1337 测试）、`verify:compat`（4 组合 × 2 传输）、`verify:platform`（stdio / daemon 鉴权 / 进程树 / MCP 生命周期 / 三包隔离安装）、`verify:soak` PR 与 nightly 档。
-- 发布阻断：Node 20 真实通道、Windows ACL/ConPTY 与双 shell 进程树、POSIX 交互式 PTY、同 SHA 的 release 档 soak 与人工冻结阈值、干净提交重跑。未取得前不执行 `pnpm release 0.0.10`。
+- 最终候选 `d6d73ac` 的本地及跨平台门禁通过（159 文件 / 1364 测试）；旧新产物兼容、真实 Node 20、三包隔离安装、MCP、原生终端、跨用户 ACL、双解释器进程树和正式长跑证据见[验收记录](verification/v0.0.10.md#6-最终发布结果2026-10-23)。
+- 六项同 SHA 证据及冻结阈值均经维护者审核，标签工作流完成三包发布、公共 registry 安装 smoke 与 GitHub Release。未来候选仍须重新满足全部证据门禁。
 
 ### v0.0.9 本地实现与发布边界（2026-10-21）
 

@@ -65,9 +65,9 @@ pnpm verify:release-evidence --sha "$(git rev-parse HEAD)" --manifest /path/to/a
 Release 工作流从仓库变量 `KPBL_RELEASE_EVIDENCE` 读取同一份 JSON，在 prepare 阶段和发布前分别检查 `RELEASE_SHA`。变量缺失、格式错误、缺项或任何未达标记录都会使工作流失败；检查过程不打印原始清单。用户审核清单后可手动设置变量：
 
 ```sh
-gh variable set KPBL_RELEASE_EVIDENCE --body-file /path/to/acceptance.json
+gh variable set KPBL_RELEASE_EVIDENCE < /path/to/acceptance.json
 ```
 
 先冻结并提交性能基线，再创建最终升版提交；将该提交推送 main 完成自动门禁，并补齐该 SHA 的人工专项及正式长跑报告。审核并设置清单后才推送版本标签。升版或任何代码变更产生新 SHA 后，需要该 SHA 的真实报告，不能复用旧提交的通过声明。
 
-现阶段没有完整的正式验收清单，不提供虚假的 passed 文件或默认放行入口。
+v0.0.10 已使用维护者审核的完整清单发布，原始报告见[最终验收结果](verification/v0.0.10.md#6-最终发布结果2026-10-23)。新候选须重新采集并审核同 SHA 证据，不复用本版清单，不提供默认放行入口。
