@@ -1,6 +1,6 @@
 {
   "name": "@kiturone/kapibala-mcp",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "Model Context Protocol (MCP) client ecosystem adapter for Kapibala",
   "license": "MIT",
   "author": "tedburner",
