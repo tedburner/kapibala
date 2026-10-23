@@ -1,6 +1,6 @@
 # Release soak 冻结基线
 
-`release-baseline.json` 必须由固定环境的三次实测结果经人工审核后生成并提交；当前没有可用的冻结阈值，不提供占位数值。
+`release-baseline.json` 必须由固定环境的三次实测结果经人工审核后生成并提交。当前基线已由维护者审核：RSS 18432、heap 1024 字节/轮，三份完整报告、测量环境及计算依据随 JSON 保存；该基线不代表最终候选已通过正式 release soak。
 
 文件包含两个以「字节 / 轮」计量的数值字段：`rssGrowthBytesPerRound`（宿主 RSS 增长上限）与 `heapGrowthBytesPerRound`（客户端 heap 增长上限）。阈值应覆盖实测波动，并记录环境和审核依据；不能凭经验填写或用无穷大绕过门禁。
 

@@ -1,0 +1,62 @@
+{
+  "heapGrowthBytesPerRound": 1024,
+  "rssGrowthBytesPerRound": 18432,
+  "unit": "bytes/round",
+  "measurementEnvironment": {
+    "commit": "279ccd899b35202dae9337eced7a7eb95a6638c1",
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v24.22.1",
+    "image": "ubuntu24",
+    "imageVersion": "20261021.345.10"
+  },
+  "measurements": [
+    {
+      "attempt": 1,
+      "rounds": 1000,
+      "durationMs": 1851907,
+      "samples": 40,
+      "slopes": {
+        "heapUsed": -1191.6938686679175,
+        "daemonRss": 15678.043257035653,
+        "stdioRss": 1483.2899362101316
+      },
+      "verdict": "pending",
+      "generatedAt": "2026-10-22T16:38:39.748Z"
+    },
+    {
+      "attempt": 2,
+      "rounds": 1000,
+      "durationMs": 1851731,
+      "samples": 40,
+      "slopes": {
+        "heapUsed": -1331.5531707317073,
+        "daemonRss": 14315.481575984993,
+        "stdioRss": -402.8527429643527
+      },
+      "verdict": "pending",
+      "generatedAt": "2026-10-22T17:09:36.844Z"
+    },
+    {
+      "attempt": 3,
+      "rounds": 1000,
+      "durationMs": 1852101,
+      "samples": 40,
+      "slopes": {
+        "heapUsed": -1243.1313170731712,
+        "daemonRss": 13401.650911819892,
+        "stdioRss": 302.56606378986896
+      },
+      "verdict": "pending",
+      "generatedAt": "2026-10-22T17:40:34.254Z"
+    }
+  ],
+  "sourceRun": "https://github.com/tedburner/kapibala/actions/runs/39811229975",
+  "sourceArtifact": "https://github.com/tedburner/kapibala/actions/runs/39811229975/artifacts/12445548321",
+  "method": "三次固定环境完整采集；RSS 每轮取 daemon/stdio 较大斜率。阈值为 max(0, 三次斜率最大值) 加三次极差，向上取整至 1024 字节。",
+  "review": {
+    "reviewer": "仓库维护者（本次发布会话中明确审核接受）",
+    "reviewedAt": "2026-10-23T00:47:46.428273+00:00",
+    "decision": "接受 RSS 18432、heap 1024 字节/轮的实测阈值；仅冻结回归预算，不代表最终候选发布验收通过。"
+  }
+}
