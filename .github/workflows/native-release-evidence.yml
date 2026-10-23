@@ -42,6 +42,7 @@ jobs:
           pnpm -C candidate dev --no-verify --no-start
           npm ci --prefix harness/scripts/native-acceptance
       - name: Real native terminal and second-user acceptance
+        timeout-minutes: 4
         run: node harness/scripts/native-acceptance/probe.mjs candidate evidence
       - name: Preserve raw observations, including failures
         if: always()

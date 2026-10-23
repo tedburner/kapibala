@@ -226,6 +226,7 @@ function terminal(label) {
     child,
     write: (data) => child.write(data),
     async see(text) {
+      stage(`${label}: wait ${text}`);
       try {
         const index = await until(() => {
           const index = clean.indexOf(text, cursor);
@@ -237,6 +238,7 @@ function terminal(label) {
       }
     },
     async finish(expected) {
+      stage(`${label}: wait exit`);
       await until(() => exit, `${label}: terminal exit`);
       fs.writeFileSync(path.join(output, `${label}.txt`), raw);
       assert.equal(exit.exitCode, expected, `${label}: exit code`);
@@ -258,6 +260,7 @@ async function processTrees() {
   const results = [];
   const kinds = process.platform === 'win32' ? ['bash', 'powershell'] : ['bash'];
   for (const kind of kinds) {
+    stage(`process-tree:${kind}`);
     const shell = core.detectShell({ cwd: workspace, preference: kind });
     assert.equal(shell.kind, kind);
     const file = `tree-${kind}.cjs`;
@@ -333,10 +336,32 @@ const report = {
     terminal: process.platform === 'win32' ? 'conpty' : 'posix-pty',
   },
   observations,
-  status: 'failed',
+  status: 'running',
 };
 let active;
+/** 逐阶段保留真实观察；即使驱动或第三方终端清理卡住，也不能丢掉失败边界。 */
+function checkpoint() {
+  active?.save();
+  fs.writeFileSync(
+    path.join(output, 'native-report.json'),
+    `${JSON.stringify({ ...report, modelInputs: requests }, null, 2)}\n`,
+  );
+}
+function stage(name) {
+  report.stage = name;
+  checkpoint();
+  console.log(`Native acceptance stage: ${name}`);
+}
+const watchdog = setTimeout(() => {
+  report.status = 'failed';
+  report.error = `Acceptance exceeded 180 seconds at ${report.stage}`;
+  checkpoint();
+  console.error(report.error);
+  process.exit(1);
+}, 180000);
+watchdog.unref();
 try {
+  stage('daemon-start');
   const first = JSON.parse(await cli(['daemon', 'start', '--runtime-dir', runtime]));
   assert.equal(first.running, true);
   active = terminal('interactive');
@@ -403,6 +428,7 @@ try {
         pipe: metadata.endpoint.path,
       }),
     );
+    stage('windows-cross-user');
     const ps = spawnSync(
       'powershell.exe',
       [
@@ -427,21 +453,26 @@ try {
   report.status = 'passed';
 } catch (error) {
   active?.save();
+  report.status = 'failed';
   report.error = error instanceof Error ? error.message : String(error);
   process.exitCode = 1;
 } finally {
+  stage('cleanup:pty');
   for (const child of terminals) {
     try {
       child.kill();
     } catch {}
   }
   for (const response of held) response.destroy();
+  stage('cleanup:daemon');
   await cli(['daemon', 'stop', '--runtime-dir', runtime]).catch(() => {});
+  stage('cleanup:model');
   model.closeAllConnections();
   await new Promise((resolve) => model.close(resolve));
   report.generatedAt = new Date().toISOString();
   report.modelInputs = requests;
   fs.writeFileSync(path.join(output, 'native-report.json'), `${JSON.stringify(report, null, 2)}\n`);
+  clearTimeout(watchdog);
   console.log(JSON.stringify(report, null, 2));
   fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   if (process.platform === 'win32')
