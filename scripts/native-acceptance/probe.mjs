@@ -221,6 +221,12 @@ function terminal(label) {
   child.onExit((value) => {
     exit = value;
     terminals.delete(child);
+    if (process.platform === 'win32') {
+      // 已观察到候选真实退出后，回收 node-pty 1.1.0 在正常退出路径遗留的驱动 Worker/输入 socket。
+      // 不调用 kill，也不代候选关闭 readline；raw 模式恢复仍由候选的 finally 记录并断言。
+      child._agent.inSocket.destroy();
+      child._agent._conoutSocketWorker.dispose();
+    }
   });
   return {
     child,
@@ -442,7 +448,21 @@ try {
         '-Output',
         result,
       ],
-      { encoding: 'utf8', timeout: 90000 },
+      {
+        encoding: 'utf8',
+        timeout: 90000,
+        // 经典 Windows PowerShell 不得从父 pwsh 的模块目录加载不兼容 DLL。
+        env: {
+          ...process.env,
+          PSModulePath: path.join(
+            process.env.SystemRoot,
+            'System32',
+            'WindowsPowerShell',
+            'v1.0',
+            'Modules',
+          ),
+        },
+      },
     );
     assert.equal(ps.status, 0, `Cross-user check failed: ${ps.stderr?.slice(-1200)}`);
     const crossUser = JSON.parse(fs.readFileSync(result, 'utf8').replace(/^\uFEFF/, ''));
