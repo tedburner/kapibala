@@ -1,0 +1,6 @@
+{
+  "name": "kapibala-native-acceptance",
+  "private": true,
+  "type": "module",
+  "dependencies": { "node-pty": "1.1.0" }
+}
