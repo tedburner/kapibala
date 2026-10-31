@@ -6,6 +6,7 @@
 export * from './types/index.js';
 export * from './context/history.js';
 export * from './context/session-store.js';
+export type { HistoryReadOptions } from './context/jsonl-lines.js';
 export * from './context/session-lock.js';
 export * from './context/session-manager.js';
 export * from './context/catalog.js';

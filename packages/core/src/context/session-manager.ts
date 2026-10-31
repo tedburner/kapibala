@@ -6,7 +6,12 @@ import path from 'node:path';
 import { KapibalaError, createSessionError } from '../errors/index.js';
 import type { CanonicalMessage } from '../types/index.js';
 import { createMessageId, identifyHistory } from './history.js';
-import { readJsonlLines, syncSessionDirectory } from './jsonl-lines.js';
+import {
+  assertHistoryReadBudget,
+  readHistoryBytes,
+  readJsonlLines,
+  syncSessionDirectory,
+} from './jsonl-lines.js';
 import { SessionLock } from './session-lock.js';
 import {
   MAIN_BRANCH_ID,
@@ -18,7 +23,7 @@ import {
   assertClosedToolTransaction,
   isGlobalControlRecordType,
 } from './session-store.js';
-import { toNativePhysicalPath } from './workspace.js';
+import { computeProjectKey, toNativePhysicalPath } from './workspace.js';
 
 /** 会话桶的项目身份：会话按工作树根隔离存储在项目桶目录下。 */
 export interface ProjectIdentity {
@@ -39,19 +44,22 @@ export function normalizedProjectRoot(root: string): string {
   return process.platform === 'win32' ? root.replaceAll('\\', '/').toLowerCase() : root;
 }
 
-/** 解析真实工作树根；同工作树子目录共用桶，非 Git 目录和不同 worktree 独立。不会改变 cwd。 */
-export function resolveSessionProject(cwd: string): ProjectIdentity {
+/** 选择历史桶身份；exact 不提升显式根，git 保留同工作树子目录共桶的兼容行为。 */
+export function resolveSessionProject(cwd: string, mode: 'git' | 'exact' = 'git'): ProjectIdentity {
   const realCwd = toNativePhysicalPath(cwd);
   let root = realCwd;
   let gitBranch: string | undefined;
   let gitWorktree = false;
   try {
-    root = toNativePhysicalPath(
+    const gitRoot = toNativePhysicalPath(
       execFileSync('git', ['-C', realCwd, 'rev-parse', '--show-toplevel'], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
       }).trim(),
     );
+    if (mode === 'git') root = gitRoot;
+    if (normalizedProjectRoot(gitRoot) !== normalizedProjectRoot(root))
+      return { projectRoot: root, cwd: realCwd, projectKey: computeProjectKey(root) };
     gitWorktree = true;
     gitBranch =
       execFileSync('git', ['-C', realCwd, 'symbolic-ref', '--short', '-q', 'HEAD'], {
@@ -61,11 +69,10 @@ export function resolveSessionProject(cwd: string): ProjectIdentity {
   } catch {
     /* 非 Git 或 detached HEAD 保留已确定的工作树根。 */
   }
-  const normalized = normalizedProjectRoot(root);
   return {
     projectRoot: root,
     cwd: realCwd,
-    projectKey: createHash('sha256').update(normalized).digest('hex'),
+    projectKey: computeProjectKey(root),
     gitBranch,
     gitWorktree,
   };
@@ -111,6 +118,8 @@ export interface SessionMetadata {
   activeLeafId?: string | null;
   /** 会话是否已归档。 */
   archived?: boolean;
+  /** 预算不足时仅提供定位与提示，不把超限文件误判为损坏或写入不完整缓存。 */
+  unavailableReason?: 'HISTORY_READ_LIMIT';
 }
 
 /** 打开的会话句柄：持有单写者锁与 Store，宿主用毕必须 release。 */
@@ -135,6 +144,10 @@ export interface SessionManagerOptions {
   projectRoot?: string;
   /** 执行或参考目录；若未提供工作区根，以此解析项目工作树。 */
   cwd?: string;
+  /** exact 固定显式根的历史归属；缺省按 Git 工作树分桶，旧调用不迁移历史。 */
+  projectRootMode?: 'git' | 'exact';
+  /** 元数据重建、升级、打开和重载共用的单文件字节预算；省略保持原行为。 */
+  maxReadBytes?: number;
   homeDirectory?: string;
   onDiagnostic?: (message: string) => void;
 }
@@ -164,8 +177,11 @@ export class SessionManager {
   readonly directory: string;
   private readonly handles = new Map<string, ManagedSession>();
   private readonly diagnostic?: (message: string) => void;
+  private readonly readOptions: { maxReadBytes?: number };
 
   constructor(options: SessionManagerOptions = {}) {
+    this.readOptions = { maxReadBytes: options.maxReadBytes };
+    assertHistoryReadBudget(0, this.readOptions);
     const rootCandidate = options.workspaceRoot ?? options.projectRoot ?? options.cwd;
     if (!rootCandidate) {
       throw new KapibalaError('Workspace root is required for SessionManager', {
@@ -173,7 +189,7 @@ export class SessionManager {
         safeMessage: '必须显式指定工作区根路径或项目目录',
       });
     }
-    this.project = resolveSessionProject(rootCandidate);
+    this.project = resolveSessionProject(rootCandidate, options.projectRootMode);
     this.directory = path.join(
       options.homeDirectory ?? os.homedir(),
       '.kapibala',
@@ -190,12 +206,16 @@ export class SessionManager {
     const file = path.join(this.directory, `${Date.now()}_${conversationId}.jsonl`);
     const lock = await SessionLock.acquire(this.lockPath(conversationId));
     try {
-      const store = await SessionStore.create(file, {
-        conversationId,
-        projectRoot: this.project.projectRoot,
-        initialCwd: this.project.cwd,
-        gitBranch: this.project.gitBranch,
-      });
+      const store = await SessionStore.create(
+        file,
+        {
+          conversationId,
+          projectRoot: this.project.projectRoot,
+          initialCwd: this.project.cwd,
+          gitBranch: this.project.gitBranch,
+        },
+        this.readOptions,
+      );
       return await this.attach(store, lock);
     } catch (error) {
       await lock.release();
@@ -205,11 +225,15 @@ export class SessionManager {
 
   /**
    * 按正文活动排序分页；有效 sidecar 只读元数据，不读取完整 JSONL。默认排除已归档会话。
-   * pageSize 由调用方显式给出时必须在 1–100 之间；非法页参数直接失败，不静默修正。
+   * pageSize 由调用方显式给出时必须在 1–100 之间；filter 在分页前筛选元数据，调用方须自行处理敏感信息。
    */
   async list(
     page = 1,
-    options?: { includeArchived?: boolean; pageSize?: number },
+    options?: {
+      includeArchived?: boolean;
+      pageSize?: number;
+      filter?: (metadata: SessionMetadata) => boolean;
+    },
   ): Promise<{ items: SessionMetadata[]; total: number; page: number; pages: number }> {
     const pageSize = options?.pageSize ?? 20;
     if (
@@ -221,7 +245,8 @@ export class SessionManager {
     )
       throw createSessionError('HISTORY_PAGE_INVALID', 'History page must be a positive integer');
     const all = await this.allMetadata();
-    const filtered = options?.includeArchived ? all : all.filter((m) => !m.archived);
+    const visible = options?.includeArchived ? all : all.filter((m) => !m.archived);
+    const filtered = options?.filter ? visible.filter(options.filter) : visible;
     return {
       items: filtered.slice((page - 1) * pageSize, page * pageSize),
       total: filtered.length,
@@ -269,7 +294,7 @@ export class SessionManager {
     const targetFile = path.join(this.directory, fileName);
     const lock = await SessionLock.acquire(this.lockPath(conversationId));
     try {
-      const store = await SessionStore.open(targetFile);
+      const store = await SessionStore.open(targetFile, this.readOptions);
       if (store.isReadOnly()) {
         throw new KapibalaError('Cannot archive legacy v1 session', {
           code: 'LEGACY_SESSION_READ_ONLY',
@@ -294,7 +319,7 @@ export class SessionManager {
     const targetFile = path.join(this.directory, fileName);
     const lock = await SessionLock.acquire(this.lockPath(conversationId));
     try {
-      const store = await SessionStore.open(targetFile);
+      const store = await SessionStore.open(targetFile, this.readOptions);
       if (store.isReadOnly()) {
         throw new KapibalaError('Cannot restore legacy v1 session', {
           code: 'LEGACY_SESSION_READ_ONLY',
@@ -320,6 +345,14 @@ export class SessionManager {
       const file = path.join(this.directory, fileName);
       try {
         let meta = this.readMetadata(file);
+        if (
+          this.readOptions.maxReadBytes !== undefined &&
+          fs.statSync(file).size > this.readOptions.maxReadBytes
+        ) {
+          meta ??= this.readOversizedMetadata(file);
+          all.push({ ...meta, unavailableReason: 'HISTORY_READ_LIMIT' });
+          continue;
+        }
         if (!meta) {
           // 浏览重建不能修复/改写正文，也不能取得其它进程写锁。
           const records = this.readDiscoveryRecords(file);
@@ -331,7 +364,19 @@ export class SessionManager {
           }
         }
         all.push(meta);
-      } catch {
+      } catch (error) {
+        if (error instanceof KapibalaError && error.code === 'HISTORY_READ_LIMIT') {
+          try {
+            // 预检之后仍可能有活跃写者追加；预算拒绝不能把真实历史伪装成不存在。
+            all.push({
+              ...this.readOversizedMetadata(file),
+              unavailableReason: 'HISTORY_READ_LIMIT',
+            });
+            continue;
+          } catch {
+            /* 头部身份无法安全核验时仍保留诊断，不读取超出预算的正文。 */
+          }
+        }
         this.report(`Cannot discover session: ${fileName}`);
       }
     }
@@ -387,7 +432,10 @@ export class SessionManager {
           normalizedProjectRoot(this.project.projectRoot)
       )
         throw new Error('Foreign session identity');
-      const store = await SessionStore.open(path.join(this.directory, meta.fileName));
+      const store = await SessionStore.open(
+        path.join(this.directory, meta.fileName),
+        this.readOptions,
+      );
       if ((await store.loadState()).header.conversationId !== meta.conversationId)
         throw new Error('Session identity mismatch');
       await store.load();
@@ -400,7 +448,9 @@ export class SessionManager {
 
   /** 继续最近有正文的会话；没有历史才新建，显式打开失败绝不回退为空会话。 */
   async continueRecent(options?: { autoUpgradeLegacy?: boolean }): Promise<ManagedSession> {
-    const latest = (await this.allMetadata()).find((m) => m.messageCount > 0);
+    const latest = (await this.allMetadata()).find(
+      (m) => m.messageCount > 0 || m.unavailableReason,
+    );
     if (latest)
       return this.open(latest.conversationId, {
         autoUpgradeLegacy: options?.autoUpgradeLegacy ?? true,
@@ -435,7 +485,7 @@ export class SessionManager {
     for (const source of sources) {
       if (!fs.existsSync(source)) continue;
       const before = fs.statSync(source);
-      const bytes = fs.readFileSync(source);
+      const bytes = readHistoryBytes(source, this.readOptions);
       const identity = createHash('sha256')
         .update(fs.realpathSync.native(source))
         .update('\0')
@@ -471,13 +521,17 @@ export class SessionManager {
         const id = createMessageId();
         const target = path.join(this.directory, `${Date.now()}_${id}.jsonl`);
         temp = `${target}.tmp-${createMessageId()}`;
-        const store = await SessionStore.create(temp, {
-          conversationId: id,
-          projectRoot: this.project.projectRoot,
-          initialCwd: this.project.cwd,
-          gitBranch: this.project.gitBranch,
-          importIdentity: identity,
-        });
+        const store = await SessionStore.create(
+          temp,
+          {
+            conversationId: id,
+            projectRoot: this.project.projectRoot,
+            initialCwd: this.project.cwd,
+            gitBranch: this.project.gitBranch,
+            importIdentity: identity,
+          },
+          this.readOptions,
+        );
         await store.appendRecord('legacy_import', { source, identity });
         await store.appendRecord('title', { title: '旧历史导入' });
         for (const message of identifyHistory(raw, identity)) await store.append(message);
@@ -486,7 +540,7 @@ export class SessionManager {
         if (
           before.size !== after.size ||
           before.mtimeMs !== after.mtimeMs ||
-          !fs.readFileSync(source).equals(bytes)
+          !readHistoryBytes(source, this.readOptions).equals(bytes)
         ) {
           this.report('Legacy history is changing; import postponed');
           continue;
@@ -558,7 +612,7 @@ export class SessionManager {
 
     const nativeSource = toNativePhysicalPath(sourcePath);
     const beforeStat = fs.statSync(nativeSource);
-    const bytes = fs.readFileSync(nativeSource);
+    const bytes = readHistoryBytes(nativeSource, this.readOptions);
     const upgradeIdentity = createHash('sha256')
       .update(nativeSource)
       .update('\0')
@@ -586,7 +640,7 @@ export class SessionManager {
         return this.open(doubleCheck.conversationId);
       }
 
-      const sourceStore = await SessionStore.open(nativeSource);
+      const sourceStore = await SessionStore.open(nativeSource, this.readOptions);
       if (sourceStore.getSchemaVersion() !== SESSION_SCHEMA_VERSION_V1) {
         const state = await sourceStore.loadState();
         return this.open(state.header.conversationId);
@@ -664,7 +718,7 @@ export class SessionManager {
       if (
         beforeStat.size !== afterStat.size ||
         beforeStat.mtimeMs !== afterStat.mtimeMs ||
-        !fs.readFileSync(nativeSource).equals(bytes)
+        !readHistoryBytes(nativeSource, this.readOptions).equals(bytes)
       ) {
         throw new Error('Source legacy session changed during upgrade; retry aborted');
       }
@@ -859,7 +913,7 @@ export class SessionManager {
       (record) => {
         // 此时正文已变化，缓存仍可用于增量更新，不能用旧 stat 判断为无效。
         const previous = JSON.parse(
-          fs.readFileSync(this.metadataPath(store.filePath), 'utf8'),
+          readHistoryBytes(this.metadataPath(store.filePath), this.readOptions).toString('utf8'),
         ) as SessionMetadata;
         const currentPrev = record.prevRecordId ?? record.parentId;
         if (
@@ -913,10 +967,29 @@ export class SessionManager {
     return handle;
   }
 
+  /** 超限列表只解析有界头部并核对桶身份，不读取正文、不生成可误用的耐久缓存。 */
+  private readOversizedMetadata(file: string): SessionMetadata {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buffer = Buffer.alloc(Math.min(this.readOptions.maxReadBytes!, 64 * 1024));
+      const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      const end = buffer.subarray(0, length).indexOf(10);
+      if (end < 0) throw new Error('Session header exceeds discovery budget');
+      const header = JSON.parse(buffer.subarray(0, end).toString('utf8')) as SessionRecord;
+      if (header.type !== 'header' || ![1, 2].includes(header.schemaVersion))
+        throw new Error('Session corrupt header');
+      return { ...this.buildMetadata(file, [header]), title: '历史超过读取预算' };
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
   /** 缓存通过文件名、身份、统计与正文 stat 校验；失败交由正文重建。 */
   private readMetadata(file: string): SessionMetadata | undefined {
     try {
-      const meta = JSON.parse(fs.readFileSync(this.metadataPath(file), 'utf8')) as SessionMetadata;
+      const meta = JSON.parse(
+        readHistoryBytes(this.metadataPath(file), this.readOptions).toString('utf8'),
+      ) as SessionMetadata;
       const stat = fs.statSync(file);
       if (
         (meta.schemaVersion === 1 || meta.schemaVersion === 2) &&
@@ -943,7 +1016,7 @@ export class SessionManager {
 
   /** 浏览仅解析完整记录；严格打开由 SessionStore 验证，浏览不能改写残片。 */
   private *readDiscoveryRecords(file: string): Generator<SessionRecord> {
-    const iterator = readJsonlLines(file);
+    const iterator = readJsonlLines(file, this.readOptions);
     let first = true;
     let blankSeen = false;
     for (const line of iterator) {
