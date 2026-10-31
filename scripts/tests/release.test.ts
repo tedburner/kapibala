@@ -288,3 +288,29 @@ describe('public registry lookup', () => {
     await expect(readRegistry(expected.name, fetcher)).rejects.toThrow(/connection reset/);
   });
 });
+it('工作区版本检查包含桌面清单，拒绝 SDK 与客户端版本漂移', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-release-desktop-'));
+  try {
+    for (const file of [
+      'package.json',
+      'packages/core/package.json',
+      'packages/mcp/package.json',
+      'packages/cli/package.json',
+      'packages/desktop/package.json',
+    ]) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, file),
+        JSON.stringify({ version: file.includes('desktop') ? '0.0.9' : '0.0.10' }),
+      );
+    }
+    fs.mkdirSync(path.join(root, 'packages/cli/src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'packages/cli/src/version.ts'),
+      "export const CLI_VERSION = '0.0.10';",
+    );
+    expect(() => readWorkspaceVersion(root)).toThrow(/inconsistent/i);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -189,3 +189,34 @@ jobs:
           name: soak-release
           path: .workbuddy/v0.0.10-soak/evidence/*.json
           if-no-files-found: ignore
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          runtime: node@24
+          require-lockfile: true
+      - run: pnpm install --frozen-lockfile
+      - name: Install pinned Electron runtime
+        run: pnpm --filter @kiturone/kapibala-desktop exec install-electron
+      - name: Verify isolated desktop flows
+        run: pnpm verify:desktop
+      - name: Preserve desktop evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.os }}-node24
+          path: |
+            packages/desktop/test-results
+            .workbuddy/desktop-stage-b/*.png
+          if-no-files-found: ignore

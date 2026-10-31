@@ -25,6 +25,7 @@ jobs:
       tag: ${{ steps.source.outputs.tag }}
       sha: ${{ steps.source.outputs.sha }}
       version: ${{ steps.source.outputs.version }}
+      desktop: ${{ steps.source.outputs.desktop }}
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       KPBL_RELEASE_EVIDENCE: ${{ vars.KPBL_RELEASE_EVIDENCE }}
@@ -37,6 +38,12 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          install: false
+          cache: false
+      - run: pnpm install --frozen-lockfile
       - name: Validate release source and version
         id: source
         shell: bash
@@ -49,10 +56,21 @@ jobs:
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          if [ -f packages/desktop/package.json ]; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Require reviewed acceptance evidence for the source commit
         env:
           RELEASE_SHA: ${{ steps.source.outputs.sha }}
-        run: node scripts/check-release-evidence.ts --sha "$RELEASE_SHA"
+        shell: bash
+        run: |
+          if [ "${{ steps.source.outputs.desktop }}" = true ]; then
+            pnpm verify:release-evidence --sha "$RELEASE_SHA" --desktop-version "${RELEASE_TAG#v}"
+          else
+            pnpm verify:release-evidence --sha "$RELEASE_SHA"
+          fi
 
   verify:
     needs: prepare
@@ -66,6 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
       id-token: write
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -96,13 +115,22 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
           node scripts/release.ts check "$RELEASE_TAG"
-          node scripts/check-release-evidence.ts --sha "$RELEASE_SHA"
+          if [ "${{ needs.prepare.outputs.desktop }}" = true ]; then
+            pnpm verify:release-evidence --sha "$RELEASE_SHA" --desktop-version "$RELEASE_VERSION"
+          else
+            pnpm verify:release-evidence --sha "$RELEASE_SHA"
+          fi
           release_dir="$RUNNER_TEMP/kapibala-release"
           echo "RELEASE_DIR=$release_dir" >> "$GITHUB_ENV"
           mkdir -p "$release_dir"
           pnpm -C packages/core pack --pack-destination "$release_dir"
           pnpm -C packages/mcp pack --pack-destination "$release_dir"
           pnpm -C packages/cli pack --pack-destination "$release_dir"
+      - name: Download only reviewed desktop artifacts
+        if: needs.prepare.outputs.desktop == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/desktop-candidate.ts download "$RELEASE_SHA" "$RELEASE_VERSION" "$RELEASE_DIR/desktop"
       - name: Publish Core, MCP, then CLI using npm trusted publishing
         run: node scripts/release.ts publish "$RELEASE_TAG" "$RELEASE_DIR"
       - name: Verify installation from the public registry
@@ -114,6 +142,14 @@ jobs:
           set -euo pipefail
           node scripts/release.ts notes "$RELEASE_TAG" "$RELEASE_DIR/release-notes.md"
           assets=("$RELEASE_DIR/kiturone-kapibala-$RELEASE_VERSION.tgz" "$RELEASE_DIR/kiturone-kapibala-mcp-$RELEASE_VERSION.tgz" "$RELEASE_DIR/kiturone-kapibala-cli-$RELEASE_VERSION.tgz" "$RELEASE_DIR/SHA256SUMS.txt")
+          if [ -d "$RELEASE_DIR/desktop" ]; then
+            while IFS= read -r -d '' file; do
+              relative="${file#"$RELEASE_DIR/desktop/"}"
+              name="desktop-${relative//\//__}"
+              cp "$file" "$RELEASE_DIR/$name"
+              assets+=("$RELEASE_DIR/$name")
+            done < <(find "$RELEASE_DIR/desktop" -type f -print0)
+          fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest

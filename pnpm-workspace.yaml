@@ -3,3 +3,6 @@ packages:
 allowBuilds:
   '@biomejs/biome': true
   esbuild: true
+  electron: true
+  # Only NSIS/ZIP are supported; the optional Squirrel toolchain is not built.
+  electron-winstaller: false

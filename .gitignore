@@ -38,3 +38,11 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 .idea/
+
+# Electron development outputs and browser evidence
+packages/desktop/out/
+packages/desktop/test-results/
+packages/desktop/playwright-report/
+
+# Local pnpm download cache
+.pnpm-store/

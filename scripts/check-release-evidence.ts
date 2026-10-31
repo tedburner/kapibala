@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertDesktopEvidence } from './desktop-candidate.js';
 
 /** 专项覆盖按设计方案固定；日常平台脚本的 pending 不能替代这些发布必需项。 */
 const REQUIRED_COVERAGE = {
@@ -35,7 +36,11 @@ function reportUrl(value: unknown): boolean {
  * 发布前检查经审核的证据索引；每个必需专项必须覆盖目标提交、完整平台范围和干净的正式运行。
  * 这里只验证索引和审核声明，不生成通过记录，也不能代替真实执行或人工审阅原始日志。
  */
-export function assertReleaseEvidence(value: unknown, expectedCommit: string): void {
+export function assertReleaseEvidence(
+  value: unknown,
+  expectedCommit: string,
+  desktopVersion?: string,
+): void {
   ensure(/^[a-f0-9]{40}$/.test(expectedCommit), 'Expected candidate SHA must be a full commit SHA');
   ensure(record(value) && value.schemaVersion === 1, 'Invalid release evidence manifest');
   ensure(value.commit === expectedCommit, 'Release evidence manifest SHA does not match candidate');
@@ -79,15 +84,18 @@ export function assertReleaseEvidence(value: unknown, expectedCommit: string): v
   }
   for (const id of Object.keys(REQUIRED_COVERAGE))
     ensure(seen.has(id), `Missing release evidence gate: ${id}`);
+  if (desktopVersion) assertDesktopEvidence(value.desktop, expectedCommit, desktopVersion);
 }
 
 function main(): void {
   const args = process.argv.slice(2);
   let commit: string | undefined;
   let file: string | undefined;
+  let desktopVersion: string | undefined;
   for (let index = 0; index < args.length; index++) {
     if (args[index] === '--sha') commit = args[++index];
     else if (args[index] === '--manifest') file = args[++index];
+    else if (args[index] === '--desktop-version') desktopVersion = args[++index];
     else throw new Error('Usage: check-release-evidence --sha <commit> [--manifest <file>]');
   }
   ensure(commit, 'Expected candidate SHA is required (--sha)');
@@ -102,8 +110,10 @@ function main(): void {
   } catch {
     throw new Error('Invalid release evidence JSON');
   }
-  assertReleaseEvidence(value, commit);
-  console.log(`Release evidence verified: 6 required gates at ${commit}`);
+  assertReleaseEvidence(value, commit, desktopVersion);
+  console.log(
+    `Release evidence verified: 6 required gates${desktopVersion ? ' and 8 desktop gates' : ''} at ${commit}`,
+  );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
