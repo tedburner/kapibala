@@ -64,6 +64,304 @@
       ]
     },
     {
+      "id": "cli/host",
+      "entry": "packages/cli/src/host/index.ts",
+      "exports": [
+        {
+          "name": "API_KEY_ENV_NONE",
+          "kind": "const",
+          "declarations": ["API_KEY_ENV_NONE = \"NONE\""]
+        },
+        {
+          "name": "BUILTIN_PROFILES",
+          "kind": "const",
+          "declarations": ["BUILTIN_PROFILES: ModelProfile[]"]
+        },
+        {
+          "name": "createManagedSession",
+          "kind": "function",
+          "declarations": [
+            "export declare function createManagedSession(options: ManagedSessionOptions): Promise<ManagedHostSession>;"
+          ]
+        },
+        {
+          "name": "credentialGroup",
+          "kind": "function",
+          "declarations": [
+            "export declare function credentialGroup(profile: ModelProfile): string;"
+          ]
+        },
+        {
+          "name": "CUSTOM_PROVIDER_KEY",
+          "kind": "const",
+          "declarations": ["CUSTOM_PROVIDER_KEY = \"custom\""]
+        },
+        {
+          "name": "DEFAULT_MODEL_ID",
+          "kind": "const",
+          "declarations": ["DEFAULT_MODEL_ID = \"deepseek-flash\""]
+        },
+        {
+          "name": "describeCredentialGroup",
+          "kind": "function",
+          "declarations": [
+            "export declare function describeCredentialGroup(profile: ModelProfile): string;"
+          ]
+        },
+        {
+          "name": "displayBlockId",
+          "kind": "function",
+          "declarations": [
+            "export declare function displayBlockId(messageId: string, index: number): string;"
+          ]
+        },
+        {
+          "name": "displayMessageId",
+          "kind": "function",
+          "declarations": [
+            "export declare function displayMessageId(message: CanonicalMessage, index: number, scope: string): string;"
+          ]
+        },
+        {
+          "name": "ensureProfile",
+          "kind": "function",
+          "declarations": [
+            "export declare function ensureProfile(settings: UserSettings, profile: ModelProfile): ModelProfile;"
+          ]
+        },
+        {
+          "name": "getGlobalSettingsPath",
+          "kind": "function",
+          "declarations": [
+            "export declare function getGlobalSettingsPath(homeDir?: string): string;"
+          ]
+        },
+        {
+          "name": "GitStatusCache",
+          "kind": "class",
+          "declarations": [
+            "export declare class GitStatusCache {\n    private readonly loader;\n    private value;\n    private inFlight;\n    private lastAttempt;\n    private controller;\n    private closed;\n    private readonly now;\n    private readonly ttlMs;\n    private onChange;\n    constructor(loader: (signal: AbortSignal) => Promise<string | undefined>, options?: GitStatusCacheOptions);\n    /** 只读缓存；尚无成功探测或已关闭时返回 undefined，不等待异步探测。 */\n    peek(): string | undefined;\n    /** 合并并发探测并按 TTL 限流；失败不抛至调用方，不阻塞继续读取已有状态。 */\n    refresh(): Promise<void>;\n    /** 幂等中止宿主探测并释放回调；不等待不遵守中止信号的外部 loader。 */\n    close(): void;\n}"
+          ]
+        },
+        {
+          "name": "GitStatusCacheOptions",
+          "kind": "interface",
+          "declarations": [
+            "export interface GitStatusCacheOptions {\n    readonly ttlMs?: number;\n    readonly now?: () => number;\n    readonly onChange?: (branch: string | undefined) => void | Promise<void>;\n}"
+          ]
+        },
+        {
+          "name": "isProjectTrusted",
+          "kind": "function",
+          "declarations": [
+            "export declare function isProjectTrusted(settings: UserSettings, projectPath: string): boolean;"
+          ]
+        },
+        {
+          "name": "loadGlobalSettingsForWrite",
+          "kind": "function",
+          "declarations": [
+            "export declare function loadGlobalSettingsForWrite(options?: Pick<LoadSettingsOptions, 'homeDir'>): UserSettings;"
+          ]
+        },
+        {
+          "name": "loadSettings",
+          "kind": "function",
+          "declarations": [
+            "export declare function loadSettings(options?: LoadSettingsOptions): LoadedSettings;"
+          ]
+        },
+        {
+          "name": "LoadSettingsOptions",
+          "kind": "interface",
+          "declarations": [
+            "export interface LoadSettingsOptions {\n    cwd?: string;\n    homeDir?: string;\n    /** 设为 false 时只读取内置与全局层，供全局配置写入流程使用。 */\n    includeProject?: boolean;\n}"
+          ]
+        },
+        {
+          "name": "ManagedHostSession",
+          "kind": "interface",
+          "declarations": [
+            "export interface ManagedHostSession {\n    readonly conversationId: string;\n    /** 完整驱动一次运行；并发请求拒绝，外部中止也等待工具事务收口。 */\n    run(input: string, signal?: AbortSignal): Promise<void>;\n    /** 中止当前父子任务并等待清理；不因退订展示而自动触发。 */\n    cancel(): Promise<void>;\n    /** 清理失败保留写锁，可重试；成功后禁止再运行或配置。 */\n    dispose(): Promise<void>;\n    /** 清理中的句柄仍忙碌，只有终态且清理结束才能复用。 */\n    isBusy(): boolean;\n    /** 只更新空闲会话，保持全局设置不变；失效 Profile 明确拒绝。 */\n    configure(configuration: ManagedSessionConfiguration): void;\n    /** 返回脱敏后的公共展示快照，不提供原始历史或资源句柄。 */\n    snapshot(): PresentationState;\n    /** 交付已接受的有序展示事件；退订不取消执行。 */\n    subscribeEvents(listener: (event: PresentationEvent) => void): () => void;\n    /** 当前生效选择的白名单事实，不含 Profile 对象、端点或凭证。 */\n    configuration(): {\n        profileId: string;\n        role: PrimaryModelRole;\n        mode: SessionMode;\n    };\n    /** 仅读取当前状态；缺失的 Provider usage 不以默认零补齐。 */\n    status(): StatusFacts;\n    /** 只读取已知状态，不启动探测或收集；诊断与任务摘要有界脱敏。 */\n    inspection(): ManagedInspection;\n    /** 观察变更不依赖页面正文订阅，退订不影响执行。 */\n    subscribeInspection(listener: () => void): () => void;\n}"
+          ]
+        },
+        {
+          "name": "ManagedInspection",
+          "kind": "interface",
+          "declarations": [
+            "export interface ManagedInspection {\n    status: StatusFacts;\n    branchDrift?: {\n        createdBranch?: string;\n        currentBranch?: string;\n    };\n    skills: {\n        enabled: boolean;\n        entries: {\n            name: string;\n            description: string;\n            scope: string;\n            available: boolean;\n            active?: string;\n            reason?: string;\n        }[];\n        diagnostics: {\n            code: string;\n            message: string;\n        }[];\n        omitted: number;\n        diagnosticsOmitted: number;\n    };\n    mcp: {\n        enabled: boolean;\n        servers: {\n            name: string;\n            state: string;\n            toolsState?: string;\n            promptsState?: string;\n            toolCount?: number;\n            promptCount?: number;\n            error?: string;\n        }[];\n        diagnostics: {\n            code: string;\n            message: string;\n        }[];\n        omitted: number;\n        diagnosticsOmitted: number;\n    };\n    tasksOmitted: number;\n    truncated: boolean;\n}"
+          ]
+        },
+        {
+          "name": "ManagedSessionConfiguration",
+          "kind": "interface",
+          "declarations": [
+            "export interface ManagedSessionConfiguration {\n    profileId?: string;\n    role?: PrimaryModelRole;\n    mode?: SessionMode;\n}"
+          ]
+        },
+        {
+          "name": "ManagedSessionOptions",
+          "kind": "interface",
+          "declarations": [
+            "export interface ManagedSessionOptions {\n    workspaceRoot: string;\n    homeDirectory: string;\n    conversationId?: string;\n    /** 新会话的临时默认模型；仅影响此会话，不写回用户配置。 */\n    initialProfileId?: string;\n    approvalChannel: ApprovalChannel;\n    leaseCoordinator: WorkspaceLeaseCoordinator;\n    /** 未传时保持 SDK 读取行为；桌面调用方应显式设置读取预算。 */\n    maxReadBytes?: number;\n}"
+          ]
+        },
+        {
+          "name": "mutateGlobalSettings",
+          "kind": "function",
+          "declarations": [
+            "export declare function mutateGlobalSettings(mutate: (settings: UserSettings) => void, options?: Pick<LoadSettingsOptions, 'homeDir'>): string;"
+          ]
+        },
+        {
+          "name": "presentationScope",
+          "kind": "function",
+          "declarations": [
+            "export declare function presentationScope(identity: ViewIdentity): string;"
+          ]
+        },
+        {
+          "name": "PresentationStore",
+          "kind": "class",
+          "declarations": [
+            "export declare class PresentationStore {\n    private state;\n    private readonly listeners;\n    private readonly eventListeners;\n    private readonly eventQueue;\n    private publishingEvents;\n    private scheduled;\n    private closed;\n    private generation;\n    private publishing;\n    constructor(identity: ViewIdentity, messages?: readonly ViewMessage[]);\n    /** 读取已经按顺序更新的只读快照，不等待下一帧或微任务。 */\n    snapshot(): PresentationState;\n    /** 订阅变化并返回幂等取消函数；监听失败不得传播到 Session 事件消费者。 */\n    subscribe(listener: () => void): () => void;\n    /** 同步逐个发布已接受事件；重入排队保持所有观察者的顺序，返回幂等退订函数。 */\n    subscribeEvents(listener: (event: PresentationEvent) => void): () => void;\n    /** 只接受当前视图/操作事件；返回是否更新，拒绝事件不触发额外绘制。 */\n    dispatch(event: PresentationEvent): boolean;\n    /** 显式切换视图必须推进代次，取消旧回调；不从旧视图恢复偏好或权限。 */\n    reload(identity: ViewIdentity, messages: readonly ViewMessage[]): void;\n    /** 立即发布当前完整状态并使此前排队回调失效，不重放旧增量或通知。 */\n    flush(): void;\n    /** 仅关闭展示观察，不代替 Session/工具清理，不得用它提前解除操作执行门。 */\n    close(): void;\n    /** 发布副本防止观察者修改内部状态；嵌套 dispatch 追加到当前事件之后。 */\n    private publishEvent;\n    /** 合并同一微任务之前的状态通知，不引入固定 33ms 等待或第二个绘制计时器。 */\n    private schedule;\n}"
+          ]
+        },
+        {
+          "name": "projectHistory",
+          "kind": "function",
+          "declarations": [
+            "export declare function projectHistory(history: readonly CanonicalMessage[], scope: string, redact?: PublicTextRedactor): ViewMessage[];"
+          ]
+        },
+        {
+          "name": "projectStatusFacts",
+          "kind": "function",
+          "declarations": [
+            "export declare function projectStatusFacts(input: StatusFacts, redact?: PublicTextRedactor): StatusFacts;"
+          ]
+        },
+        {
+          "name": "PROVIDER_METAS",
+          "kind": "const",
+          "declarations": ["PROVIDER_METAS: ProviderMeta[]"]
+        },
+        {
+          "name": "ProviderMeta",
+          "kind": "interface",
+          "declarations": [
+            "export interface ProviderMeta {\n    key: string;\n    name: string;\n    desc: string;\n    /** 冷启动向导索要密钥时的提示语；免密钥厂商为空串 */\n    keyPrompt: string;\n}"
+          ]
+        },
+        {
+          "name": "PublicTextRedactor",
+          "kind": "type",
+          "declarations": ["export type PublicTextRedactor = (text: string) => string;"]
+        },
+        {
+          "name": "redactCommonSecrets",
+          "kind": "function",
+          "declarations": ["export declare function redactCommonSecrets(text: string): string;"]
+        },
+        {
+          "name": "redactPresentationChange",
+          "kind": "function",
+          "declarations": [
+            "export declare function redactPresentationChange(change: PresentationChange, redact: PublicTextRedactor): PresentationChange;"
+          ]
+        },
+        {
+          "name": "redactPresentationState",
+          "kind": "function",
+          "declarations": [
+            "export declare function redactPresentationState(state: PresentationState, redact: PublicTextRedactor): PresentationState;"
+          ]
+        },
+        {
+          "name": "redactText",
+          "kind": "function",
+          "declarations": [
+            "export declare function redactText(text: string, secrets: readonly string[]): string;"
+          ]
+        },
+        {
+          "name": "redactViewBlock",
+          "kind": "function",
+          "declarations": [
+            "export declare function redactViewBlock(block: ViewBlock, redact: PublicTextRedactor): ViewBlock;"
+          ]
+        },
+        {
+          "name": "redactViewMessage",
+          "kind": "function",
+          "declarations": [
+            "export declare function redactViewMessage(message: ViewMessage, redact?: PublicTextRedactor): ViewMessage;"
+          ]
+        },
+        {
+          "name": "resolveApiKeyDetailed",
+          "kind": "function",
+          "declarations": [
+            "export declare function resolveApiKeyDetailed(profile: ModelProfile, settings?: Pick<UserSettings, 'profiles'>): ResolvedApiKey | undefined;"
+          ]
+        },
+        {
+          "name": "resolveBaseURL",
+          "kind": "function",
+          "declarations": ["export declare function resolveBaseURL(profile: ModelProfile): string;"]
+        },
+        {
+          "name": "SessionPresentation",
+          "kind": "class",
+          "declarations": [
+            "export declare class SessionPresentation {\n    private readonly store;\n    private readonly operationId;\n    private readonly getHistory;\n    private readonly redact;\n    private readonly identity;\n    private readonly scope;\n    private readonly known;\n    private readonly thinking;\n    private readonly tools;\n    private turn;\n    private counter;\n    private messageId;\n    private textId;\n    private anonymousThinking;\n    private firstEvent;\n    private result;\n    constructor(store: PresentationStore, operationId: string, getHistory: () => readonly CanonicalMessage[], redact?: PublicTextRedactor);\n    /**\n     * 消费已由 AgentSession 闭合/持久化约束保护的事件；迟到旧视图不再读取历史。\n     * 工具消息完成 canonical 对齐后，以历史结果为准，后续完成通知不再生成临时卡片。\n     */\n    consume(event: SessionEvent): void;\n    /** 只改变取消展示阶段，真正 AbortSignal 和执行门由原控制器负责。 */\n    cancelling(): void;\n    /** 用户覆盖属于当前展示块，不保存到 canonical；旧视图动作不能影响新会话。 */\n    setExpanded(blockId: string, expanded: boolean): void;\n    /**\n     * 宿主确认控制器 finally 已完成后校对原历史，再解除展示忙碌状态。\n     * 最后落盘/清理失败覆盖早先成功结果；无 canonical 的片段仍保留为临时中断。\n     */\n    settle(result?: OperationResult, failure?: unknown): void;\n    private resetTurn;\n    private nextId;\n    private thinkingId;\n    private updateTool;\n    /**\n     * 在完成边界才做原历史白名单重建，按块类型/调用身份对齐，不依正文 hash 猜测身份。\n     * 临时消息成功对齐后释放其工具映射，避免 Core 随后发送的 tool_finish 重新创建副本；\n     * 尚未对齐的工具仍接收实时进度与完成结果，不能提前丢弃。\n     */\n    private syncHistory;\n    private diagnostic;\n    private isCurrent;\n    private emit;\n}"
+          ]
+        },
+        {
+          "name": "StreamingRedactor",
+          "kind": "class",
+          "declarations": [
+            "export declare class StreamingRedactor {\n    private pending;\n    private readonly secrets;\n    constructor(secrets: readonly string[]);\n    /** 一旦完整匹配就替换；不匹配的普通文本立即输出，剩余内存不超过最长凭证。 */\n    push(text: string): string;\n    /** 消息结束后剩余只是未完成的匹配前缀，可作为普通用户内容返回。 */\n    flush(): string;\n}"
+          ]
+        },
+        {
+          "name": "TaskObservation",
+          "kind": "class",
+          "declarations": [
+            "export declare class TaskObservation {\n    private readonly runtime;\n    private onChange?;\n    private scope;\n    private readonly unsubscribe;\n    private tasks;\n    /** 只保存实际见过的投递事件 ID，以 ACK 证明已收集；不复制 Core 的事件 ID 生成规则。 */\n    private readonly observedEvents;\n    private closed;\n    constructor(runtime: AgentRuntime, scope: TaskObservationScope, onChange?: ((tasks: readonly TaskSummary[]) => void | Promise<void>) | undefined);\n    /** 返回独立摘要副本；宿主/UI 修改副本不影响后续刷新或运行时记录。 */\n    snapshot(): readonly TaskSummary[];\n    /**\n     * 读取当前快照并通知宿主；用于显式 ACK 后刷新或切换父会话/根任务/分支。\n     * 未提供 rootTaskId 时仍按父会话过滤直接子任务；关闭后不再读取运行时或触发回调。\n     */\n    refresh(scope?: TaskObservationScope): readonly TaskSummary[];\n    /** 幂等解除订阅并释放摘要、投递证据和回调；不取消或收集任何后台任务。 */\n    close(): void;\n    /** 拒绝空身份，避免 Core 的可选过滤器将无效父会话意外当成无范围查询。 */\n    private validateScope;\n}"
+          ]
+        },
+        {
+          "name": "TaskObservationScope",
+          "kind": "interface",
+          "declarations": [
+            "export interface TaskObservationScope {\n    readonly parentSessionId: string;\n    readonly rootTaskId?: string;\n    readonly branchId: string;\n}"
+          ]
+        },
+        {
+          "name": "trustProject",
+          "kind": "function",
+          "declarations": [
+            "export declare function trustProject(settings: UserSettings, projectPath: string, options?: Pick<LoadSettingsOptions, 'homeDir'>): string;"
+          ]
+        },
+        {
+          "name": "updateProfileApiKey",
+          "kind": "function",
+          "declarations": [
+            "export declare function updateProfileApiKey(settings: UserSettings, profileId: string, apiKey: string): ModelProfile;"
+          ]
+        },
+        {
+          "name": "UserSettings",
+          "kind": "interface",
+          "declarations": [
+            "export interface UserSettings {\n    $schema?: string;\n    defaultModel: string;\n    modelRouting?: ModelRoutingConfig;\n    profiles: ModelProfile[];\n    /** 已由用户永久信任的项目真实绝对路径，仅允许从全局配置加载。 */\n    trustedProjects?: string[];\n    /** 只有用户级设置可指定默认模式，FullAccess 仍须本次会话主动选择。 */\n    permissionMode?: SessionMode;\n    /** 只有用户级设置可提供可执行授权规则。 */\n    permissionRules?: PermissionRule[];\n    /** 项目设置不可启用或更换命令解释器。 */\n    shell?: {\n        enabled?: boolean;\n        preference?: ShellPreference;\n    };\n    /** 技能默认开启；项目层只可关闭或补充禁用名称，不能解除全局限制。 */\n    skills?: {\n        enabled?: boolean;\n        disabled?: string[];\n    };\n    /**\n     * 该配置所依据的内置模型清单版本。\n     * 缺失或落后于 BUILTIN_CATALOG_VERSION 时，启动阶段会执行一次目录升级（见 migrateBuiltinCatalog）。\n     * 没有这个字段，老用户的配置永远是首次写入那天的快照 —— 厂商换代后菜单里还挂着已退役的模型。\n     */\n    builtinCatalogVersion?: number;\n}"
+          ]
+        }
+      ]
+    },
+    {
       "id": "cli/protocol",
       "entry": "packages/cli/src/protocol/index.ts",
       "exports": [
@@ -1171,6 +1469,13 @@
           "declarations": ["HARD_LIMIT_MAX_SUBAGENT_DEPTH = 5"]
         },
         {
+          "name": "HistoryReadOptions",
+          "kind": "interface",
+          "declarations": [
+            "export interface HistoryReadOptions {\n    /** 编码字节总量上限，必须为正安全整数；不限制已打开事务的追加落盘。 */\n    maxReadBytes?: number;\n}"
+          ]
+        },
+        {
           "name": "HistoryRepair",
           "kind": "interface",
           "declarations": [
@@ -1846,7 +2151,7 @@
           "name": "resolveSessionProject",
           "kind": "function",
           "declarations": [
-            "export declare function resolveSessionProject(cwd: string): ProjectIdentity;"
+            "export declare function resolveSessionProject(cwd: string, mode?: 'git' | 'exact'): ProjectIdentity;"
           ]
         },
         {
@@ -2025,14 +2330,14 @@
           "name": "SessionManager",
           "kind": "class",
           "declarations": [
-            "export declare class SessionManager {\n    readonly project: ProjectIdentity;\n    readonly directory: string;\n    private readonly handles;\n    private readonly diagnostic?;\n    constructor(options?: SessionManagerOptions);\n    /** 默认新建独立空会话，写入头部并持有单写者锁；不读取其它正文。 */\n    create(): Promise<ManagedSession>;\n    /**\n     * 按正文活动排序分页；有效 sidecar 只读元数据，不读取完整 JSONL。默认排除已归档会话。\n     * pageSize 由调用方显式给出时必须在 1–100 之间；非法页参数直接失败，不静默修正。\n     */\n    list(page?: number, options?: {\n        includeArchived?: boolean;\n        pageSize?: number;\n    }): Promise<{\n        items: SessionMetadata[];\n        total: number;\n        page: number;\n        pages: number;\n    }>;\n    /** 解析完整 ID 或唯一前缀对应的会话文件与 ID。 */\n    private resolveSession;\n    /**\n     * 逻辑归档指定会话。\n     *\n     * 约束：\n     * - 必须取得会话独占锁；\n     * - 若会话当前正处于活动打开状态，拒绝归档并抛出 SESSION_IN_USE；\n     * - 向会话正文追加 archive_state { archived: true } 并刷新 sidecar 缓存。\n     */\n    archiveSession(id: string): Promise<void>;\n    /**\n     * 恢复已逻辑归档的会话。\n     */\n    restoreSession(id: string): Promise<void>;\n    /** 一次扫描建立排序目录，分页和继续最近会话共用；有效缓存不读取正文。 */\n    private allMetadata;\n    /**\n     * 打开完整 ID 或唯一前缀；跨桶、缺失与歧义均失败，同一 Manager 已持有的目标直接返回。\n     *\n     * @param id 完整会话 ID 或唯一前缀\n     * @param options 可选参数，autoUpgradeLegacy 为 true 时若目标为 v1 旧会话则自动创建/复用 v2 副本以支持无感续写\n     */\n    open(id: string, options?: {\n        autoUpgradeLegacy?: boolean;\n    }): Promise<ManagedSession>;\n    /** 继续最近有正文的会话；没有历史才新建，显式打开失败绝不回退为空会话。 */\n    continueRecent(options?: {\n        autoUpgradeLegacy?: boolean;\n    }): Promise<ManagedSession>;\n    /** 标题作为独立耐久记录；标题或浏览不改变正文活动排序。 */\n    rename(id: string, title: string): Promise<void>;\n    /** 等候所有存储队列后释放句柄；宿主必须先结束 AgentSession 的工具/摘要清理。 */\n    close(): Promise<void>;\n    /**\n     * 只发现 cwd 和工作树根的旧文件；来源快照 hash 幂等，完整临时文件 fsync 后独占安装。\n     * 保留源文件，安装身份写入头部，缓存丢失或进程退出后仍不会重复导入。\n     */\n    importLegacy(): Promise<string[]>;\n    /**\n     * 将旧版 v1 会话升级为独立的 v2 会话副本。\n     *\n     * 保证与约束：\n     * - 原 v1 会话文件保持只读且绝不进行原地修改；\n     * - 升级生成全新独立会话文件，Header 中记录 upgradeIdentity；\n     * - 幂等：若同一 v1 文件已升级过，直接返回已有 v2 会话句柄，不重复生成副本；\n     * - 升级过程使用单写者锁保护临时文件，原子发布；\n     * - 失败时不污染目标桶目录。\n     *\n     * @param idOrFileName 原会话 conversationId 或文件名（如 `xxx.jsonl`）\n     * @returns 升级后的独立 v2 会话句柄（持有写者锁）\n     */\n    upgradeLegacyV1Session(idOrFileName: string): Promise<ManagedSession>;\n    /**\n     * 从当前会话的指定路径（指定分支或切点）导出生成全新的独立会话文件。\n     *\n     * 保证与约束：\n     * - 新会话拥有全新独立的 conversationId；\n     * - Header 记录 parentSessionId 与 forkPointRecordId；\n     * - 仅复制导出路径上的必需状态，映射为新会话的 main 分支并重排连续 seq/prevRecordId；\n     * - 拒绝半事务分叉：切点若为未闭合工具调用的 assistant 消息，立即报错；\n     * - 历史 usage 标为导入来源（importedFromFork: true），不重复计入新会话执行费用；\n     * - 临时文件写入、fsync 后原子发布，同步目录；\n     * - 导出失败绝不污染或修改源会话。\n     *\n     * @param options 导出配置\n     * @returns 新独立会话句柄（持有写者锁）\n     */\n    forkSession(options: {\n        sourceSessionId: string;\n        branchId?: string;\n        forkPointRecordId?: string;\n    }): Promise<ManagedSession>;\n    /** 绑定写后缓存与锁生命周期；正文优先，缓存失败不使保存成功的消息消失。 */\n    private attach;\n    /** 缓存通过文件名、身份、统计与正文 stat 校验；失败交由正文重建。 */\n    private readMetadata;\n    /** 浏览仅解析完整记录；严格打开由 SessionStore 验证，浏览不能改写残片。 */\n    private readDiscoveryRecords;\n    /** 从正文重建元数据，标题和上下文事件不改变内容活动时间。 */\n    private buildMetadata;\n    /** 只由正文、用户 run 与 reset 更新活动；usage、标题、摘要均不能把浏览对象置顶。 */\n    private applyRecord;\n    /** 临时 sidecar 完整写入后替换，可重建缓存不承担正文提交职责。 */\n    private writeMetadata;\n    private metadataPath;\n    private lockPath;\n    private report;\n}"
+            "export declare class SessionManager {\n    readonly project: ProjectIdentity;\n    readonly directory: string;\n    private readonly handles;\n    private readonly diagnostic?;\n    private readonly readOptions;\n    constructor(options?: SessionManagerOptions);\n    /** 默认新建独立空会话，写入头部并持有单写者锁；不读取其它正文。 */\n    create(): Promise<ManagedSession>;\n    /**\n     * 按正文活动排序分页；有效 sidecar 只读元数据，不读取完整 JSONL。默认排除已归档会话。\n     * pageSize 由调用方显式给出时必须在 1–100 之间；filter 在分页前筛选元数据，调用方须自行处理敏感信息。\n     */\n    list(page?: number, options?: {\n        includeArchived?: boolean;\n        pageSize?: number;\n        filter?: (metadata: SessionMetadata) => boolean;\n    }): Promise<{\n        items: SessionMetadata[];\n        total: number;\n        page: number;\n        pages: number;\n    }>;\n    /** 解析完整 ID 或唯一前缀对应的会话文件与 ID。 */\n    private resolveSession;\n    /**\n     * 逻辑归档指定会话。\n     *\n     * 约束：\n     * - 必须取得会话独占锁；\n     * - 若会话当前正处于活动打开状态，拒绝归档并抛出 SESSION_IN_USE；\n     * - 向会话正文追加 archive_state { archived: true } 并刷新 sidecar 缓存。\n     */\n    archiveSession(id: string): Promise<void>;\n    /**\n     * 恢复已逻辑归档的会话。\n     */\n    restoreSession(id: string): Promise<void>;\n    /** 一次扫描建立排序目录，分页和继续最近会话共用；有效缓存不读取正文。 */\n    private allMetadata;\n    /**\n     * 打开完整 ID 或唯一前缀；跨桶、缺失与歧义均失败，同一 Manager 已持有的目标直接返回。\n     *\n     * @param id 完整会话 ID 或唯一前缀\n     * @param options 可选参数，autoUpgradeLegacy 为 true 时若目标为 v1 旧会话则自动创建/复用 v2 副本以支持无感续写\n     */\n    open(id: string, options?: {\n        autoUpgradeLegacy?: boolean;\n    }): Promise<ManagedSession>;\n    /** 继续最近有正文的会话；没有历史才新建，显式打开失败绝不回退为空会话。 */\n    continueRecent(options?: {\n        autoUpgradeLegacy?: boolean;\n    }): Promise<ManagedSession>;\n    /** 标题作为独立耐久记录；标题或浏览不改变正文活动排序。 */\n    rename(id: string, title: string): Promise<void>;\n    /** 等候所有存储队列后释放句柄；宿主必须先结束 AgentSession 的工具/摘要清理。 */\n    close(): Promise<void>;\n    /**\n     * 只发现 cwd 和工作树根的旧文件；来源快照 hash 幂等，完整临时文件 fsync 后独占安装。\n     * 保留源文件，安装身份写入头部，缓存丢失或进程退出后仍不会重复导入。\n     */\n    importLegacy(): Promise<string[]>;\n    /**\n     * 将旧版 v1 会话升级为独立的 v2 会话副本。\n     *\n     * 保证与约束：\n     * - 原 v1 会话文件保持只读且绝不进行原地修改；\n     * - 升级生成全新独立会话文件，Header 中记录 upgradeIdentity；\n     * - 幂等：若同一 v1 文件已升级过，直接返回已有 v2 会话句柄，不重复生成副本；\n     * - 升级过程使用单写者锁保护临时文件，原子发布；\n     * - 失败时不污染目标桶目录。\n     *\n     * @param idOrFileName 原会话 conversationId 或文件名（如 `xxx.jsonl`）\n     * @returns 升级后的独立 v2 会话句柄（持有写者锁）\n     */\n    upgradeLegacyV1Session(idOrFileName: string): Promise<ManagedSession>;\n    /**\n     * 从当前会话的指定路径（指定分支或切点）导出生成全新的独立会话文件。\n     *\n     * 保证与约束：\n     * - 新会话拥有全新独立的 conversationId；\n     * - Header 记录 parentSessionId 与 forkPointRecordId；\n     * - 仅复制导出路径上的必需状态，映射为新会话的 main 分支并重排连续 seq/prevRecordId；\n     * - 拒绝半事务分叉：切点若为未闭合工具调用的 assistant 消息，立即报错；\n     * - 历史 usage 标为导入来源（importedFromFork: true），不重复计入新会话执行费用；\n     * - 临时文件写入、fsync 后原子发布，同步目录；\n     * - 导出失败绝不污染或修改源会话。\n     *\n     * @param options 导出配置\n     * @returns 新独立会话句柄（持有写者锁）\n     */\n    forkSession(options: {\n        sourceSessionId: string;\n        branchId?: string;\n        forkPointRecordId?: string;\n    }): Promise<ManagedSession>;\n    /** 绑定写后缓存与锁生命周期；正文优先，缓存失败不使保存成功的消息消失。 */\n    private attach;\n    /** 超限列表只解析有界头部并核对桶身份，不读取正文、不生成可误用的耐久缓存。 */\n    private readOversizedMetadata;\n    /** 缓存通过文件名、身份、统计与正文 stat 校验；失败交由正文重建。 */\n    private readMetadata;\n    /** 浏览仅解析完整记录；严格打开由 SessionStore 验证，浏览不能改写残片。 */\n    private readDiscoveryRecords;\n    /** 从正文重建元数据，标题和上下文事件不改变内容活动时间。 */\n    private buildMetadata;\n    /** 只由正文、用户 run 与 reset 更新活动；usage、标题、摘要均不能把浏览对象置顶。 */\n    private applyRecord;\n    /** 临时 sidecar 完整写入后替换，可重建缓存不承担正文提交职责。 */\n    private writeMetadata;\n    private metadataPath;\n    private lockPath;\n    private report;\n}"
           ]
         },
         {
           "name": "SessionManagerOptions",
           "kind": "interface",
           "declarations": [
-            "export interface SessionManagerOptions {\n    /** 显式工作区物理根路径。 */\n    workspaceRoot?: string;\n    /** 显式项目根路径。 */\n    projectRoot?: string;\n    /** 执行或参考目录；若未提供工作区根，以此解析项目工作树。 */\n    cwd?: string;\n    homeDirectory?: string;\n    onDiagnostic?: (message: string) => void;\n}"
+            "export interface SessionManagerOptions {\n    /** 显式工作区物理根路径。 */\n    workspaceRoot?: string;\n    /** 显式项目根路径。 */\n    projectRoot?: string;\n    /** 执行或参考目录；若未提供工作区根，以此解析项目工作树。 */\n    cwd?: string;\n    /** exact 固定显式根的历史归属；缺省按 Git 工作树分桶，旧调用不迁移历史。 */\n    projectRootMode?: 'git' | 'exact';\n    /** 元数据重建、升级、打开和重载共用的单文件字节预算；省略保持原行为。 */\n    maxReadBytes?: number;\n    homeDirectory?: string;\n    onDiagnostic?: (message: string) => void;\n}"
           ]
         },
         {
@@ -2046,7 +2351,7 @@
           "name": "SessionMetadata",
           "kind": "interface",
           "declarations": [
-            "export interface SessionMetadata {\n    /** 元数据缓存格式版本（1 或 2）。 */\n    schemaVersion: number;\n    conversationId: string;\n    fileName: string;\n    projectRoot: string;\n    createdAt: number;\n    /** 最后一次正文、用户 run 或 reset 的时间；usage 与标题不影响排序。 */\n    lastActivityAt: number;\n    messageCount: number;\n    title: string;\n    /** 用户显式重命名的标题；存在时 reset 不再回退为默认标题。 */\n    customTitle?: string;\n    gitBranch?: string;\n    lastActivityGitBranch?: string;\n    lastModelId?: string;\n    /** 旧历史导入的幂等身份（来源路径 + 内容哈希）；重复导入据此跳过。 */\n    importIdentity?: string;\n    /** v1 副本升级的来源身份哈希。 */\n    upgradeIdentity?: string;\n    size: number;\n    mtimeMs: number;\n    /** 兼容字段：最后计入的记录 ID。 */\n    revision: string;\n    /** 会话文件使用的 Schema 版本（1 或 2）。 */\n    sessionSchemaVersion?: number;\n    /** 物理末记录 ID（与 revision 语义一致）。 */\n    logRevision?: string;\n    /** 内容正文 revision（仅正文/修复/reset 变化）。 */\n    contentRevision?: string;\n    /** 当前活动分支 ID（默认 'main'）。 */\n    activeBranchId?: string;\n    /** 当前活动分支叶子记录 ID。 */\n    activeLeafId?: string | null;\n    /** 会话是否已归档。 */\n    archived?: boolean;\n}"
+            "export interface SessionMetadata {\n    /** 元数据缓存格式版本（1 或 2）。 */\n    schemaVersion: number;\n    conversationId: string;\n    fileName: string;\n    projectRoot: string;\n    createdAt: number;\n    /** 最后一次正文、用户 run 或 reset 的时间；usage 与标题不影响排序。 */\n    lastActivityAt: number;\n    messageCount: number;\n    title: string;\n    /** 用户显式重命名的标题；存在时 reset 不再回退为默认标题。 */\n    customTitle?: string;\n    gitBranch?: string;\n    lastActivityGitBranch?: string;\n    lastModelId?: string;\n    /** 旧历史导入的幂等身份（来源路径 + 内容哈希）；重复导入据此跳过。 */\n    importIdentity?: string;\n    /** v1 副本升级的来源身份哈希。 */\n    upgradeIdentity?: string;\n    size: number;\n    mtimeMs: number;\n    /** 兼容字段：最后计入的记录 ID。 */\n    revision: string;\n    /** 会话文件使用的 Schema 版本（1 或 2）。 */\n    sessionSchemaVersion?: number;\n    /** 物理末记录 ID（与 revision 语义一致）。 */\n    logRevision?: string;\n    /** 内容正文 revision（仅正文/修复/reset 变化）。 */\n    contentRevision?: string;\n    /** 当前活动分支 ID（默认 'main'）。 */\n    activeBranchId?: string;\n    /** 当前活动分支叶子记录 ID。 */\n    activeLeafId?: string | null;\n    /** 会话是否已归档。 */\n    archived?: boolean;\n    /** 预算不足时仅提供定位与提示，不把超限文件误判为损坏或写入不完整缓存。 */\n    unavailableReason?: 'HISTORY_READ_LIMIT';\n}"
           ]
         },
         {
@@ -2093,7 +2398,7 @@
           "name": "SessionStore",
           "kind": "class",
           "declarations": [
-            "export declare class SessionStore implements StatefulMessageStore {\n    readonly filePath: string;\n    private queue;\n    private records;\n    private observer?;\n    private onDiagnostic?;\n    private stamp?;\n    private schemaVersion;\n    private activeBranchId;\n    private branchLeaves;\n    private constructor();\n    /** 获取当前会话文件使用的 Schema 版本（1 或 2）。 */\n    getSchemaVersion(): number;\n    /** 判断当前会话是否为只读历史（v1 历史文件强制只读）。 */\n    isReadOnly(): boolean;\n    /** 获取当前选中的活动分支标识。 */\n    getActiveBranchId(): string;\n    /** 获取所有分支当前叶子记录 ID 映射快照。 */\n    getBranchLeaves(): ReadonlyMap<string, string>;\n    /** 注册可重建缓存的写后通知；缓存失败只诊断，不撤销或毒化已 fsync 的正文。 */\n    setAppendObserver(observer: (record: SessionRecord) => void, onDiagnostic?: (message: string) => void): void;\n    /** 以独占创建方式安装新头部（默认生成 Schema v2 格式），已有文件明确失败，绝不覆盖其它会话。 */\n    static create(filePath: string, header: SessionHeader): Promise<SessionStore>;\n    /** 打开并验证已有会话；尾部残片先保存到隔离文件，中部损坏与未知版本拒绝恢复。 */\n    static open(filePath: string): Promise<SessionStore>;\n    /** 获取完整记录快照，等候已排队写入后读取；调用者不能借此修改内部记录。 */\n    readRecords(): Promise<SessionRecord[]>;\n    /** 消息级持久化，补稳定身份并保留所有终态字段，成功后方可进入下一次写入。 */\n    append(message: CanonicalMessage, options?: {\n        branchId?: string;\n        parentId?: string;\n    }): Promise<void>;\n    /** 持久化状态记录，fsync 成功才返回；失败会毒化当前写者，要求重新验证后恢复。 */\n    appendRecord(type: Exclude<SessionRecordType, 'header' | 'message'>, payload: Record<string, unknown>, options?: {\n        branchId?: string;\n        parentId?: string;\n    }): Promise<SessionRecord>;\n    /**\n     * 创建新分支记录并推进分支叶子。\n     *\n     * 约束：\n     * - 分支标识必须符合命名规范（字母、数字、下划线、短横线）；\n     * - 目标分支必须不存在；\n     * - 切点记录 baseRecordId 必须为正文中已存在的合法记录；\n     * - 拒绝未闭合工具事务分叉：因果链上不得包含未全部回填 tool_result 的工具调用；\n     * - v1 历史会话禁止创建分支。\n     */\n    createBranch(branchId: string, baseRecordId: string): Promise<SessionRecord>;\n    /**\n     * 切换活动分支并持久化记录。\n     *\n     * 约束：\n     * - 目标分支必须已被创建或存在；\n     * - v1 历史会话禁止切换分支。\n     */\n    selectBranch(branchId: string): Promise<SessionRecord>;\n    /**\n     * 追加逻辑归档控制记录。\n     *\n     * 约束：\n     * - 归档状态记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；\n     * - payload 结构为 { archived: boolean }；\n     * - v1 历史会话禁止变更归档状态。\n     */\n    setArchiveState(archived: boolean): Promise<SessionRecord>;\n    /**\n     * 查询当前会话是否处于已归档状态。\n     */\n    isArchived(): Promise<boolean>;\n    /**\n     * 获取当前会话中所有已知分支的元数据与状态列表。\n     */\n    getBranches(): Promise<BranchInfo[]>;\n    /** 重建指定分支（默认当前活动分支）reset 后的状态视图。 */\n    loadState(options?: {\n        branchId?: string;\n    }): Promise<SessionState>;\n    /**\n     * 沿因果 parentId 链从叶子节点回溯，生成合法线性消息序列投影。\n     *\n     * 保证与约束：\n     * - 仅包含回溯因果链上的消息与状态叠加，全局控制记录与其他分支记录被天然隔离；\n     * - 支持 reset 边界截断与 history_repair 幂等叠加；\n     * - 严格校验工具事务闭合不变量，拒绝半事务破坏；\n     * - 修复缺失结果时自动持久化 history_repair（v2 下在目标分支上记录）。\n     */\n    buildProjection(options?: {\n        branchId?: string;\n        leafRecordId?: string;\n    }): Promise<CanonicalMessage[]>;\n    /**\n     * 恢复当前活动分支的原始正文，并将幂等修复叠加到原工具事务。\n     */\n    load(): Promise<CanonicalMessage[]>;\n    /** SDK 清空语义通过持久边界实现；此前摘要、剪裁及失败状态不再参与恢复。 */\n    clear(): Promise<void>;\n    /**\n     * 生成 Envelope 记录。\n     * v2 下严格维护连续物理序号 seq、物理前驱 prevRecordId 与因果 parentId / branchId。\n     */\n    private makeRecord;\n    /** 单写者队列不吞异常；后续写入依赖同一失败 Promise，防止继续污染正文。 */\n    private enqueue;\n    /** 保存当前写者的正文版本，拒绝未经锁保护的第二写者继续追加。 */\n    private refreshStamp;\n    /** 校验每个完整记录，只有最后非空行的 JSON 残片可隔离，语义损坏绝不作为残片吞掉。 */\n    private readFile;\n}"
+            "export declare class SessionStore implements StatefulMessageStore {\n    private readonly readOptions;\n    readonly filePath: string;\n    private queue;\n    private records;\n    private observer?;\n    private onDiagnostic?;\n    private stamp?;\n    private schemaVersion;\n    private activeBranchId;\n    private branchLeaves;\n    private constructor();\n    /** 获取当前会话文件使用的 Schema 版本（1 或 2）。 */\n    getSchemaVersion(): number;\n    /** 判断当前会话是否为只读历史（v1 历史文件强制只读）。 */\n    isReadOnly(): boolean;\n    /** 获取当前选中的活动分支标识。 */\n    getActiveBranchId(): string;\n    /** 获取所有分支当前叶子记录 ID 映射快照。 */\n    getBranchLeaves(): ReadonlyMap<string, string>;\n    /** 注册可重建缓存的写后通知；缓存失败只诊断，不撤销或毒化已 fsync 的正文。 */\n    setAppendObserver(observer: (record: SessionRecord) => void, onDiagnostic?: (message: string) => void): void;\n    /** 以独占创建方式安装新头部（默认生成 Schema v2 格式），已有文件明确失败，绝不覆盖其它会话。 */\n    static create(filePath: string, header: SessionHeader, options?: HistoryReadOptions): Promise<SessionStore>;\n    /** 打开并验证已有会话；尾部残片先保存到隔离文件，中部损坏与未知版本拒绝恢复。 */\n    static open(filePath: string, options?: HistoryReadOptions): Promise<SessionStore>;\n    /** 获取完整记录快照，等候已排队写入后读取；调用者不能借此修改内部记录。 */\n    readRecords(): Promise<SessionRecord[]>;\n    /** 消息级持久化，补稳定身份并保留所有终态字段，成功后方可进入下一次写入。 */\n    append(message: CanonicalMessage, options?: {\n        branchId?: string;\n        parentId?: string;\n    }): Promise<void>;\n    /** 持久化状态记录，fsync 成功才返回；失败会毒化当前写者，要求重新验证后恢复。 */\n    appendRecord(type: Exclude<SessionRecordType, 'header' | 'message'>, payload: Record<string, unknown>, options?: {\n        branchId?: string;\n        parentId?: string;\n    }): Promise<SessionRecord>;\n    /**\n     * 创建新分支记录并推进分支叶子。\n     *\n     * 约束：\n     * - 分支标识必须符合命名规范（字母、数字、下划线、短横线）；\n     * - 目标分支必须不存在；\n     * - 切点记录 baseRecordId 必须为正文中已存在的合法记录；\n     * - 拒绝未闭合工具事务分叉：因果链上不得包含未全部回填 tool_result 的工具调用；\n     * - v1 历史会话禁止创建分支。\n     */\n    createBranch(branchId: string, baseRecordId: string): Promise<SessionRecord>;\n    /**\n     * 切换活动分支并持久化记录。\n     *\n     * 约束：\n     * - 目标分支必须已被创建或存在；\n     * - v1 历史会话禁止切换分支。\n     */\n    selectBranch(branchId: string): Promise<SessionRecord>;\n    /**\n     * 追加逻辑归档控制记录。\n     *\n     * 约束：\n     * - 归档状态记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；\n     * - payload 结构为 { archived: boolean }；\n     * - v1 历史会话禁止变更归档状态。\n     */\n    setArchiveState(archived: boolean): Promise<SessionRecord>;\n    /**\n     * 查询当前会话是否处于已归档状态。\n     */\n    isArchived(): Promise<boolean>;\n    /**\n     * 获取当前会话中所有已知分支的元数据与状态列表。\n     */\n    getBranches(): Promise<BranchInfo[]>;\n    /** 重建指定分支（默认当前活动分支）reset 后的状态视图。 */\n    loadState(options?: {\n        branchId?: string;\n    }): Promise<SessionState>;\n    /**\n     * 沿因果 parentId 链从叶子节点回溯，生成合法线性消息序列投影。\n     *\n     * 保证与约束：\n     * - 仅包含回溯因果链上的消息与状态叠加，全局控制记录与其他分支记录被天然隔离；\n     * - 支持 reset 边界截断与 history_repair 幂等叠加；\n     * - 严格校验工具事务闭合不变量，拒绝半事务破坏；\n     * - 修复缺失结果时自动持久化 history_repair（v2 下在目标分支上记录）。\n     */\n    buildProjection(options?: {\n        branchId?: string;\n        leafRecordId?: string;\n    }): Promise<CanonicalMessage[]>;\n    /**\n     * 恢复当前活动分支的原始正文，并将幂等修复叠加到原工具事务。\n     */\n    load(): Promise<CanonicalMessage[]>;\n    /** SDK 清空语义通过持久边界实现；此前摘要、剪裁及失败状态不再参与恢复。 */\n    clear(): Promise<void>;\n    /**\n     * 生成 Envelope 记录。\n     * v2 下严格维护连续物理序号 seq、物理前驱 prevRecordId 与因果 parentId / branchId。\n     */\n    private makeRecord;\n    /** 单写者队列不吞异常；后续写入依赖同一失败 Promise，防止继续污染正文。 */\n    private enqueue;\n    /** 保存当前写者的正文版本，拒绝未经锁保护的第二写者继续追加。 */\n    private refreshStamp;\n    /** 校验每个完整记录，只有最后非空行的 JSON 残片可隔离，语义损坏绝不作为残片吞掉。 */\n    private readFile;\n}"
           ]
         },
         {
@@ -3536,6 +3841,11 @@
           "types": "./dist/client/index.d.ts"
         },
         "./dist/*": "./dist/*",
+        "./host": {
+          "default": "./dist/host/index.js",
+          "import": "./dist/host/index.js",
+          "types": "./dist/host/index.d.ts"
+        },
         "./package.json": "./package.json",
         "./protocol": {
           "default": "./dist/protocol/index.js",
@@ -3577,8 +3887,13 @@
         "git.d.ts",
         "host/command-output.d.ts",
         "host/history-projection.d.ts",
+        "host/index.d.ts",
+        "host/inspection.d.ts",
         "host/interactive.d.ts",
+        "host/managed-session.d.ts",
         "host/presentation-store.d.ts",
+        "host/public-projection.d.ts",
+        "host/redaction.d.ts",
         "host/session-presentation.d.ts",
         "host/status-facts.d.ts",
         "host/task-observation.d.ts",

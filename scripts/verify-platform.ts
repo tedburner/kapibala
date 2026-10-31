@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkHostArtifact } from './check-host.js';
 
 const repositoryRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const probePath = path.join(repositoryRoot, 'scripts/platform-probe.mjs');
@@ -200,6 +201,7 @@ export async function buildCandidate(): Promise<void> {
     'tsup.view-model.config.ts',
     'tsup.protocol.config.ts',
     'tsup.client.config.ts',
+    'tsup.host.config.ts',
   ]) {
     await run(process.execPath, [cliTsup, '--config', config], { cwd: cliDir });
   }
@@ -426,6 +428,8 @@ async function executeArtifactChecks(tempRoot: string): Promise<Record<string, u
     '@kiturone/kapibala-cli/dist/protocol/index.d.ts',
     '@kiturone/kapibala-cli/dist/client/index.js',
     '@kiturone/kapibala-cli/dist/client/index.d.ts',
+    '@kiturone/kapibala-cli/dist/host/index.js',
+    '@kiturone/kapibala-cli/dist/host/index.d.ts',
     '@kiturone/kapibala-cli/dist/view-model/index.js',
     '@kiturone/kapibala-cli/dist/view-model/index.d.ts',
   ];
@@ -453,8 +457,9 @@ async function executeArtifactChecks(tempRoot: string): Promise<Record<string, u
   );
   await importIn(
     installDir,
-    'import assert from "node:assert/strict"; const protocol = await import("@kiturone/kapibala-cli/protocol"); const client = await import("@kiturone/kapibala-cli/client"); const view = await import("@kiturone/kapibala-cli/view-model"); assert.equal(typeof protocol.DEFAULT_LIMITS, "object"); assert.equal(typeof client.LocalClient, "function"); assert.equal(typeof view.createPresentation, "function");',
+    'import assert from "node:assert/strict"; const protocol = await import("@kiturone/kapibala-cli/protocol"); const client = await import("@kiturone/kapibala-cli/client"); const view = await import("@kiturone/kapibala-cli/view-model"); assert.equal(typeof protocol.DEFAULT_LIMITS, "object"); assert.equal(typeof client.LocalClient, "function"); assert.equal(typeof view.createPresentation, "function"); const host = await import("@kiturone/kapibala-cli/host"); assert.equal(typeof host.createManagedSession, "function"); assert.equal(typeof host.mutateGlobalSettings, "function");',
   );
+  checkHostArtifact(path.join(installDir, 'node_modules/@kiturone/kapibala-cli'));
   const cliBin = path.join(
     installDir,
     'node_modules',

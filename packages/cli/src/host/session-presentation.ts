@@ -20,6 +20,8 @@ import type {
 } from '../view-model/index.js';
 import { displayMessageId, projectHistory } from './history-projection.js';
 import type { PresentationStore } from './presentation-store.js';
+import { type PublicTextRedactor, redactPresentationChange } from './public-projection.js';
+import { redactText } from './redaction.js';
 
 /** 展示身份只按会话/分支分组；viewEpoch 隔离事件但不改变 canonical 消息自身身份。 */
 export function presentationScope(identity: ViewIdentity): string {
@@ -48,6 +50,7 @@ export class SessionPresentation {
     private readonly store: PresentationStore,
     private readonly operationId: string,
     private readonly getHistory: () => readonly CanonicalMessage[],
+    private readonly redact: PublicTextRedactor = (text) => redactText(text, []),
   ) {
     this.identity = { ...store.snapshot().identity };
     this.scope = presentationScope(this.identity);
@@ -255,7 +258,7 @@ export class SessionPresentation {
    */
   private syncHistory(target?: CanonicalMessage): void {
     const history = this.getHistory();
-    const projected = projectHistory(history, this.scope);
+    const projected = projectHistory(history, this.scope, this.redact);
     const targetIndex = target
       ? history.findIndex(
           (message) => message === target || (target.id !== undefined && message.id === target.id),
@@ -318,7 +321,7 @@ export class SessionPresentation {
       ...this.identity,
       operationId: this.operationId,
       sequence: this.store.snapshot().sequence + 1,
-      change,
+      change: redactPresentationChange(change, this.redact),
     });
   }
 }

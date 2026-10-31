@@ -15,9 +15,8 @@ import {
   credentialGroup,
   describeCredentialGroup,
   ensureProfile,
-  loadGlobalSettingsForWrite,
+  mutateGlobalSettings,
   resolveApiKeyDetailed,
-  saveGlobalSettings,
   updateProfileApiKey,
 } from '../settings.js';
 import { formatTokenCount } from '../ui/metrics.js';
@@ -27,26 +26,13 @@ import { settingsCommand } from './settings.js';
 
 /**
  * {@link updateModelApiKey} 的注入点，供测试与宿主替换密钥读取和配置写入。
- * `globalSettings` 传入时直接作为磁盘原始配置使用，并在保存后回写同步到该对象。
+ * `globalSettings` 仅作为成功提交后的内存镜像；注入点替换整个短事务而非裸写盘。
  */
 export interface UpdateModelApiKeyOptions {
   secretReader?: (prompt: string) => Promise<string>;
-  saveSettings?: typeof saveGlobalSettings;
+  mutateSettings?: typeof mutateGlobalSettings;
   globalSettings?: UserSettings;
   homeDir?: LoadSettingsOptions['homeDir'];
-}
-
-/**
- * 取一份**磁盘原始**的全局配置用于写回。
- *
- * 不能用 loadSettings().settings：它已经和 BUILTIN_PROFILES 合并过，整份写回会把用户
- * 从未启用的内置模型全部物化进配置文件。文件不存在时由 loadGlobalSettingsForWrite
- * 退回空骨架；文件存在但损坏/含非法值时直接抛错，绝不能静默回退骨架 ——
- * 否则下一次写盘会把用户的全部 profile（含内联 apiKey）无声清空。
- */
-function globalSettingsForWrite(options: UpdateModelApiKeyOptions): UserSettings {
-  if (options.globalSettings) return options.globalSettings;
-  return loadGlobalSettingsForWrite({ homeDir: options.homeDir });
 }
 
 /**
@@ -70,16 +56,17 @@ export async function updateModelApiKey(
     return false;
   }
 
-  const globalSettings = structuredClone(globalSettingsForWrite(options));
-  ensureProfile(globalSettings, profile);
-  // 统一走 updateProfileApiKey 执行组内归一，无论该 profile 是否已存盘，
-  // 均自动清理同厂商族其它模型的旧密钥副本，确保全局配置中同族只留一份密钥。
-  updateProfileApiKey(globalSettings, profile.id, apiKey);
-  const savedPath = (options.saveSettings ?? saveGlobalSettings)(globalSettings, {
+  let committed: UserSettings | undefined;
+  const change = (draft: UserSettings) => {
+    ensureProfile(draft, profile);
+    updateProfileApiKey(draft, profile.id, apiKey);
+    committed = draft;
+  };
+  const savedPath = (options.mutateSettings ?? mutateGlobalSettings)(change, {
     homeDir: options.homeDir,
   });
   if (options.globalSettings && options.globalSettings !== ctx.settings)
-    Object.assign(options.globalSettings, globalSettings);
+    Object.assign(options.globalSettings, committed);
   updateProfileApiKey(ctx.settings, profile.id, apiKey);
   if (ctx.onCredentialsUpdated) {
     ctx.onCredentialsUpdated(profile.id);

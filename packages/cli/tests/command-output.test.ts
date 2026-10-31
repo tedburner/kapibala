@@ -107,7 +107,10 @@ describe('injected command output', () => {
     ctx.settings.profiles = [keyedProfile];
     await updateModelApiKey(keyedProfile, ctx, {
       secretReader: async () => 'fixture-sensitive-value',
-      saveSettings: () => 'isolated/settings.json',
+      mutateSettings: (change) => {
+        change(structuredClone(ctx.settings));
+        return 'isolated/settings.json';
+      },
       globalSettings: ctx.settings,
     });
     expect(messages.some((message) => message.text.includes('已更新'))).toBe(true);

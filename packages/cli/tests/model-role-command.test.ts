@@ -132,7 +132,7 @@ describe('CLI role command contract', () => {
     expect(() =>
       persistModelRole(profile, 'planning', runtime, {
         homeDir,
-        saveSettings: () => {
+        mutateSettings: () => {
           throw new Error('disk failure');
         },
       }),
@@ -154,7 +154,10 @@ describe('CLI role command contract', () => {
     await updateModelApiKey(target, context, {
       globalSettings: settings,
       secretReader: async () => 'new-key',
-      saveSettings: () => 'saved',
+      mutateSettings: (change) => {
+        change(structuredClone(settings));
+        return 'saved';
+      },
     });
     expect(refresh).toHaveBeenCalledWith(target.id);
     expect(switched).not.toHaveBeenCalled();
@@ -172,7 +175,7 @@ describe('CLI role command contract', () => {
       updateModelApiKey(target, context, {
         globalSettings: settings,
         secretReader: async () => 'new-key',
-        saveSettings: () => {
+        mutateSettings: () => {
           throw new Error('disk failure');
         },
       }),

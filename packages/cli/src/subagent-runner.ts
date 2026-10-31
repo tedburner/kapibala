@@ -1,3 +1,4 @@
+import path from 'node:path';
 /**
  * @fileoverview CLI 生产环境真实子代理会话执行器（SubagentSessionRunner）工厂。
  *
@@ -40,6 +41,8 @@ import { registerBuiltinTools } from './tool-registration.js';
 export interface CliSubagentRunnerOptions {
   /** 会话管理器，用于创建独立的子会话历史文件与锁。 */
   manager: SessionManager;
+  /** 显式用户目录贯穿每个子会话；未传时保留既有 CLI/SDK 行为。 */
+  homeDirectory?: string;
   /** 模型绑定管理器，用于解析各角色对应的实际模型与 Provider。 */
   models: CliModelBindings;
   /** 用户设置。 */
@@ -107,6 +110,15 @@ export function createCliSubagentRunner(options: CliSubagentRunnerOptions): Suba
         (task.effectivePolicy as { mode?: SessionMode } | undefined)?.mode ?? 'Approval';
 
       subSession = new AgentSession({
+        userInstructionsPath: options.homeDirectory
+          ? path.join(options.homeDirectory, '.kapibala/AGENTS.md')
+          : undefined,
+        loggingDirectory: options.homeDirectory
+          ? path.join(options.homeDirectory, '.kapibala')
+          : undefined,
+        auditRecoveryDirectory: options.homeDirectory
+          ? path.join(options.homeDirectory, '.kapibala/audit')
+          : undefined,
         approvalChannel: options.approvalChannel,
         leaseCoordinator: options.leaseCoordinator,
         workspaceRoot: task.workspaceRoot,

@@ -6,14 +6,14 @@ import {
   BUILTIN_PROFILES,
   type UserSettings,
   loadGlobalSettingsForWrite,
-  saveGlobalSettings,
+  mutateGlobalSettings,
 } from '../src/settings.js';
 import { runSetupWizard } from '../src/wizard.js';
 
 vi.mock('../src/settings.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/settings.js')>()),
   loadGlobalSettingsForWrite: vi.fn(),
-  saveGlobalSettings: vi.fn(() => 'virtual-settings.json'),
+  mutateGlobalSettings: vi.fn(),
 }));
 
 describe('wizard user overrides and credential groups', () => {
@@ -21,6 +21,7 @@ describe('wizard user overrides and credential groups', () => {
     Object.getOwnPropertyDescriptor(stream, 'isTTY'),
   );
   let original: UserSettings;
+  let persisted: UserSettings | undefined;
   beforeEach(() => {
     for (const stream of [process.stdin, process.stdout])
       Object.defineProperty(stream, 'isTTY', { configurable: true, value: true });
@@ -41,7 +42,13 @@ describe('wizard user overrides and credential groups', () => {
       ],
     };
     vi.mocked(loadGlobalSettingsForWrite).mockReturnValue(original);
-    vi.mocked(saveGlobalSettings).mockImplementation(() => 'virtual-settings.json');
+    persisted = undefined;
+    vi.mocked(mutateGlobalSettings).mockImplementation((change) => {
+      const draft = structuredClone(original);
+      change(draft);
+      persisted = draft;
+      return 'virtual-settings.json';
+    });
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
   });
@@ -63,14 +70,14 @@ describe('wizard user overrides and credential groups', () => {
       question: question(),
       secretReader: async () => 'new-fixture-key',
     });
+    expect(result.profile.apiKey).toBe('new-fixture-key');
     expect(result.profile.maxOutputTokens).toBe(1024);
     expect(result.profile.chatCapabilities).toEqual({ requiresDone: false });
-    expect(vi.mocked(saveGlobalSettings).mock.calls[0]?.[0].profiles).toHaveLength(2);
+    expect(persisted?.profiles).toHaveLength(2);
   });
 
   it('normalizes the new key across the group and never prints credentials', async () => {
     await runSetupWizard({ question: question(), secretReader: async () => 'new-fixture-key' });
-    const persisted = vi.mocked(saveGlobalSettings).mock.calls[0]?.[0];
     expect(persisted?.profiles.filter((profile) => profile.apiKey)).toHaveLength(1);
     expect(persisted?.profiles.find((profile) => profile.id === 'gpt-6-astra')?.apiKey).toBe(
       'new-fixture-key',
@@ -92,7 +99,7 @@ describe('wizard user overrides and credential groups', () => {
   });
 
   it('does not mutate the loaded snapshot or activate any binding when save fails', async () => {
-    vi.mocked(saveGlobalSettings).mockImplementation(() => {
+    vi.mocked(mutateGlobalSettings).mockImplementation(() => {
       throw new Error('disk full');
     });
     const before = structuredClone(original);
@@ -144,7 +151,6 @@ describe('wizard user overrides and credential groups', () => {
     });
     expect(result.apiKey).toBe('');
     expect(result.profile.apiKeyEnv).toBe(API_KEY_ENV_NONE);
-    const persisted = vi.mocked(saveGlobalSettings).mock.calls[0]?.[0];
     const saved = persisted?.profiles.find((profile) => profile.id === result.profile.id);
     expect(saved?.apiKeyEnv).toBe(API_KEY_ENV_NONE);
     expect(() => createModelBinding(result.profile, persisted!)).not.toThrow();

@@ -28,7 +28,7 @@ describe('default model persistence', () => {
     expect(() =>
       persistDefaultModel(selected, settings, {
         homeDir: directory,
-        saveSettings: () => {
+        mutateSettings: () => {
           throw new Error('write failed');
         },
       }),
