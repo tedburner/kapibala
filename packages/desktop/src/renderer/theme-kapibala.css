@@ -1,0 +1,220 @@
+/* 产品语义主题唯一真源；形状和交互沿用 Kumo，不复制组件样式。 */
+:root {
+  color-scheme: light;
+  --color-kumo-canvas: #f7f7f7;
+  --color-kumo-overlay: rgba(0, 0, 0, 0.55);
+  --color-kumo-base: #ffffff;
+  --color-kumo-elevated: #ffffff;
+  --color-kumo-recessed: #f5f5f5;
+  --color-kumo-tint: #eeeeee;
+  --color-kumo-fill: #e8e8e8;
+  --color-kumo-fill-hover: #eeeeee;
+  --color-kumo-control: #ffffff;
+  --color-kumo-line: rgba(23, 23, 23, 0.1);
+  --color-kumo-hairline: #e8e8e8;
+  --color-kumo-contrast: #171717;
+  --color-kumo-brand: #171717;
+  --color-kumo-brand-hover: #2a2a2a;
+  --color-kumo-focus: #525252;
+  --text-color-kumo-default: #262626;
+  --text-color-kumo-strong: #171717;
+  --text-color-kumo-subtle: #666666;
+  --text-color-kumo-placeholder: #737373;
+  --text-color-kumo-inverse: #ffffff;
+  --text-color-kumo-brand: #404040;
+  --text-color-kumo-link: #404040;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --kapibala-sidebar-width: 256px;
+  --kapibala-sidebar-surface: #f8f8f7;
+  --kapibala-sidebar-icon-width: 57px;
+  /* 品牌信号色只标记「正在发生」，不参与正文、链接或大面积背景。 */
+  --kapibala-signal: #b0653a;
+  --kapibala-signal-soft: rgb(176 101 58 / 12%);
+}
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --color-kumo-canvas: #111111;
+  --color-kumo-base: #181818;
+  --color-kumo-elevated: #202020;
+  --color-kumo-recessed: #141414;
+  --color-kumo-tint: #262626;
+  --color-kumo-fill: #303030;
+  --color-kumo-fill-hover: #383838;
+  --color-kumo-control: #202020;
+  --color-kumo-line: rgba(255, 255, 255, 0.1);
+  --color-kumo-hairline: #333333;
+  --color-kumo-contrast: #f2f2f2;
+  --color-kumo-brand: #171717;
+  --color-kumo-brand-hover: #2a2a2a;
+  --color-kumo-focus: #d4d4d4;
+  --text-color-kumo-default: #e5e5e5;
+  --text-color-kumo-strong: #f5f5f5;
+  --text-color-kumo-subtle: #a3a3a3;
+  --text-color-kumo-placeholder: #8a8a8a;
+  --text-color-kumo-inverse: #111111;
+  --text-color-kumo-brand: #d4d4d4;
+  --text-color-kumo-link: #d4d4d4;
+  --kapibala-sidebar-surface: #151515;
+  --kapibala-signal: #d9a075;
+  --kapibala-signal-soft: rgb(217 160 117 / 18%);
+}
+/* Kumo LayerDialog 使用公开 Tailwind 尺寸 token，集中收紧各类浮层，避免页面各自覆盖库内部结构。 */
+@theme {
+  --container-md: 27.5rem;
+  --container-xl: 31.25rem;
+  --container-2xl: 37.5rem;
+  --text-base: 0.875rem;
+  --text-sm: 0.8125rem;
+  --text-lg: 1rem;
+  --text-xl: 1.125rem;
+}
+@theme inline {
+  --color-kumo-success: light-dark(#1f7a4d, #6cc79b);
+  --color-kumo-danger: light-dark(#b42318, #f08a82);
+  --color-kumo-warning: light-dark(#8a5a12, #e0b15c);
+  --color-kumo-info: light-dark(#1f5f7a, #7ec3dc);
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+body {
+  font-size: 14px;
+  font-family: var(--font-sans);
+  background: var(--color-kumo-base);
+  color: var(--text-color-kumo-default);
+  -webkit-font-smoothing: antialiased;
+}
+#root {
+  isolation: isolate;
+}
+.kapibala-action:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 2px;
+}
+.kapibala-prose {
+  font-size: 15px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.kapibala-prose p {
+  margin: 0 0 0.8em;
+}
+.kapibala-prose p:last-child {
+  margin-bottom: 0;
+}
+.kapibala-prose pre {
+  overflow-x: auto;
+}
+.kapibala-prose a {
+  color: var(--text-color-kumo-link);
+  text-decoration: underline;
+}
+.kapibala-prose ul,
+.kapibala-prose ol {
+  padding-left: 1.5em;
+}
+.kapibala-prose table {
+  border-collapse: collapse;
+  max-width: 100%;
+}
+.kapibala-prose th,
+.kapibala-prose td {
+  border: 1px solid var(--color-kumo-line);
+  padding: 0.5em;
+}
+
+/* 减少动效统一覆盖浮层与折叠的库默认过渡；不影响键盘、焦点或滚动操作。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    transition-duration: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 使用库显式提供的浮层 backdrop 标记，仅调整遮罩材质，保留原语的动效、层级与交互。 */
+[data-layer-dialog-backdrop] {
+  background-color: var(--color-kumo-overlay);
+}
+
+/* 长设置表单在弹窗内滚动，避免内容越多就把整块浮层撑满桌面。 */
+[role="dialog"]:has([data-kapibala-modal]) {
+  max-height: min(560px, calc(100dvh - 48px));
+}
+
+/* 侧栏按操作、空间、对话三层组织；选中底色只用于当前对话。 */
+.kapibala-sidebar-actions {
+  margin-bottom: 12px;
+}
+.kapibala-sidebar-action {
+  min-height: 36px;
+  font-weight: 500;
+}
+.kapibala-sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 34px;
+  margin: 0 2px 6px;
+  padding: 0 10px;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 8px;
+  color: var(--text-color-kumo-subtle);
+  background: var(--color-kumo-base);
+}
+[data-sidebar="sidebar"][data-state="collapsed"] .kapibala-sidebar-search {
+  display: none;
+}
+.kapibala-sidebar-search:focus-within {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 1px;
+}
+.kapibala-sidebar-search input {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-color-kumo-default);
+  font: inherit;
+}
+.kapibala-sidebar-search input::placeholder {
+  color: var(--text-color-kumo-placeholder);
+}
+.kapibala-sidebar-section {
+  padding: 16px 12px 6px;
+  color: var(--text-color-kumo-subtle);
+  font-size: 12px;
+  font-weight: 500;
+}
+.kapibala-sidebar-space {
+  margin-bottom: 2px;
+}
+.kapibala-sidebar-space-button {
+  min-height: 36px;
+  font-weight: 500;
+}
+.kapibala-sidebar-chevron {
+  color: var(--text-color-kumo-subtle);
+}
+.kapibala-sidebar-conversations {
+  padding: 2px 0 3px;
+}
+.kapibala-sidebar-conversation {
+  min-height: 34px;
+  padding-left: 40px;
+  font-weight: 400;
+}
+.kapibala-sidebar-conversation[data-active] {
+  font-weight: 500;
+}
