@@ -253,7 +253,10 @@ function stopProcessTree(child: ChildProcess, nativeGroup?: NativeBashGroup): bo
   try {
     process.kill(-child.pid, 'SIGTERM');
     return true;
-  } catch {
+  } catch (error: unknown) {
+    // 组可能先于本次信号消失（良性竞态）：此时已无进程可终止，交由 confirm 的 ESRCH 探活
+    // 收口为已停止；不能把 ESRCH 当终止失败，否则正常中止会被误报成 OUTCOME_UNKNOWN。
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
     try {
       child.kill('SIGTERM');
     } catch {
@@ -276,7 +279,9 @@ function forceProcessTree(child: ChildProcess, nativeGroup?: NativeBashGroup): b
   try {
     process.kill(-child.pid, 'SIGKILL');
     return true;
-  } catch {
+  } catch (error: unknown) {
+    // 与 TERM 路径同理：ESRCH 只说明组已消失，属于已停止而非无法确认。
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
     try {
       child.kill('SIGKILL');
     } catch {
