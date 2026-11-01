@@ -314,9 +314,29 @@ async function confirmProcessTreeStopped(
       if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
       return false;
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // kill(0) 对僵尸同样报存在：僵尸已终止、不会再产生副作用，仅剩僵尸的组按已停止处理；
+    // 仍有活成员时保持原轮询节奏等待其退出，探活工具不可用时沿用原判直至窗口结束。
+    if (groupHasLiveProcess(child.pid)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      continue;
+    }
+    return true;
   }
   return false;
+}
+
+/** 判断进程组内是否仍有非僵尸成员；ps 不可用或解析失败时保守视为有活进程。 */
+function groupHasLiveProcess(pgid: number): boolean {
+  const result = spawnSync('ps', ['-axo', 'pgid=', 'stat='], { timeout: 2000, encoding: 'utf8' });
+  const rows = result.stdout.split('\n');
+  let seen = false;
+  for (const row of rows) {
+    const columns = row.trim().split(/\s+/);
+    if (columns.length < 2 || Number(columns[0]) !== pgid) continue;
+    seen = true;
+    if (!columns[1]!.startsWith('Z')) return true;
+  }
+  return !seen;
 }
 
 function waitForClose(promise: Promise<unknown>, milliseconds: number): Promise<boolean> {
