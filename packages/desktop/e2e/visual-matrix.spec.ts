@@ -74,7 +74,8 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
     const search = page.getByRole('searchbox', { name: '搜索空间与对话' });
     await expect(search).toBeVisible();
     await expect(sidebar.getByRole('button', { name: '新建对话' })).toBeVisible();
-    await expect(sidebar.getByRole('button', { name: '添加项目' })).toBeVisible();
+    // 项目创建入口已收敛到输入框旁的空间选择器，侧栏不再提供常驻添加入口。
+    await expect(sidebar.getByRole('button', { name: '添加项目' })).toHaveCount(0);
     const geometry = await sidebar.evaluate((element) => {
       const bounds = element.getBoundingClientRect();
       const input = element
@@ -131,8 +132,9 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
           BrowserWindow.getAllWindows()[0].setSize(width, height),
         [width, height],
       );
-      // 首页空态也提供「添加项目」；取侧栏入口，保持与既有断言同一目标。
-      await page.getByRole('button', { name: '添加项目', exact: true }).first().click();
+      // 项目创建入口统一在输入框旁的空间选择器；浮层密度测量沿用同一目标。
+      await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
+      await page.getByRole('menuitem', { name: '新建项目' }).click();
       const dialog = page.getByRole('dialog', { name: '创建项目', exact: true });
       await check(dialog, `create-${width}-${height}`, 500);
       await page.getByRole('button', { name: '关闭创建项目', exact: true }).click();
