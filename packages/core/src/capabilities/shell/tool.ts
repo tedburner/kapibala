@@ -308,14 +308,19 @@ async function confirmProcessTreeStopped(
   if (process.platform === 'win32') return true; // taskkill /T /F reported successful termination.
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {
+    let exists: boolean;
     try {
       process.kill(-child.pid, 0);
+      exists = true;
     } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
-      return false;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ESRCH') return true;
+      if (code !== 'EPERM') return false;
+      // EPERM 说明组存在但本次探活不可信号；成员是否存活仍交由 ps 判定。
+      exists = true;
     }
     // kill(0) 对僵尸同样报存在：僵尸已终止、不会再产生副作用，仅剩僵尸的组按已停止处理；
-    // 仍有活成员时保持原轮询节奏等待其退出，探活工具不可用时沿用原判直至窗口结束。
+    // 仍有活成员时保持原轮询节奏等待其退出，ps 不可用时沿用原判直至窗口结束。
     if (groupHasLiveProcess(child.pid)) {
       await new Promise((resolve) => setTimeout(resolve, 50));
       continue;
@@ -325,18 +330,16 @@ async function confirmProcessTreeStopped(
   return false;
 }
 
-/** 判断进程组内是否仍有非僵尸成员；ps 不可用或解析失败时保守视为有活进程。 */
+/** 判断进程组内是否仍有非僵尸成员；ps 执行失败时保守视为有活进程，ps 成功但无成员即已停止。 */
 function groupHasLiveProcess(pgid: number): boolean {
   const result = spawnSync('ps', ['-axo', 'pgid=', 'stat='], { timeout: 2000, encoding: 'utf8' });
-  const rows = result.stdout.split('\n');
-  let seen = false;
-  for (const row of rows) {
+  if (result.status !== 0 || result.error) return true;
+  for (const row of result.stdout.split('\n')) {
     const columns = row.trim().split(/\s+/);
     if (columns.length < 2 || Number(columns[0]) !== pgid) continue;
-    seen = true;
     if (!columns[1]!.startsWith('Z')) return true;
   }
-  return !seen;
+  return false;
 }
 
 function waitForClose(promise: Promise<unknown>, milliseconds: number): Promise<boolean> {
