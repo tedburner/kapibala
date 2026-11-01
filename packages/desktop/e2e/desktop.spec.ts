@@ -167,20 +167,38 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect.poll(() => fs.existsSync(path.join(defaultRoot, 'proof.txt'))).toBe(true);
     expect(fs.existsSync(path.join(home, 'proof.txt'))).toBe(false);
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
+    const composer = page.getByRole('textbox', { name: '发送消息' });
+    // CI runner 的显示器可能小于默认窗宽（如 macOS 1176×885），窗口会被钳制到工作区，
+    // 不能假设一定拿到 ≥1200 的宽布局；两种布局分别验收真实行为。
+    const wide = await page.evaluate(() => matchMedia('(min-width: 1200px)').matches);
+    console.log(
+      `[desktop.spec] layout=${wide ? 'wide' : 'narrow'} innerWidth=${await page.evaluate(() => innerWidth)}`,
+    );
+    if (!wide) await composer.fill('保留中文草稿');
     await page.getByRole('button', { name: '查看详情', exact: true }).first().click();
     await expect(page.getByRole('dialog', { name: '工具详情' })).toBeVisible();
-    const composer = page.getByRole('textbox', { name: '发送消息' });
-    await composer.fill('保留中文草稿');
-    await composer.press('Tab');
-    await expect(page.getByRole('dialog', { name: '工具详情' })).toBeVisible();
-    await composer.dispatchEvent('keydown', {
-      key: 'Enter',
-      code: 'Enter',
-      isComposing: true,
-      bubbles: true,
-    });
-    await expect(composer).toHaveValue('保留中文草稿');
-    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    if (wide) {
+      // 宽布局：抽屉非模态，正文可继续输入，IME 组合键 Enter 不发送。
+      await composer.fill('保留中文草稿');
+      await composer.press('Tab');
+      await expect(page.getByRole('dialog', { name: '工具详情' })).toBeVisible();
+      await composer.dispatchEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        isComposing: true,
+        bubbles: true,
+      });
+      await expect(composer).toHaveValue('保留中文草稿');
+      await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    } else {
+      // 窄布局：抽屉按设计模态化，背景内容对可达性树不可见；草稿先填后开，关闭后仍须保留。
+      await expect(page.getByRole('dialog', { name: '工具详情' })).toHaveAttribute(
+        'aria-modal',
+        'true',
+      );
+      await expect(composer).toHaveCount(0);
+      await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    }
     await expect(page.getByRole('button', { name: '查看详情', exact: true }).first()).toBeFocused();
     await page.getByRole('button', { name: '会话状态', exact: true }).click();
     await expect(page.getByRole('heading', { name: '运行事实', exact: true })).toBeVisible();
@@ -200,8 +218,11 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(composer).toHaveValue('保留中文草稿');
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1200, 800));
     await page.getByRole('button', { name: '会话状态', exact: true }).click();
-    await composer.click();
-    await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toBeVisible();
+    if (wide) {
+      // 仅宽布局可断言「点击正文不关闭抽屉」；窄布局下背景在模态遮罩内不可点。
+      await composer.click();
+      await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toBeVisible();
+    }
     await page.screenshot({ path: path.join(artifacts, 'details-1200.png') });
     await page.getByRole('button', { name: '关闭详情', exact: true }).click();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
@@ -220,8 +241,9 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selection] });
     }, project);
     const beforeProjectCalls = requests.length;
-    // 首页空态也提供「添加项目」；取侧栏入口，保持与既有断言同一目标。
-    await page.getByRole('button', { name: '添加项目', exact: true }).first().click();
+    // 项目创建入口统一在输入框旁的空间选择器：现有项目、最近项目与新建项目在同一菜单。
+    await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
+    await page.getByRole('menuitem', { name: '新建项目' }).click();
     const creation = page.getByRole('dialog', { name: '创建项目', exact: true });
     await creation.getByRole('textbox', { name: '项目名称', exact: true }).fill('API 项目');
     await expect(creation.getByText('在此电脑上添加文件夹')).toBeVisible();
@@ -375,8 +397,9 @@ test('默认目录不可用时保持阻断且可使用项目入口，不回退�
     await app.evaluate(({ dialog }, selection) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selection] });
     }, project);
-    // 首页空态也提供「添加项目」；取侧栏入口，保持与既有断言同一目标。
-    await page.getByRole('button', { name: '添加项目', exact: true }).first().click();
+    // 项目创建入口统一在输入框旁的空间选择器：现有项目、最近项目与新建项目在同一菜单。
+    await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
+    await page.getByRole('menuitem', { name: '新建项目' }).click();
     await page.getByRole('button', { name: '选择文件夹', exact: true }).click();
     await page.getByRole('button', { name: '创建项目', exact: true }).click();
     await expect(page.getByRole('dialog', { name: '信任此文件夹吗？', exact: true })).toBeVisible();
