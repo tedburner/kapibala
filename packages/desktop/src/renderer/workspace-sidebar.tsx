@@ -49,7 +49,6 @@ export function WorkspaceSidebar({
   onSpace,
   onRecent,
   onDefault,
-  onPick,
   onNew,
   onOpen,
   onClose,
@@ -68,7 +67,6 @@ export function WorkspaceSidebar({
   onSpace(space: Workspace): void;
   onRecent(id: string): void;
   onDefault(): void;
-  onPick(): void;
   onNew(): void;
   onOpen(space: Workspace, conversationId: string): void;
   onClose(item: RuntimeItem): void;
@@ -159,16 +157,6 @@ export function WorkspaceSidebar({
               onClick={onNew}
             >
               新建对话
-            </Sidebar.MenuButton>
-            <Sidebar.MenuButton
-              icon={FolderPlusIcon}
-              className="kapibala-sidebar-action"
-              aria-label="添加项目"
-              tooltip="添加项目"
-              disabled={busy}
-              onClick={onPick}
-            >
-              添加项目
             </Sidebar.MenuButton>
             {!spaces.some((space) => space.kind === 'default') && (
               <Sidebar.MenuButton

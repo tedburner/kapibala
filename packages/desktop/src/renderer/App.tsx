@@ -338,7 +338,6 @@ export function App() {
           })
         }
         onDefault={() => void act(async () => selectSpace(await api.workspace.openDefault()))}
-        onPick={() => setProjectOpen(true)}
         onRecent={(id) => void act(async () => selectSpace(await api.workspace.openRecent(id)))}
         onNew={() => void act(() => openConversation())}
         onOpen={(space, conversationId) => void act(() => openConversation(conversationId, space))}
