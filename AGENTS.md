@@ -15,7 +15,7 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - ⚠️ **`--verify-only` 必须与 `pnpm verify` 同源**（typecheck → test → lint，含 check-secrets）。
   早前该分支只跑 typecheck + test 却输出「校验全部通过」，会漏掉 lint 错误与密钥泄露 —— 修过一次，别再退化。
 - `pnpm dev:cli` 是 `tsup --watch`，**只监听重建、不启动 REPL**；启动请用 `pnpm dev` 或直接 `node packages/cli/dist/bin.js`。
-- **验证门禁：`pnpm verify` = typecheck → test → lint**。注意 tsup/esbuild 不做类型检查，`pnpm build` 绿 ≠ 类型没问题。
+- **验证门禁：`pnpm verify` = typecheck → test（先 `pnpm build` 再 vitest）→ lint**。注意 tsup/esbuild 不做类型检查，`pnpm build` 绿 ≠ 类型没问题；test 前置构建是为了桌面集成测试依赖的 core/CLI host dist 制品保持新鲜，单独 `pnpm test` 同样会先构建。
 - 密钥扫描 `pnpm check-secrets` 已并入 lint 流程，严禁提交真实 API Key。
 
 ### 已知环境坑（Windows）
@@ -75,8 +75,9 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - 造型铁律：口鼻必须是"上窄下宽"的钝形深色块（水豚最关键辨识特征）；不要大面积奶油色口鼻斑（会读成泰迪熊）；头不要撑满画面（会读成河马）。
 - README 抬头 `<picture>` + `prefers-color-scheme` 双主题（dark 版仅字标换暖白 `#F0E4D6`）；tagline 固定：**心如止水，稳定如初 —— AI Agent Harness**。
 
-## 当前状态（2026-10-23）
+## 当前状态（2026-11-01）
 
+- **v0.1.0 桌面 Harness 已于 2026-10-31 在 `docs/v0.1.0-desktop-harness` 分支落库（5 个 commit，待合并 main）**：Core 历史读取预算与 `projectRootMode: 'exact'`、CLI host 公共投影层与 `mutateGlobalSettings` 配置事务、Electron 桌面客户端（`packages/desktop`，不新增 npm 发布包）、桌面候选构建与发布证据链路。新增门禁：`pnpm check-desktop`（已并入 lint）、`pnpm verify:desktop`（构建+类型+check-desktop --artifacts+单测+e2e）与 desktop-candidate workflow；发布证据追加桌面专项（`--desktop-version`，日常 PR 不要求）。协议会话注入 `~/.kapibala/AGENTS.md` 的迁移边界见 `docs/migration/v0.1.0.md`。
 - 版本编号约定于 2026-10-21 更新：采用三段稳定版本，minor/patch 均允许多位整数；默认 `v0.0.9 → v0.0.10`，不逢十进位。稳定整合版为 **v0.0.10**，Electron 桌面客户端为 **v0.1.0**；历史文档中的旧编号不作为现役发布规则。
 - v0.0.1 既有能力与后续路线图见 `docs/RELEASES.md`，不在规则文件重复维护能力清单。
 - **v0.0.10 稳定整合版已于 2026-10-23 发布到 npm 与 GitHub Release**（实际版本号以包清单与 `CLI_VERSION` 为准，升版只由 `pnpm release` 完成）。公开差异的唯一真源是 `docs/sdk-compatibility.md` + `scripts/fixtures/public-api/migration.json`；协议细节 `docs/local-protocol.md`、迁移动作 `docs/migration/v0.0.10.md`、证据与 pending 阻断 `docs/verification/v0.0.10.md`、发布说明 `docs/releases/v0.0.10.md`。三类专项门禁：`pnpm verify:compat`（v0.0.9 tarball × 候选构建四组合）、`pnpm verify:platform`（当前 OS 真实进程 + 三包隔离安装）、`pnpm verify:soak`（PR/nightly/release 分档）；新增宿主或传输能力时必须同步其断言，不允许用短档或模拟测试替代 Node 20、Windows ACL/ConPTY、POSIX PTY 与 release 长时证据。
