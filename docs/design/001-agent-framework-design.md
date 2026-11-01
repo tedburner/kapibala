@@ -823,6 +823,7 @@ kapibala/
 | **v0.0.9** | 本地客户端契约与发布前加固:版本化 wire DTO、本地守护进程和一种受控本地传输;审计、预算、宿主隔离与兼容性测试。桌面/Web/移动及远程接入在契约稳定后推进,远程接入先具备认证与授权 | 事件传输适配 + 宿主隔离 + 兼容性测试 | core + 本地宿主适配 |
 | **v0.0.10** | 阶段性整合:稳定已交付的 Core API、事件协议和本地客户端契约,完成迁移验证与发布流程,不新增运行时子系统；见 [技术方案](003-v0.0.10-stable-integration.md) | 全部已落地扩展点的集成验收 | CLI + Core SDK + 扩展包 |
 | **v0.1.0** | 跨平台桌面客户端:基于 Electron 复用 Headless Core、MCP、协议与 ViewModel；具体产品交付见 [路线图](../RELEASES.md) | 宿主适配 + 版本化通信契约 + 共享展示模型 | 独立桌面包 |
+| **v0.1.1** | 双主题:跨会话引用(同项目桶内把其它会话/分支的历史消息作为冻结快照,经宿主 `runPreparedTask` 注入并随 user 消息落盘,Core 新增只读不取锁的会话读取 API,CLI `/quote` 与桌面 mention 入口,补齐 `branchWithSummary`) + 多任务派发(委派会话一等化:detached 保留预算、`send_agent` 续聊、requestId 幂等、用户级 `/delegate`;桌面委派会话可见可接续,见 [设计 005](005-v0.1.1-multi-task-delegation.md));跨项目桶引用、活引用、跨 Harness 托管未交付,详见 [路线图](../RELEASES.md) | `CrossProjectSessionCatalog` 检索定位 + `runPreparedTask` 注入管道 + `branch_summary` 预留记录 + `spawn_agent`/`SubagentOutbox` 任务树 | core + 宿主增量 |
 
 ## 13. 待定议题:全局与项目的作用域模型(非 v0.0.1 范围)
 

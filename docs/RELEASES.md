@@ -5,6 +5,7 @@
 > 不允许前导零；默认只递增补丁段，`v0.0.9 → v0.0.10 → v0.0.11`，不逢十进位。
 > 稳定整合版由原规划 v0.1.0 调整为 **v0.0.10**，Electron 桌面客户端由原规划 v0.1.1 调整为 **v0.1.0**；
 > 次版本/主版本通过发布命令显式选择。已发布版本与历史验收记录不重命名。
+> 2026-11-01 确认规划：**v0.1.1** 为双主题补丁位版本（桌面端 v0.1.0 之后）——跨会话消息引用与上下文复用、多任务派发（后者见 [设计 005](design/005-v0.1.1-multi-task-delegation.md)）。
 
 ---
 
@@ -36,7 +37,24 @@
 | **v0.0.9** | **本地客户端契约与发布前加固**（已于 2026-10-21 发布；[发布说明](releases/v0.0.9.md)，[验收记录](verification/v0.0.9.md)，[迁移说明](migration/v0.0.9.md)） | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；已实现有界快照、审批与宿主隔离；Linux 与 Windows CI 全量门禁已通过，Windows ACL/进程树与 Node 20 等平台验收仍待补齐。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
 | **v0.0.10** | **阶段性整合版本**（已于 2026-10-23 发布；[发布说明](releases/v0.0.10.md)，[技术方案](design/003-v0.0.10-stable-integration.md)，[验收记录](verification/v0.0.10.md)，[迁移说明](migration/v0.0.10.md)，[SDK 兼容性说明](sdk-compatibility.md)） | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约：显式工作区身份、宿主级写租约与父子协调器传递、类型化错误与取消语义、按方法具体化的客户端结果与整个连接的恢复单位；新增 `verify:compat` / `verify:platform` / `verify:soak` 三类门禁。不新增客户端类型或运行时子系统；Node 20、Windows 跨用户 ACL/ConPTY、POSIX PTY、双解释器进程树及 release 长跑已在同一发布 SHA 上通过并获维护者审核 | CLI + Core SDK + 扩展包 |
 | **v0.1.0** | **桌面 Harness（Electron，阶段 A/B 已完成本地验收）** | 基于现有 Core、MCP 与共享 ViewModel，采用单个 utilityProcess Agent Host、受控 IPC 与 React 界面；交付项目/模型配置、历史对话、工具展示、审批取消、多会话及平台安装包，签名与公证纳入正式门禁；详见[功能与开发方案](design/004-v0.1.0-desktop-harness.md) | 私有桌面应用包 `packages/desktop`，不新增 npm 发布包 |
+| **v0.1.1** | **跨会话引用与多任务派发（双主题）**（规划中；多任务派发见[设计 005](design/005-v0.1.1-multi-task-delegation.md)） | 跨会话引用：同项目桶内把其它会话（含本会话其它分支）的历史消息作为冻结快照引入当前会话，宿主经 `runPreparedTask` 注入带溯源头的引用块（源会话 + `recordId` + 角色 + 时间戳 + 正文片段）并随 user 消息落盘，Core 新增只读不取锁的会话读取 API，CLI `/quote` 与桌面端 mention 弹层（接入全文检索），补齐 v0.0.7 未交付的 `branchWithSummary`；多任务派发：委派会话升级为用户可见、可续聊的一等会话（`spawn_agent` detached 保留预算、`send_agent` 续聊、requestId 幂等、「子任务名 · 父会话名」命名），CLI `/delegate` `/tasks` 用户级派发与任务面板，桌面委派会话可见可接续；单条/单轮引用预算上限，压缩投影保留溯源头、可降级正文。跨项目桶引用、活引用、跨 Harness 托管、Worktree 隔离、编排画布明确未交付 | Core + CLI + 桌面增量 |
 
+### v0.1.1 跨会话引用与多任务派发（2026-11-01 规划）
+
+> 双主题补丁位版本（2026-11-01 确认，与 [设计 005](design/005-v0.1.1-multi-task-delegation.md) 的 v0.1.1 定版合并）：两个主题共用既有会话、任务树与权限基础设施，互不依赖、可独立交付。
+>
+> **主题一 · 跨会话消息引用与上下文复用**：把其它会话（含本会话其它分支）的历史消息作为**确定性上下文**引入当前会话，走显式、可追溯、可复现的冻结快照回放，与自动提炼的长期记忆互补。v0.0.7 已交付的跨项目全文检索（`CrossProjectSessionCatalog.search` 返回命中 `recordId`）是定位基础，本版补齐其消费端。开源对标：Zed Agent Panel 的 `@` mention previous threads 与 Cursor `@ Past Chats` 已验证该交互形态；Claude Code 无原生支持。
+
+主题一交付边界：
+
+- **引用注入与落盘**：宿主经 `AgentSession.runPreparedTask` 在运行锁内把引用展开为带溯源头的引用块（来源元数据语义与 MCP Prompt 的 `promptSource` 对齐），随本轮 user 消息经 `MessageStore` 消息级落盘；引用为冻结快照，源会话后续压缩、分叉或归档不改变已注入内容，且不产生未闭合工具事务。
+- **Core 只读读取 API**：新增按会话与 `recordId` 读取消息的受控只读宿主 API，复用 Envelope 因果链（`parentId`/`branchId`）与投影能力；只读路径不获取 `SessionLock`、不创建目录，不破坏单写者与项目桶校验模型。
+- **宿主入口**：CLI 新增 `/quote`（复用 `/resume` 选择菜单与 `--search` 全文检索交互，支持会话级与消息级粒度）；桌面端输入区提供 mention 弹层，复用侧栏会话列表并接入全文检索（桌面端当前只搜标题）。
+- **预算与压缩**：单条引用与单轮引用总量设上限，超预算拒绝并提示（沿用任务自身超预算零追加拒绝语义）；引用块携带来源标记，压缩投影优先保留溯源头与摘要、允许降级正文，不误伤未被引用消息；剪裁白名单与 `normalizeHistory` 行为不变。
+- **收编遗留项**：v0.0.7 明确未交付的 `branchWithSummary` 跨分支摘要注入并入本版（`branch_summary` 记录类型与投影注入位已预留，本版补齐写入方）。
+- **主题一明确未交付**：跨项目桶（跨工作区）引用——需先与 v0.0.5 项目信任模型对齐后另行设计；活引用（引用随源会话演进联动）；引用内容自动记忆化提炼；对被引用会话的任何写操作。技术方案另行编写。
+
+**主题二 · 多任务派发**：交付范围以 [设计 005](design/005-v0.1.1-multi-task-delegation.md) 为准（提案草稿已入库），分三段交付（D1 Core 委派会话生命周期 → D2 CLI 用户级派发 → D3 桌面可见化，任一段独立可用）：`spawn_agent` 新增 detached 保留型委派会话与保留预算（数量 + 闲置天数，LIFO 清理）、`send_agent` 对空闲 detached 会话续聊（busy 即拒绝不排队）、工具层 requestId 幂等（显式去重，不做隐式摘要窗）、「子任务名 · 父会话名」命名；CLI `/delegate` `/tasks` 用户级派发与任务面板；桌面侧栏委派会话可见、流式看进度、终态后接续聊天。跨 Harness 托管（把外部 CLI agent 接入为派发目标）与被 ACP 客户端托管维持 005 §3.3 非目标，列为后续探索项；本版不捆绑 Worktree 隔离（005 开放问题 4）。
 
 ### v0.0.10 稳定整合与发布边界（2026-10-21）
 
