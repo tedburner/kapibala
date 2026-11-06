@@ -36,6 +36,7 @@ jobs:
           runtime: node@24
           require-lockfile: true
           cache: true
+          save-cache: false
       - name: Build candidate
         run: pnpm build
       - name: Require the reviewed release baseline
@@ -77,6 +78,7 @@ jobs:
           runtime: node@24
           require-lockfile: true
           cache: true
+          save-cache: false
       - name: Build candidate
         run: pnpm build
       - name: Collect three full release runs on one runner (not release acceptance)
