@@ -59,6 +59,7 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
+          cache: true
       - name: Check native target and version
         shell: bash
         env:
@@ -66,7 +67,6 @@ jobs:
         run: |
           node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_TARGET) process.exit(1)'
           node scripts/release.ts check "v$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')"
-      - run: pnpm install --frozen-lockfile
       - name: Install pinned Electron
         run: pnpm --filter @kiturone/kapibala-desktop exec install-electron
       - name: Prepare Apple API key

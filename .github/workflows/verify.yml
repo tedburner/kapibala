@@ -2,7 +2,14 @@ name: Verify
 
 on:
   push:
+    branches-ignore: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
   workflow_call:
     inputs:
       ref:
@@ -23,6 +30,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: verify-${{ github.event_name }}-${{ inputs.ref != '' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ inputs.ref == '' }}
+
 jobs:
   cross-platform:
     strategy:
@@ -40,14 +51,15 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
+          cache: true
       - name: Build and verify
         if: runner.os != 'Windows'
-        run: pnpm dev --no-start
+        run: pnpm dev --no-build --no-start
       - name: Build and verify on Windows
         if: runner.os == 'Windows'
         run: |
           New-Item -ItemType Directory -Force .workbuddy/ci-diagnostics | Out-Null
-          pnpm dev --no-start 2>&1 | Tee-Object -FilePath .workbuddy/ci-diagnostics/build-verify.log
+          pnpm dev --no-build --no-start 2>&1 | Tee-Object -FilePath .workbuddy/ci-diagnostics/build-verify.log
           exit $LASTEXITCODE
       - name: Current-OS automated checks (independent acceptance may remain pending)
         if: runner.os != 'Windows'
@@ -92,12 +104,13 @@ jobs:
           version: 12.4.1
           runtime: node@20
           require-lockfile: true
+          cache: true
       - name: Record minimum runtime
         run: |
           node --version
           node -e "if (Number(process.versions.node.split('.')[0]) !== 20) process.exit(1)"
       - name: Build and verify on Node 20
-        run: pnpm dev --no-start
+        run: pnpm dev --no-build --no-start
       - name: Node 20 automated checks (independent acceptance may remain pending)
         run: pnpm verify:platform --no-build --allow-pending
       - name: Preserve Node 20 evidence
@@ -120,6 +133,7 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
+          cache: true
       - name: Verify pinned v0.0.9 and candidate clients and hosts over stdio and socket
         run: pnpm verify:compat --prepare
       - name: Preserve compatibility evidence
@@ -131,7 +145,7 @@ jobs:
           if-no-files-found: error
 
   soak-pr:
-    if: github.event_name != 'workflow_call' || inputs.soak_tier == 'pr'
+    if: inputs.soak_tier == '' || inputs.soak_tier == 'pr'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -143,6 +157,7 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
+          cache: true
       - name: Build candidate
         run: pnpm build
       - name: PR soak (10 rounds)
@@ -168,6 +183,7 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
+          cache: true
       - name: Build candidate
         run: pnpm build
       - name: Require the reviewed release baseline
@@ -206,7 +222,7 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
-      - run: pnpm install --frozen-lockfile
+          cache: true
       - name: Install pinned Electron runtime
         run: pnpm --filter @kiturone/kapibala-desktop exec install-electron
       - name: Verify isolated desktop flows
