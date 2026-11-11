@@ -95,7 +95,7 @@ export function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const detailTrigger = useRef<HTMLElement | null>(null);
   const [details, setDetails] = useState<DetailsTarget>();
-  const [wide, setWide] = useState(innerWidth >= 1200);
+  const [wide, setWide] = useState(() => matchMedia('(min-width: 1200px)').matches);
   const current = useRef<Workspace | undefined>(undefined);
   const run =
     opened &&
@@ -198,6 +198,8 @@ export function App() {
   useEffect(() => {
     const query = matchMedia('(min-width: 1200px)');
     const change = () => setWide(query.matches);
+    // 窗口可能在首帧渲染后被系统钳制到工作区，挂载时主动同步一次，避免初始值与媒体查询脱节。
+    change();
     query.addEventListener('change', change);
     return () => query.removeEventListener('change', change);
   }, []);
