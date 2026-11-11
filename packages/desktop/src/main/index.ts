@@ -393,6 +393,10 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     backgroundColor: surfaces[displayMode()],
+    // macOS 使用沉浸式标题栏，红绿灯位置按 46px 标题栏垂直居中；其它平台保留原生边框。
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 15 } }
+      : {}),
     webPreferences: {
       preload: path.join(directory, '../preload/index.cjs'),
       contextIsolation: true,

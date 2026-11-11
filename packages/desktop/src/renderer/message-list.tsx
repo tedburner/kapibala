@@ -1,4 +1,4 @@
-import { Button, Collapsible, InlineCopyText, LayerCard } from '@cloudflare/kumo';
+import { Button, Collapsible, InlineCopyText } from '@cloudflare/kumo';
 import type { ViewBlock, ViewMessage, ViewTool } from '@kiturone/kapibala-cli/view-model';
 import {
   ArrowDownIcon,
@@ -150,7 +150,7 @@ function ToolGroup({
   const summary = summarize(tools);
   const totalMs = tools.reduce((sum, tool) => sum + (tool.durationMs ?? 0), 0);
   return (
-    <Collapsible.Root defaultOpen className="my-2 rounded-lg bg-kumo-recessed/40">
+    <Collapsible.Root defaultOpen className="kapibala-tool-group my-2">
       <Collapsible.Trigger
         render={
           <Button
@@ -271,17 +271,10 @@ export function MessageList({
         {messages.length === 0 && (
           <p className="py-12 text-center text-sm text-kumo-subtle">对话已就绪，输入你的问题。</p>
         )}
-        <div
-          className="relative mx-auto w-full max-w-[848px]"
-          style={{ height: virtualizer.getTotalSize() }}
-        >
+        <div className="kapibala-thread relative" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((row) => {
             const message = messages[row.index];
-            const previous = messages[row.index - 1];
             const isUser = message.role === 'user';
-            // 轮内只在首次出现时标注一次身份；气泡位置已表达用户消息。
-            const showAuthor =
-              message.role === 'assistant' && (!previous || previous.role === 'user');
             const copyText = message.blocks
               .filter((block) => block.kind === 'text')
               .map((block) => block.text)
@@ -300,12 +293,9 @@ export function MessageList({
                   aria-label={isUser ? '你的消息' : 'Kapibala 回复'}
                   className={isUser ? 'ml-auto w-fit max-w-[85%]' : 'group w-full'}
                 >
-                  {showAuthor && (
-                    <p className="mb-2 text-xs font-medium text-kumo-subtle">Kapibala</p>
-                  )}
-                  <LayerCard
+                  <div
                     className={
-                      isUser ? 'bg-kumo-tint px-4 py-3' : 'bg-transparent p-0 shadow-none ring-0'
+                      isUser ? 'kapibala-user-bubble whitespace-pre-wrap break-words' : 'w-full'
                     }
                   >
                     {groupBlocks(message.blocks).map((group) =>
@@ -342,7 +332,7 @@ export function MessageList({
                         />
                       ),
                     )}
-                  </LayerCard>
+                  </div>
                   {message.role === 'assistant' && copyText && (
                     <InlineCopyText
                       className="kapibala-action mt-2 text-xs text-kumo-subtle opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 focus-visible:opacity-100"

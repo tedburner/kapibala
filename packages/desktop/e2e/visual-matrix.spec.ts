@@ -48,9 +48,9 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
   const page = await app.firstWindow();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const measurements: unknown[] = [];
-  async function check(dialog: Locator, name: string, width: number) {
+  async function check(dialog: Locator, name: string, width: number | 'none') {
     await expect(dialog).toBeVisible();
-    await expect(dialog).toHaveCSS('max-width', `${width}px`);
+    await expect(dialog).toHaveCSS('max-width', width === 'none' ? 'none' : `${width}px`);
     await expect
       .poll(async () =>
         dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
@@ -88,7 +88,7 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
         right: bounds.right - input.right,
       };
     });
-    expect(geometry.width).toBe(256);
+    expect(geometry.width).toBe(275);
     expect(geometry.inputWidth).toBeGreaterThan(200);
     expect(Math.abs(geometry.left - geometry.right)).toBeLessThan(3);
     await page.screenshot({
@@ -140,14 +140,20 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
       await page.getByRole('button', { name: '关闭创建项目', exact: true }).click();
       await page.getByRole('button', { name: '打开设置', exact: true }).click();
       const settings = page.getByRole('dialog', { name: '设置', exact: true });
-      await check(settings, `settings-${width}-${height}`, 600);
+      // 设置是 PI 式整页导航：铺满窗口、不设弹窗宽度上限，左栏固定 275px。
+      await check(settings, `settings-${width}-${height}`, 'none');
+      expect(
+        await settings
+          .locator('.kapibala-settings-rail')
+          .evaluate((element) => element.getBoundingClientRect().width),
+      ).toBe(275);
       await settings.getByRole('tab', { name: '模型与服务商', exact: true }).click();
       await settings.getByRole('button', { name: '保存模型', exact: true }).click();
       const confirmation = page.getByRole('dialog', { name: '确认模型与凭证', exact: true });
       await check(confirmation, `credential-${width}-${height}`, 440);
       await page.getByRole('button', { name: '返回编辑模型', exact: true }).click();
       await settings.getByRole('tab', { name: '外观与应用', exact: true }).click();
-      await check(settings, `appearance-${width}-${height}`, 600);
+      await check(settings, `appearance-${width}-${height}`, 'none');
       await page.screenshot({
         path: path.join(artifacts, `settings-${width}-${height}.png`),
         animations: 'disabled',

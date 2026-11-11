@@ -1,7 +1,6 @@
 import {
   Button,
   DropdownMenu,
-  Empty,
   Input,
   InputArea,
   LayerCard,
@@ -11,12 +10,11 @@ import {
 import brandMark from '@kapibala-assets/icon.svg';
 import { selectMessages } from '@kiturone/kapibala-cli/view-model';
 import {
+  ArrowUpIcon,
   CaretDownIcon,
   CheckIcon,
   FolderPlusIcon,
   FolderSimpleIcon,
-  PaperPlaneTiltIcon,
-  PlusIcon,
   ShieldCheckIcon,
   StopIcon,
   XIcon,
@@ -66,11 +64,6 @@ const failure = (error: unknown) =>
   error instanceof Error ? error.message : '操作失败，请检查配置后重试。';
 /** 首页示例只填入草稿，不创建会话、不自动发送；用户仍可改写后再提交。 */
 const STARTERS = ['梳理当前仓库的目录结构', '为这个项目补一份 README', '检查最近的改动有没有风险'];
-/** 空态只保留路径末两段：完整绝对路径留在悬浮提示与详情抽屉，避免首屏出现整条临时目录。 */
-function shortRoot(root: string): string {
-  const parts = root.split(/[\\/]+/).filter(Boolean);
-  return parts.length <= 3 ? root : `…/${parts.slice(-2).join('/')}`;
-}
 
 /** 桌面应用只组合投影事实与临时 UI 状态；运行和审批的最终决定由 Host 校验。 */
 export function App() {
@@ -303,6 +296,282 @@ export function App() {
           .flatMap((message) => message.blocks)
           .find((block) => block.tool?.callId === details.callId)?.tool
       : undefined;
+  // 输入卡在首页与对话页共用：只改变落点，不复制发送、模式与模型选择逻辑。
+  const composer = (
+    <div className="relative w-full space-y-2">
+      {/* 输入、空间、模型、模式与发送同属一张卡：焦点由卡片整体承担，工具条保持低权重。 */}
+      <div className="kapibala-composer px-3 pt-3 pb-2">
+        <InputArea
+          aria-label="发送消息"
+          placeholder={opened ? '继续对话…' : '描述你想完成的任务…'}
+          value={draft}
+          onValueChange={(value) =>
+            ui.draft(opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new', value)
+          }
+          disabled={busy}
+          autoResize
+          minRows={1}
+          maxRows={8}
+          className="max-h-[200px] rounded-none bg-transparent px-2 py-1 ring-0 focus:ring-0"
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              void send();
+            }
+          }}
+        />
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-0.5">
+            {/* 空间入口在会话内外都保留：换目标空间不必先回侧栏；切空间会关闭当前会话视图，运行中的任务仍在后台。 */}
+            <DropdownMenu>
+              <DropdownMenu.Trigger
+                render={
+                  <Button
+                    className="kapibala-action kapibala-chip max-w-48"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    aria-label={workspace ? `会话空间：${workspace.name}` : '选择空间'}
+                  >
+                    <FolderSimpleIcon size={15} className="shrink-0" />
+                    <span className="min-w-0 truncate">{workspace?.name ?? '选择空间'}</span>
+                    <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
+                  </Button>
+                }
+              />
+              <DropdownMenu.Content>
+                <div className="px-2 py-2" onKeyDown={(event) => event.stopPropagation()}>
+                  <Input
+                    size="sm"
+                    aria-label="搜索项目"
+                    placeholder="搜索项目"
+                    className="w-full bg-transparent text-sm"
+                    value={projectSearch}
+                    onValueChange={setProjectSearch}
+                  />
+                </div>
+                <DropdownMenu.Group>
+                  <DropdownMenu.Label>空间</DropdownMenu.Label>
+                  {spaces
+                    .filter((space) =>
+                      space.name.toLowerCase().includes(projectSearch.trim().toLowerCase()),
+                    )
+                    .map((space) => (
+                      <DropdownMenu.Item
+                        key={space.id}
+                        onClick={() => void act(() => selectSpace(space))}
+                      >
+                        <FolderSimpleIcon size={16} className="text-kumo-subtle" />
+                        <span className="min-w-0 flex-1 truncate">{space.name}</span>
+                        {space.id === workspace?.id && <CheckIcon size={14} />}
+                      </DropdownMenu.Item>
+                    ))}
+                </DropdownMenu.Group>
+                {recent.length > 0 && (
+                  <DropdownMenu.Group>
+                    <DropdownMenu.Label>最近项目</DropdownMenu.Label>
+                    {recent
+                      .filter(
+                        (item) =>
+                          !spaces.some((space) => space.recentId === item.id) &&
+                          item.name.toLowerCase().includes(projectSearch.trim().toLowerCase()),
+                      )
+                      .map((item) => (
+                        <DropdownMenu.Item
+                          key={item.id}
+                          onClick={() =>
+                            void act(async () =>
+                              selectSpace(await api.workspace.openRecent(item.id)),
+                            )
+                          }
+                        >
+                          <FolderSimpleIcon size={16} className="text-kumo-subtle" />
+                          <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                        </DropdownMenu.Item>
+                      ))}
+                  </DropdownMenu.Group>
+                )}
+                <DropdownMenu.Separator />
+                <DropdownMenu.Item onClick={() => setProjectOpen(true)}>
+                  <FolderPlusIcon size={16} className="text-kumo-subtle" />
+                  新建项目
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu>
+            {opened && (
+              <DropdownMenu>
+                <DropdownMenu.Trigger
+                  render={
+                    <Button
+                      className="kapibala-action kapibala-chip"
+                      variant="ghost"
+                      size="sm"
+                      disabled={Boolean(running) || busy}
+                      aria-label={`会话模式：${MODE_NAMES[opened.configuration.mode]}`}
+                    >
+                      <ShieldCheckIcon size={15} className="shrink-0" />
+                      <span className="min-w-0 truncate">
+                        {MODE_NAMES[opened.configuration.mode]}
+                      </span>
+                      <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
+                    </Button>
+                  }
+                />
+                <DropdownMenu.Content>
+                  {(
+                    [
+                      ['Approval', '逐次审批'],
+                      ['Plan', '计划'],
+                      ['Auto', '自动'],
+                      ['FullAccess', '完全访问'],
+                    ] as const
+                  ).map(([mode, name]) => (
+                    <DropdownMenu.Item
+                      key={mode}
+                      onClick={() => {
+                        if (mode === 'FullAccess') setFullAccess(true);
+                        else void act(() => configure({ ...scopeOf(opened), mode }));
+                      }}
+                    >
+                      <span className="min-w-0 flex-1">{name}</span>
+                      {opened.configuration.mode === mode && <CheckIcon size={14} />}
+                    </DropdownMenu.Item>
+                  ))}
+                </DropdownMenu.Content>
+              </DropdownMenu>
+            )}
+            <DropdownMenu>
+              <DropdownMenu.Trigger
+                render={
+                  <Button
+                    className="kapibala-action kapibala-chip max-w-56"
+                    variant="ghost"
+                    size="sm"
+                    disabled={Boolean(running) || busy}
+                    aria-label={
+                      opened
+                        ? `当前会话模型：${composerModel?.name ?? '选择模型'}`
+                        : `新对话模型：${composerModel?.name ?? '选择模型'}`
+                    }
+                  >
+                    <span className="min-w-0 truncate">{composerModel?.name ?? '未配置模型'}</span>
+                    <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
+                  </Button>
+                }
+              />
+              {/* 内置清单有二十个模型，限制高度让其内部滚动，避免菜单铺满整窗。 */}
+              <DropdownMenu.Content className="max-h-[min(20rem,var(--available-height))]">
+                {opened && (
+                  <>
+                    <DropdownMenu.Sub>
+                      <DropdownMenu.SubTrigger>
+                        会话角色：{ROLE_NAMES[opened.configuration.role]}
+                      </DropdownMenu.SubTrigger>
+                      <DropdownMenu.SubContent>
+                        {(
+                          [
+                            ['default', '默认'],
+                            ['planning', '规划'],
+                            ['execution', '执行'],
+                            ['fast', '快速'],
+                          ] as const
+                        ).map(([role, name]) => (
+                          <DropdownMenu.Item
+                            key={role}
+                            onClick={() => void act(() => configure({ ...scopeOf(opened), role }))}
+                          >
+                            <span className="min-w-0 flex-1">{name}</span>
+                            {opened.configuration.role === role && <CheckIcon size={14} />}
+                          </DropdownMenu.Item>
+                        ))}
+                      </DropdownMenu.SubContent>
+                    </DropdownMenu.Sub>
+                    <DropdownMenu.Separator />
+                  </>
+                )}
+                <DropdownMenu.Group>
+                  <DropdownMenu.Label>
+                    {opened ? '本会话模型' : '新对话使用的模型'}
+                  </DropdownMenu.Label>
+                  {usableModels.map((model) => (
+                    <DropdownMenu.Item key={model.id} onClick={() => chooseModel(model.id)}>
+                      <span className="min-w-0 flex-1 truncate">{model.name}</span>
+                      {model.id === composerModel?.id && <CheckIcon size={14} />}
+                    </DropdownMenu.Item>
+                  ))}
+                  {usableModels.length === 0 && (
+                    <DropdownMenu.Item onClick={() => ui.settings(true)}>
+                      <span className="min-w-0 flex-1 truncate">还没有可用模型，去设置</span>
+                    </DropdownMenu.Item>
+                  )}
+                </DropdownMenu.Group>
+              </DropdownMenu.Content>
+            </DropdownMenu>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {running ? (
+              <Button
+                className="kapibala-action kapibala-chip"
+                size="sm"
+                variant="secondary"
+                disabled={run.phase !== 'running'}
+                onClick={() =>
+                  opened &&
+                  void api.run
+                    .cancel({ ...scopeOf(opened), runId: run.runId })
+                    .catch((reason) => report(failure(reason)))
+                }
+              >
+                <StopIcon size={15} />
+                {run.phase === 'running'
+                  ? '停止'
+                  : run.phase === 'cancelling'
+                    ? '正在取消'
+                    : '正在清理'}
+              </Button>
+            ) : (
+              <Button
+                className="kapibala-action kapibala-send text-(--text-color-kumo-inverse)!"
+                size="base"
+                variant="primary"
+                shape="square"
+                style={
+                  {
+                    '--kumo-button-emphasis-ring': 'var(--color-kumo-focus)',
+                  } as CSSProperties
+                }
+                aria-label="发送"
+                disabled={busy || !canSend}
+                onClick={() => void send()}
+              >
+                <ArrowUpIcon size={17} weight="bold" />
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+      {!opened && workspace && !workspace.trusted && (
+        <p className="kapibala-composer-hint px-1 text-kumo-warning">
+          当前空间尚未信任，确认信任后才能发送。
+        </p>
+      )}
+      {/* 没有密钥时直接说清阻断原因并给出入口，不让用户点了发送才发现不可用。 */}
+      {usableModels.length === 0 && (
+        <p className="kapibala-composer-hint flex flex-wrap items-center gap-1 px-1 text-kumo-warning">
+          <span>还没有可用模型，请先在</span>
+          <Button
+            className="kapibala-action h-auto px-1 py-0 text-xs underline underline-offset-2"
+            variant="ghost"
+            size="sm"
+            onClick={() => ui.settings(true)}
+          >
+            设置
+          </Button>
+          <span>中为模型填写密钥。</span>
+        </p>
+      )}
+    </div>
+  );
 
   return (
     <Sidebar.Provider
@@ -359,30 +628,32 @@ export function App() {
       />
       <div ref={containerRef} className="relative flex min-w-0 flex-1">
         <main className="flex min-w-0 flex-1 flex-col bg-kumo-base">
-          <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-kumo-line px-5">
-            <div className="flex min-w-0 items-center gap-3">
+          <header className="kapibala-titlebar flex shrink-0 items-center justify-between gap-3 px-4">
+            <div className="flex min-w-0 items-center gap-2">
               <Sidebar.Trigger aria-label="展开或收起侧栏" />
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium">
+                <p className="truncate text-[13px] font-medium">
                   {workspace?.name ?? '选择空间'}
                   {opened ? ` / ${currentTitle}` : ''}
                 </p>
-                <p className="truncate text-xs text-kumo-subtle">{headerHint}</p>
+                <p className="truncate text-[11px] text-kumo-subtle">{headerHint}</p>
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1">
               <Button
-                className="kapibala-action"
+                className="kapibala-action kapibala-chip"
                 variant="ghost"
+                size="sm"
                 onClick={() => ui.approvals(true)}
               >
-                <ShieldCheckIcon size={18} />
+                <ShieldCheckIcon size={15} />
                 审批 {facts.approvals.length}
               </Button>
               {opened && (
                 <Button
-                  className="kapibala-action"
+                  className="kapibala-action kapibala-chip"
                   variant="ghost"
+                  size="sm"
                   onClick={(event) => {
                     detailTrigger.current = event.currentTarget;
                     setDetails({ kind: 'status' });
@@ -396,7 +667,7 @@ export function App() {
                   className="kapibala-action"
                   variant="ghost"
                   shape="square"
-                  size="base"
+                  size="sm"
                   aria-label="关闭当前会话"
                   onClick={() =>
                     void act(async () => {
@@ -409,7 +680,7 @@ export function App() {
                     })
                   }
                 >
-                  <XIcon size={18} />
+                  <XIcon size={16} />
                 </Button>
               )}
             </div>
@@ -469,72 +740,31 @@ export function App() {
               </div>
             )
           ) : (
-            <div className="flex min-h-0 flex-1 justify-center overflow-y-auto px-6">
-              {/* 引导卡用 my-auto 居中；卡片高于可视区时仍从顶部开始滚动，不会被 flex 居中裁掉。 */}
-              <Empty
-                className="my-auto max-w-xl [@media(max-height:700px)]:gap-4 [@media(max-height:700px)]:py-8"
-                icon={
-                  <img src={brandMark} alt="" aria-hidden="true" className="size-14 rounded-xl" />
-                }
-                title="今天想完成什么？"
-                description="描述任务后按 Enter 发送；其它空间运行中的任务会在后台继续。"
-                contents={
-                  <div className="flex flex-col items-center gap-5">
-                    <div className="flex flex-wrap justify-center gap-2">
-                      {STARTERS.map((starter) => (
-                        <Button
-                          key={starter}
-                          className="kapibala-action"
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => ui.draft(':new', starter)}
-                        >
-                          {starter}
-                        </Button>
-                      ))}
-                    </div>
-                    {/* 空态交代「在哪个空间、哪个目录」以及两个次要动作；路径用悬浮提示承载，不占首屏。 */}
-                    <div className="flex flex-col items-center gap-3 border-t border-kumo-line pt-4">
-                      <p className="text-xs text-kumo-subtle">
-                        当前空间：{workspace?.name ?? '未选择'}
-                        {workspace?.root && (
-                          <>
-                            {' · '}
-                            <span
-                              className="inline-block max-w-64 truncate align-bottom font-mono"
-                              title={workspace.root}
-                            >
-                              {shortRoot(workspace.root)}
-                            </span>
-                          </>
-                        )}
-                      </p>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          className="kapibala-action"
-                          variant="ghost"
-                          size="sm"
-                          disabled={!workspace?.trusted || busy}
-                          onClick={() => void act(() => openConversation())}
-                        >
-                          <PlusIcon size={16} />
-                          新建对话
-                        </Button>
-                        <Button
-                          className="kapibala-action"
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => setProjectOpen(true)}
-                        >
-                          <FolderPlusIcon size={16} />
-                          添加项目
-                        </Button>
-                      </div>
-                    </div>
+            <div className="kapibala-home">
+              {/* 首页只保留吉祥物、标题与输入卡：动作入口在侧栏与输入卡内，首屏不再堆叠重复按钮。 */}
+              <div className="kapibala-home-stack">
+                <div className="kapibala-home-hero">
+                  <img src={brandMark} alt="" aria-hidden="true" className="kapibala-home-mark" />
+                  <h1 className="kapibala-home-title">今天想做点什么？</h1>
+                  <p className="kapibala-home-subtitle">
+                    描述任务后按 Enter 发送；其它空间运行中的任务会在后台继续。
+                  </p>
+                  <div className="kapibala-home-starters">
+                    {STARTERS.map((starter) => (
+                      <Button
+                        key={starter}
+                        className="kapibala-action kapibala-starter"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => ui.draft(':new', starter)}
+                      >
+                        {starter}
+                      </Button>
+                    ))}
                   </div>
-                }
-              />
+                </div>
+                <div className="kapibala-home-composer">{composer}</div>
+              </div>
             </div>
           )}
           {facts.state?.notices.map((notice) => (
@@ -542,300 +772,11 @@ export function App() {
               {notice.text}
             </output>
           ))}
-          <footer className="shrink-0 px-6 pt-3 pb-4">
-            <div className="relative mx-auto w-full max-w-[848px] space-y-2">
-              {/* 输入、空间、模型、模式与发送同属一张卡：焦点由卡片整体承担，工具条保持低权重。 */}
-              <div className="rounded-[20px] border border-kumo-line bg-kumo-base px-3 pt-3 pb-2 shadow-sm transition-colors focus-within:border-kumo-focus/40">
-                <InputArea
-                  aria-label="发送消息"
-                  placeholder={opened ? '继续对话…' : '描述你想完成的任务…'}
-                  value={draft}
-                  onValueChange={(value) =>
-                    ui.draft(
-                      opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new',
-                      value,
-                    )
-                  }
-                  disabled={busy}
-                  autoResize
-                  minRows={2}
-                  maxRows={6}
-                  className="max-h-[180px] rounded-none bg-transparent px-2 py-1 ring-0 focus:ring-0"
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === 'Enter' &&
-                      !event.shiftKey &&
-                      !event.nativeEvent.isComposing
-                    ) {
-                      event.preventDefault();
-                      void send();
-                    }
-                  }}
-                />
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-1">
-                    {/* 空间入口在会话内外都保留：换目标空间不必先回侧栏；切空间会关闭当前会话视图，运行中的任务仍在后台。 */}
-                    <DropdownMenu>
-                      <DropdownMenu.Trigger
-                        render={
-                          <Button
-                            className="kapibala-action max-w-48"
-                            variant="ghost"
-                            size="sm"
-                            disabled={busy}
-                            aria-label={workspace ? `会话空间：${workspace.name}` : '选择空间'}
-                          >
-                            <FolderSimpleIcon size={16} className="shrink-0" />
-                            <span className="min-w-0 truncate">
-                              {workspace?.name ?? '选择空间'}
-                            </span>
-                            <CaretDownIcon size={14} className="shrink-0 text-kumo-subtle" />
-                          </Button>
-                        }
-                      />
-                      <DropdownMenu.Content>
-                        <div className="px-2 py-2" onKeyDown={(event) => event.stopPropagation()}>
-                          <Input
-                            size="sm"
-                            aria-label="搜索项目"
-                            placeholder="搜索项目"
-                            className="w-full bg-transparent text-sm"
-                            value={projectSearch}
-                            onValueChange={setProjectSearch}
-                          />
-                        </div>
-                        <DropdownMenu.Group>
-                          <DropdownMenu.Label>空间</DropdownMenu.Label>
-                          {spaces
-                            .filter((space) =>
-                              space.name.toLowerCase().includes(projectSearch.trim().toLowerCase()),
-                            )
-                            .map((space) => (
-                              <DropdownMenu.Item
-                                key={space.id}
-                                onClick={() => void act(() => selectSpace(space))}
-                              >
-                                <FolderSimpleIcon size={16} className="text-kumo-subtle" />
-                                <span className="min-w-0 flex-1 truncate">{space.name}</span>
-                                {space.id === workspace?.id && <CheckIcon size={14} />}
-                              </DropdownMenu.Item>
-                            ))}
-                        </DropdownMenu.Group>
-                        {recent.length > 0 && (
-                          <DropdownMenu.Group>
-                            <DropdownMenu.Label>最近项目</DropdownMenu.Label>
-                            {recent
-                              .filter(
-                                (item) =>
-                                  !spaces.some((space) => space.recentId === item.id) &&
-                                  item.name
-                                    .toLowerCase()
-                                    .includes(projectSearch.trim().toLowerCase()),
-                              )
-                              .map((item) => (
-                                <DropdownMenu.Item
-                                  key={item.id}
-                                  onClick={() =>
-                                    void act(async () =>
-                                      selectSpace(await api.workspace.openRecent(item.id)),
-                                    )
-                                  }
-                                >
-                                  <FolderSimpleIcon size={16} className="text-kumo-subtle" />
-                                  <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                                </DropdownMenu.Item>
-                              ))}
-                          </DropdownMenu.Group>
-                        )}
-                        <DropdownMenu.Separator />
-                        <DropdownMenu.Item onClick={() => setProjectOpen(true)}>
-                          <FolderPlusIcon size={16} className="text-kumo-subtle" />
-                          新建项目
-                        </DropdownMenu.Item>
-                      </DropdownMenu.Content>
-                    </DropdownMenu>
-                    {opened && (
-                      <DropdownMenu>
-                        <DropdownMenu.Trigger
-                          render={
-                            <Button
-                              className="kapibala-action"
-                              variant="ghost"
-                              size="sm"
-                              disabled={Boolean(running) || busy}
-                              aria-label={`会话模式：${MODE_NAMES[opened.configuration.mode]}`}
-                            >
-                              <ShieldCheckIcon size={16} className="shrink-0" />
-                              <span className="min-w-0 truncate">
-                                {MODE_NAMES[opened.configuration.mode]}
-                              </span>
-                              <CaretDownIcon size={14} className="shrink-0 text-kumo-subtle" />
-                            </Button>
-                          }
-                        />
-                        <DropdownMenu.Content>
-                          {(
-                            [
-                              ['Approval', '逐次审批'],
-                              ['Plan', '计划'],
-                              ['Auto', '自动'],
-                              ['FullAccess', '完全访问'],
-                            ] as const
-                          ).map(([mode, name]) => (
-                            <DropdownMenu.Item
-                              key={mode}
-                              onClick={() => {
-                                if (mode === 'FullAccess') setFullAccess(true);
-                                else void act(() => configure({ ...scopeOf(opened), mode }));
-                              }}
-                            >
-                              <span className="min-w-0 flex-1">{name}</span>
-                              {opened.configuration.mode === mode && <CheckIcon size={14} />}
-                            </DropdownMenu.Item>
-                          ))}
-                        </DropdownMenu.Content>
-                      </DropdownMenu>
-                    )}
-                    <DropdownMenu>
-                      <DropdownMenu.Trigger
-                        render={
-                          <Button
-                            className="kapibala-action max-w-56"
-                            variant="ghost"
-                            size="sm"
-                            disabled={Boolean(running) || busy}
-                            aria-label={
-                              opened
-                                ? `当前会话模型：${composerModel?.name ?? '选择模型'}`
-                                : `新对话模型：${composerModel?.name ?? '选择模型'}`
-                            }
-                          >
-                            <span className="min-w-0 truncate">
-                              {composerModel?.name ?? '未配置模型'}
-                            </span>
-                            <CaretDownIcon size={14} className="shrink-0 text-kumo-subtle" />
-                          </Button>
-                        }
-                      />
-                      {/* 内置清单有二十个模型，限制高度让其内部滚动，避免菜单铺满整窗。 */}
-                      <DropdownMenu.Content className="max-h-[min(20rem,var(--available-height))]">
-                        {opened && (
-                          <>
-                            <DropdownMenu.Sub>
-                              <DropdownMenu.SubTrigger>
-                                会话角色：{ROLE_NAMES[opened.configuration.role]}
-                              </DropdownMenu.SubTrigger>
-                              <DropdownMenu.SubContent>
-                                {(
-                                  [
-                                    ['default', '默认'],
-                                    ['planning', '规划'],
-                                    ['execution', '执行'],
-                                    ['fast', '快速'],
-                                  ] as const
-                                ).map(([role, name]) => (
-                                  <DropdownMenu.Item
-                                    key={role}
-                                    onClick={() =>
-                                      void act(() => configure({ ...scopeOf(opened), role }))
-                                    }
-                                  >
-                                    <span className="min-w-0 flex-1">{name}</span>
-                                    {opened.configuration.role === role && <CheckIcon size={14} />}
-                                  </DropdownMenu.Item>
-                                ))}
-                              </DropdownMenu.SubContent>
-                            </DropdownMenu.Sub>
-                            <DropdownMenu.Separator />
-                          </>
-                        )}
-                        <DropdownMenu.Group>
-                          <DropdownMenu.Label>
-                            {opened ? '本会话模型' : '新对话使用的模型'}
-                          </DropdownMenu.Label>
-                          {usableModels.map((model) => (
-                            <DropdownMenu.Item key={model.id} onClick={() => chooseModel(model.id)}>
-                              <span className="min-w-0 flex-1 truncate">{model.name}</span>
-                              {model.id === composerModel?.id && <CheckIcon size={14} />}
-                            </DropdownMenu.Item>
-                          ))}
-                          {usableModels.length === 0 && (
-                            <DropdownMenu.Item onClick={() => ui.settings(true)}>
-                              <span className="min-w-0 flex-1 truncate">
-                                还没有可用模型，去设置
-                              </span>
-                            </DropdownMenu.Item>
-                          )}
-                        </DropdownMenu.Group>
-                      </DropdownMenu.Content>
-                    </DropdownMenu>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {running ? (
-                      <Button
-                        className="kapibala-action"
-                        size="base"
-                        variant="secondary"
-                        disabled={run.phase !== 'running'}
-                        onClick={() =>
-                          opened &&
-                          void api.run
-                            .cancel({ ...scopeOf(opened), runId: run.runId })
-                            .catch((reason) => report(failure(reason)))
-                        }
-                      >
-                        <StopIcon size={18} />
-                        {run.phase === 'running'
-                          ? '停止'
-                          : run.phase === 'cancelling'
-                            ? '正在取消'
-                            : '正在清理'}
-                      </Button>
-                    ) : (
-                      <Button
-                        className="kapibala-action rounded-full"
-                        size="base"
-                        variant="primary"
-                        shape="square"
-                        style={
-                          {
-                            '--kumo-button-emphasis-ring': 'var(--color-kumo-focus)',
-                          } as CSSProperties
-                        }
-                        aria-label="发送"
-                        disabled={busy || !canSend}
-                        onClick={() => void send()}
-                      >
-                        <PaperPlaneTiltIcon size={18} />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </div>
-              {!opened && workspace && !workspace.trusted && (
-                <p className="px-1 text-xs text-kumo-warning">
-                  当前空间尚未信任，确认信任后才能发送。
-                </p>
-              )}
-              {/* 没有密钥时直接说清阻断原因并给出入口，不让用户点了发送才发现不可用。 */}
-              {usableModels.length === 0 && (
-                <p className="flex flex-wrap items-center gap-1 px-1 text-xs text-kumo-warning">
-                  <span>还没有可用模型，请先在</span>
-                  <Button
-                    className="kapibala-action h-auto px-1 py-0 text-xs underline underline-offset-2"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => ui.settings(true)}
-                  >
-                    设置
-                  </Button>
-                  <span>中为模型填写密钥。</span>
-                </p>
-              )}
-            </div>
-          </footer>
+          {opened && <footer className="kapibala-composer-dock shrink-0">{composer}</footer>}
         </main>
-        {details && wide && <div className="w-[360px] shrink-0" aria-hidden="true" />}
+        {details && wide && (
+          <div className="w-(--kapibala-dock-width) shrink-0" aria-hidden="true" />
+        )}
         <DetailsDrawer
           target={details}
           tool={detailTool}

@@ -59,9 +59,9 @@ export function DetailsDrawer({
           aria-modal={!wide}
           finalFocus={() => (trigger.current?.isConnected ? trigger.current : fallback.current)}
           initialFocus={wide ? false : undefined}
-          className="absolute inset-y-0 right-0 z-50 flex w-[360px] max-w-full flex-col border-l border-kumo-line bg-kumo-base text-kumo-default"
+          className="kapibala-dock absolute inset-y-0 right-0 z-50 flex w-(--kapibala-dock-width) max-w-full flex-col text-kumo-default"
         >
-          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-kumo-line p-4">
+          <div className="kapibala-dock-header flex shrink-0 items-start justify-between gap-3 p-4">
             <div className="min-w-0">
               <Dialog.Title className="text-base font-semibold">
                 {target?.kind === 'tool' ? '工具详情' : '会话状态'}

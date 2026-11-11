@@ -8,7 +8,15 @@ import {
   SensitiveInput,
   Switch,
 } from '@cloudflare/kumo';
+import { Dialog } from '@cloudflare/kumo/primitives/dialog';
 import { Tabs } from '@cloudflare/kumo/primitives/tabs';
+import {
+  PaletteIcon,
+  PlugsConnectedIcon,
+  PulseIcon,
+  ShuffleIcon,
+  XIcon,
+} from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import type { Output, ProfileDraft } from '../shared/contracts.js';
 
@@ -16,10 +24,30 @@ type Catalog = Output<'settings.read'>;
 type Model = Catalog['profiles'][number];
 /** 左导航只负责切换内容；诊断与产品设置同级但独立，避免版本信息混进日常配置。 */
 const SETTINGS_TABS = [
-  { value: 'models', label: '模型与服务商' },
-  { value: 'routing', label: '默认模型与路由' },
-  { value: 'appearance', label: '外观与应用' },
-  { value: 'diagnostics', label: '诊断' },
+  {
+    value: 'models',
+    label: '模型与服务商',
+    icon: PlugsConnectedIcon,
+    subtitle: '添加模型、更新凭证；与 CLI 共用同一份全局配置。',
+  },
+  {
+    value: 'routing',
+    label: '默认模型与路由',
+    icon: ShuffleIcon,
+    subtitle: '为新建会话指定默认模型和各角色模型。',
+  },
+  {
+    value: 'appearance',
+    label: '外观与应用',
+    icon: PaletteIcon,
+    subtitle: '主题设置适用于此客户端。',
+  },
+  {
+    value: 'diagnostics',
+    label: '诊断',
+    icon: PulseIcon,
+    subtitle: '版本、运行环境与退出入口。',
+  },
 ] as const;
 function draftOf(model: Model): ProfileDraft {
   return {
@@ -129,57 +157,95 @@ export function SettingsDialog({
     }
   }
   const builtin = Boolean(selected?.builtin && selected.id === draft?.id);
+  const active = SETTINGS_TABS.find((item) => item.value === tab) ?? SETTINGS_TABS[0];
   return (
     <>
-      <LayerDialog open={open} onOpenChange={onOpenChange} dismissDisabled={busy}>
-        <LayerDialog.Content size="lg" closeLabel="关闭设置">
-          <LayerDialog.Title>
-            <span data-kapibala-modal="true">设置</span>
-          </LayerDialog.Title>
-          <LayerDialog.Description>
-            模型配置与现有 CLI 共用。当前会话的临时模型选择不改变全局默认。
-          </LayerDialog.Description>
-          <LayerDialog.Body>
-            {hostDown && (
-              <div
-                role="alert"
-                className="mb-4 flex flex-wrap items-center gap-3 border-b border-kumo-line pb-4 text-sm"
-              >
-                <span className="min-w-0 flex-1">
-                  执行 Host 未连接，无法读取或保存模型配置。请先核查残留进程并重新连接。
-                </span>
-                <Button
-                  className="kapibala-action"
-                  variant="secondary"
-                  onClick={() =>
-                    void window.kapibala.app.reconnect().catch((error: unknown) => {
-                      report(error instanceof Error ? error.message : '重新连接请求失败。');
-                    })
-                  }
-                >
-                  重新连接
-                </Button>
-              </div>
-            )}
+      <Dialog.Root
+        open={open}
+        onOpenChange={(isOpen) => {
+          if (!isOpen && !busy) onOpenChange(false);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Backdrop className="fixed inset-0 bg-kumo-contrast/20" />
+          <Dialog.Popup className="kapibala-settings-popup fixed inset-0 text-kumo-default">
             <Tabs.Root
               orientation="vertical"
               value={tab}
               onValueChange={(value) => setTab(String(value))}
-              className="mt-5 flex gap-6"
+              className="kapibala-settings"
             >
-              <Tabs.List className="flex w-36 shrink-0 flex-col gap-1 self-start border-r border-kumo-line pr-3">
-                {SETTINGS_TABS.map((item) => (
-                  <Tabs.Tab
-                    key={item.value}
-                    value={item.value}
-                    className="rounded-md px-3 py-2 text-left text-sm text-kumo-subtle outline-none hover:bg-kumo-recessed hover:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-focus aria-selected:bg-kumo-tint aria-selected:font-medium aria-selected:text-kumo-default"
+              <aside className="kapibala-settings-rail">
+                <div className="kapibala-settings-rail-top">
+                  <Dialog.Title className="kapibala-settings-rail-title">设置</Dialog.Title>
+                  <Dialog.Close
+                    render={
+                      <Button
+                        className="kapibala-action"
+                        variant="ghost"
+                        shape="square"
+                        size="base"
+                        aria-label="关闭设置"
+                      />
+                    }
                   >
-                    {item.label}
-                  </Tabs.Tab>
-                ))}
-              </Tabs.List>
-              <div className="min-w-0 flex-1">
-                <Tabs.Panel value="models" className="space-y-4">
+                    <XIcon size={18} />
+                  </Dialog.Close>
+                </div>
+                <Tabs.List className="kapibala-settings-nav" aria-label="设置分类">
+                  {SETTINGS_TABS.map((item) => (
+                    <Tabs.Tab
+                      key={item.value}
+                      value={item.value}
+                      className="kapibala-settings-nav-item"
+                    >
+                      <span className="kapibala-settings-nav-icon" aria-hidden="true">
+                        <item.icon size={16} />
+                      </span>
+                      {item.label}
+                    </Tabs.Tab>
+                  ))}
+                </Tabs.List>
+                <div className="kapibala-settings-rail-footer">
+                  <span className="text-xs text-kumo-subtle">
+                    {info ? `Kapibala ${info.version}` : 'Kapibala'}
+                  </span>
+                </div>
+              </aside>
+              <div className="kapibala-settings-content">
+                <header className="kapibala-settings-header">
+                  <span className="kapibala-settings-page-icon" aria-hidden="true">
+                    <active.icon size={19} />
+                  </span>
+                  <div className="min-w-0">
+                    <h2 className="kapibala-settings-title">{active.label}</h2>
+                    <Dialog.Description className="kapibala-settings-subtitle">
+                      {active.subtitle}
+                    </Dialog.Description>
+                  </div>
+                </header>
+                {hostDown && (
+                  <div
+                    role="alert"
+                    className="mb-4 flex flex-wrap items-center gap-3 rounded-xl bg-kumo-recessed px-4 py-3 text-sm"
+                  >
+                    <span className="min-w-0 flex-1">
+                      执行 Host 未连接，无法读取或保存模型配置。请先核查残留进程并重新连接。
+                    </span>
+                    <Button
+                      className="kapibala-action"
+                      variant="secondary"
+                      onClick={() =>
+                        void window.kapibala.app.reconnect().catch((error: unknown) => {
+                          report(error instanceof Error ? error.message : '重新连接请求失败。');
+                        })
+                      }
+                    >
+                      重新连接
+                    </Button>
+                  </div>
+                )}
+                <Tabs.Panel value="models" className="kapibala-settings-panel space-y-4">
                   <Combobox<Model>
                     label="模型 Profile"
                     items={catalog?.profiles ?? []}
@@ -347,7 +413,7 @@ export function SettingsDialog({
                     </>
                   )}
                 </Tabs.Panel>
-                <Tabs.Panel value="routing" className="space-y-4">
+                <Tabs.Panel value="routing" className="kapibala-settings-panel space-y-4">
                   <Select
                     label="全局默认模型"
                     value={catalog?.defaultModel}
@@ -395,7 +461,7 @@ export function SettingsDialog({
                     />
                   ))}
                 </Tabs.Panel>
-                <Tabs.Panel value="appearance" className="space-y-4">
+                <Tabs.Panel value="appearance" className="kapibala-settings-panel space-y-4">
                   <Select
                     label="主题"
                     items={{ light: '浅色', dark: '深色', system: '跟随系统' }}
@@ -410,9 +476,8 @@ export function SettingsDialog({
                       }
                     }}
                   />
-                  <p className="text-sm text-kumo-subtle">主题设置适用于此客户端。</p>
                 </Tabs.Panel>
-                <Tabs.Panel value="diagnostics" className="space-y-4">
+                <Tabs.Panel value="diagnostics" className="kapibala-settings-panel space-y-4">
                   <p className="text-sm">
                     Kapibala {info?.version ?? '读取中'}
                     {info?.testBuild ? ' · 内部测试构建' : ''}
@@ -460,12 +525,14 @@ export function SettingsDialog({
                     停止任务并退出
                   </Button>
                 </Tabs.Panel>
-                {notice && <output className="text-sm text-kumo-default">{notice}</output>}
+                {notice && (
+                  <output className="mt-4 block text-sm text-kumo-default">{notice}</output>
+                )}
               </div>
             </Tabs.Root>
-          </LayerDialog.Body>
-        </LayerDialog.Content>
-      </LayerDialog>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
       <LayerDialog
         open={Boolean(confirmation)}
         onOpenChange={(isOpen) => {

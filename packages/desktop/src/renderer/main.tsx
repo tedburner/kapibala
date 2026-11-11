@@ -7,6 +7,12 @@ import './index.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Missing application root');
+// 平台标记在首帧前写入，驱动 macOS 红绿灯让位、拖拽区与字体回退，避免布局闪动。
+document.documentElement.dataset.platform = navigator.userAgent.includes('Mac OS X')
+  ? 'darwin'
+  : navigator.userAgent.includes('Windows')
+    ? 'win32'
+    : 'linux';
 createRoot(root, {
   // 边界之外的未捕获渲染错误（如边界自身故障）至少保留结构化报告，不静默白屏。
   onUncaughtError(error) {

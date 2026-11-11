@@ -1,5 +1,4 @@
 import { Button, Collapsible, DropdownMenu, Input, Sidebar } from '@cloudflare/kumo';
-import brandMark from '@kapibala-assets/icon.svg';
 import {
   CaretDownIcon,
   DotsThreeIcon,
@@ -74,6 +73,7 @@ export function WorkspaceSidebar({
   onSettings(): void;
   onRefreshRuntime(): void;
 }) {
+  const [version, setVersion] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
   const [searchPages, setSearchPages] = useState<Record<string, number>>({});
@@ -115,8 +115,19 @@ export function WorkspaceSidebar({
     };
   }, [keyword, spaces, searchPages]);
 
+  useEffect(() => {
+    void window.kapibala.app
+      .getInfo()
+      .then((info) => setVersion(info.version))
+      .catch(() => {});
+  }, []);
   const items = runtime?.items ?? [];
   const running = items.filter((item) => item.phase !== 'idle').length;
+  // 「会话」段只列仍有运行句柄的对话；空闲历史归入所属项目，避免同一对话出现两次。
+  const temporary = items.filter((item) => item.phase !== 'idle' || item.cleanup === 'failed');
+  const titleOfSession = (item: RuntimeItem) =>
+    histories[item.workspaceId]?.items.find((row) => row.conversationId === item.conversationId)
+      ?.title || '未命名对话';
   // 搜索只过滤视图：命中的空间自动展开，运行中的任务、句柄预算与历史读取都不受影响。
   const hit = (value: string) => value.toLowerCase().includes(keyword);
   const titleOf = (row: { title: string }) => row.title || '未命名对话';
@@ -139,10 +150,9 @@ export function WorkspaceSidebar({
     recentVisible.length === 0;
   return (
     <Sidebar aria-label="空间与会话">
-      <Sidebar.Header>
-        <span className="flex h-10 items-center gap-2.5 px-1 font-semibold">
-          <img src={brandMark} alt="" aria-hidden="true" className="size-7 shrink-0 rounded-md" />
-          <span className="group-data-[state=collapsed]/sidebar:hidden">Kapibala</span>
+      <Sidebar.Header className="kapibala-sidebar-header">
+        <span className="kapibala-sidebar-wordmark flex h-10 items-center px-1 font-semibold group-data-[state=collapsed]/sidebar:hidden">
+          Kapibala
         </span>
       </Sidebar.Header>
       <Sidebar.Content>
@@ -201,11 +211,42 @@ export function WorkspaceSidebar({
             已打开的空间中没有匹配的对话。最近项目需先打开才能搜索。
           </p>
         )}
-        {visible.length > 0 && (
-          <div className="kapibala-sidebar-section group-data-[state=collapsed]/sidebar:hidden">
-            空间
+        {keyword === '' && (
+          <div className="group-data-[state=collapsed]/sidebar:hidden">
+            <div className="kapibala-sidebar-section">会话</div>
+            {temporary.length === 0 ? (
+              <p className="kapibala-sidebar-empty">暂无临时对话</p>
+            ) : (
+              <Sidebar.Menu>
+                {temporary.map((item) => {
+                  const space = spaces.find((entry) => entry.id === item.workspaceId);
+                  const title = titleOfSession(item);
+                  return (
+                    <Sidebar.MenuItem key={item.sessionId}>
+                      <Sidebar.MenuButton
+                        icon={NotePencilIcon}
+                        className="kapibala-sidebar-temp"
+                        title={title}
+                        tooltip={title}
+                        aria-label={`${title} · ${space?.name ?? '未知空间'} 临时对话`}
+                        disabled={!space}
+                        onClick={() => space && onOpen(space, item.conversationId)}
+                      >
+                        <span className="min-w-0 truncate">{title}</span>
+                        <span className="ml-auto shrink-0 text-xs text-kumo-subtle">
+                          {runtimeLabel(item, runtimeValid)}
+                        </span>
+                      </Sidebar.MenuButton>
+                    </Sidebar.MenuItem>
+                  );
+                })}
+              </Sidebar.Menu>
+            )}
           </div>
         )}
+        <div className="kapibala-sidebar-section group-data-[state=collapsed]/sidebar:hidden">
+          项目
+        </div>
         {visible.map((space) => {
           const history =
             keyword && !hit(space.name) ? search.lists[space.id] : histories[space.id];
@@ -445,7 +486,7 @@ export function WorkspaceSidebar({
           </Sidebar.Group>
         )}
       </Sidebar.Content>
-      <Sidebar.Footer>
+      <Sidebar.Footer className="kapibala-sidebar-footer">
         <Button
           className="kapibala-action"
           variant="ghost"
@@ -471,6 +512,11 @@ export function WorkspaceSidebar({
             </Button>
           )}
         </span>
+        {version && (
+          <span className="kapibala-sidebar-version group-data-[state=collapsed]/sidebar:hidden">
+            v{version}
+          </span>
+        )}
       </Sidebar.Footer>
     </Sidebar>
   );
