@@ -306,6 +306,8 @@ E2E 在 app ready 前设置隔离 Electron userData，在任何 Host、Session �
 
 2026-11-14 起的 v0.1.0 口径是未签名个人自用版：Release 不传 `--desktop-version`，上述“候选签名构建 → 逐平台安装验收”不在发布前置内，改由 `release.yml` 的 `desktop-unsigned` 作业在四平台自动 `pnpm pack:desktop --no-verify` 并上传测试包（本机仍可用同一命令出包）。签名能力与候选流程保留，设 `KPBL_DESKTOP_RELEASE=true` 即恢复，此时 `desktop-unsigned` 不再产出，改由审核候选附件接管。
 
+未签名测试包的附件名不再加 `desktop-<target>__` 前缀（2026-11-15 起）：安装器自身已带 `os-arch`（如 `Kapibala-0.1.2-mac-arm64-test.dmg`），直接用原名；只有各平台同名的 `SHA256SUMS.txt` 与 `test-build.json` 追加平台短名（`-mac-arm64` / `-mac-x64` / `-win-x64` / `-linux-x64`），否则四平台会互相覆盖。签名候选附件的 `desktop-<target>__` 命名不受影响。
+
 实施时同步 SDK 兼容性、迁移说明、验收记录和发布说明，明确旧 CLI 不参与新配置锁、CLI 与桌面无跨进程工作区租约、异常退出后需要人工检查。未完成的平台、签名或长跑项目保留 pending，不能用文档勾选代替证据。
 
 参考机制与固定源码提交见 [004 第 12 节](design/004-v0.1.0-desktop-harness.md#12-开源参考与取舍依据)。Electron 的 [utilityProcess](https://www.electronjs.org/docs/latest/api/utility-process) 默认继承标准输出流；[MessagePort 文档](https://www.electronjs.org/docs/latest/tutorial/message-ports)说明端口传递与关闭语义，应用仍需自行实现本指南中的预算与确认机制。
