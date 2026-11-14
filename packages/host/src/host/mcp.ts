@@ -30,7 +30,14 @@ import {
   createMcpPlugin,
   resolveMcpConfig,
 } from '@kiturone/kapibala-mcp';
-import type { CliInputCoordinator } from './input-coordinator.js';
+
+/** MCP 启动授权所需的输入能力子集；宿主输入协调器结构化满足，不反向依赖 CLI 输入模块。 */
+export interface McpServerStartInputPort {
+  /** 当前输入链是否具备交互能力；非交互环境下未预授权的启动一律拒绝。 */
+  readonly interactive: boolean;
+  /** 阻塞式问答；实现负责取消与终端资源管理。 */
+  question(prompt: string): Promise<string>;
+}
 
 /**
  * CLI 解析后的 MCP 宿主状态。
@@ -181,7 +188,7 @@ export function resolveCliMcpOptions(options: {
  * @returns 规范的 ServerStartAuthorizer 回调。
  */
 export function createCliServerStartAuthorizer(
-  inputCoordinator: CliInputCoordinator,
+  inputCoordinator: McpServerStartInputPort,
   interactive: boolean,
 ): ServerStartAuthorizer {
   return async (
@@ -271,7 +278,7 @@ export function getSessionMcpPlugin(session: AgentSession): McpPluginInstance | 
 export async function attachMcpToSession(
   session: AgentSession,
   hostOptions: CliMcpHostOptions,
-  inputCoordinator: CliInputCoordinator,
+  inputCoordinator: McpServerStartInputPort,
   interactive: boolean,
 ): Promise<McpPluginInstance | undefined> {
   if (!hostOptions.enabled || hostOptions.servers.size === 0) {

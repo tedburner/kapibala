@@ -81,9 +81,20 @@ export function checkDesktop(artifacts = false): void {
           );
         if (relative.startsWith('agent-host/') && specifier.startsWith('@kiturone/kapibala-cli'))
           insist(
-            specifier === '@kiturone/kapibala-cli/host' ||
-              specifier === '@kiturone/kapibala-cli/view-model',
-            `${relative}: private CLI import`,
+            specifier === '@kiturone/kapibala-cli/commands',
+            `${relative}: private CLI import（命令系统子路径是唯一例外；宿主层已迁至 @kiturone/kapibala-host）`,
+          );
+        if (relative.startsWith('agent-host/') && specifier.startsWith('@kiturone/kapibala-host'))
+          insist(
+            specifier === '@kiturone/kapibala-host/host' ||
+              specifier === '@kiturone/kapibala-host/view-model' ||
+              specifier === '@kiturone/kapibala-host/internal',
+            `${relative}: private host import`,
+          );
+        if (relative.startsWith('renderer/') && specifier.startsWith('@kiturone/kapibala-host'))
+          insist(
+            specifier === '@kiturone/kapibala-host/view-model',
+            `${relative}: renderer may only import the view-model subpath`,
           );
       }
       ts.forEachChild(node, visit);
@@ -119,8 +130,8 @@ export function checkDesktop(artifacts = false): void {
   };
   const allowed = new Set([
     '@kiturone/kapibala',
+    '@kiturone/kapibala-host',
     '@kiturone/kapibala-cli',
-    '@kiturone/kapibala-mcp',
     '@cloudflare/kumo',
     '@phosphor-icons/react',
     '@tanstack/react-virtual',

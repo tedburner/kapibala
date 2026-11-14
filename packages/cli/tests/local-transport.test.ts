@@ -1,7 +1,7 @@
 import { PassThrough } from 'node:stream';
+import { JsonlDecoder } from '@kiturone/kapibala-host/transport';
+import { createStdioTransport } from '@kiturone/kapibala-host/transport';
 import { describe, expect, it } from 'vitest';
-import { JsonlDecoder } from '../src/transport/jsonl.js';
-import { createStdioTransport } from '../src/transport/stdio.js';
 
 const ping = { jsonrpc: '2.0' as const, id: 'c:1', method: 'ping' as const, params: {} };
 const wire = (value: unknown) => Buffer.from(`${JSON.stringify(value)}\n`);

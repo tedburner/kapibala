@@ -174,3 +174,82 @@ jobs:
           name: kapibala-${{ needs.prepare.outputs.tag }}
           path: ${{ runner.temp }}/kapibala-release/
           if-no-files-found: ignore
+
+  desktop-unsigned:
+    # 未签名自用版：Release 发布后自动补齐四平台测试安装包，替代维护者本机打包再手工上传。
+    # KPBL_DESKTOP_RELEASE=true 时由签名候选流程接管（publish 里下载审核附件），这里不再产出，
+    # 避免两套产物在同一 Release 上重名覆盖。
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.desktop == 'true' && vars.KPBL_DESKTOP_RELEASE != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+          - runner: windows-2025
+            target: win32-x64
+          - runner: ubuntu-24.04
+            target: linux-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          runtime: node@24
+          require-lockfile: true
+          cache: true
+      - name: Check native target
+        shell: bash
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_TARGET) process.exit(1)'
+      - name: Install pinned Electron
+        run: pnpm --filter @kiturone/kapibala-desktop exec install-electron
+      # 自动门禁已由同 SHA 的 Verify 工作流跑过（含 mac/win 桌面 e2e），这里只做打包与安装副本 smoke，
+      # 因此用 --no-verify 跳过重复校验；产物的 test-build.json 会如实写明 verification=skipped。
+      - name: Build unsigned test package
+        if: runner.os != 'Linux'
+        id: package
+        run: pnpm pack:desktop --no-verify
+      - name: Build unsigned test package under a real virtual display
+        if: runner.os == 'Linux'
+        id: linux-package
+        run: xvfb-run -a pnpm pack:desktop --no-verify
+      - name: Upload test installers to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACTS: ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}
+          TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACTS"
+          assets=()
+          for file in "$ARTIFACTS"/*.dmg "$ARTIFACTS"/*.exe "$ARTIFACTS"/*.zip "$ARTIFACTS"/*.AppImage "$ARTIFACTS"/SHA256SUMS.txt "$ARTIFACTS"/test-build.json; do
+            if [ -f "$file" ]; then
+              name="desktop-${TARGET}__$(basename "$file")"
+              cp "$file" "$RUNNER_TEMP/$name"
+              assets+=("$RUNNER_TEMP/$name")
+            fi
+          done
+          test "${#assets[@]}" -ge 2
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Preserve the same bytes for inspection
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-unsigned-${{ matrix.target }}-${{ needs.prepare.outputs.sha }}
+          path: ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}
+          if-no-files-found: ignore
+          retention-days: 30

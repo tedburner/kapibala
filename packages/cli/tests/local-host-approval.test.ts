@@ -1,6 +1,6 @@
+import type { ApprovalPrompt } from '@kiturone/kapibala-host/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RpcApprovalChannel } from '../src/local-host/approval.js';
-import type { ApprovalPrompt } from '../src/protocol/index.js';
 
 afterEach(() => vi.useRealTimers());
 const identity = {

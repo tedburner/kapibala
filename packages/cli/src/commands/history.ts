@@ -1,5 +1,5 @@
 import { CrossProjectSessionCatalog, sanitizeSessionTitle } from '@kiturone/kapibala';
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
 
 function controller(ctx: CommandContext) {

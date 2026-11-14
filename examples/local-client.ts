@@ -9,8 +9,8 @@
  */
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { LocalClient, createStdioTransport } from '@kiturone/kapibala-cli/client';
-import type { WireEvent } from '@kiturone/kapibala-cli/protocol';
+import { LocalClient, createStdioTransport } from '@kiturone/kapibala-host/client';
+import type { WireEvent } from '@kiturone/kapibala-host/protocol';
 
 const hostEntry = process.env.KPBL_HOST_ENTRY
   ? path.resolve(process.env.KPBL_HOST_ENTRY)

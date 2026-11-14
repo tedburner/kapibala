@@ -5,8 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { LocalClient, type LocalClientOptions } from '../client/index.js';
-import { type LocalEndpoint, connectLocal, listenLocalHost } from '../transport/socket.js';
+import { LocalClient, type LocalClientOptions } from '@kiturone/kapibala-host/client';
+import {
+  type LocalEndpoint,
+  connectLocal,
+  listenLocalHost,
+} from '@kiturone/kapibala-host/transport';
 import { createResourceFactory } from './resources.js';
 import { LocalHostServer } from './server.js';
 

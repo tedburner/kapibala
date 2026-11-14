@@ -5,12 +5,10 @@ import {
 import { PromptAssembler } from '../../capabilities/prompt/index.js';
 import {
   type ApprovalChannel,
-  type ApprovalRequest,
   SessionApprovalCache,
 } from '../../capabilities/security/approval.js';
 import { WorkspaceLeaseCoordinator } from '../../capabilities/security/lease.js';
 import {
-  PermissionPolicy,
   type PermissionRule,
   type SessionMode,
   validatePermissionRules,
@@ -21,7 +19,7 @@ import { estimateSkillTokens } from '../../capabilities/skills/catalog.js';
 import { inspectSkillContent } from '../../capabilities/skills/content.js';
 import { type PreparedSkill, SkillRuntime } from '../../capabilities/skills/loader.js';
 import { SkillRegistry } from '../../capabilities/skills/registry.js';
-import { skillDigest, skillFailure } from '../../capabilities/skills/scanner.js';
+import { skillFailure } from '../../capabilities/skills/scanner.js';
 import type { SkillOptions } from '../../capabilities/skills/types.js';
 import type { Tool } from '../../capabilities/tools/index.js';
 import { ToolRegistry, type ToolRegistrySnapshot } from '../../capabilities/tools/registry.js';
@@ -61,121 +59,40 @@ import {
   type ContentBlock,
   type ContextUsage,
   type ModelRequest,
-  type PromptContentSource,
   type RunMetrics,
   type SessionEvent,
-  type TextBlock,
   type TurnMetrics,
   type Usage,
   isTextBlock,
 } from '../../types/index.js';
-
-/**
- * 任务准备上下文；提供当前会话取消信号、runId 与不可变工具快照。
- */
-export interface PreparedTaskContext {
-  signal?: AbortSignal;
-  runId: string;
-  tools: ToolRegistrySnapshot;
-}
-
-/**
- * 任务准备产物；包含要附加到 User 消息的内容块，以及提交前的身份复核回调。
- */
-export interface PreparedTaskResult {
-  /** 任务附加内容块或纯文本（如 Prompt 内容或技能正文）。 */
-  content: ContentBlock[] | string;
-  /** 可选来源元数据；仅在 content 为 string 时由宿主自动包装为带来源的 TextBlock。 */
-  promptSource?: PromptContentSource;
-  /** 最终提交前核对准备身份；若在此期间目录变化或连接重置，返回 false 拒绝提交并零发送闭合。 */
-  verifyIdentity?: () => boolean | Promise<boolean>;
-  /** 可选技能名称；存在时按显式技能流程处理。 */
-  skillName?: string;
-}
-import {
-  type TokenEstimator,
-  UnicodeTokenEstimator,
-  createContextBudget,
-  stableSerialize,
-} from '../budget.js';
+import { type TokenEstimator, UnicodeTokenEstimator, createContextBudget } from '../budget.js';
 import { createMessageId, identifyHistory } from '../history.js';
 import { ContextManager, type ContextSnapshot } from '../manager.js';
 import { resolveSessionProject } from '../session-manager.js';
 import { supportsSessionState } from '../session-store.js';
 import type { MessageStore } from '../store/index.js';
 import { resolveWorkspaceContext } from '../workspace.js';
+import {
+  buildInterruptedToolMessage,
+  findClosedToolMessages,
+  persistAssistantMessage,
+  persistToolMessages,
+} from './persistence.js';
+import { assertSignedContinuationStable, verifyPrivateBlockIntegrity } from './request-prepare.js';
+import { authorizeExplicitSkill, commitSkillEvents, createSkillResourceAuditor } from './skills.js';
+import type {
+  PreparedTaskContext,
+  PreparedTaskResult,
+  SessionConfig,
+  SessionStats,
+} from './types.js';
+import { computeContextUsage, recordSummaryUsage, recordUsage } from './usage.js';
 
-/** 会话的非根选项；扩展配置时与 SessionConfig 的显式根联合组合，不能隐式推导工作区。 */
-export interface SessionOptions {
-  /** 宿主显式技能配置；缺省不扫描home，项目根需独立信任。 */
-  skills?: SkillOptions;
-  /** 持久会话身份；有版本化 Store 时须与头部一致，日志实例身份保持独立。 */
-  conversationId?: string;
-  tokenEstimator?: TokenEstimator;
-  /** 无 Git 工作树时随 run_started 记录的分支回退值。 */
-  gitBranch?: string;
-  /** 主任务默认模型绑定；恢复历史及未显式选择角色时使用。 */
-  defaultProfile: ModelProfile;
-  /** 与 defaultProfile 匹配的协议适配器。 */
-  defaultProvider: ModelProvider;
-  /** 消息级落盘通道；支持状态能力的 Store 额外启用持久压缩与交互终态。 */
-  store?: MessageStore;
-  /** 默认命令执行目录绝对路径，必须位于 workspaceRoot 内部；缺省为 workspaceRoot。 */
-  executionCwd?: string;
-  systemPrompt?: string;
-  maxSteps?: number;
-  logger?: (msg: string) => void;
-  eventLogger?: EventLogger;
-  loggingDirectory?: string;
-  /** 初始权限模式，缺省 Approval；仅空闲时可切换。 */
-  mode?: SessionMode;
-  permissionRules?: readonly PermissionRule[];
-  approvalChannel?: ApprovalChannel;
-  /** 项目根路径；缺省为 workspaceRoot。 */
-  projectRoot?: string;
-  /** 兼容别名：执行目录。 */
-  cwd?: string;
-  userInstructionsPath?: string;
-  /** 未提供时使用默认日志 sink 的审计目录；init 时恢复不完整审计。 */
-  auditRecoveryDirectory?: string;
-  /** 接收普通运行日志失败的脱敏诊断；诊断失败也不得中断问答或替代审计。 */
-  onDiagnostic?: (message: string) => void;
-  /** 会话持有的沙箱实例；缺省基于 workspaceRoot 自动创建独占实例。 */
-  sandbox?: PathSandbox;
-  /** 宿主显式共享的写租约协调器；缺省为本会话独占实例，不隐含跨会话互斥。 */
-  leaseCoordinator?: WorkspaceLeaseCoordinator;
-  /** 父任务或任务树根 ID，用于多智能体任务层级限制与追踪。 */
-  rootTaskId?: string;
-  /** 当前子会话在代理树中的深度，根会话为 0。 */
-  depth?: number;
-  /** 当前子会话对应的 agentId。 */
-  agentId?: string;
-}
-
-/** 显式工作区根至少提供其一；保留 rootDir-only 兼容输入，双字段物理冲突在构造时拒绝。 */
-export type SessionConfig = SessionOptions &
-  ({ workspaceRoot: string; rootDir?: string } | { workspaceRoot?: never; rootDir: string });
-
-/** getStats 返回的统计快照；全部字段为独立副本，宿主修改不影响会话内部状态。 */
-export interface SessionStats {
-  conversationId?: string;
-  /** 历史存在无 usage 的模型步骤时为 false，不将旧消耗伪装为精确零。 */
-  usageKnown?: boolean;
-  /** 摘要 attempt 的累计消耗；独立于主任务指标。 */
-  summaryUsage?: Usage;
-  summaryUsageKnown?: boolean;
-  contextSnapshot?: ContextSnapshot;
-  /** 累计用户任务次数，含恢复自持久状态的 run_started 记录。 */
-  totalTurns: number;
-  /** 主任务累计消耗；摘要消耗在 summaryUsage 单独统计。 */
-  totalTokens: Usage;
-  activeModel: string;
-  loadedToolsCount: number;
-  lastMetrics?: TurnMetrics;
-  lastRunMetrics?: RunMetrics;
-  /** 最近一次内部模型请求的窗口占用；无实测时仅提供窗口上限。 */
-  contextUsage: ContextUsage;
-}
+/**
+ * 会话公共类型（SessionOptions/SessionConfig/SessionStats 等）定义在 ./types.js，
+ * 此处原样转发以保持包根导出面稳定。
+ */
+export * from './types.js';
 
 /**
  * 宿主无关的 Agent 会话门面：统一模型路由、工具执行、权限与上下文压缩。
@@ -268,53 +185,9 @@ export class AgentSession {
     this.projectKey = resolvedWorkspace.projectKey;
     this.sandbox = config.sandbox ?? new PathSandbox({ workspaceRoot: this.workspaceRoot });
     this.leaseCoordinator = config.leaseCoordinator ?? new WorkspaceLeaseCoordinator();
-    this.tools = new ToolRegistry();
-    if (config.skills) {
-      this.skillRegistry = new SkillRegistry(config.skills);
-      this.skillRuntime = new SkillRuntime(
-        this.skillRegistry,
-        this.tools,
-        async (source, input, page) => {
-          try {
-            await this.eventLogger.recordAudit({
-              level: 'info',
-              event: 'skill.resource_read',
-              sessionId: this.sessionId,
-              runId: source.runId,
-              fields: {
-                skillName: source.name,
-                contentDigest: source.contentDigest,
-                invocationId: source.invocationId,
-                pathDigest: skillDigest(input.path),
-                resourceDigest: skillDigest(page.text),
-                outputBytes: Buffer.byteLength(page.text),
-                outputTruncated: page.truncated,
-                offset: input.offset,
-                startLine: input.startLine,
-                endLine: input.endLine,
-              },
-            });
-          } catch {
-            throw new KapibalaError('Skill resource audit unavailable', {
-              code: 'AUDIT_UNAVAILABLE',
-              retryPolicy: 'after_user_action',
-              safeMessage: '技能资源读取审计不可用，本轮停止',
-            });
-          }
-        },
-      );
-    }
-    this.hooks = new HookRegistry();
-    this.router = new SimpleModelRouter(config.defaultProfile, config.defaultProvider);
-    this.store = config.store;
-    this.customSystemPrompt = config.systemPrompt;
-    this.maxSteps = config.maxSteps ?? 20;
-    this.logger = config.logger;
-    validatePermissionRules(config.permissionRules ?? []);
-    this.mode = config.mode ?? 'Approval';
-    this.permissionRules = config.permissionRules ?? [];
-    this.approvalChannel = config.approvalChannel;
     this.userInstructionsPath = config.userInstructionsPath;
+    // 事件日志先于技能运行时创建：SkillRuntime 的资源读取审计回调在构造期注入，
+    // 依赖已包装的 eventLogger（自动附带 conversationId）。
     const sinks = config.eventLogger ? undefined : createDefaultLogSinks(config.loggingDirectory);
     const eventLogger =
       config.eventLogger ??
@@ -330,6 +203,25 @@ export class AgentSession {
         eventLogger.recordAudit({ ...input, conversationId: this.persistentId }),
     };
     this.auditRecoveryDirectory = config.auditRecoveryDirectory ?? sinks?.auditSink.directory;
+    this.tools = new ToolRegistry();
+    if (config.skills) {
+      this.skillRegistry = new SkillRegistry(config.skills);
+      this.skillRuntime = new SkillRuntime(
+        this.skillRegistry,
+        this.tools,
+        createSkillResourceAuditor(this.eventLogger, this.sessionId),
+      );
+    }
+    this.hooks = new HookRegistry();
+    this.router = new SimpleModelRouter(config.defaultProfile, config.defaultProvider);
+    this.store = config.store;
+    this.customSystemPrompt = config.systemPrompt;
+    this.maxSteps = config.maxSteps ?? 20;
+    this.logger = config.logger;
+    validatePermissionRules(config.permissionRules ?? []);
+    this.mode = config.mode ?? 'Approval';
+    this.permissionRules = config.permissionRules ?? [];
+    this.approvalChannel = config.approvalChannel;
     this.rootTaskId = config.rootTaskId;
     this.depth = config.depth ?? 0;
     this.agentId = config.agentId;
@@ -1044,99 +936,21 @@ export class AgentSession {
                 modelId: profile.id,
               })
             : this.context.project(history);
-          for (const message of projected) {
-            const original = sourceView.find((source) => source.id === message.id);
-            // 按内容多重集匹配而非块索引对齐：hook 合法增删/重排同消息内的普通块时不误报；
-            // 私有块被改写或 Item 身份被冒用仍然 fail-closed，签名前缀由冻结检查兜底。
-            const privateBag = new Map<string, number>();
-            const blockBag = new Map<string, number>();
-            for (const block of original?.content ?? []) {
-              const serialized = stableSerialize(block);
-              if (
-                block.type === 'provider_state' ||
-                block.type === 'redacted_thinking' ||
-                (block.type === 'thinking' && block.origin)
-              )
-                privateBag.set(serialized, (privateBag.get(serialized) ?? 0) + 1);
-              blockBag.set(serialized, (blockBag.get(serialized) ?? 0) + 1);
-            }
-            const take = (bag: Map<string, number>, serialized: string): boolean => {
-              const count = bag.get(serialized) ?? 0;
-              if (!count) return false;
-              if (count === 1) bag.delete(serialized);
-              else bag.set(serialized, count - 1);
-              return true;
-            };
-            for (const block of message.content) {
-              if (
-                block.type === 'provider_state' ||
-                block.type === 'redacted_thinking' ||
-                (block.type === 'thinking' && block.origin)
-              ) {
-                if (!original || !take(privateBag, stableSerialize(block)))
-                  throw new ModelError('Hook changed signed or private request provenance', {
-                    stage: 'request',
-                    retryable: false,
-                  });
-              }
-              if (block.type !== 'text' && block.type !== 'tool_use') continue;
-              if (block.protocolMeta && !take(blockBag, stableSerialize(block)))
-                block.protocolMeta = undefined;
-            }
-          }
-          const frozen = Boolean(
-            previousRequest &&
-              history.some(
-                (message) =>
-                  message.interactionId === runId &&
-                  message.content.some(
-                    (block) =>
-                      block.type === 'provider_state' ||
-                      block.type === 'redacted_thinking' ||
-                      (block.type === 'thinking' &&
-                        Boolean(block.signature && block.origin?.runId === runId)),
-                  ),
-              ),
-          );
+          verifyPrivateBlockIntegrity(projected, sourceView);
           const candidate: ModelRequest = {
             ...request,
             messages: projected,
             context: { runId, modelId: profile.id },
             signal: options?.signal,
           };
-          if (frozen) {
-            const generated = nativeBinding
-              ? projectProtocolHistory(
-                  this.context
-                    .project(history)
-                    .filter(
-                      (message) => message.interactionId === runId && message.role !== 'user',
-                    ),
-                  nativeBinding,
-                  candidate.context,
-                )
-              : [];
-            for (const original of generated) {
-              const matches = candidate.messages.filter((message) => message.id === original.id);
-              if (matches.length !== 1 || stableSerialize(matches[0]) !== stableSerialize(original))
-                throw new ModelError('Signed continuation prefix or tool chain changed', {
-                  stage: 'request',
-                  retryable: false,
-                });
-            }
-          }
-          if (
-            frozen &&
-            previousRequest &&
-            (stableSerialize(candidate.messages.slice(0, previousRequest.messages.length)) !==
-              stableSerialize(previousRequest.messages) ||
-              candidate.systemPrompt !== previousRequest.systemPrompt ||
-              stableSerialize(candidate.tools) !== stableSerialize(previousRequest.tools))
-          )
-            throw new ModelError('Signed continuation prefix changed', {
-              stage: 'request',
-              retryable: false,
-            });
+          const frozen = assertSignedContinuationStable({
+            candidate,
+            previousRequest,
+            history,
+            runId,
+            nativeBinding,
+            projectHistory: (projectedHistory) => this.context.project(projectedHistory),
+          });
           const context = this.context;
           const skills = this.skillRuntime;
           const preparation = context.prepare(history, candidate, profile, runId, reason, !frozen);
@@ -1189,6 +1003,9 @@ export class AgentSession {
       let persistedHistoryLength = this.history.length;
       let loopCompleted = false;
       let loopFailed = false;
+      // 消费者在挂起点注入异常（generator.throw）时置位：Loop 会在迭代器收口里闭合内存
+      // 历史，但该异常与内部落盘失败在 catch 里无法区分，必须单独标记才能安全补齐落盘。
+      let consumerInterrupted = false;
 
       try {
         for await (const event of loop.run(this.history)) {
@@ -1276,7 +1093,14 @@ export class AgentSession {
           if (event.type === 'message_stop' || event.type === 'tool_messages') {
             persistedHistoryLength = this.history.length;
           }
-          yield event;
+          try {
+            yield event;
+          } catch (error: unknown) {
+            // 只有命中 yield 挂起点的异常才是消费者注入（.throw）；内部错误都发生在
+            // await 落盘路径上，落盘层可能已失败，不能据此重试写入。
+            consumerInterrupted = true;
+            throw error;
+          }
         }
         loopCompleted = true;
       } catch (error: unknown) {
@@ -1298,7 +1122,10 @@ export class AgentSession {
       } finally {
         // 早退时 Loop 的 finally 已等待工具并闭合历史，但不会再发出落盘事件。
         // 仅追加正常落盘游标之后的消息，避免重复已完成的事务或重试失败的写入。
-        if (!loopCompleted && !loopFailed) {
+        // 消费者 .throw() 注入的异常同样会经 Loop 收口闭合内存历史：此时落盘层是
+        // 健康的（异常来自消费者而非写入），补齐 append 让磁盘与内存历史保持一致；
+        // 内部落盘失败路径（loopFailed 且非消费者注入）维持跳过，不重试已失败的写入。
+        if (!loopCompleted && (!loopFailed || consumerInterrupted)) {
           await executor.rollback();
           if (this.store) {
             for (const message of this.history.slice(persistedHistoryLength)) {
@@ -1446,89 +1273,29 @@ export class AgentSession {
 
   /** 完整消息提交后完成技能审计；审计失败保留真实历史，停止本轮且不发布成功事件。 */
   private async commitSkills(runId: string): Promise<SessionEvent[]> {
-    if (!this.skillRuntime) return [];
-    return this.skillRuntime.commit(
-      async (source, messageId) => {
-        try {
-          await this.eventLogger.recordAudit({
-            level: 'info',
-            event: 'skill.loaded',
-            sessionId: this.sessionId,
-            runId,
-            fields: {
-              skillName: source.name,
-              skillScope: source.scope,
-              contentDigest: source.contentDigest,
-              renderedDigest: source.renderedDigest,
-              pathDigest: skillDigest(source.filePath),
-              caller: source.caller,
-              invocationId: source.invocationId,
-              messageId,
-            },
-          });
-        } catch {
-          throw new KapibalaError('Skill commit audit unavailable', {
-            code: 'AUDIT_UNAVAILABLE',
-            retryPolicy: 'after_user_action',
-            safeMessage: '技能提交审计不可用，本轮停止',
-          });
-        }
-      },
-      this.store ? 'disk' : 'memory',
-    );
+    return commitSkillEvents({
+      skillRuntime: this.skillRuntime,
+      eventLogger: this.eventLogger,
+      sessionId: this.sessionId,
+      runId,
+      persistence: this.store ? 'disk' : 'memory',
+    });
   }
 
   /** 显式加载仍按同一读取策略、精确缓存与宿主审批裁决；拒绝/取消/审计失败时不追加用户任务。 */
-  private async authorizeSkill(name: string, runId: string, signal?: AbortSignal): Promise<void> {
-    const request: ApprovalRequest = {
-      toolName: 'load_skill',
-      capabilities: ['fs:read'],
-      input: { name },
-      rootDir: this.rootDir,
-      sessionAllowed: true,
-    };
-    const cached = this.approvalCache.get(request);
-    const decision = new PermissionPolicy().decide({
-      toolName: request.toolName,
-      capabilities: request.capabilities,
-      mode: this.mode,
-      rules: this.permissionRules,
-      cachedApproval: cached === 'allow',
-      cachedDenial: cached === 'deny',
-    });
-    let permitted = decision.decision === 'allow';
-    let approvalChoice: Awaited<ReturnType<ApprovalChannel['requestApproval']>> | undefined;
-    if (decision.decision === 'ask') {
-      try {
-        approvalChoice =
-          (await this.approvalChannel?.requestApproval(request, signal)) ?? 'deny_once';
-      } catch {
-        approvalChoice = 'cancel';
-      }
-      permitted = approvalChoice === 'allow_once' || approvalChoice === 'allow_session';
-      if (approvalChoice === 'allow_session') this.approvalCache.set(request, 'allow');
-      if (approvalChoice === 'deny_session') this.approvalCache.set(request, 'deny');
-    }
-    await this.eventLogger.recordAudit({
-      level: 'info',
-      event: 'skill.decided',
-      sessionId: this.sessionId,
+  private authorizeSkill(name: string, runId: string, signal?: AbortSignal): Promise<void> {
+    return authorizeExplicitSkill({
+      name,
       runId,
-      fields: {
-        skillName: name,
-        caller: 'user',
-        decision: permitted && !signal?.aborted ? 'allow' : 'deny',
-        decisionSource:
-          decision.decision === 'ask'
-            ? this.approvalChannel
-              ? 'human'
-              : 'non_interactive'
-            : decision.source,
-        approvalChoice,
-      },
+      signal,
+      rootDir: this.rootDir,
+      mode: this.mode,
+      permissionRules: this.permissionRules,
+      approvalChannel: this.approvalChannel,
+      approvalCache: this.approvalCache,
+      eventLogger: this.eventLogger,
+      sessionId: this.sessionId,
     });
-    if (!permitted) throw skillFailure('SKILL_INVOCATION_FORBIDDEN', '宿主权限禁止显式技能读取');
-    signal?.throwIfAborted();
   }
 
   /**
@@ -1536,23 +1303,19 @@ export class AgentSession {
    * run 累计 promptTokens 会重复计算每一步都重发的历史，不能用于窗口占用率。
    */
   private createContextUsage(usedTokens?: number, estimatedUsage = false): ContextUsage {
-    const contextWindow = resolveContextWindow(
-      (this.lastPrimaryProfile ?? this.getActiveProfile()).contextWindow,
-    );
-    return {
+    return computeContextUsage(
+      this.lastPrimaryProfile ?? this.getActiveProfile(),
       usedTokens,
-      limitTokens: contextWindow.tokens,
-      percent: usedTokens === undefined ? undefined : (usedTokens / contextWindow.tokens) * 100,
-      estimatedLimit: contextWindow.estimated,
-      ...(estimatedUsage ? { estimatedUsage: true } : {}),
-    };
+      estimatedUsage,
+    );
   }
 
   private async persistAssistant(
     event: Extract<SessionEvent, { type: 'message_stop' }>,
   ): Promise<void> {
-    if (this.store) await this.store.append(event.message);
-    if (!event.usage) this.usageKnown = false;
+    await persistAssistantMessage(event, this.store, () => {
+      this.usageKnown = false;
+    });
   }
 
   /** 创建上下文协调器并注入当前路由；摘要不经过主任务 Loop，插件结果不默认为可剪裁。 */
@@ -1577,20 +1340,8 @@ export class AgentSession {
 
   /** 摘要实际消耗按 attempt 身份独立累加；缺失消耗保留未知，不计入主任务指标。 */
   private accountSummaryUsage(attemptId: string, usage?: Usage): void {
-    if (this.summaryAttempts.has(attemptId)) return;
-    this.summaryAttempts.add(attemptId);
-    if (
-      !usage ||
-      ![usage.promptTokens, usage.completionTokens, usage.totalTokens].every(
-        (n) => Number.isSafeInteger(n) && n >= 0,
-      )
-    ) {
-      this.summaryUsageKnown = false;
-      return;
-    }
-    this.summaryUsage.promptTokens += usage.promptTokens;
-    this.summaryUsage.completionTokens += usage.completionTokens;
-    this.summaryUsage.totalTokens += usage.totalTokens;
+    const outcome = recordSummaryUsage(attemptId, usage, this.summaryAttempts, this.summaryUsage);
+    if (outcome === 'unknown') this.summaryUsageKnown = false;
   }
 
   /**
@@ -1676,25 +1427,12 @@ export class AgentSession {
 
   /** 以模型 attempt 身份幂等累加真实消耗；非法或缺失 usage 保持未知。 */
   private accountUsage(attemptId: string, usage: Usage): void {
-    if (this.accountedAttempts.has(attemptId)) return;
-    if (
-      !usage ||
-      ![usage.promptTokens, usage.completionTokens, usage.totalTokens].every(
-        (n) => Number.isSafeInteger(n) && n >= 0,
-      )
-    ) {
-      this.usageKnown = false;
-      return;
-    }
-    this.accountedAttempts.add(attemptId);
-    this.usageStats.promptTokens += usage.promptTokens;
-    this.usageStats.completionTokens += usage.completionTokens;
-    this.usageStats.totalTokens += usage.totalTokens;
+    const outcome = recordUsage(attemptId, usage, this.accountedAttempts, this.usageStats);
+    if (outcome === 'unknown') this.usageKnown = false;
   }
 
   private async persistToolMessages(messages: CanonicalMessage[]): Promise<void> {
-    if (!this.store) return;
-    for (const message of messages) await this.store.append(message);
+    await persistToolMessages(messages, this.store);
   }
 
   /** 中止时为缓冲 assistant 的每个 tool_use 生成 OUTCOME_UNKNOWN 结果并入历史，保持事务闭合。 */
@@ -1702,25 +1440,7 @@ export class AgentSession {
     assistantEvent: Extract<SessionEvent, { type: 'message_stop' }>,
     error: unknown,
   ): CanonicalMessage[] {
-    const message: CanonicalMessage = {
-      id: createMessageId(),
-      role: 'tool',
-      content: assistantEvent.message.content
-        .filter((block) => block.type === 'tool_use')
-        .map((toolUse) => ({
-          type: 'tool_result' as const,
-          toolUseId: toolUse.id,
-          content: JSON.stringify({
-            code: 'OUTCOME_UNKNOWN',
-            retryPolicy: 'after_user_action',
-            message: 'Tool execution was interrupted; outcome is unknown',
-          }),
-          isError: true,
-          errorCode: 'OUTCOME_UNKNOWN',
-          retryPolicy: 'after_user_action' as const,
-        })),
-      timestamp: Date.now(),
-    };
+    const message = buildInterruptedToolMessage(assistantEvent);
     this.history.push(message);
     return [message];
   }
@@ -1729,23 +1449,6 @@ export class AgentSession {
   private findClosedToolMessages(
     assistantEvent: Extract<SessionEvent, { type: 'message_stop' }>,
   ): CanonicalMessage[] {
-    const assistantIndex = this.history.lastIndexOf(assistantEvent.message);
-    if (assistantIndex < 0) return [];
-
-    const expected = new Set(
-      assistantEvent.message.content
-        .filter((block) => block.type === 'tool_use')
-        .map((toolUse) => toolUse.id),
-    );
-    const messages: CanonicalMessage[] = [];
-    for (let index = assistantIndex + 1; index < this.history.length; index++) {
-      const message = this.history[index]!;
-      if (message.role !== 'tool') break;
-      messages.push(message);
-      for (const block of message.content) {
-        if (block.type === 'tool_result') expected.delete(block.toolUseId);
-      }
-    }
-    return expected.size === 0 ? messages : [];
+    return findClosedToolMessages(this.history, assistantEvent);
   }
 }

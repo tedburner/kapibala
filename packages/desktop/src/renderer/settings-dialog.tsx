@@ -3,18 +3,33 @@ import { Dialog } from '@cloudflare/kumo/primitives/dialog';
 import { Tabs } from '@cloudflare/kumo/primitives/tabs';
 import {
   ArchiveIcon,
+  PackageIcon,
   PaletteIcon,
   PlugsConnectedIcon,
   PulseIcon,
   ShuffleIcon,
   XIcon,
 } from '@phosphor-icons/react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Output, ProfileDraft, Workspace } from '../shared/contracts.js';
 import type { SessionTarget } from './session-actions.js';
 
 type Catalog = Output<'settings.read'>;
 type Model = Catalog['profiles'][number];
+type McpCatalog = Output<'resources.readMcp'>;
+type McpServerView = McpCatalog['servers'][number];
+type SkillsCatalog = Output<'resources.readSkills'>;
+/** MCP 编辑表单的草稿形态；args 以空白分隔输入，提交时按空白切分。 */
+type McpFormDraft = {
+  editName?: string;
+  name: string;
+  type: 'stdio' | 'http';
+  command: string;
+  args: string;
+  url: string;
+  /** 快照未提供未脱敏回填面（目标串内嵌密钥）时置位：传输字段锁定，只允许改名。 */
+  keepTransport?: boolean;
+};
 /** 左导航只负责切换内容；诊断与产品设置同级但独立，避免版本信息混进日常配置。 */
 const SETTINGS_TABS = [
   {
@@ -28,6 +43,12 @@ const SETTINGS_TABS = [
     label: '默认模型与路由',
     icon: ShuffleIcon,
     subtitle: '为新建会话指定默认模型和各角色模型。',
+  },
+  {
+    value: 'resources',
+    label: '资源管理',
+    icon: PackageIcon,
+    subtitle: 'MCP 服务器与技能的清单、启停与诊断；管理操作对新建会话生效。',
   },
   {
     value: 'appearance',
@@ -81,6 +102,7 @@ export function SettingsDialog({
   reload,
   report,
   spaces = [],
+  workspaceId,
   archiveRevision = 0,
   onArchivedChanged,
   onRequestDelete,
@@ -93,6 +115,8 @@ export function SettingsDialog({
   report(message: string): void;
   /** 已登记空间；归档页按空间分组读取，未信任空间不参与（与侧栏列表同一准入）。 */
   spaces?: readonly Workspace[];
+  /** 资源管理读取上下文；MCP 项目视图与技能目录都按该空间的信任投影。 */
+  workspaceId?: string;
   /** 归档集合的变更代数：外部归档/删除后重新拉取，避免展示过期行。 */
   archiveRevision?: number;
   /** 恢复成功后通知外部刷新侧栏列表。 */
@@ -104,6 +128,42 @@ export function SettingsDialog({
 }) {
   const [info, setInfo] = useState<Output<'app.getInfo'>>();
   const [tab, setTab] = useState('models');
+  const [resMcp, setResMcp] = useState<McpCatalog>();
+  const [resSkills, setResSkills] = useState<SkillsCatalog>();
+  const [resDraft, setResDraft] = useState<McpFormDraft>();
+  const [resConfirmDelete, setResConfirmDelete] = useState<string>();
+  const [resBusy, setResBusy] = useState(false);
+  /** 资源面板本地错误条：模态弹窗会遮住全局状态栏，校验失败的原因必须在面板内可见。 */
+  const [resError, setResError] = useState('');
+  /** 资源管理读函数：MCP 与 Skills 并行拉取；workspaceId 未定时不请求。 */
+  const loadResources = useCallback(() => {
+    if (!workspaceId) return;
+    void window.kapibala.resources
+      .readMcp(workspaceId)
+      .then(setResMcp)
+      .catch((error) => report(error.message));
+    void window.kapibala.resources
+      .readSkills(workspaceId)
+      .then(setResSkills)
+      .catch((error) => report(error.message));
+  }, [workspaceId, report]);
+  useEffect(() => {
+    if (!open || tab !== 'resources') return;
+    loadResources();
+  }, [open, tab, loadResources]);
+  /** 资源写操作统一入口：串行防抖 + 回读 + 失败上报，不静默吞错。 */
+  function resourceAction(action: (activeWorkspaceId: string) => Promise<unknown>): void {
+    if (!workspaceId || resBusy) return;
+    setResBusy(true);
+    setResError('');
+    void action(workspaceId)
+      .then(() => loadResources())
+      .catch((error) => {
+        setResError(error.message);
+        report(error.message);
+      })
+      .finally(() => setResBusy(false));
+  }
   /** 左侧选中的厂商分组键（providers[].key）；详情面板展示该厂商的模型与编辑表单。 */
   const [providerSel, setProviderSel] = useState('custom');
   const [search, setSearch] = useState('');
@@ -169,7 +229,10 @@ export function SettingsDialog({
         // 顺序读取：与侧栏搜索同一策略，避免多个空间同时占满 Host 请求预算。
         for (const space of spaces) {
           if (!space.trusted) continue;
-          groups.push({ space, list: await window.kapibala.session.archived(space.id) });
+          groups.push({
+            space,
+            list: await window.kapibala.session.archived(space.id),
+          });
           if (cancelled) return;
         }
         if (!cancelled) setArchive({ loading: false, groups });
@@ -190,7 +253,10 @@ export function SettingsDialog({
   async function restoreArchived(space: Workspace, conversationId: string) {
     setRestoring(conversationId);
     try {
-      await window.kapibala.session.restore({ workspaceId: space.id, conversationId });
+      await window.kapibala.session.restore({
+        workspaceId: space.id,
+        conversationId,
+      });
       setReloadTick((value) => value + 1);
       onArchivedChanged?.();
     } catch (error) {
@@ -328,7 +394,10 @@ export function SettingsDialog({
         ) {
           savedAsNew = true;
           saved = await window.kapibala.settings.saveProfile({
-            profile: { ...target, id: `custom-${crypto.randomUUID().slice(0, 8)}` },
+            profile: {
+              ...target,
+              id: `custom-${crypto.randomUUID().slice(0, 8)}`,
+            },
             apiKey: pendingKey,
           });
         } else {
@@ -775,6 +844,326 @@ export function SettingsDialog({
                     />
                   ))}
                 </Tabs.Panel>
+                <Tabs.Panel value="resources" className="kapibala-settings-panel space-y-6">
+                  {!workspaceId && (
+                    <p className="text-sm text-kumo-subtle">暂无可用空间，无法读取资源清单。</p>
+                  )}
+                  {resError && (
+                    <p role="alert" className="text-xs text-kumo-danger">
+                      {resError}
+                    </p>
+                  )}
+                  <section className="space-y-3" aria-label="MCP 服务器">
+                    <h3 className="text-sm font-medium">MCP 服务器</h3>
+                    <p className="text-sm text-kumo-subtle">
+                      全局配置：~/.kapibala/mcp.json；项目级声明只读展示。
+                      启停与增删对新建会话生效，运行中的会话不受影响。
+                    </p>
+                    {(resMcp?.servers ?? []).length === 0 && (
+                      <p className="text-sm text-kumo-subtle">未配置任何 MCP 服务器。</p>
+                    )}
+                    {(resMcp?.servers ?? []).map((server: McpServerView) => (
+                      <div
+                        key={`${server.source}:${server.name}`}
+                        className="space-y-1 rounded-lg border border-kumo-line p-3"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium">
+                              {server.name}
+                              <span className="ml-2 text-xs text-kumo-subtle">
+                                {server.source === 'project'
+                                  ? '项目级（只读）'
+                                  : server.enabled
+                                    ? '已启用'
+                                    : '已禁用'}
+                              </span>
+                            </div>
+                            <div className="truncate text-xs text-kumo-subtle">
+                              {server.type === 'http' ? 'HTTP' : 'stdio'} ·{' '}
+                              {server.target || '（无目标）'}
+                            </div>
+                          </div>
+                          {server.source === 'global' && (
+                            <div className="flex shrink-0 items-center gap-2">
+                              <Switch
+                                label={`启用 ${server.name}`}
+                                checked={server.enabled}
+                                disabled={resBusy}
+                                onCheckedChange={(checked) =>
+                                  resourceAction((activeWorkspaceId) =>
+                                    window.kapibala.resources.toggleMcpServer({
+                                      workspaceId: activeWorkspaceId,
+                                      name: server.name,
+                                      enabled: checked,
+                                    }),
+                                  )
+                                }
+                              />
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() =>
+                                  setResDraft({
+                                    editName: server.name,
+                                    name: server.name,
+                                    type: server.type === 'http' ? 'http' : 'stdio',
+                                    // 回填必须用未脱敏的编辑面：target 是脱敏摘要
+                                    //（command+args 合并、密钥成掩码），回写会损坏声明。
+                                    command: server.edit?.command ?? '',
+                                    args: server.edit?.args?.join(' ') ?? '',
+                                    url: server.edit?.url ?? '',
+                                    keepTransport: !server.edit,
+                                  })
+                                }
+                              >
+                                编辑
+                              </Button>
+                              {resConfirmDelete === server.name ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    setResConfirmDelete(undefined);
+                                    resourceAction((activeWorkspaceId) =>
+                                      window.kapibala.resources.deleteMcpServer({
+                                        workspaceId: activeWorkspaceId,
+                                        name: server.name,
+                                      }),
+                                    );
+                                  }}
+                                >
+                                  确认删除
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setResConfirmDelete(server.name)}
+                                >
+                                  删除
+                                </Button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        {server.hasSecretSurface && (
+                          <p className="text-xs text-kumo-subtle">
+                            该声明包含环境变量或请求头（值不在界面回显，编辑会保留原文）。
+                          </p>
+                        )}
+                        {server.diagnostics.map((diagnostic) => (
+                          <p
+                            key={`${diagnostic.code}:${diagnostic.message}`}
+                            className="text-xs text-kumo-subtle"
+                          >
+                            [{diagnostic.code}] {diagnostic.message}
+                          </p>
+                        ))}
+                      </div>
+                    ))}
+                    {resMcp?.diagnostics.map((diagnostic) => (
+                      <p
+                        key={`${diagnostic.code}:${diagnostic.message}`}
+                        className="text-xs text-kumo-subtle"
+                      >
+                        [{diagnostic.code}] {diagnostic.message}
+                      </p>
+                    ))}
+                    {resDraft && (
+                      <div className="space-y-3 rounded-lg border border-kumo-line p-3">
+                        <Input
+                          label="名称"
+                          value={resDraft.name}
+                          onValueChange={(value) => setResDraft({ ...resDraft, name: value })}
+                        />
+                        <Select
+                          label="传输类型"
+                          value={resDraft.type}
+                          items={{
+                            stdio: 'stdio（本地命令）',
+                            http: 'HTTP（远程端点）',
+                          }}
+                          disabled={resDraft.keepTransport}
+                          onValueChange={(value) =>
+                            setResDraft({
+                              ...resDraft,
+                              type: value as 'stdio' | 'http',
+                            })
+                          }
+                        />
+                        {resDraft.type === 'stdio' ? (
+                          <>
+                            <Input
+                              label="启动命令"
+                              value={resDraft.command}
+                              disabled={resDraft.keepTransport}
+                              onValueChange={(value) =>
+                                setResDraft({ ...resDraft, command: value })
+                              }
+                            />
+                            <Input
+                              label="命令行参数（空白分隔，可选）"
+                              value={resDraft.args}
+                              disabled={resDraft.keepTransport}
+                              onValueChange={(value) => setResDraft({ ...resDraft, args: value })}
+                            />
+                          </>
+                        ) : (
+                          <Input
+                            label="端点 URL"
+                            value={resDraft.url}
+                            disabled={resDraft.keepTransport}
+                            onValueChange={(value) => setResDraft({ ...resDraft, url: value })}
+                          />
+                        )}
+                        <p className="text-xs text-kumo-subtle">
+                          {resDraft.keepTransport
+                            ? '该声明包含敏感内容，面板编辑只保留传输配置原文（可改名）；如需修改传输配置请手工编辑 ~/.kapibala/mcp.json。'
+                            : '环境变量与请求头请在 mcp.json 中手工维护；编辑会保留这些字段原文。'}
+                        </p>
+                        <div className="flex gap-2">
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            disabled={resBusy || !resDraft.name.trim()}
+                            onClick={() => {
+                              // 提交前友好预校验：宿主层事务仍会全量兜底，此处只拦截最常见的必填缺失。
+                              // keepTransport 时传输字段锁定为空，必填校验交由服务端保留原文。
+                              if (!resDraft.keepTransport) {
+                                if (resDraft.type === 'http' && !resDraft.url.trim()) {
+                                  setResError('HTTP 服务器必须提供端点 URL');
+                                  return;
+                                }
+                                if (resDraft.type === 'stdio' && !resDraft.command.trim()) {
+                                  setResError('stdio 服务器必须提供启动命令');
+                                  return;
+                                }
+                              }
+                              const draft = {
+                                name: resDraft.name.trim(),
+                                type: resDraft.type,
+                                ...(resDraft.keepTransport
+                                  ? {}
+                                  : resDraft.type === 'stdio'
+                                    ? { command: resDraft.command.trim() }
+                                    : { url: resDraft.url.trim() }),
+                                ...(resDraft.type === 'stdio' &&
+                                !resDraft.keepTransport &&
+                                resDraft.args.trim()
+                                  ? { args: resDraft.args.trim().split(/\s+/) }
+                                  : {}),
+                              };
+                              resourceAction((activeWorkspaceId) =>
+                                window.kapibala.resources
+                                  .saveMcpServer({
+                                    workspaceId: activeWorkspaceId,
+                                    editName: resDraft.editName,
+                                    ...(resDraft.keepTransport ? { keepTransport: true } : {}),
+                                    draft,
+                                  })
+                                  .then(() => setResDraft(undefined)),
+                              );
+                            }}
+                          >
+                            保存
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => setResDraft(undefined)}>
+                            取消
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                    {!resDraft && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!workspaceId}
+                        onClick={() =>
+                          setResDraft({
+                            name: '',
+                            type: 'stdio',
+                            command: '',
+                            args: '',
+                            url: '',
+                          })
+                        }
+                      >
+                        新增服务器
+                      </Button>
+                    )}
+                  </section>
+                  <section className="space-y-3" aria-label="技能">
+                    <h3 className="text-sm font-medium">技能</h3>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium">启用技能功能</div>
+                        <p className="text-xs text-kumo-subtle">
+                          关闭后新建会话不注册技能工具；运行中的会话不变。
+                        </p>
+                      </div>
+                      <Switch
+                        label="启用技能功能"
+                        checked={resSkills?.enabled ?? true}
+                        disabled={resBusy}
+                        onCheckedChange={(checked) =>
+                          resourceAction((activeWorkspaceId) =>
+                            window.kapibala.resources.setSkillsEnabled({
+                              workspaceId: activeWorkspaceId,
+                              enabled: checked,
+                            }),
+                          )
+                        }
+                      />
+                    </div>
+                    {(resSkills?.skills ?? []).map((skill) => (
+                      <div
+                        key={skill.name}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-kumo-line p-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">
+                            {skill.name}
+                            <span className="ml-2 text-xs text-kumo-subtle">
+                              [{skill.scope}]
+                              {skill.disabled ? ' · 已禁用' : skill.available ? '' : ' · 不可用'}
+                            </span>
+                          </div>
+                          <div className="truncate text-xs text-kumo-subtle">
+                            {skill.description || skill.filePath || '目录中暂无同名技能'}
+                          </div>
+                          {!skill.available && (
+                            <div className="text-xs text-kumo-subtle">
+                              原因：{skill.unavailableReason ?? '未知'}
+                            </div>
+                          )}
+                        </div>
+                        <Switch
+                          label={`启用 ${skill.name}`}
+                          checked={!skill.disabled}
+                          disabled={resBusy}
+                          onCheckedChange={(checked) =>
+                            resourceAction((activeWorkspaceId) =>
+                              window.kapibala.resources.setSkillDisabled({
+                                workspaceId: activeWorkspaceId,
+                                name: skill.name,
+                                disabled: !checked,
+                              }),
+                            )
+                          }
+                        />
+                      </div>
+                    ))}
+                    {resSkills?.diagnostics.map((diagnostic) => (
+                      <p
+                        key={`${diagnostic.code}:${diagnostic.path}:${diagnostic.message}`}
+                        className="text-xs text-kumo-subtle"
+                      >
+                        [{diagnostic.code}] {diagnostic.path} · {diagnostic.message}
+                      </p>
+                    ))}
+                  </section>
+                </Tabs.Panel>
                 <Tabs.Panel value="appearance" className="kapibala-settings-panel space-y-4">
                   <Select
                     label="主题"
@@ -870,7 +1259,8 @@ export function SettingsDialog({
                         {info.runtimes.chrome}
                       </p>
                       <p className="text-sm text-kumo-subtle">
-                        通知：{info.notifications ? '系统支持，送达取决于系统权限' : '系统不支持'} ·
+                        通知：
+                        {info.notifications ? '系统支持，送达取决于系统权限' : '系统不支持'} ·
                         托盘：
                         {info.tray
                           ? '可用'
@@ -892,7 +1282,10 @@ export function SettingsDialog({
                           null,
                           2,
                         )}
-                        labels={{ copyAction: '复制应用诊断', copied: '已复制' }}
+                        labels={{
+                          copyAction: '复制应用诊断',
+                          copied: '已复制',
+                        }}
                       >
                         复制应用诊断
                       </InlineCopyText>

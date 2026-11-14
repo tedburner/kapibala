@@ -1,4 +1,5 @@
 import type { AgentSession } from '@kiturone/kapibala';
+import { EXPLICIT_SKILL_KICKOFF } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it, vi } from 'vitest';
 import { COMMAND_CATALOG } from '../src/commands/catalog.js';
 import { type CommandContext, CommandDispatcher } from '../src/commands/dispatcher.js';
@@ -33,11 +34,18 @@ describe('skills commands', () => {
     await dispatcher.dispatch('/skill write-guide 请保留 "a  b"\n第二行   ', context);
     expect(runSkill).toHaveBeenCalledWith('write-guide', '请保留 "a  b"\n第二行   ');
   });
-  it('rejects missing tasks, invalid names and busy mutation without starting a run', async () => {
+  it('uses the shared kickoff task when the task is omitted or blank', async () => {
+    const { dispatcher, context, runSkill } = harness();
+    await dispatcher.dispatch('/skill write-guide', context);
+    expect(runSkill).toHaveBeenLastCalledWith('write-guide', EXPLICIT_SKILL_KICKOFF);
+    await dispatcher.dispatch('/skill write-guide   ', context);
+    expect(runSkill).toHaveBeenLastCalledWith('write-guide', EXPLICIT_SKILL_KICKOFF);
+  });
+  it('rejects invalid names and busy mutation without starting a run', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       const h = harness();
-      for (const input of ['/skill write-guide', '/skill ../outside task', '/skill write-guide   '])
+      for (const input of ['/skill', '/skill ../outside task', '/skill -bad task'])
         await h.dispatcher.dispatch(input, h.context);
       expect(h.runSkill).not.toHaveBeenCalled();
       const busy = harness(true);

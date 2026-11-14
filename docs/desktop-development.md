@@ -304,7 +304,7 @@ E2E 在 app ready 前设置隔离 Electron userData，在任何 Host、Session �
 
 正式发布继续使用 [发布证据](release-evidence.md)和 004 第 11 节流程：升版提交完整 SHA → 人工推送 main 并等待 Verify → 候选签名构建 → 逐平台安装验收及哈希审核 → 人工推送标签 → 验证并发布同一批附件。Release 不重新构建桌面包，desktop 保持 private，npm 仍只有原三包。
 
-2026-11-14 起的 v0.1.0 口径是未签名个人自用版：Release 不传 `--desktop-version`、默认不附带桌面附件，上述“候选签名构建 → 逐平台安装验收”不在发布前置内，改由本机 `pnpm pack:desktop` 出测试包后手工上传。签名能力与候选流程保留，设 `KPBL_DESKTOP_RELEASE=true` 即恢复。
+2026-11-14 起的 v0.1.0 口径是未签名个人自用版：Release 不传 `--desktop-version`，上述“候选签名构建 → 逐平台安装验收”不在发布前置内，改由 `release.yml` 的 `desktop-unsigned` 作业在四平台自动 `pnpm pack:desktop --no-verify` 并上传测试包（本机仍可用同一命令出包）。签名能力与候选流程保留，设 `KPBL_DESKTOP_RELEASE=true` 即恢复，此时 `desktop-unsigned` 不再产出，改由审核候选附件接管。
 
 实施时同步 SDK 兼容性、迁移说明、验收记录和发布说明，明确旧 CLI 不参与新配置锁、CLI 与桌面无跨进程工作区租约、异常退出后需要人工检查。未完成的平台、签名或长跑项目保留 pending，不能用文档勾选代替证据。
 

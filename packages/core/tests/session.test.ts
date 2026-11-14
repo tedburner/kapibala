@@ -37,12 +37,20 @@ describe('AgentSession 消息级落盘', () => {
   it('把 user / assistant / tool / assistant 全链路写进 JSONL，重载后无需自愈', async () => {
     const provider = new ScriptedProvider([
       [
-        { type: 'tool_call_finish', id: 'call_1', name: 'echo', input: { value: 'hi' } },
+        {
+          type: 'tool_call_finish',
+          id: 'call_1',
+          name: 'echo',
+          input: { value: 'hi' },
+        },
         { type: 'message_stop' },
       ],
       [
         { type: 'text_delta', text: 'ok' },
-        { type: 'message_stop', usage: { promptTokens: 3, completionTokens: 1, totalTokens: 4 } },
+        {
+          type: 'message_stop',
+          usage: { promptTokens: 3, completionTokens: 1, totalTokens: 4 },
+        },
       ],
     ]);
 
@@ -132,7 +140,12 @@ describe('AgentSession 消息级落盘', () => {
   it('does not expose a tool-use message until its tool result has closed history', async () => {
     const provider = new ScriptedProvider([
       [
-        { type: 'tool_call_finish', id: 'call_buffered', name: 'echo', input: { value: 'hi' } },
+        {
+          type: 'tool_call_finish',
+          id: 'call_buffered',
+          name: 'echo',
+          input: { value: 'hi' },
+        },
         { type: 'message_stop' },
       ],
       [{ type: 'text_delta', text: 'done' }, { type: 'message_stop' }],
@@ -169,7 +182,12 @@ describe('AgentSession 消息级落盘', () => {
   it('does not admit a tool-use message when model:after rejects', async () => {
     const provider = new ScriptedProvider([
       [
-        { type: 'tool_call_finish', id: 'call_hook', name: 'echo', input: { value: 'hi' } },
+        {
+          type: 'tool_call_finish',
+          id: 'call_hook',
+          name: 'echo',
+          input: { value: 'hi' },
+        },
         { type: 'message_stop' },
       ],
     ]);
@@ -205,7 +223,12 @@ describe('AgentSession 消息级落盘', () => {
       defaultProfile: TEST_PROFILE,
       defaultProvider: new ScriptedProvider([
         [
-          { type: 'tool_call_finish', id: 'call_cleanup', name: 'cleanup', input: {} },
+          {
+            type: 'tool_call_finish',
+            id: 'call_cleanup',
+            name: 'cleanup',
+            input: {},
+          },
           { type: 'message_stop' },
         ],
       ]),
@@ -272,6 +295,80 @@ describe('AgentSession 消息级落盘', () => {
     }
   });
 
+  it('persists the closed tool transaction when the consumer throws into the run iterator', async () => {
+    let releaseTool!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const session = new AgentSession({
+      defaultProfile: TEST_PROFILE,
+      defaultProvider: new ScriptedProvider([
+        [
+          {
+            type: 'tool_call_finish',
+            id: 'call_throw',
+            name: 'slow',
+            input: {},
+          },
+          { type: 'message_stop' },
+        ],
+      ]),
+      rootDir: tempDir,
+      store,
+      eventLogger: { async record() {}, async recordAudit() {} },
+    });
+    session.tools.register(
+      defineTool({
+        name: 'slow',
+        description: 'Slow tool.',
+        parameters: {},
+        metadata: { permissions: ['fs:read'], managesTimeout: true },
+        async execute(_input, ctx) {
+          ctx.onProgress?.({ elapsedMs: 1, outputBytes: 0 });
+          await gate;
+          if (ctx.signal?.aborted) throw new AbortError();
+          return 'done';
+        },
+      }),
+    );
+    const iterator = session.run('run slow')[Symbol.asyncIterator]();
+    while ((await iterator.next()).value?.type !== 'tool_progress') {
+      /* consume */
+    }
+    // 消费者注入异常：Loop 在迭代器收口中闭合内存历史，session 必须把闭合结果补齐落盘，
+    // 否则磁盘与内存历史分歧（重启丢消息）。
+    const throwing = iterator.throw!(new Error('consumer abort')).catch(() => {});
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseTool();
+    await throwing;
+    // .throw() 不终结生成器：外层 catch 仍会产出收尾事件并挂在新 yield 上，
+    // 按生成器契约显式 return 让会话释放 activeRun。
+    await iterator.return!();
+
+    const persisted = fs
+      .readFileSync(storePath, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(persisted.map((record) => record.role)).toEqual(['user', 'assistant', 'tool']);
+    expect(persisted[2].content[0]).toMatchObject({
+      type: 'tool_result',
+      toolUseId: 'call_throw',
+    });
+    expect(findDanglingToolUses(session.getHistory())).toEqual([]);
+    expect(session.getHistory().map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+    ]);
+    // 重载后与内存历史一致：修复前 assistant+tool 只存在于内存，磁盘缺整个事务。
+    const reloaded = await store.load();
+    expect(reloaded.map((message) => message.role)).toEqual(
+      session.getHistory().map((m) => m.role),
+    );
+    await expect(session.reset()).resolves.toBeUndefined();
+  });
+
   it('does not start remaining tool calls after a progress iterator is returned', async () => {
     let releaseTool!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -282,8 +379,18 @@ describe('AgentSession 消息级落盘', () => {
       defaultProfile: TEST_PROFILE,
       defaultProvider: new ScriptedProvider([
         [
-          { type: 'tool_call_finish', id: 'call_first', name: 'first', input: {} },
-          { type: 'tool_call_finish', id: 'call_remaining', name: 'remaining', input: {} },
+          {
+            type: 'tool_call_finish',
+            id: 'call_first',
+            name: 'first',
+            input: {},
+          },
+          {
+            type: 'tool_call_finish',
+            id: 'call_remaining',
+            name: 'remaining',
+            input: {},
+          },
           { type: 'message_stop' },
         ],
       ]),
@@ -348,7 +455,12 @@ describe('AgentSession 消息级落盘', () => {
       defaultProfile: TEST_PROFILE,
       defaultProvider: new ScriptedProvider([
         [
-          { type: 'tool_call_finish', id: 'call_completed', name: 'completed', input: {} },
+          {
+            type: 'tool_call_finish',
+            id: 'call_completed',
+            name: 'completed',
+            input: {},
+          },
           { type: 'message_stop' },
         ],
       ]),

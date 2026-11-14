@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { loadSettings, resolveApiKey, resolveBaseURL } from '../packages/cli/src/settings.js';
 import { AgentSession } from '../packages/core/src/context/session/index.js';
 import { AnthropicProvider } from '../packages/core/src/models/anthropic/index.js';
 import { OpenAICompatibleProvider } from '../packages/core/src/models/openai-compatible/index.js';
 import { OpenAIResponsesProvider } from '../packages/core/src/models/openai-responses/index.js';
 import type { SessionEvent } from '../packages/core/src/types/index.js';
+import { loadSettings, resolveApiKey, resolveBaseURL } from '../packages/host/src/host/settings.js';
 
 // 小样本真实模型验收：只提供隔离技能的读取能力；不改用户设置，不输出密钥或私有思考状态。
 const { settings } = loadSettings({ includeProject: false });

@@ -1,4 +1,4 @@
-import { createPresentation } from '@kiturone/kapibala-cli/view-model';
+import { createPresentation } from '@kiturone/kapibala-host/view-model';
 import { expect, it, vi } from 'vitest';
 import { ViewClient } from '../src/renderer/view-client.js';
 import type { DesktopAPI, Notification, Params } from '../src/shared/contracts.js';

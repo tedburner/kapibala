@@ -1,16 +1,16 @@
 import { PassThrough } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
-import { LocalClient } from '../src/client/index.js';
-import { SnapshotPager } from '../src/local-host/snapshots.js';
+import { LocalClient } from '@kiturone/kapibala-host/client';
 import {
   DEFAULT_LIMITS,
   type JsonValue,
   toWireErrorCode,
   validateMethodResult,
   validateSnapshotBody,
-} from '../src/protocol/index.js';
-import { RpcPeer } from '../src/transport/rpc.js';
-import { createStdioTransport } from '../src/transport/stdio.js';
+} from '@kiturone/kapibala-host/protocol';
+import { RpcPeer } from '@kiturone/kapibala-host/transport';
+import { createStdioTransport } from '@kiturone/kapibala-host/transport';
+import { describe, expect, it, vi } from 'vitest';
+import { SnapshotPager } from '../src/local-host/snapshots.js';
 
 const offer = { major: 1, minMinor: 0, maxMinor: 0, clientName: 'contract-test', capabilities: [] };
 const initialized = {

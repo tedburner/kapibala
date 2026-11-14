@@ -1,5 +1,5 @@
+import { GitStatusCache, projectStatusFacts } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it, vi } from 'vitest';
-import { GitStatusCache, projectStatusFacts } from '../src/host/status-facts.js';
 
 describe('host status facts', () => {
   it('projects explicit usage facts without retaining Core objects or private model data', () => {

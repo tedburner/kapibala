@@ -533,9 +533,6 @@ export class AgentRuntime {
         task.status = 'failed';
       }
       task.error = runError.message;
-
-      // 自身运行失败时，无条件级联取消所有后代
-      await this.cascadeCancelChildren(task.agentId, 'Parent task failed');
     } finally {
       this.runnerContexts.delete(task.agentId);
       this.clearTaskTimer(task.agentId);
@@ -544,6 +541,13 @@ export class AgentRuntime {
       if (!isTerminalTaskStatus(task.status)) {
         task.status = 'failed';
         task.error = runError?.message ?? 'Unknown execution failure';
+      }
+
+      // 失败任务在此无条件级联取消后代：墙钟超时与取消信号下 runner 正常返回的路径
+      // 不经过 catch，级联只在异常路径做会漏掉它们（违反文件头约束 4）。
+      // cancelled 的后代由 cancelTask 发起时已经级联，这里不重复触发，避免覆盖调用方原因。
+      if (task.status === 'failed') {
+        await this.cascadeCancelChildren(task.agentId, task.error ?? 'Parent task failed');
       }
 
       task.finishedAt = Date.now();

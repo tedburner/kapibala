@@ -1,4 +1,4 @@
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 import type { CommandHandler } from './dispatcher.js';
 
 /** 列出当前会话生效的项目指令来源；无来源时明确输出「无」。只读诊断。 */

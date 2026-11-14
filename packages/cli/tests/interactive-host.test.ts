@@ -6,15 +6,15 @@ import type {
   SessionEvent,
   SessionManager,
 } from '@kiturone/kapibala';
+import { bindSessionMcpPlugin } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it, vi } from 'vitest';
 import { ActiveSessionController } from '../src/active-session.js';
 import { COMMAND_CATALOG } from '../src/commands/catalog.js';
 import { type CommandContext, CommandDispatcher } from '../src/commands/dispatcher.js';
 import { promptCommand } from '../src/commands/prompts.js';
 import { skillCommand } from '../src/commands/skills.js';
-import { type HostInputPort, runInteractiveHost } from '../src/host/interactive.js';
 import { CliInputCoordinator } from '../src/input-coordinator.js';
-import { bindSessionMcpPlugin } from '../src/mcp.js';
+import { type HostInputPort, runInteractiveHost } from '../src/interactive-host.js';
 import { createEventRenderer } from '../src/ui/events.js';
 
 function deferred() {

@@ -2,7 +2,16 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src"
+    "baseUrl": ".",
+    "paths": {
+      "@kiturone/kapibala-host": ["../host/src/index.ts"],
+      "@kiturone/kapibala-host/host": ["../host/src/host/index.ts"],
+      "@kiturone/kapibala-host/internal": ["../host/src/internal.ts"],
+      "@kiturone/kapibala-host/protocol": ["../host/src/protocol/index.ts"],
+      "@kiturone/kapibala-host/view-model": ["../host/src/view-model/index.ts"],
+      "@kiturone/kapibala-host/client": ["../host/src/client/index.ts"],
+      "@kiturone/kapibala-host/transport": ["../host/src/transport/index.ts"]
+    }
   },
   "include": ["src/**/*"]
 }

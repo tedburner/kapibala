@@ -4,8 +4,8 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { mutateGlobalSettings } from '@kiturone/kapibala-host/host';
 import { afterEach, expect, it, vi } from 'vitest';
-import { mutateGlobalSettings } from '../../cli/src/settings.js';
 import { SettingsService } from '../src/agent-host/settings-service.js';
 import { Workspaces } from '../src/agent-host/workspaces.js';
 

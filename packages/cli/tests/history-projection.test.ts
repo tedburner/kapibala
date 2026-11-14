@@ -1,6 +1,6 @@
 import type { CanonicalMessage } from '@kiturone/kapibala';
+import { projectHistory } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it } from 'vitest';
-import { projectHistory } from '../src/host/history-projection.js';
 
 describe('canonical public history projection', () => {
   it('whitelists public content without copying protocol metadata or mutating source history', () => {

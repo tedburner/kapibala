@@ -5,12 +5,12 @@ import {
   type ApprovalRequest,
   type SessionEvent,
 } from '@kiturone/kapibala';
-import type { ActiveSessionController } from '../active-session.js';
-import type { CommandContext, CommandDispatcher } from '../commands/dispatcher.js';
-import type { CliApprovalChannel } from '../ui/approval.js';
-import type { EventRenderer } from '../ui/events.js';
-import type { SelectConfig } from '../ui/select.js';
+import type { ActiveSessionController } from './active-session.js';
 import { resolveCommandOutput } from './command-output.js';
+import type { CommandContext, CommandDispatcher } from './commands/dispatcher.js';
+import type { CliApprovalChannel } from './ui/approval.js';
+import type { EventRenderer } from './ui/events.js';
+import type { SelectConfig } from './ui/select.js';
 
 /**
  * 文本/TUI 共用的结构化输入端口；实现只能拥有一条实际输入链。

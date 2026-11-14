@@ -34,6 +34,11 @@ export interface ViewBlock {
   readonly revision: number;
   /** 仅工具块使用；不得装入原始入参对象或 Provider/传输层状态。 */
   readonly tool?: ViewTool;
+  /**
+   * 技能信封文本块的来源技能名：宿主把显式技能正文附在用户消息里（`<skill_content>`
+   * 包络），渲染层据此折叠为技能徽章而不是整段元数据与正文；普通文本块缺省。
+   */
+  readonly skillName?: string;
 }
 
 /** 可重建展示消息；persisted 表示已观察的提交事实，临时片段不冒充落盘。 */

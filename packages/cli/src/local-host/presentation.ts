@@ -1,4 +1,4 @@
-import type { JsonValue, WireEvent } from '../protocol/index.js';
+import type { JsonValue, WireEvent } from '@kiturone/kapibala-host/protocol';
 import {
   type PresentationChange,
   type PresentationState,
@@ -6,7 +6,7 @@ import {
   type ViewMessage,
   createPresentation,
   reducePresentation,
-} from '../view-model/index.js';
+} from '@kiturone/kapibala-host/view-model';
 
 /**
  * wire 到现有纯展示 reducer 的薄适配；只有 canonical 快照可将消息标为 persisted。

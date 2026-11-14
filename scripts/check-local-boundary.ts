@@ -75,7 +75,7 @@ export function checkProtocolBoundary(root: string): string[] {
 const self = fileURLToPath(import.meta.url);
 if (process.argv[1] && path.resolve(process.argv[1]) === self) {
   const errors = checkProtocolBoundary(
-    path.resolve(path.dirname(self), '../packages/cli/src/protocol'),
+    path.resolve(path.dirname(self), '../packages/host/src/protocol'),
   );
   if (errors.length) {
     console.error(errors.join('\n'));

@@ -1,5 +1,5 @@
 import { createContextBudget } from '@kiturone/kapibala';
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 import type { CommandHandler } from './dispatcher.js';
 
 /** 从已发布快照渲染预算；不执行 Hook 或 Provider，不将未知/过期值伪装为下一请求的精确输入。 */

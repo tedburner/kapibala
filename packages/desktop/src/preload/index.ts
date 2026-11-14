@@ -100,6 +100,7 @@ const api: DesktopAPI = {
     addProject: (params) => call('workspace.addProject', params),
     openRecent: (recentId) => call('workspace.openRecent', { recentId }),
     confirmTrust: (params) => call('workspace.confirmTrust', params),
+    listFiles: (workspaceId) => call('workspace.listFiles', { workspaceId }),
   },
   settings: {
     read: (workspaceId) => call('settings.read', { workspaceId }),
@@ -107,6 +108,15 @@ const api: DesktopAPI = {
     listModels: (params) => call('settings.listModels', params),
     setDefault: (profileId) => done('settings.setDefault', { profileId }),
     setRouting: (params) => done('settings.setRouting', params),
+  },
+  resources: {
+    readMcp: (workspaceId) => call('resources.readMcp', { workspaceId }),
+    saveMcpServer: (params) => call('resources.saveMcpServer', params),
+    deleteMcpServer: (params) => call('resources.deleteMcpServer', params),
+    toggleMcpServer: (params) => call('resources.toggleMcpServer', params),
+    readSkills: (workspaceId) => call('resources.readSkills', { workspaceId }),
+    setSkillsEnabled: (params) => call('resources.setSkillsEnabled', params),
+    setSkillDisabled: (params) => call('resources.setSkillDisabled', params),
   },
   session: {
     runtimeSubscribe: (subscriptionId) => call('session.runtimeSubscribe', { subscriptionId }),
@@ -129,8 +139,12 @@ const api: DesktopAPI = {
     start: (params) => call('run.start', params),
     cancel: (params) => call('run.cancel', params),
     status: (params) => call('run.status', params),
+    command: (params) => call('run.command', params),
+    commandList: () => call('run.commandList', {}),
+    skillCatalog: (params) => call('run.skillCatalog', params),
   },
   approval: { reply: (params) => done('approval.reply', params) },
+  interaction: { reply: (params) => done('interaction.reply', params) },
   presentation: {
     subscribe: (params) => done('presentation.subscribe', params),
     unsubscribe: (params) => done('presentation.unsubscribe', params),

@@ -1,4 +1,4 @@
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 /**
  * @fileoverview /plugins 与 /plugin 命令：查看当前会话已挂载的扩展插件与能力贡献清单
  *
@@ -10,7 +10,7 @@ import { resolveCommandOutput } from '../host/command-output.js';
  * 3. 宿主隔离防线：仅展示当前活动会话内实例，跨会话隔离。
  */
 
-import { getSessionMcpPlugin } from '../mcp.js';
+import { getSessionMcpPlugin } from '@kiturone/kapibala-host/internal';
 import { color } from '../ui/events.js';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
 

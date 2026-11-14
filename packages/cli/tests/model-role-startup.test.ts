@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { BUILTIN_CATALOG_VERSION, BUILTIN_PROFILES } from '@kiturone/kapibala-host/internal';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../src/index.js';
-import { BUILTIN_CATALOG_VERSION, BUILTIN_PROFILES } from '../src/settings.js';
 
 describe('noninteractive CLI model roles', () => {
   let directory: string;

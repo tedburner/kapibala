@@ -1,5 +1,5 @@
 import type { SessionMode } from '@kiturone/kapibala';
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 import type { CommandHandler } from './dispatcher.js';
 
 const MODES: Record<string, SessionMode> = {

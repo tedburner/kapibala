@@ -8,7 +8,7 @@ import {
   type SessionControl,
   isJsonData,
   matchesSchema,
-} from '../protocol/index.js';
+} from '@kiturone/kapibala-host/protocol';
 
 /** 宿主提供实际控制归属与安全展示；无法描述完整目标时必须返回 undefined。 */
 export interface RpcApprovalOptions {

@@ -1,4 +1,4 @@
-import type { WireErrorCode } from '../protocol/index.js';
+import type { WireErrorCode } from '@kiturone/kapibala-host/protocol';
 
 /** 宿主固定错误分类；cause 仅供内部诊断，wire 只读取 code，不能暴露原始消息。 */
 export class LocalHostError extends Error {

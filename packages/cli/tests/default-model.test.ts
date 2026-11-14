@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { BUILTIN_PROFILES, loadSettings } from '@kiturone/kapibala-host/internal';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { persistDefaultModel } from '../src/default-model.js';
-import { BUILTIN_PROFILES, loadSettings } from '../src/settings.js';
 
 describe('default model persistence', () => {
   let directory: string;

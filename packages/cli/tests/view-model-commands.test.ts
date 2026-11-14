@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
 import {
   type CommandCandidate,
   matchCommandCandidates,
   moveCommandSelection,
   selectCommandWindow,
-} from '../src/view-model/commands.js';
+} from '@kiturone/kapibala-host/view-model';
+import { describe, expect, it } from 'vitest';
 
 const command = (
   name: string,

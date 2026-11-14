@@ -1,8 +1,8 @@
 import type { AgentSession, ModelRole, PrimaryModelRole } from '@kiturone/kapibala';
+import type { UserSettings } from '@kiturone/kapibala-host/internal';
 import type { ActiveSessionController } from '../active-session.js';
-import { resolveCommandOutput } from '../host/command-output.js';
-import type { CommandOutput } from '../host/command-output.js';
-import type { UserSettings } from '../settings.js';
+import { resolveCommandOutput } from '../command-output.js';
+import type { CommandOutput } from '../command-output.js';
 import type { SelectConfig } from '../ui/select.js';
 import type { CommandDefinition } from './catalog.js';
 
@@ -17,6 +17,11 @@ export interface CommandContext {
   output?: CommandOutput;
   /** 实际生效的配置文件路径；仅使用内置默认（未加载文件）时缺省。 */
   settingsPath?: string;
+  /**
+   * 全局配置根目录（HOME 语义）；命令介导的全局写入（默认模型、路由、密钥）经它透传，
+   * 隔离环境（如桌面 e2e 的 KPBL_DESKTOP_HOME）不传会把变更写穿到真实用户 HOME。
+   */
+  homeDir?: string;
   /** 模型切换已在宿主侧生效（含设置重载与绑定重建）后回调。 */
   onModelSwitched: (newProfileId: string) => void;
   /** 角色绑定持久化成功后回调，宿主据此同步运行时绑定。 */
@@ -32,7 +37,8 @@ export interface CommandContext {
   dispatcher?: CommandDispatcher;
   /** 输入协调器是否正被问答占用；变更门禁会参考它避免打断进行中的确认。 */
   isInputBusy?: () => boolean;
-  question?: (prompt: string) => Promise<string>;
+  /** 阻塞式问答；undefined 返回值表示用户取消，命令应按取消语义收尾。 */
+  question?: (prompt: string) => Promise<string | undefined>;
   select?: <T>(config: SelectConfig<T>) => Promise<T | null>;
   renderEvent?: (event: import('@kiturone/kapibala').SessionEvent) => void;
   /** 宿主按本轮渲染与活动会话取消规则消费技能运行流；只读命令不得调用。 */

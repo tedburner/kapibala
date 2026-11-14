@@ -11,8 +11,8 @@ vi.mock('node:readline/promises', () => ({
   },
 }));
 
-vi.mock('../src/settings.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/settings.js')>();
+vi.mock('@kiturone/kapibala-host/internal', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiturone/kapibala-host/internal')>();
   return {
     ...actual,
     loadGlobalSettingsForWrite: vi.fn(() => {

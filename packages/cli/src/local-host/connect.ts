@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { sanitizeUntrustedOutput } from '@kiturone/kapibala-host/internal';
+import type { JsonValue, SessionControl, WireEvent } from '@kiturone/kapibala-host/protocol';
 import { CliInputCoordinator } from '../input-coordinator.js';
-import type { JsonValue, SessionControl, WireEvent } from '../protocol/index.js';
 import { escapeApprovalText } from '../ui/approval.js';
-import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
 import { type DaemonOptions, connectDaemon } from './daemon.js';
 import { ConnectedPresentation } from './presentation.js';
 

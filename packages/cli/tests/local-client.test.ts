@@ -3,12 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { SessionManager } from '@kiturone/kapibala';
+import { LocalClient } from '@kiturone/kapibala-host/client';
+import { DEFAULT_LIMITS, type JsonValue, type WireEvent } from '@kiturone/kapibala-host/protocol';
+import { RpcPeer } from '@kiturone/kapibala-host/transport';
+import { createStdioTransport } from '@kiturone/kapibala-host/transport';
 import { describe, expect, it, vi } from 'vitest';
-import { LocalClient } from '../src/client/index.js';
 import { LocalHostServer } from '../src/local-host/server.js';
-import { DEFAULT_LIMITS, type JsonValue, type WireEvent } from '../src/protocol/index.js';
-import { RpcPeer } from '../src/transport/rpc.js';
-import { createStdioTransport } from '../src/transport/stdio.js';
 
 const pair = () => {
   const a = new PassThrough();

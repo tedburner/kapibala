@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AgentSession, SessionManager } from '@kiturone/kapibala';
+import { projectHistory } from '@kiturone/kapibala-host/internal';
+import { PresentationStore } from '@kiturone/kapibala-host/internal';
+import { SessionPresentation, presentationScope } from '@kiturone/kapibala-host/internal';
+import { selectMessages } from '@kiturone/kapibala-host/view-model';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ScriptedProvider,
@@ -9,10 +13,6 @@ import {
   makeEchoToolRegistry,
 } from '../../core/tests/helpers/mock.js';
 import { ActiveSessionController } from '../src/active-session.js';
-import { projectHistory } from '../src/host/history-projection.js';
-import { PresentationStore } from '../src/host/presentation-store.js';
-import { SessionPresentation, presentationScope } from '../src/host/session-presentation.js';
-import { selectMessages } from '../src/view-model/index.js';
 
 afterEach(() => vi.restoreAllMocks());
 

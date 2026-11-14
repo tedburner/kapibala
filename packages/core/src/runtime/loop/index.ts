@@ -29,41 +29,17 @@ import type {
   TurnMetrics,
   Usage,
 } from '../../types/index.js';
-import { stableSerialize } from '../../types/serialization.js';
 import type { ToolExecutor } from '../executor/index.js';
+import {
+  assertAssistantMessageUntampered,
+  assertHookToolDefinitionsIntact,
+  snapshotAssistantIntegrity,
+} from './hook-integrity.js';
+import { assertToolCallsExecutable } from './tool-call-validation.js';
+import type { AgentLoopOptions } from './types.js';
 
-/** 循环宿主配置；请求投影与在途预算只操作临时视图，历史仍按完整工具事务追加。 */
-export interface AgentLoopOptions {
-  /** 本次交互身份，内部步骤仍独立编号。 */
-  interactionId?: string;
-  /** 仅用于诊断、用量归因与脱敏说明，不参与请求构造。 */
-  modelId?: string;
-  modelRole?: PrimaryModelRole;
-  /** 请求视图投影：只允许变换克隆出的请求消息，不得改动真实历史。 */
-  projectHistory?: (history: readonly CanonicalMessage[]) => CanonicalMessage[];
-  /** 请求准备契约；可在请求前产出事件，并在上下文溢出时参与一次预算重试。 */
-  prepareRequest?: RequestPreparation;
-  /** 每次收到 usage 后回调；attemptId 标识 run:step:attempt，便于按尝试归因。 */
-  onUsage?: (request: ModelRequest, usage: Usage, attemptId: string) => Promise<void>;
-  /** 在途批次预算视图；含当前 assistant 和已完成结果，不能作为落盘或授权依据，闭合后清空；回调不得抛错。 */
-  onToolBatchUpdate?: (messages: readonly CanonicalMessage[]) => void;
-  provider: ModelProvider;
-  executor: ToolExecutor;
-  tools: ToolRegistry | ToolRegistrySnapshot;
-  hooks: HookRegistry;
-  systemPrompt?: string;
-  /** 单次 run 的最大 turn 数，耗尽时以 error 事件收尾；缺省 20。 */
-  maxSteps?: number;
-  /** 连续工具失败达到该阈值即熔断终止本轮 run；缺省 3。 */
-  maxConsecutiveErrors?: number;
-  signal?: AbortSignal;
-  eventLogger?: EventLogger;
-  sessionId?: string;
-  runId?: string;
-  /** 每轮开始时读取；工具可见性与权限模式可随宿主状态变化。 */
-  getMode?: () => SessionMode;
-  permissionRules?: readonly PermissionRule[];
-}
+// 循环宿主配置在 ./types.js 定义；此处在包根保持原导出面不变。
+export type { AgentLoopOptions } from './types.js';
 
 /**
  * 主执行循环：按 turn 推进「模型请求 → 整批校验 → 工具调度 → 历史闭合」。
@@ -162,29 +138,7 @@ export class AgentLoop {
           request = modified;
         }
       }
-      if (request.tools) {
-        for (const t of request.tools) {
-          const original = toolSnapshot.get(t.name);
-          if (!original) {
-            throw new ModelError(`Hook injected tool '${t.name}' not present in snapshot`, {
-              stage: 'request',
-              retryable: false,
-            });
-          }
-          if (
-            t.description !== original.description ||
-            JSON.stringify(t.parameters) !== JSON.stringify(original.parameters)
-          ) {
-            throw new ModelError(
-              `Hook mutated tool definition for '${t.name}' (description or parameters drifted from snapshot)`,
-              {
-                stage: 'request',
-                retryable: false,
-              },
-            );
-          }
-        }
-      }
+      assertHookToolDefinitionsIntact(request, toolSnapshot);
       if (this.prepareRequest) request = yield* this.prepareRequest(request, history);
 
       yield {
@@ -380,29 +334,7 @@ export class AgentLoop {
                 retryable: false,
               });
             // 工具调用整批校验：名称、参数、ID 合法且不与历史重复；任一失败则整批不执行。
-            const knownCalls = new Set(
-              history.flatMap((message) =>
-                message.content
-                  .filter((block) => block.type === 'tool_use')
-                  .map((block) => block.id),
-              ),
-            );
-            for (const call of toolCalls) {
-              if (
-                !call.name?.trim() ||
-                !call.input ||
-                typeof call.input !== 'object' ||
-                Array.isArray(call.input)
-              )
-                throw new ModelError('Invalid tool call arguments or name; no tools executed', {
-                  code: 'MODEL_INVALID_RESPONSE',
-                  stage: 'stream',
-                  retryable: false,
-                });
-              if (!call.id?.trim() || knownCalls.has(call.id))
-                throw new ModelError('Duplicate tool call ID; no tools executed');
-              knownCalls.add(call.id);
-            }
+            assertToolCallsExecutable(history, toolCalls);
             break;
           } catch (error) {
             // 溢出重试只允许一次，且要求模型尚未产出任何输出、准备器可用且未被取消。
@@ -541,60 +473,9 @@ export class AgentLoop {
       // 触发 model:after hooks
       validateProtocolContent(assistantMessage.content);
       // 钩子不得改动消息身份、已校验的工具输出与私有状态（签名/密文）；违规即拒绝本轮结果。
-      const originalContent = stableSerialize(assistantMessage.content);
-      const identity = stableSerialize({ ...assistantMessage, content: undefined });
-      const originalTools = stableSerialize(
-        assistantMessage.content.filter(
-          (block) => block.type === 'tool_use' || block.type === 'tool_result',
-        ),
-      );
-      const privateOutput = assistantMessage.content.some(
-        (block) =>
-          block.type === 'provider_state' ||
-          block.type === 'redacted_thinking' ||
-          (block.type === 'thinking' && Boolean(block.origin || block.signature)),
-      );
+      const integrity = snapshotAssistantIntegrity(assistantMessage);
       await this.hooks.emit('model:after', hookCtx, { message: assistantMessage });
-      if (identity !== stableSerialize({ ...assistantMessage, content: undefined }))
-        throw new ModelError('Hook changed assistant message identity', {
-          stage: 'request',
-          retryable: false,
-        });
-      if (
-        originalTools !==
-        stableSerialize(
-          assistantMessage.content.filter(
-            (block) => block.type === 'tool_use' || block.type === 'tool_result',
-          ),
-        )
-      )
-        throw new ModelError('Hook changed validated tool model output', {
-          stage: 'request',
-          retryable: false,
-        });
-      if (originalContent !== stableSerialize(assistantMessage.content)) {
-        if (
-          privateOutput ||
-          assistantMessage.content.some(
-            (block) =>
-              block.type === 'provider_state' ||
-              block.type === 'redacted_thinking' ||
-              (block.type === 'thinking' && Boolean(block.origin || block.signature)),
-          )
-        )
-          throw new ModelError('Hook changed signed or private model output', {
-            stage: 'request',
-            retryable: false,
-          });
-        // 普通正文改写后不得继承源 Item 身份；有工具的整批不能被 Hook 偷换。
-        if (toolCalls.length)
-          throw new ModelError('Hook changed validated tool model output', {
-            stage: 'request',
-            retryable: false,
-          });
-        for (const block of assistantMessage.content)
-          if (block.type === 'text' || block.type === 'tool_use') block.protocolMeta = undefined;
-      }
+      assertAssistantMessageUntampered(assistantMessage, integrity);
       validateProtocolContent(assistantMessage.content);
 
       // 判断是否需要调用工具

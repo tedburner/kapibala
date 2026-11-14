@@ -1,17 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { settingsCommand } from '../src/commands/settings.js';
-import { createModelBinding } from '../src/model-bindings.js';
+import { createModelBinding } from '@kiturone/kapibala-host/internal';
 import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
   type UserSettings,
   loadGlobalSettingsForWrite,
   mutateGlobalSettings,
-} from '../src/settings.js';
+} from '@kiturone/kapibala-host/internal';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { settingsCommand } from '../src/commands/settings.js';
 import { runSetupWizard } from '../src/wizard.js';
 
-vi.mock('../src/settings.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../src/settings.js')>()),
+vi.mock('@kiturone/kapibala-host/internal', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@kiturone/kapibala-host/internal')>()),
   loadGlobalSettingsForWrite: vi.fn(),
   mutateGlobalSettings: vi.fn(),
 }));

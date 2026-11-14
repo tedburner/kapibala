@@ -1,4 +1,4 @@
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 /**
  * @fileoverview 后台子代理任务树管理命令（/agents）。
  *

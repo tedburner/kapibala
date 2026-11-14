@@ -1,17 +1,24 @@
 import type { CanonicalMessage, ToolResultBlock } from '@kiturone/kapibala';
-import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
+import type { ViewBlock, ViewMessage, ViewTool } from '../view-model/index.js';
+import { type PublicTextRedactor, redactViewMessage } from './public-projection.js';
+import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 import {
   formatToolDetail,
   formatToolInvocation,
   sanitizeToolName,
-} from '../ui/tool-presentation.js';
-import type { ViewBlock, ViewMessage, ViewTool } from '../view-model/index.js';
-import { type PublicTextRedactor, redactViewMessage } from './public-projection.js';
+} from './ui/tool-presentation.js';
 
 interface MatchedResult {
   block: ToolResultBlock;
   messageId?: string;
 }
+
+/**
+ * 「/skill <名称>」无任务直发时宿主合成的启动任务文本。
+ * core 要求显式技能的 userInput 非空，宿主因此注入一句占位任务；它不是用户输入，
+ * 投影时随技能信封一起折叠，避免气泡里冒出一行用户从未写过的文字。
+ */
+export const EXPLICIT_SKILL_KICKOFF = '开始执行该技能。';
 
 /** canonical ID 优先；旧消息按源序号补展示身份，同正文不合并，不伪造 Core ID。 */
 export function displayMessageId(message: CanonicalMessage, index: number, scope: string): string {
@@ -57,9 +64,20 @@ export function projectHistory(
   for (let messageIndex = 0; messageIndex < history.length; messageIndex++) {
     const message = history[messageIndex];
     const id = displayMessageId(message, messageIndex, scope);
+    // 带技能信封的用户消息由徽章承载全部语义；首块若是宿主合成的启动任务则不进投影。
+    const hasSkillEnvelope =
+      message.role === 'user' &&
+      message.content.some((item) => item.type === 'text' && item.skillSource !== undefined);
     const blocks: ViewBlock[] = [];
     for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
       const block = message.content[blockIndex];
+      if (
+        block.type === 'text' &&
+        hasSkillEnvelope &&
+        blockIndex === 0 &&
+        block.text === EXPLICIT_SKILL_KICKOFF
+      )
+        continue;
       const blockId = displayBlockId(id, blockIndex);
       if (block.type === 'text' || block.type === 'thinking') {
         blocks.push({
@@ -73,6 +91,10 @@ export function projectHistory(
               : 'completed',
           revision: 0,
           text: sanitizeUntrustedOutput(block.type === 'text' ? block.text : block.thinking),
+          // 技能信封块透传来源名：渲染层折叠为徽章，元数据与正文不进公开原文。
+          ...(block.type === 'text' && block.skillSource
+            ? { skillName: block.skillSource.name }
+            : {}),
         });
       } else if (block.type === 'tool_use') {
         const result = results.get(blockId);

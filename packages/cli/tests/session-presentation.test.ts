@@ -1,8 +1,8 @@
 import type { CanonicalMessage, RunMetrics } from '@kiturone/kapibala';
+import { PresentationStore } from '@kiturone/kapibala-host/internal';
+import { SessionPresentation } from '@kiturone/kapibala-host/internal';
+import { isBlockExpanded, selectMessages } from '@kiturone/kapibala-host/view-model';
 import { describe, expect, it } from 'vitest';
-import { PresentationStore } from '../src/host/presentation-store.js';
-import { SessionPresentation } from '../src/host/session-presentation.js';
-import { isBlockExpanded, selectMessages } from '../src/view-model/index.js';
 
 const metrics: RunMetrics = {
   startTime: 1,

@@ -1,7 +1,7 @@
-import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
 import type { StatusFacts } from '../view-model/status.js';
 import type { PublicTextRedactor } from './public-projection.js';
 import { redactText } from './redaction.js';
+import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 
 /**
  * 白名单复制宿主传入的真实状态事实；上下文和运行累计独立保留，未知用量不补零。

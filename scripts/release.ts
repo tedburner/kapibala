@@ -36,6 +36,8 @@ const baseVersionManifestFiles = [
   'packages/core/package.json',
   'packages/mcp/package.json',
   'packages/cli/package.json',
+  // 私有宿主层包（不进 npm 发布集），但版本与全仓清单同步。
+  'packages/host/package.json',
 ];
 
 /** 版本同步与读取共用一份路径清单；历史检出没有桌面包时保留三包流程，桌面存在时不可漏检。 */
@@ -65,12 +67,14 @@ export function validateRelease(tag: string, manifests: Manifest[], cliVersion: 
   }
   const version = tag.slice(1);
   if (
-    ![4, 5].includes(manifests.length) ||
+    ![5, 6].includes(manifests.length) ||
     manifests.some((manifest) => manifest.version !== version)
   ) {
     throw new Error('Release tag and package versions must match');
   }
-  if (manifests.length === 5 && manifests[4].name !== '@kiturone/kapibala-desktop')
+  if (manifests[4].name !== '@kiturone/kapibala-host')
+    throw new Error('Unexpected host package name');
+  if (manifests.length === 6 && manifests[5].name !== '@kiturone/kapibala-desktop')
     throw new Error('Unexpected desktop package name');
   if (cliVersion !== version) throw new Error('CLI display version must match the release tag');
   if (

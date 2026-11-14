@@ -1,12 +1,19 @@
-import { resolveCommandOutput } from '../host/command-output.js';
-import { sanitizeToolName } from '../ui/tool-presentation.js';
+import { EXPLICIT_SKILL_KICKOFF, sanitizeToolName } from '@kiturone/kapibala-host/internal';
+import { resolveCommandOutput } from '../command-output.js';
 import type { CommandHandler } from './dispatcher.js';
 
-/** 解析一个技能名和原始任务；只消费一个分隔空白，保留任务的引号、其余空格与换行。 */
+/**
+ * 解析一个技能名和可选任务；只消费一个分隔空白，保留任务的引号、其余空格与换行。
+ * 任务缺省或全为空白时取宿主约定的启动任务（与桌面端无任务直发同一常量），
+ * 使 `/skill <name>` 与 `/skill <name> <task>` 共用同一条受管运行路径；名称非法或超过 64 字符返回 undefined。
+ */
 export function parseSkillTask(tail: string): { name: string; task: string } | undefined {
-  const match = tail.match(/^([a-z0-9]+(?:-[a-z0-9]+)*)(\s)([\s\S]*)$/);
-  if (!match || match[1].length > 64 || !match[3].trim()) return undefined;
-  return { name: match[1], task: match[3] };
+  const match = tail.match(/^([a-z0-9]+(?:-[a-z0-9]+)*)(?:\s([\s\S]*))?$/);
+  if (!match || match[1].length > 64) return undefined;
+  return {
+    name: match[1],
+    task: match[2]?.trim() ? match[2] : EXPLICIT_SKILL_KICKOFF,
+  };
 }
 
 /** 只读当前集合、覆盖诊断和活动状态；禁用技能仍可检查，不触发正文读取或运行。 */
@@ -31,10 +38,10 @@ export const skillsCommand: CommandHandler = (args, ctx) => {
     );
 };
 
-/** 仅将合法名称与原始任务交给宿主受管运行；命令本身不读取文件、不扩大权限。 */
+/** 仅将合法名称与任务（缺省用启动任务）交给宿主受管运行；命令本身不读取文件、不扩大权限。 */
 export const skillCommand: CommandHandler = async (args, ctx) => {
   const parsed = parseSkillTask(args[0] ?? '');
-  if (!parsed) throw new Error('用法: /skill <name> <task...>');
+  if (!parsed) throw new Error('用法: /skill <name> [task...]');
   if (!ctx.runSkill) throw new Error('当前宿主未提供技能执行入口');
   await ctx.runSkill(parsed.name, parsed.task);
 };

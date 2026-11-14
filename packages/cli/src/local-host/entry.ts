@@ -88,7 +88,7 @@ export async function runLocalCommand(command: LocalCommand): Promise<void> {
   }
   const { createResourceFactory } = await import('./resources.js');
   const { LocalHostServer } = await import('./server.js');
-  const { createStdioTransport } = await import('../transport/stdio.js');
+  const { createStdioTransport } = await import('@kiturone/kapibala-host/transport');
   const transport = createStdioTransport(process.stdin, process.stdout);
   const host = new LocalHostServer({
     ...createResourceFactory(),

@@ -1,6 +1,6 @@
+import { PresentationStore } from '@kiturone/kapibala-host/internal';
+import type { PresentationEvent, ViewIdentity } from '@kiturone/kapibala-host/view-model';
 import { describe, expect, it } from 'vitest';
-import { PresentationStore } from '../src/host/presentation-store.js';
-import type { PresentationEvent, ViewIdentity } from '../src/view-model/index.js';
 
 const identity: ViewIdentity = { conversationId: 'c', branchId: 'main', viewEpoch: 1 };
 const event = (sequence: number, change: PresentationEvent['change']): PresentationEvent => ({

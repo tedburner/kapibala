@@ -46,6 +46,10 @@ CLI `/host` 新增导出类型 `ManagedInspection`；`ManagedHostSession` 新增
 
 `deleteSession` 是不可逆的物理删除（正文 + sidecar），只拒绝本进程持句柄或其它进程持锁的会话，不提供回收站；`pinSession` 只影响 `list()` 的分组次序，不写活动时间。自定义实现 `ManagedHostSession` 的适配器必须补齐新增的两个方法，否则 TypeScript 编译失败；wire 1.0 形状与版本不变，桌面 RPC 契约属客户端内部面，不构成对外承诺。
 
+## 桌面命令系统与资源面板增量（未发布，随桌面命令宿主进入下一版本）
+
+CLI `/host` 新增导出类型 `LoadedSettings`（`settings`/`sourcePath`/`pendingProject`）：此前该类型仅经 internal 门面提供给仓库内宿主，桌面 agent-host 需要在公共面拿到它与 `loadSettings` 配对使用；纯类型增补，不改变任何函数签名。同批 `ManagedHostSession` 的声明文本随新增 `session` 字段（同进程宿主构造命令上下文专用，禁止跨进程传输）与接口注释修订刷新，成员集合相对上一条记录不变的部分按原样登记。`@kiturone/kapibala-cli` 新增 `./commands` 子路径与声明模块 `commands/assemble.d.ts`、`commands/index.d.ts`（命令目录与装配面，桌面 agent-host 经它接入同一命令系统）。wire 1.0 形状与版本不变。
+
 ## 1. 盘点口径
 
 - 覆盖范围：Core 根入口、MCP 根入口，以及 CLI 的 `protocol`、`client`、`view-model` 及 `host` 四个子路径。当前候选清单以 `scripts/fixtures/public-api/current.json` 为准，新增 `/host` 也列入声明扫描。
@@ -77,17 +81,17 @@ tsx scripts/check-public-api.ts --update  # 人工审阅候选差异后显式刷
 - 声明模块：`@kiturone/kapibala-cli` 的 `protocol/results.d.ts`、`local-host/errors.d.ts`。
 - 新增均为纯增补，不改变既有符号签名语义；`SessionOptions` 是为让"扩展非根选项"有可写的接口面而拆出的类型。
 
-**签名或形状变化（11 项）**
+**签名或形状变化（12 项）**
 
-- Core：`SessionConfig`（interface → 交集联合 type）、`SpawnContext`（新增必填 `leaseCoordinator`）、`SubagentSessionRunner`（第三参数 `SubagentRunnerContext`）、`ToolContext`（提供只读 `leaseCoordinator` 引用）、`AgentRuntime`（runner 调用带上下文，内部引用按 agentId 只在内存持有）。
+- Core：`SessionConfig`（interface → 交集联合 type）、`SpawnContext`（新增必填 `leaseCoordinator`）、`SubagentSessionRunner`（第三参数 `SubagentRunnerContext`）、`ToolContext`（提供只读 `leaseCoordinator` 引用）、`AgentRuntime`（runner 调用带上下文，内部引用按 agentId 只在内存持有）、`ToolExecutor`（实现按概念模块化后，声明中的私有 `withTimeout` 成员随实现外移，公开构造项与公开成员签名不变）。
 - CLI `client`：`LocalClient`（`call` 结果按方法与参数具体化）、`LocalTransport`（新增必填 `setLimits`）。
-- CLI `protocol`：`WireSchema`、`REQUEST_SCHEMAS`、`EVENT_PAYLOAD_SCHEMAS`、`APPROVAL_RESPONSE_SCHEMA` 及新增的结果 Schema 面（`RESULT_SCHEMAS` / `RESULT_SELECTORS`）。
+- CLI `protocol`：`WireSchema`、`REQUEST_SCHEMAS`、`EVENT_PAYLOAD_SCHEMAS`、`APPROVAL_RESPONSE_SCHEMA` 及新增的结果 Schema 面（`RESULT_SCHEMAS` / `RESULT_SELECTORS`）。`REQUEST_SCHEMAS` / `RESULT_SCHEMAS` 在 Core 实现模块化后声明文本中的 `required` 联合键序重排，成员集合与运行时校验语义不变。
 
 ## 3. `./dist/*` 与入口可达性
 
 CLI 包保留既有 `./dist/*` 导出模式，但不把通配模式本身当成"已枚举"：以 v0.0.9 tarball 中实际匹配的文件为有限集合，逐个比较具体导入地址、模块格式（ESM/CJS）、声明可达性与导出清单；JS、`.d.ts` 与静态资源分别比较存在性和可访问性。候选文件集合的**增加与删除都显式报告**，声明可用入口再比较签名。原始清单允许保留 `.map` 等构建资源，但不因此把它们列为推荐代码 API。
 
-本版不做整体 barrel 重构，也不新增 npm 包；发布仍是 `@kiturone/kapibala`、`@kiturone/kapibala-cli`、`@kiturone/kapibala-mcp` 三个包。
+本版不做整体 barrel 重构，npm 发布集保持 `@kiturone/kapibala`、`@kiturone/kapibala-cli`、`@kiturone/kapibala-mcp` 三个包不变。宿主层实现（protocol / view-model / transport / client / managed session 装配与 settings/providers 等装配模块）物理迁移到私有工作区包 `@kiturone/kapibala-host`（不发布）：CLI 的四个子路径（`/host` `/protocol` `/client` `/view-model`）变为兼容转发 barrel，构建时从宿主源码内联进 dist，导出符号名、种类与声明文本经 `check-public-api` 门禁确认与基线一致；声明模块清单随文件迁移重排（`packages` 段的 module 记录），属机械结果。
 
 ## 4. 导入副作用与可执行入口
 

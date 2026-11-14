@@ -1,5 +1,5 @@
 import type { ApprovalChannel, SessionEvent } from '@kiturone/kapibala';
-import type { JsonValue } from '../protocol/index.js';
+import type { JsonValue } from '@kiturone/kapibala-host/protocol';
 
 /** 每次打开会话都持有独立资源；dispose 失败不得释放底层存储锁。 */
 export interface SessionResources {

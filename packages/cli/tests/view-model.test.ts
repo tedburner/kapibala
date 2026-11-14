@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest';
 import {
   createPresentation,
   isBlockExpanded,
   reducePresentation,
   selectMessages,
-} from '../src/view-model/index.js';
-import type { PresentationEvent, ViewIdentity } from '../src/view-model/index.js';
+} from '@kiturone/kapibala-host/view-model';
+import type { PresentationEvent, ViewIdentity } from '@kiturone/kapibala-host/view-model';
+import { describe, expect, it } from 'vitest';
 
 const identity: ViewIdentity = { conversationId: 'conversation', branchId: 'main', viewEpoch: 1 };
 const event = (

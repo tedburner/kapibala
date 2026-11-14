@@ -1,10 +1,7 @@
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import {
   type ApprovalChannel,
-  type ApprovalRequest,
   SessionApprovalCache,
-  stableJsonStringify,
 } from '../../capabilities/security/approval.js';
 import {
   type WorkspaceLeaseCoordinator,
@@ -15,6 +12,7 @@ import {
   PermissionPolicy,
   type PermissionRule,
   type SessionMode,
+  type ShellScope,
 } from '../../capabilities/security/permissions.js';
 import type { PathSandbox } from '../../capabilities/security/sandbox.js';
 import type { ParentPolicySnapshot } from '../../capabilities/security/subagent-policy.js';
@@ -22,65 +20,15 @@ import type { Tool, ToolContext, ToolExecutionIdentity } from '../../capabilitie
 import type { ToolRegistry, ToolRegistrySnapshot } from '../../capabilities/tools/registry.js';
 import { KapibalaError } from '../../errors/index.js';
 import type { HookRegistry } from '../../extensibility/hooks/registry.js';
-import {
-  type EventLogger,
-  commandAuditSummary,
-  createLogId,
-} from '../../extensibility/logging/index.js';
+import { type EventLogger, createLogId } from '../../extensibility/logging/index.js';
 import type { ToolResultBlock, ToolResultExecution, ToolUseBlock } from '../../types/index.js';
+import { resolveToolApproval } from './approval.js';
+import { closeToolResult } from './result.js';
+import { withToolTimeout } from './timeout.js';
+import { DEFAULT_TOOL_TIMEOUT_MS, type ExecutorOptions, type ToolHardDenial } from './types.js';
 
-/** ToolExecutor 的构造项；审计写入需要 eventLogger 与 sessionId 同时提供，否则不产生审计。 */
-/** 宿主运行级硬限制；优先于模式、审批及缓存，文案和字段不得携带凭据。 */
-export interface ToolHardDenial {
-  code: string;
-  message: string;
-  retryPolicy: ToolResultBlock['retryPolicy'];
-  fields?: Record<string, unknown>;
-}
-
-export interface ExecutorOptions {
-  /** 在最终参数上补充硬拒绝，不能把拒绝转为授权。 */
-  hardDenial?: (tool: Tool, input: Record<string, unknown>) => ToolHardDenial | undefined;
-  /** 结果钩子和执行审计完成后调用；用于在同批次下一调用前安装宿主收紧状态。 */
-  onToolResult?: (
-    tool: Tool,
-    input: Record<string, unknown>,
-    result: ToolResultBlock,
-  ) => void | Promise<void>;
-  tools: ToolRegistry | ToolRegistrySnapshot;
-  hooks: HookRegistry;
-  /** 显式工作区物理根路径，经 native realpath 规范化；缺省回退到 rootDir。 */
-  workspaceRoot?: string;
-  /** 显式命令执行工作目录绝对路径（位于 workspaceRoot 内部）；缺省回退到 rootDir。 */
-  executionCwd?: string;
-  /** 会话持有的 PathSandbox 独占实例；文件类工具优先使用此沙箱。 */
-  sandbox?: PathSandbox;
-  /** 共享工作区写租约协调器；并发写入互斥保护。 */
-  leaseCoordinator?: WorkspaceLeaseCoordinator;
-  /** 工具执行的绝对根目录；路径解析与审批均以此为基准。 */
-  rootDir: string;
-  /** 会话级取消信号；与 cancel() 的内部信号合并生效。 */
-  signal?: AbortSignal;
-  logger?: (msg: string) => void;
-  /** 单次工具执行超时(毫秒)。异步挂起的工具超时后返回 isError 结果，避免永久卡死会话循环 */
-  toolTimeoutMs?: number;
-  eventLogger?: EventLogger;
-  sessionId?: string;
-  runId?: string;
-  branchId?: string;
-  rootTaskId?: string;
-  depth?: number;
-  agentId?: string;
-  /** 固定模式或每次裁决时读取的取值函数；宿主可中途切换。 */
-  mode?: SessionMode | (() => SessionMode);
-  permissionRules?: readonly PermissionRule[];
-  /** 审批入口；缺省视为非交互环境，需要询问的调用一律拒绝。 */
-  approvalChannel?: ApprovalChannel;
-  /** 会话内 allow_session / deny_session 审批缓存；缺省使用实例私有缓存。 */
-  approvalCache?: SessionApprovalCache;
-}
-
-const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
+// 构造项与硬限制类型在 ./types.js 定义；此处在包根保持原导出面不变。
+export type { ExecutorOptions, ToolHardDenial } from './types.js';
 
 /**
  * 工具执行器：按「审计 → 钩子裁决 → 权限裁决 → 执行 → 结果闭合」处理单次调用。
@@ -469,212 +417,28 @@ export class ToolExecutor {
       }
       return failure('Invalid tool execution identity', 'INVALID_TARGET');
     }
-    let auditFields: Record<string, unknown> = {};
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const request: ApprovalRequest = {
-        toolName: call.name,
-        capabilities: tool.metadata?.permissions ?? [],
-        input: finalInput,
-        rootDir: this.rootDir,
-        ...(shell ? { shell } : {}),
-        ...(executionIdentity ? { executionIdentity } : {}),
-        // 解释器内建查询与内容已绑定摘要的工作区直引脚本可确认不受外部脚本变更影响，
-        // 允许会话级批准；其余 shell 命令仅允许单次批准。
-        // 非 shell 工具（含深度绑定 executionIdentity 的外部工具）允许会话级批准。
-        sessionAllowed:
-          !shell ||
-          /^(?:pwd|get-location)$/i.test(shell.command.trim()) ||
-          shell.scriptDigest !== undefined,
-      };
-      const repeatKey = createHash('sha256')
-        .update(stableJsonStringify([call.name, finalInput]))
-        .digest('hex');
-      if (this.neverFailures.has(repeatKey)) {
-        try {
-          await audit('tool.decided', { decision: 'deny', decisionSource: 'repeat_block' });
-          await audit('tool.finished', { status: 'blocked', errorCode: 'REPEAT_BLOCKED' });
-        } catch {
-          return failure(
-            'Audit unavailable; tool was not started',
-            'AUDIT_UNAVAILABLE',
-            'after_user_action',
-            {
-              version: 1,
-              dispatchOutcome: 'not_sent',
-              hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
-            },
-          );
-        }
-        return failure(
-          'Identical failed tool call cannot be repeated in this run',
-          'REPEAT_BLOCKED',
-        );
-      }
-      const hardDenied = this.hardDenial?.(tool, finalInput);
-      const cached = this.approvalCache.get(request);
-      const decision = this.policy.decide({
-        hardDenied: hardDenied !== undefined,
-        mode: typeof this.mode === 'function' ? this.mode() : this.mode,
-        toolName: call.name,
-        capabilities: request.capabilities,
-        dangerous: tool.metadata?.dangerous,
-        cachedApproval: cached === 'allow',
-        cachedDenial: cached === 'deny',
-        rules: this.permissionRules,
-        ...(shell ? { shell } : {}),
-      });
-      let permitted = decision.decision === 'allow';
-      let source: string = decision.source;
-      let approvalChoice: Awaited<ReturnType<ApprovalChannel['requestApproval']>> | undefined;
-      if (decision.decision === 'ask') {
-        let choice: Awaited<ReturnType<ApprovalChannel['requestApproval']>> = 'deny_once';
-        try {
-          choice =
-            (await this.approvalChannel?.requestApproval(request, this.signal)) ?? 'deny_once';
-        } catch {
-          choice = 'cancel';
-        }
-        approvalChoice = choice;
-        if (choice === 'allow_session' && request.sessionAllowed)
-          this.approvalCache.set(request, 'allow');
-        if (choice === 'deny_session') this.approvalCache.set(request, 'deny');
-        permitted =
-          choice === 'allow_once' || (choice === 'allow_session' && request.sessionAllowed);
-        source = this.approvalChannel ? 'human' : 'non_interactive';
-      }
-      auditFields = shell
-        ? {
-            shell: shell.interpreter,
-            cwdDigest: createHash('sha256').update(shell.cwd).digest('hex'),
-            executableDigest: shell.executableDigest,
-            executionFingerprint: shell.executionFingerprint,
-            ...commandAuditSummary(shell.command),
-          }
-        : executionIdentity
-          ? {
-              serverIdentity: executionIdentity.serverIdentity,
-              connectionGeneration: executionIdentity.connectionGeneration,
-              catalogEpoch: executionIdentity.catalogEpoch,
-              toolDigest: executionIdentity.toolDigest,
-            }
-          : {};
-      try {
-        await audit('tool.decided', {
-          decision: permitted ? 'allow' : 'deny',
-          decisionSource: source,
-          ...(approvalChoice ? { approvalChoice } : {}),
-          ...(hardDenied?.fields ?? {}),
-          ...auditFields,
-        });
-      } catch {
-        return failure(
-          'Audit unavailable; tool was not started',
-          'AUDIT_UNAVAILABLE',
-          'after_user_action',
-          {
-            version: 1,
-            dispatchOutcome: 'not_sent',
-            hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
-          },
-        );
-      }
-      if (!permitted || this.signal?.aborted) {
-        const code = this.signal?.aborted ? 'ABORTED' : (hardDenied?.code ?? 'PERMISSION_DENIED');
-        try {
-          await audit('tool.finished', { status: 'denied', errorCode: code });
-        } catch {
-          return failure('Audit result unavailable', 'AUDIT_UNAVAILABLE', 'after_user_action', {
-            version: 1,
-            dispatchOutcome: 'not_sent',
-            hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
-          });
-        }
-        return failure(
-          this.signal?.aborted
-            ? 'Operation cancelled'
-            : (hardDenied?.message ?? 'Tool permission denied'),
-          code,
-          this.signal?.aborted
-            ? 'after_user_action'
-            : (hardDenied?.retryPolicy ?? 'after_user_action'),
-        );
-      }
-      if (shell) {
-        try {
-          const next = tool.approvalScope?.(finalInput, this.rootDir, this.executionCwd);
-          if (next?.executionFingerprint !== shell.executionFingerprint) {
-            if (attempt === 0 && next) {
-              try {
-                await audit('tool.target_changed', { status: 'redeciding' });
-              } catch {
-                return failure(
-                  'Audit unavailable; tool was not started',
-                  'AUDIT_UNAVAILABLE',
-                  'after_user_action',
-                  {
-                    version: 1,
-                    dispatchOutcome: 'not_sent',
-                    hostError: { phase: 'audit', code: 'AUDIT_UNAVAILABLE' },
-                  },
-                );
-              }
-              shell = next;
-              continue;
-            }
-            await audit('tool.finished', { status: 'target_changed', errorCode: 'TARGET_CHANGED' });
-            return failure(
-              'Execution target changed after approval',
-              'TARGET_CHANGED',
-              'after_user_action',
-            );
-          }
-        } catch {
-          return failure(
-            'Execution target changed after approval',
-            'TARGET_CHANGED',
-            'after_user_action',
-          );
-        }
-      }
-      if (executionIdentity) {
-        try {
-          const nextIdentity = tool.executionIdentity?.(finalInput, this.rootDir);
-          if (
-            !nextIdentity ||
-            nextIdentity.serverIdentity !== executionIdentity.serverIdentity ||
-            nextIdentity.connectionGeneration !== executionIdentity.connectionGeneration ||
-            nextIdentity.catalogEpoch !== executionIdentity.catalogEpoch ||
-            nextIdentity.toolDigest !== executionIdentity.toolDigest
-          ) {
-            await audit('tool.finished', {
-              status: 'identity_changed',
-              errorCode: 'MCP_TOOL_CHANGED',
-            });
-            return failure(
-              'Tool execution identity changed after approval',
-              'MCP_TOOL_CHANGED',
-              'after_user_action',
-              {
-                version: 1,
-                dispatchOutcome: 'not_sent',
-                hostError: { phase: 'validation', code: 'MCP_TOOL_CHANGED' },
-              },
-            );
-          }
-        } catch {
-          return failure(
-            'Tool execution identity check failed after approval',
-            'MCP_TOOL_CHANGED',
-            'after_user_action',
-            {
-              version: 1,
-              dispatchOutcome: 'not_sent',
-            },
-          );
-        }
-      }
-      break;
-    }
+    const approval = await resolveToolApproval({
+      call,
+      finalInput,
+      tool,
+      shell,
+      executionIdentity,
+      rootDir: this.rootDir,
+      executionCwd: this.executionCwd,
+      mode: this.mode,
+      permissionRules: this.permissionRules,
+      approvalChannel: this.approvalChannel,
+      approvalCache: this.approvalCache,
+      hardDenial: this.hardDenial,
+      neverFailures: this.neverFailures,
+      policy: this.policy,
+      signal: this.signal,
+      audit,
+      failure,
+    });
+    if (approval.result) return approval.result;
+    shell = approval.shell;
+    const auditFields = approval.auditFields ?? {};
     try {
       await audit('tool.started', { status: 'started', ...auditFields });
     } catch {
@@ -742,9 +506,10 @@ export class ToolExecutor {
 
         const rawResult = tool.metadata?.managesTimeout
           ? await tool.execute(finalInput, toolCtx)
-          : await this.withTimeout(
+          : await withToolTimeout(
               tool.execute(finalInput, toolCtx),
               call.name,
+              this.toolTimeoutMs,
               executionController,
             );
         if (typeof tool.toExecutionResult === 'function') {
@@ -818,117 +583,18 @@ export class ToolExecutor {
       };
     }
 
-    const resultBlock: ToolResultBlock = {
-      type: 'tool_result',
-      toolUseId: call.id,
-      content: outputStr,
-      isError,
-      ...(errorCode ? { errorCode, retryPolicy } : {}),
-      execution,
-    };
-    if (resultBlock.isError && resultBlock.errorCode) {
-      resultBlock.content = JSON.stringify({
-        code: resultBlock.errorCode,
-        retryPolicy: resultBlock.retryPolicy,
-        message: outputStr,
-      });
-    }
-
-    // 触发 tool:after hooks
-    try {
-      for (const hook of this.hooks.get('tool:after')) {
-        await hook(
-          hookCtx,
-          { id: call.id, name: call.name, input: finalInput },
-          { output: outputStr, isError },
-        );
-      }
-    } catch {
-      resultBlock.content = JSON.stringify({
-        code: 'HOOK_ERROR',
-        retryPolicy: 'after_user_action',
-        message: 'Tool finished but result processing failed',
-      });
-      resultBlock.isError = true;
-      resultBlock.errorCode = 'HOOK_ERROR';
-      resultBlock.retryPolicy = 'after_user_action';
-      resultBlock.execution = {
-        version: 1,
-        dispatchOutcome: resultBlock.execution?.dispatchOutcome ?? 'failed',
-        hostError: {
-          phase: 'hook',
-          code: 'HOOK_ERROR',
-        },
-      };
-    }
-
-    resultBlock.durationMs = Math.max(0, Date.now() - startedAt);
-    if (resultBlock.isError && resultBlock.retryPolicy === 'never') {
-      this.neverFailures.add(
-        createHash('sha256')
-          .update(stableJsonStringify([call.name, finalInput]))
-          .digest('hex'),
-      );
-    }
-
-    try {
-      await audit('tool.finished', {
-        status: resultBlock.isError ? 'failed' : 'completed',
-        ...(resultBlock.errorCode ? { errorCode: resultBlock.errorCode } : {}),
-        durationMs: resultBlock.durationMs,
-      });
-    } catch {
-      resultBlock.isError = true;
-      resultBlock.errorCode = 'OUTCOME_UNKNOWN';
-      resultBlock.retryPolicy = 'after_user_action';
-      resultBlock.content = JSON.stringify({
-        code: 'OUTCOME_UNKNOWN',
-        retryPolicy: 'after_user_action',
-        message: 'Tool outcome is unknown because the audit result could not be written',
-      });
-      resultBlock.execution = {
-        version: 1,
-        dispatchOutcome: resultBlock.execution?.dispatchOutcome ?? 'succeeded',
-        hostError: {
-          phase: 'audit',
-          code: 'AUDIT_UNAVAILABLE',
-        },
-      };
-      return resultBlock;
-    }
-
-    await this.onToolResult?.(tool, finalInput, resultBlock);
-    return resultBlock;
-  }
-
-  /**
-   * 给工具执行加超时护栏：Promise.race 在超时后reject，循环拿到 isError 结果继续运转，
-   * 不会因某个异步工具(如未来接入的网络/exec 工具)挂起而永久卡死。
-   *
-   * 局限：同步 CPU 密集型实现会阻塞事件循环，timer 同样无法触发；
-   * 因此内置工具仍需避免执行用户可控的同步高复杂度计算。
-   */
-  private withTimeout<T>(
-    promise: Promise<T>,
-    toolName: string,
-    executionController: AbortController,
-  ): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        const error = new KapibalaError(
-          `Tool '${toolName}' timed out after ${this.toolTimeoutMs}ms`,
-          {
-            code: 'OUTCOME_UNKNOWN',
-            retryPolicy: 'after_user_action',
-            safeMessage: 'Tool timed out; completion of side effects is unknown',
-          },
-        );
-        reject(error);
-        executionController.abort(error);
-      }, this.toolTimeoutMs);
+    return closeToolResult({
+      call,
+      tool,
+      finalInput,
+      hookCtx,
+      hooks: this.hooks,
+      neverFailures: this.neverFailures,
+      audit,
+      onToolResult: this.onToolResult,
+      startedAt,
+      output: { content: outputStr, isError, errorCode, retryPolicy, execution },
     });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
   /**

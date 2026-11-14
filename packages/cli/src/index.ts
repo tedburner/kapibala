@@ -8,37 +8,9 @@ import {
   ToolRegistry,
   WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
-import minimist from 'minimist';
-import { ActiveSessionController } from './active-session.js';
-import { agentsCommand } from './commands/agents.js';
-import { archiveCommand } from './commands/archive.js';
-import { branchCommand } from './commands/branch.js';
-import { COMMAND_CATALOG } from './commands/catalog.js';
-import { clearCommand } from './commands/clear.js';
-import { compactCommand, contextCommand } from './commands/context.js';
-import { type CommandContext, CommandDispatcher } from './commands/dispatcher.js';
-import { forkCommand } from './commands/fork.js';
-import { helpCommand } from './commands/help.js';
-import { historyCommand, newCommand, renameCommand, resumeCommand } from './commands/history.js';
-import { instructionsCommand } from './commands/instructions.js';
-import { logsCommand } from './commands/logs.js';
-import { mcpCommand } from './commands/mcp.js';
-import { modeCommand } from './commands/mode.js';
-import { modelCommand } from './commands/model.js';
-import { pluginsCommand } from './commands/plugins.js';
-import { promptCommand, promptsCommand } from './commands/prompts.js';
-import { settingsCommand } from './commands/settings.js';
-import { skillCommand, skillsCommand } from './commands/skills.js';
-import { statusCommand } from './commands/status.js';
-import { CliInputCoordinator } from './input-coordinator.js';
-import { parseLocalCommand, runLocalCommand } from './local-host/entry.js';
-import { attachMcpToSession, resolveCliMcpOptions } from './mcp.js';
-import { CliModelBindings, parsePrimaryModelRole } from './model-bindings.js';
-import { runOneShot } from './oneshot.js';
-import { detectProjectRoot } from './project-root.js';
-import { resolveProjectTrust } from './project-trust.js';
-import { startREPL } from './repl.js';
-import { openStartupSession, validateSessionStartup } from './session-startup.js';
+import { attachMcpToSession, resolveCliMcpOptions } from '@kiturone/kapibala-host/internal';
+import { CliModelBindings, parsePrimaryModelRole } from '@kiturone/kapibala-host/internal';
+import { detectProjectRoot } from '@kiturone/kapibala-host/internal';
 import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
@@ -46,10 +18,20 @@ import {
   loadSettings,
   migrateGlobalSettingsCatalog,
   resolveApiKey,
-} from './settings.js';
-import { getCliSkillOptions } from './skills.js';
-import { createCliSubagentRunner } from './subagent-runner.js';
-import { registerBuiltinTools } from './tool-registration.js';
+} from '@kiturone/kapibala-host/internal';
+import { getCliSkillOptions } from '@kiturone/kapibala-host/internal';
+import { createCliSubagentRunner } from '@kiturone/kapibala-host/internal';
+import { registerBuiltinTools } from '@kiturone/kapibala-host/internal';
+import minimist from 'minimist';
+import { ActiveSessionController } from './active-session.js';
+import { createDefaultCommandDispatcher } from './commands/assemble.js';
+import type { CommandContext } from './commands/dispatcher.js';
+import { CliInputCoordinator } from './input-coordinator.js';
+import { parseLocalCommand, runLocalCommand } from './local-host/entry.js';
+import { runOneShot } from './oneshot.js';
+import { resolveProjectTrust } from './project-trust.js';
+import { startREPL } from './repl.js';
+import { openStartupSession, validateSessionStartup } from './session-startup.js';
 import { CliApprovalChannel } from './ui/approval.js';
 import { parseOutputDetail } from './ui/events.js';
 import { CLI_VERSION } from './version.js';
@@ -365,37 +347,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
             `分支环境已变化: ${active.handle.branchDrift.createdBranch ?? '无'} → ${active.handle.branchDrift.currentBranch ?? '无'}；保持本次工作目录。`,
           );
       }
-      const dispatcher = new CommandDispatcher();
-      const handlers: Record<string, import('./commands/dispatcher.js').CommandHandler> = {
-        new: newCommand,
-        resume: resumeCommand,
-        history: historyCommand,
-        rename: renameCommand,
-        context: contextCommand,
-        compact: compactCommand,
-        model: modelCommand,
-        settings: settingsCommand,
-        permissions: modeCommand,
-        status: statusCommand,
-        logs: logsCommand,
-        instructions: instructionsCommand,
-        skills: skillsCommand,
-        skill: skillCommand,
-        plugins: pluginsCommand,
-        mcp: mcpCommand,
-        prompts: promptsCommand,
-        prompt: promptCommand,
-        help: helpCommand,
-        branch: branchCommand,
-        fork: forkCommand,
-        archive: archiveCommand,
-        agents: agentsCommand,
-        exit: async (_args, context) => {
-          await context.onExit();
-        },
-      };
-      for (const definition of COMMAND_CATALOG)
-        dispatcher.registerDefinition(definition, handlers[definition.name]);
+      const dispatcher = createDefaultCommandDispatcher();
       const commandContext: CommandContext = {
         get session() {
           return active.session;

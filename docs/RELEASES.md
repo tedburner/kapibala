@@ -45,8 +45,8 @@
 
 - `release.yml` 默认跳过 `verify:release-evidence`（prepare 与 publish 各一次，只打印 `::warning::`）：六类专项与桌面证据都不是 v0.1.0 的阻塞项；把仓库变量 `KPBL_RELEASE_STRICT` 设为 `true` 可恢复六类专项的同 SHA 强制校验，阈值与字段不变。
 - **自动门禁没有放宽**：`verify` 工作流的 ubuntu/macos/windows 矩阵、Node 20 安装、compat、release 长跑、`verify:desktop` 的 mac/win e2e 与三包 registry 安装 smoke 仍须全绿，任一失败即不发版。
-- 桌面附件默认不随 Release 附带；需要时把仓库变量 `KPBL_DESKTOP_RELEASE` 设为 `true` 恢复“只下载已审核候选”的严格流程。
-- 未签名测试包由 `pnpm pack:desktop` 在本机生成（产物名带 `Test`、appId `dev.kapibala.desktop.test`），由维护者手工上传；macOS 首次打开需右键或 `xattr -dr com.apple.quarantine`，Windows 会触发 SmartScreen。
+- 桌面附件默认附带未签名测试包；把仓库变量 `KPBL_DESKTOP_RELEASE` 设为 `true` 则改为“只下载已审核候选”的严格流程。
+- 未签名测试包由 `release.yml` 的 `desktop-unsigned` 作业在四个原生 runner 上自动生成并上传到同一次 GitHub Release（产物名带 `Test`、appId `dev.kapibala.desktop.test`，`test-build.json` 会写明 `verification: skipped`，自动门禁证据以同 SHA 的 Verify 工作流为准）；macOS 首次打开需右键或 `xattr -dr com.apple.quarantine`，Windows 会触发 SmartScreen。
 - 因此 v0.1.0 不宣称：四平台安装验收、签名与公证、自动更新。托盘（Windows/Linux）与失焦系统通知已实现，但只有 macOS arm64 做过人工实机确认。发布说明必须逐条写明。
 - `desktop-candidate.yml` 未改动，仍在缺凭证时拒绝产出候选，避免把测试包误当正式字节。
 

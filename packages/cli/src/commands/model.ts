@@ -1,13 +1,10 @@
 import { type ModelProfile, type ModelRole, resolveContextWindow } from '@kiturone/kapibala';
-import { persistDefaultModel, persistModelRole } from '../default-model.js';
-import { resolveCommandOutput } from '../host/command-output.js';
-import { isInteractiveTerminal } from '../input-coordinator.js';
 import {
   ROUTABLE_MODEL_ROLES,
   createModelBinding,
   parsePrimaryModelRole,
-} from '../model-bindings.js';
-import { PROVIDER_METAS, providerCategory } from '../providers.js';
+} from '@kiturone/kapibala-host/internal';
+import { PROVIDER_METAS, providerCategory } from '@kiturone/kapibala-host/internal';
 import {
   API_KEY_ENV_NONE,
   type LoadSettingsOptions,
@@ -18,7 +15,10 @@ import {
   mutateGlobalSettings,
   resolveApiKeyDetailed,
   updateProfileApiKey,
-} from '../settings.js';
+} from '@kiturone/kapibala-host/internal';
+import { resolveCommandOutput } from '../command-output.js';
+import { persistDefaultModel, persistModelRole } from '../default-model.js';
+import { isInteractiveTerminal } from '../input-coordinator.js';
 import { formatTokenCount } from '../ui/metrics.js';
 import type { SelectOption } from '../ui/select.js';
 import type { CommandHandler } from './dispatcher.js';
@@ -142,7 +142,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     if (!ctx.onRoleBound) throw new Error('当前宿主不支持模型角色绑定');
     if (!(await ensureApiKey(profile, ctx))) return;
     createModelBinding(profile, ctx.settings);
-    persistModelRole(profile, role, ctx.settings);
+    persistModelRole(profile, role, ctx.settings, { homeDir: ctx.homeDir });
     ctx.onRoleBound(role, profile.id);
     resolveCommandOutput(ctx).log(`✔ 已绑定 ${role}: ${profile.name} (${profile.id})`);
     return;
@@ -178,7 +178,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
       resolveCommandOutput(ctx).log(`\x1b[31m未找到模型 Profile '${defaultId}'。\x1b[0m`);
       return;
     }
-    persistDefaultModel(found, ctx.settings);
+    persistDefaultModel(found, ctx.settings, { homeDir: ctx.homeDir });
     resolveCommandOutput(ctx).log(`\x1b[32m✔ 已将 '${found.name}' 设为全局默认模型。\x1b[0m`);
     return;
   }
@@ -270,7 +270,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     }
 
     if (chosenProvider === '__action_set_default__') {
-      persistDefaultModel(active, ctx.settings);
+      persistDefaultModel(active, ctx.settings, { homeDir: ctx.homeDir });
       resolveCommandOutput(ctx).log(`\x1b[32m✔ 已将 '${active.name}' 保存为全局默认模型。\x1b[0m`);
       return;
     }

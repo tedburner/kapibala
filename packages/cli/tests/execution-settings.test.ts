@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { loadSettings } from '@kiturone/kapibala-host/internal';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadSettings } from '../src/settings.js';
 
 describe('execution settings sources', () => {
   const roots: string[] = [];

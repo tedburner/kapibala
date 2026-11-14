@@ -83,6 +83,7 @@ describe('version bumping', () => {
       'packages/core/package.json',
       'packages/mcp/package.json',
       'packages/cli/package.json',
+      'packages/host/package.json',
     ]) {
       fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
       fs.writeFileSync(path.join(root, file), '{"version":"0.0.3"}\n');
@@ -101,6 +102,7 @@ describe('version bumping', () => {
       'packages/core/package.json',
       'packages/mcp/package.json',
       'packages/cli/package.json',
+      'packages/host/package.json',
     ]) {
       fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
       fs.writeFileSync(path.join(root, file), '{"version":"0.0.3"}\n');
@@ -148,6 +150,7 @@ it('版本事务同步桌面版本但不扩大 npm 发布包集合', () => {
     'packages/core/package.json',
     'packages/mcp/package.json',
     'packages/cli/package.json',
+    'packages/host/package.json',
     'packages/desktop/package.json',
   ]) {
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
@@ -159,7 +162,7 @@ it('版本事务同步桌面版本但不扩大 npm 发布包集合', () => {
     "export const CLI_VERSION = '0.0.10';\n",
   );
   const changes = prepareVersionBump(root, '0.1.0');
-  expect(changes).toHaveLength(6);
+  expect(changes).toHaveLength(7);
   expect(changes.find((item) => item.file === 'packages/desktop/package.json')?.updated).toContain(
     '0.1.0',
   );

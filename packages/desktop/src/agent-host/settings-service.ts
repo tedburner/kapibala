@@ -14,7 +14,7 @@ import {
   resolveApiKeyDetailed,
   resolveBaseURL,
   updateProfileApiKey,
-} from '@kiturone/kapibala-cli/host';
+} from '@kiturone/kapibala-host/host';
 import { type Output, type ProfileDraft, ProfileDraftSchema } from '../shared/contracts.js';
 import type { Workspaces } from './workspaces.js';
 

@@ -1,5 +1,5 @@
 import { Button, Collapsible, InlineCopyText } from '@cloudflare/kumo';
-import type { ViewBlock, ViewMessage, ViewTool } from '@kiturone/kapibala-cli/view-model';
+import type { ViewBlock, ViewMessage, ViewTool } from '@kiturone/kapibala-host/view-model';
 import {
   ArrowDownIcon,
   BrainIcon,
@@ -8,6 +8,7 @@ import {
   CheckCircleIcon,
   MinusCircleIcon,
   PencilSimpleIcon,
+  SparkleIcon,
   SpinnerGapIcon,
   XCircleIcon,
 } from '@phosphor-icons/react';
@@ -280,7 +281,8 @@ export function MessageList({
             const message = messages[row.index];
             const isUser = message.role === 'user';
             const copyText = message.blocks
-              .filter((block) => block.kind === 'text')
+              // 技能信封正文不进可复制文本：界面已折叠为徽章，复制原文不应带出整段技能。
+              .filter((block) => block.kind === 'text' && !block.skillName)
               .map((block) => block.text)
               .join('\n');
             return (
@@ -328,6 +330,18 @@ export function MessageList({
                             </p>
                           </Collapsible.Panel>
                         </Collapsible.Root>
+                      ) : group.block.skillName ? (
+                        // 技能信封块折叠为徽章：正文与元数据已注入模型上下文，
+                        // 界面只呈现「哪个技能在运行」，与补全面板的技能语义呼应。
+                        <span
+                          key={group.block.id}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-kumo-recessed px-3 py-2 text-sm"
+                        >
+                          <SparkleIcon size={15} className="text-kumo-brand" />
+                          <span className="font-medium text-kumo-brand">
+                            {group.block.skillName}
+                          </span>
+                        </span>
                       ) : (
                         <MessageMarkdown
                           key={group.block.id}

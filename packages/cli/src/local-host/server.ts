@@ -7,9 +7,9 @@ import {
   type PendingApproval,
   type WireRequest,
   negotiateProtocol,
-} from '../protocol/index.js';
-import { RpcPeer } from '../transport/rpc.js';
-import type { LocalTransport } from '../transport/types.js';
+} from '@kiturone/kapibala-host/protocol';
+import { RpcPeer } from '@kiturone/kapibala-host/transport';
+import type { LocalTransport } from '@kiturone/kapibala-host/transport';
 import { describeApproval } from './approval-description.js';
 import { RpcApprovalChannel } from './approval.js';
 import { redactText, sanitizeDisplayText } from './redaction.js';

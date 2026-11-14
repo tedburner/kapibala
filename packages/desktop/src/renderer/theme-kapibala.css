@@ -169,6 +169,44 @@ body {
   max-height: min(560px, calc(100dvh - 48px));
 }
 
+/* ---------- 右上角通知：macOS 风格浮层，逐条可关闭 ---------- */
+.kapibala-toasts {
+  position: fixed;
+  top: calc(var(--kapibala-titlebar-height) + 12px);
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  width: min(340px, calc(100vw - 32px));
+  max-height: calc(100dvh - var(--kapibala-titlebar-height) - 80px);
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  /* 容器只让子弹层可点，空白区域不拦截背后的对话与滚动。 */
+  pointer-events: none;
+}
+.kapibala-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 12px;
+  background: var(--color-kumo-elevated);
+  padding: 10px 10px 10px 12px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.14);
+  pointer-events: auto;
+  animation: kapibala-toast-in 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* 错误级提示用左侧色条强调，不整块染色，避免长文案阅读对比度下降。 */
+.kapibala-toast[data-level="error"] {
+  border-left: 3px solid var(--color-kumo-warning);
+}
+@keyframes kapibala-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
 /* ---------- 窗口骨架：46px 标题栏、可拖拽区与侧栏 ---------- */
 .kapibala-titlebar {
   height: var(--kapibala-titlebar-height);

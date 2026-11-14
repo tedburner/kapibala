@@ -8,7 +8,7 @@ import {
   Sidebar,
 } from '@cloudflare/kumo';
 import brandMark from '@kapibala-assets/icon.svg';
-import { selectMessages } from '@kiturone/kapibala-cli/view-model';
+import { type ViewNotice, selectMessages } from '@kiturone/kapibala-host/view-model';
 import {
   ArrowUpIcon,
   CaretDownIcon,
@@ -81,6 +81,62 @@ const MODE_ORDER: readonly Mode[] = ['Plan', 'Approval', 'Auto', 'FullAccess'];
 function ModeGlyph({ mode, size = 16 }: { mode: Mode; size?: number }) {
   const Glyph = MODE_ICONS[mode];
   return <Glyph size={size} className="shrink-0 text-kumo-subtle" />;
+}
+
+/**
+ * 右上角通知浮层：承载会话诊断，逐条渲染并可单独关闭。
+ * 不参与对话流布局，也不拦截空白区域的点击；关闭状态只保存在页面内存里。
+ * 浮层默认 3 秒自动收起；审批请求仍走正中弹窗，不在这里承接。
+ */
+function NoticeToasts({
+  notices,
+  dismissed,
+  onDismiss,
+}: {
+  notices: readonly ViewNotice[];
+  dismissed: Readonly<Record<string, true>>;
+  onDismiss(id: string): void;
+}) {
+  const visible = notices.filter((notice) => !dismissed[notice.id]);
+  // 只按 id 序列重建计时器：文案流式更新不该给同一条提示续命。
+  const visibleIds = JSON.stringify(visible.map((notice) => notice.id));
+  useEffect(() => {
+    if (visibleIds === '[]') return;
+    const timers = (JSON.parse(visibleIds) as string[]).map((id) =>
+      setTimeout(() => onDismiss(id), 3000),
+    );
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
+  }, [visibleIds, onDismiss]);
+  if (visible.length === 0) return null;
+  return (
+    <section className="kapibala-toasts" aria-label="通知">
+      {visible.map((notice) => (
+        <div
+          key={notice.id}
+          data-level={notice.level}
+          // 错误级提示用 alert 立即播报；其余走 status，避免打断读屏。
+          role={notice.level === 'error' ? 'alert' : 'status'}
+          className="kapibala-toast"
+        >
+          <span className="min-w-0 flex-1 text-sm leading-5 break-words text-kumo-default">
+            {notice.text}
+          </span>
+          <Button
+            className="kapibala-action -mt-1 -mr-1 shrink-0 text-kumo-subtle"
+            variant="ghost"
+            size="sm"
+            shape="square"
+            aria-label="关闭提示"
+            onClick={() => onDismiss(notice.id)}
+          >
+            <XIcon size={14} />
+          </Button>
+        </div>
+      ))}
+    </section>
+  );
 }
 const ROLE_NAMES = {
   default: '默认',
@@ -334,7 +390,10 @@ export function App() {
     row: { conversationId: string; title: string },
   ) {
     await act(async () => {
-      await api.session.archive({ workspaceId: space.id, conversationId: row.conversationId });
+      await api.session.archive({
+        workspaceId: space.id,
+        conversationId: row.conversationId,
+      });
       await dropOpenView(space.id, row.conversationId);
       await refreshSpaces();
     });
@@ -388,6 +447,25 @@ export function App() {
   async function send() {
     const input = draft.trim();
     if (!input || busy) return;
+    // 斜杠输入不再发给模型：会话内走与 CLI 同源的命令系统，反馈以命令消息呈现。
+    // `/skill <名称>` 无任务直发由宿主层承接（合成启动任务走收据管线），此处不拦。
+    if (input.startsWith('/')) {
+      if (!opened) {
+        report('斜杠命令需要在已打开的会话中使用。');
+        return;
+      }
+      await act(async () => {
+        const result = await api.run.command({
+          workspaceId: opened.workspaceId,
+          sessionId: opened.sessionId,
+          input,
+        });
+        if (!result.handled) report(`未知命令：${input.split(/\s+/)[0]}`);
+        else if (result.feedback.length) pushFeedback(result.feedback);
+        ui.draft(`${opened.workspaceId}:${opened.conversationId}`, '');
+      });
+      return;
+    }
     if (opened) {
       if (!facts.valid || !readyToSend || running) return;
       await act(async () => {
@@ -431,8 +509,325 @@ export function App() {
           .find((block) => block.tool?.callId === details.callId)?.tool
       : undefined;
   // 输入卡在首页与对话页共用：只改变落点，不复制发送、模式与模型选择逻辑。
+  const [commandList, setCommandList] = useState<Output<'run.commandList'>>();
+  const [skillList, setSkillList] = useState<Output<'run.skillCatalog'>>();
+  const [fileList, setFileList] = useState<{
+    files: string[];
+    truncated: boolean;
+  }>();
+  const [completion, setCompletion] = useState<{
+    kind: 'command' | 'file';
+    items: { group?: 'command' | 'skill'; insert: string; label: string; detail: string }[];
+    index: number;
+  }>();
+  /**
+   * 输入框上方的命令反馈卡片堆：最新在最上，每张可独立关闭，超过 5 张淘汰最旧。
+   * 卡片宽度随内容收缩（上限 44rem），长输出内部滚动——不再是一条通栏横幅。
+   */
+  const [commandFeedbacks, setCommandFeedbacks] = useState<{ id: string; lines: string[] }[]>([]);
+  const pushFeedback = useCallback((lines: string[]) => {
+    setCommandFeedbacks((prev) => [{ id: crypto.randomUUID(), lines }, ...prev].slice(0, 5));
+  }, []);
+  // 反馈是输入框场景的即时引导：切换会话后旧反馈只会造成误导，按 scope 变化清空。
+  const feedbackScope = opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new';
+  const [feedbackScopeOwner, setFeedbackScopeOwner] = useState(feedbackScope);
+  if (feedbackScopeOwner !== feedbackScope) {
+    setFeedbackScopeOwner(feedbackScope);
+    setCommandFeedbacks([]);
+  }
+  const [interactionValue, setInteractionValue] = useState('');
+  // 新一轮交互到达时清掉上一轮残留输入：secret 明文绝不跨请求存续。
+  // 渲染期重置模式（按请求切换清空）：超时/取消路径不会触发成功应答的清空，
+  // 必须以请求标识变化为锚点兜底。
+  const interactionKey = facts.interactions[0]?.requestId ?? '';
+  const [interactionValueOwner, setInteractionValueOwner] = useState(interactionKey);
+  if (interactionValueOwner !== interactionKey) {
+    setInteractionValueOwner(interactionKey);
+    setInteractionValue('');
+  }
+
+  /** 命令目录、技能目录与文件清单的补全数据源；目录随会话加载，文件随工作区变化刷新。 */
+  const fileListGeneration = useRef(0);
+  const openedWorkspaceId = opened?.workspaceId;
+  const openedSessionId = opened?.sessionId;
+  const refreshCompletionSources = useCallback(() => {
+    void api.run
+      .commandList()
+      .then(setCommandList)
+      .catch(() => {});
+    // 代际守卫：快速切换工作区/会话时，上一轮的慢响应可能后到并覆盖当前清单
+    //（@ 补全会插入错误路径、技能组跨会话串目录）。每轮 refresh 只自增一次，
+    // 技能与文件两个回包共用同一代数，新一轮 refresh 使两者的旧回包同时失效。
+    const generation = ++fileListGeneration.current;
+    // 技能目录双数据源：会话内用运行时目录（「现在就能跑」）；未打开会话时退化为
+    // 配置层快照预览（新会话将可用的技能），两条路径同一条过滤口径——否则 home
+    // 态 `/` 面板只剩命令组，技能搜索看起来像坏了。
+    if (!openedWorkspaceId || !openedSessionId) {
+      const previewSpace = openedWorkspaceId ?? spaces[0]?.id;
+      if (!previewSpace) {
+        setSkillList(undefined);
+      } else {
+        void api.resources
+          .readSkills(previewSpace)
+          .then((snapshot) => {
+            if (generation !== fileListGeneration.current) return;
+            // 全局开关关闭时新会话不会注册技能工具，预览如实留空。
+            const usable = snapshot.enabled
+              ? snapshot.skills.filter(
+                  (skill) => skill.userInvocable && skill.available && !skill.disabled,
+                )
+              : [];
+            setSkillList({
+              installed: snapshot.skills.length > 0,
+              skills: usable.slice(0, 500).map((skill) => ({
+                name: skill.name,
+                description:
+                  skill.description.length > 256
+                    ? `${skill.description.slice(0, 256)}…`
+                    : skill.description,
+                scope: skill.scope,
+              })),
+              truncated: usable.length > 500,
+            });
+          })
+          .catch(() => {
+            if (generation === fileListGeneration.current) setSkillList(undefined);
+          });
+      }
+    } else {
+      void api.run
+        .skillCatalog({ workspaceId: openedWorkspaceId, sessionId: openedSessionId })
+        .then((result) => {
+          if (generation === fileListGeneration.current) setSkillList(result);
+        })
+        .catch(() => {
+          if (generation === fileListGeneration.current) setSkillList(undefined);
+        });
+    }
+    const workspaceId = openedWorkspaceId ?? spaces[0]?.id;
+    if (!workspaceId) {
+      setFileList(undefined);
+      return;
+    }
+    void api.workspace
+      .listFiles(workspaceId)
+      .then((result) => {
+        if (generation === fileListGeneration.current) setFileList(result);
+      })
+      .catch(() => {
+        if (generation === fileListGeneration.current) setFileList(undefined);
+      });
+  }, [openedWorkspaceId, openedSessionId, spaces]);
+  useEffect(() => {
+    refreshCompletionSources();
+  }, [refreshCompletionSources]);
+
+  /**
+   * 触发符识别：`/` 分组面板（命令在前、技能在后）与 `@` 文件态互斥。
+   * `/skill ` 的名字段是第二触发形态（CLI 同款）：`/skill ` 或 `/skill <前缀>`
+   * 只列技能名，出现任务段（第二个空白后的内容）后不再弹出。
+   */
+  useEffect(() => {
+    const skillTail = /^\/skill\s+(\S*)$/.exec(draft);
+    if (skillTail) {
+      const prefix = skillTail[1].toLowerCase();
+      const items = (skillList?.skills ?? [])
+        .filter((skill) => skill.name.toLowerCase().startsWith(prefix))
+        .slice(0, 8)
+        .map((skill) => ({
+          group: 'skill' as const,
+          insert: `/skill ${skill.name} `,
+          label: `/skill ${skill.name}`,
+          detail: skill.description,
+        }));
+      setCompletion(items.length ? { kind: 'command', items, index: 0 } : undefined);
+      return;
+    }
+    if (draft.startsWith('/') && !/\s/.test(draft)) {
+      const prefix = draft.slice(1).toLowerCase();
+      const commandItems = (commandList?.commands ?? [])
+        .filter((item) => item.name.toLowerCase().startsWith(prefix))
+        .slice(0, 8)
+        .map((item) => ({
+          group: 'command' as const,
+          insert: `/${item.name} `,
+          label: `/${item.name}`,
+          detail: item.description,
+        }));
+      const skillItems = (skillList?.skills ?? [])
+        .filter(
+          (skill) =>
+            skill.name.toLowerCase().startsWith(prefix) ||
+            skill.description.toLowerCase().includes(prefix),
+        )
+        .slice(0, 8)
+        .map((skill) => ({
+          group: 'skill' as const,
+          insert: `/skill ${skill.name} `,
+          label: `/skill ${skill.name}`,
+          detail: skill.description,
+        }));
+      // 保序拼接：命令组在前、技能组在后，键盘导航按扁平 index 环形移动。
+      const items = [...commandItems, ...skillItems];
+      setCompletion(items.length ? { kind: 'command', items, index: 0 } : undefined);
+      return;
+    }
+    const at = draft.lastIndexOf('@');
+    if (at >= 0 && !/\s/.test(draft.slice(at + 1))) {
+      const prefix = draft.slice(at + 1).toLowerCase();
+      const items = (fileList?.files ?? [])
+        .filter((file) => file.toLowerCase().includes(prefix))
+        .slice(0, 8)
+        .map((file) => ({ insert: `@${file}`, label: file, detail: '' }));
+      setCompletion(items.length ? { kind: 'file', items, index: 0 } : undefined);
+      return;
+    }
+    setCompletion(undefined);
+  }, [draft, commandList, fileList, skillList]);
+
+  const draftScope = opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new';
+
+  /** 补全确认：命令替换整段草稿，文件替换最后一个 @ 触发段。 */
+  function acceptCompletion(current: NonNullable<typeof completion>): void {
+    const item = current.items[current.index];
+    if (current.kind === 'command') {
+      ui.draft(draftScope, item.insert);
+      return;
+    }
+    const at = draft.lastIndexOf('@');
+    if (at < 0) return;
+    ui.draft(draftScope, `${draft.slice(0, at)}${item.insert} `);
+  }
+
   const composer = (
     <div ref={composerShell} className="relative w-full space-y-2">
+      {completion && (
+        // 浮层与输入卡同宽并居中对齐：宿主外壳是整列宽度，直接 left-3/right-3 会横跨阅读列。
+        <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
+          <div className="max-h-56 overflow-y-auto rounded-lg border border-kumo-line bg-kumo-recessed p-1 shadow-lg">
+            {completion.kind === 'file' && fileList?.truncated && (
+              <p className="px-2 py-1 text-xs text-kumo-subtle">
+                文件较多，列表未列全；可继续输入路径缩小范围。
+              </p>
+            )}
+            {completion.kind === 'file' &&
+              completion.items.map((item, index) => (
+                <Button
+                  key={item.label}
+                  variant="ghost"
+                  size="sm"
+                  className={
+                    index === completion.index
+                      ? 'flex w-full items-center gap-2 rounded-md bg-kumo-brand/15 px-2 py-1.5 text-left'
+                      : 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left'
+                  }
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    acceptCompletion(completion);
+                  }}
+                >
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                </Button>
+              ))}
+            {completion.kind === 'command' &&
+              (
+                [
+                  { key: 'command', title: '命令' },
+                  { key: 'skill', title: '技能' },
+                ] as const
+              ).map(({ key, title }) => {
+                const indexed = completion.items.flatMap((item, index) =>
+                  item.group === key ? [{ item, index }] : [],
+                );
+                if (indexed.length === 0) return undefined;
+                return (
+                  <div key={key}>
+                    <p className="px-2 pt-1 pb-0.5 text-xs font-medium text-kumo-subtle">
+                      {title}（{indexed.length}）
+                    </p>
+                    {indexed.map(({ item, index }) => (
+                      <Button
+                        key={item.label}
+                        variant="ghost"
+                        size="sm"
+                        className={
+                          index === completion.index
+                            ? 'flex w-full items-center gap-2 rounded-md bg-kumo-brand/15 px-2 py-1.5 text-left'
+                            : 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left'
+                        }
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          acceptCompletion(completion);
+                        }}
+                      >
+                        <span className="w-32 shrink-0 truncate">{item.label}</span>
+                        {item.detail && (
+                          <span className="min-w-0 flex-1 truncate text-right text-xs text-kumo-subtle">
+                            {item.detail}
+                          </span>
+                        )}
+                      </Button>
+                    ))}
+                  </div>
+                );
+              })}
+            {/* 空技能组的提示只在未过滤时出现：用户正按前缀过滤时不该被无关提示打扰。 */}
+            {completion.kind === 'command' &&
+              skillList &&
+              skillList.skills.length === 0 &&
+              (draft === '/' || /^\/skill\s*$/.test(draft)) && (
+                <p className="px-2 py-1 text-xs text-kumo-subtle">
+                  {skillList.installed
+                    ? '技能已全部禁用或当前不可调用；可在设置的「资源管理」页调整。'
+                    : '没有已安装的技能；全局技能目录见设置的「资源管理」页。'}
+                </p>
+              )}
+            {completion.kind === 'command' && completion.items.length > 0 && (
+              <p className="px-2 pt-1 pb-0.5 text-xs text-kumo-subtle">
+                ↑↓ 切换 · Tab/Enter 补全 · Esc 关闭
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+      {/* 触发符激活但零匹配时也要出现面板：搜索「看起来坏了」比「无匹配」更伤可用性。
+          覆盖两种触发形态（/ 前缀、/skill 名字段）；任务段态与 @ 态不在此列。 */}
+      {!completion && (/^\/\S*$/.test(draft) || /^\/skill\s+\S*$/.test(draft)) && (
+        <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
+          <div className="rounded-lg border border-kumo-line bg-kumo-recessed p-1 shadow-lg">
+            <p className="px-2 py-1 text-xs text-kumo-subtle">
+              无匹配的命令或技能；继续输入可缩小范围。
+            </p>
+          </div>
+        </div>
+      )}
+      {commandFeedbacks.length > 0 && (
+        <div className="mx-auto flex w-full max-w-[var(--kapibala-content-max)] flex-col gap-2">
+          {commandFeedbacks.map((entry) => (
+            <div
+              key={entry.id}
+              className="relative w-full rounded-lg border border-kumo-line bg-kumo-recessed py-2 pr-11 pl-3 text-sm"
+            >
+              <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words">
+                {entry.lines.map((line, index) => (
+                  <p key={`${index}:${line}`}>{line}</p>
+                ))}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label="关闭该条反馈"
+                className="absolute top-1 right-1"
+                onClick={() =>
+                  setCommandFeedbacks((prev) => prev.filter((item) => item.id !== entry.id))
+                }
+              >
+                <XIcon size={14} />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
       {/* 输入、空间、模型、模式与发送同属一张卡：焦点由卡片整体承担，工具条保持低权重。 */}
       <div className="kapibala-composer px-3 pt-3 pb-2">
         <InputArea
@@ -448,7 +843,43 @@ export function App() {
           maxRows={8}
           className="max-h-[200px] rounded-none bg-transparent px-2 py-1 ring-0 focus:ring-0"
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+            // IME 组合中的按键（含提交候选词的 Enter）不参与补全与发送：
+            // 补全面板开着时敲中文输入法回车，会被吞成「接受补全」丢字。
+            if (event.nativeEvent.isComposing) return;
+            if (completion) {
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                const next =
+                  (completion.index +
+                    (event.key === 'ArrowDown' ? 1 : completion.items.length - 1)) %
+                  completion.items.length;
+                setCompletion({ ...completion, index: next });
+                return;
+              }
+              if (event.key === 'Tab' || event.key === 'Enter') {
+                event.preventDefault();
+                // 草稿已与高亮补全等价（完整命令或完整技能名）时 Enter 直接发送：
+                // 此时补全只剩「加一个空格」的语义，要求再按一次才能发送是纯粹的手感摩擦
+                //（典型场景：/skill <名称> 输完回车应立即执行）。
+                const highlighted = completion.items[completion.index];
+                if (
+                  event.key === 'Enter' &&
+                  highlighted &&
+                  highlighted.insert.trim() === draft.trim()
+                ) {
+                  void send();
+                  return;
+                }
+                acceptCompletion(completion);
+                return;
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setCompletion(undefined);
+                return;
+              }
+            }
+            if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
               void send();
             }
@@ -765,7 +1196,10 @@ export function App() {
         onRefreshRuntime={() => void act(() => client.connectRuntime())}
         onClose={(item) =>
           void act(async () => {
-            await api.session.close({ workspaceId: item.workspaceId, sessionId: item.sessionId });
+            await api.session.close({
+              workspaceId: item.workspaceId,
+              sessionId: item.sessionId,
+            });
             ui.select(item.workspaceId, '');
             if (opened?.sessionId === item.sessionId) {
               setOpened(undefined);
@@ -918,21 +1352,12 @@ export function App() {
               </div>
             </div>
           )}
-          {facts.state?.notices.map((notice) => (
-            // 诊断通知必须有容器承载：裸文本浮在对话流里会被当成渲染残渣，
-            // error 级别（如审批等待、运行失败）用醒目横幅，info 保持弱化样式。
-            <output
-              key={notice.id}
-              role={notice.level === 'error' ? 'alert' : undefined}
-              className={
-                notice.level === 'error'
-                  ? 'mx-6 mb-2 shrink-0 rounded-lg border border-kumo-line bg-kumo-warning/15 px-4 py-2 text-sm text-kumo-contrast'
-                  : 'shrink-0 px-6 py-2 text-xs text-kumo-subtle'
-              }
-            >
-              {notice.text}
-            </output>
-          ))}
+          {/* 诊断通知改由右上角浮层承载：不再挤压对话流与输入区，出现即提醒，可逐条关闭。 */}
+          <NoticeToasts
+            notices={facts.state?.notices ?? []}
+            dismissed={ui.dismissedNotices}
+            onDismiss={ui.dismissNotice}
+          />
           {opened && <footer className="kapibala-composer-dock shrink-0">{composer}</footer>}
         </main>
         {details && wide && (
@@ -961,10 +1386,121 @@ export function App() {
         report={report}
         hostDown={facts.error !== undefined || facts.runtimeValid === false}
         spaces={spaces}
+        workspaceId={opened?.workspaceId ?? spaces[0]?.id}
         archiveRevision={archiveRevision}
         onArchivedChanged={() => void refreshSpaces().catch((reason) => report(failure(reason)))}
         onRequestDelete={setPendingDelete}
       />
+      {facts.interactions[0] && (
+        <div className="fixed inset-x-0 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-kumo-line bg-kumo-default p-4 shadow-xl">
+          <p className="mb-2 text-sm font-medium">{facts.interactions[0].prompt}</p>
+          {facts.interactions[0].kind === 'select' ? (
+            <div className="space-y-1">
+              {(facts.interactions[0].options ?? []).map((option) => (
+                <Button
+                  key={option.value}
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-start"
+                  onClick={() => {
+                    const request = facts.interactions[0];
+                    if (!request) return;
+                    void api.interaction
+                      .reply({
+                        workspaceId: request.workspaceId,
+                        sessionId: request.sessionId,
+                        requestId: request.requestId,
+                        value: option.value,
+                      })
+                      .catch((reason) => report(failure(reason)));
+                  }}
+                >
+                  {option.label}
+                </Button>
+              ))}
+              {/* 与 CLI 的 Esc 取消同语义：不带 value 的应答由宿主映射为取消。 */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const request = facts.interactions[0];
+                  if (!request) return;
+                  void api.interaction
+                    .reply({
+                      workspaceId: request.workspaceId,
+                      sessionId: request.sessionId,
+                      requestId: request.requestId,
+                    })
+                    .catch((reason) => report(failure(reason)));
+                }}
+              >
+                取消
+              </Button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <Input
+                type={facts.interactions[0].kind === 'secret' ? 'password' : 'text'}
+                aria-label={facts.interactions[0].prompt}
+                value={interactionValue}
+                onValueChange={setInteractionValue}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    const request = facts.interactions[0];
+                    if (!request) return;
+                    void api.interaction
+                      .reply({
+                        workspaceId: request.workspaceId,
+                        sessionId: request.sessionId,
+                        requestId: request.requestId,
+                        value: interactionValue,
+                      })
+                      .then(() => setInteractionValue(''))
+                      .catch((reason) => report(failure(reason)));
+                  }
+                }}
+              />
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  const request = facts.interactions[0];
+                  if (!request) return;
+                  void api.interaction
+                    .reply({
+                      workspaceId: request.workspaceId,
+                      sessionId: request.sessionId,
+                      requestId: request.requestId,
+                      value: interactionValue,
+                    })
+                    .then(() => setInteractionValue(''))
+                    .catch((reason) => report(failure(reason)));
+                }}
+              >
+                确定
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const request = facts.interactions[0];
+                  if (!request) return;
+                  void api.interaction
+                    .reply({
+                      workspaceId: request.workspaceId,
+                      sessionId: request.sessionId,
+                      requestId: request.requestId,
+                    })
+                    .then(() => setInteractionValue(''))
+                    .catch((reason) => report(failure(reason)));
+                }}
+              >
+                取消
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
       <SessionDeleteDialog
         target={pendingDelete}
         onCancel={() => setPendingDelete(undefined)}
@@ -1043,12 +1579,14 @@ export function App() {
             关闭面板不会默认允许。超时、取消或控制连接断开后，请求会拒绝。
           </LayerDialog.Description>
           <LayerDialog.Body>
-            <div className="space-y-5">
+            {/* 弹窗正文按可用宽度换行：长路径与 JSON 参数不能把滚动内容撑得比弹窗更宽，
+                否则右侧按钮会被裁到浮层外，看起来像被遮挡。 */}
+            <div className="min-w-0 space-y-5">
               {facts.approvals.length === 0 && (
                 <p className="text-sm text-kumo-subtle">当前没有待处理请求。</p>
               )}
               {facts.approvals.map((approval) => (
-                <LayerCard key={approval.approvalId} className="space-y-3 p-4">
+                <LayerCard key={approval.approvalId} className="min-w-0 space-y-3 p-4">
                   <p className="font-medium">{approval.toolName}</p>
                   <p className="break-all text-xs text-kumo-subtle">
                     空间：{approval.workspaceName}
@@ -1057,8 +1595,10 @@ export function App() {
                     <br />
                     会话 {approval.conversationId} · 运行 {approval.runId}
                   </p>
-                  <p className="text-sm text-kumo-subtle">{approval.capabilities.join('、')}</p>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-xs">
+                  <p className="break-all text-sm text-kumo-subtle">
+                    {approval.capabilities.join('、')}
+                  </p>
+                  <pre className="max-h-48 min-w-0 overflow-auto font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere]">
                     {approval.description}
                   </pre>
                   <div className="flex flex-wrap justify-end gap-3">
