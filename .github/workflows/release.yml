@@ -258,13 +258,28 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$ARTIFACTS"
+          # 安装包名已自带 os-arch（Kapibala-<ver>-mac-arm64-test.dmg），四个目标互不重名，
+          # 直接用原名上传；只有 SHA256SUMS.txt / test-build.json 这类各平台同名的旁注文件
+          # 需要追加平台短名区分，否则会互相覆盖。
+          case "$TARGET" in
+            darwin-arm64) suffix=mac-arm64 ;;
+            darwin-x64) suffix=mac-x64 ;;
+            win32-x64) suffix=win-x64 ;;
+            linux-x64) suffix=linux-x64 ;;
+            *) echo "未知目标：$TARGET" >&2; exit 1 ;;
+          esac
           assets=()
-          for file in "$ARTIFACTS"/*.dmg "$ARTIFACTS"/*.exe "$ARTIFACTS"/*.zip "$ARTIFACTS"/*.AppImage "$ARTIFACTS"/SHA256SUMS.txt "$ARTIFACTS"/test-build.json; do
-            if [ -f "$file" ]; then
-              name="desktop-${TARGET}__$(basename "$file")"
-              cp "$file" "$RUNNER_TEMP/$name"
-              assets+=("$RUNNER_TEMP/$name")
-            fi
+          for file in "$ARTIFACTS"/*.dmg "$ARTIFACTS"/*.exe "$ARTIFACTS"/*.zip "$ARTIFACTS"/*.AppImage; do
+            [ -f "$file" ] || continue
+            name="$(basename "$file")"
+            cp "$file" "$RUNNER_TEMP/$name"
+            assets+=("$RUNNER_TEMP/$name")
+          done
+          for file in "$ARTIFACTS"/SHA256SUMS.txt "$ARTIFACTS"/test-build.json; do
+            [ -f "$file" ] || continue
+            base="$(basename "$file")"
+            cp "$file" "$RUNNER_TEMP/${base%.*}-$suffix.${base##*.}"
+            assets+=("$RUNNER_TEMP/${base%.*}-$suffix.${base##*.}")
           done
           test "${#assets[@]}" -ge 2
           gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
@@ -276,3 +291,12 @@ jobs:
           path: ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}
           if-no-files-found: ignore
           retention-days: 30
+      - name: Preserve packaged smoke diagnostics on failure
+        # 安装副本 smoke 失败时保存 Playwright trace/error-context，供离线复现定位。
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-smoke-diagnostics-${{ matrix.target }}-${{ needs.prepare.outputs.sha }}
+          path: packages/desktop/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

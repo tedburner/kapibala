@@ -427,6 +427,10 @@ export async function packDesktop(args: string[]): Promise<void> {
   );
   const stage = path.join(output, 'stage');
   const artifacts = path.join(output, 'artifacts');
+  // 产物路径必须先于安装副本 smoke 写入 GITHUB_OUTPUT：smoke 失败时脚本直接进 catch 退出，
+  // 走不到末尾的输出——workflow 拿到空路径会连 trace/error-context 现场都上传不了。
+  if (process.env.GITHUB_OUTPUT)
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, `artifacts=${artifacts}\n`);
   process.stdout.write('部署独立生产依赖…\n');
   // legacy deploy 按共享 lockfile 重放依赖树，仍需读取 registry 元数据；CI 的元数据缓存不完整，
   // --offline 会在任何干净机器上解析失败（本机能过只是缓存恰好齐全）。改为 prefer-offline：
@@ -702,8 +706,6 @@ export async function packDesktop(args: string[]): Promise<void> {
   );
   if (candidate && licenses.some((item) => item.license === 'UNKNOWN' || item.licenseTextMissing))
     throw new Error('LICENSE_INVENTORY_INCOMPLETE');
-  if (process.env.GITHUB_OUTPUT)
-    fs.appendFileSync(process.env.GITHUB_OUTPUT, `artifacts=${artifacts}\n`);
   process.stdout.write(`${candidate ? '候选' : '测试'}产物：${artifacts}\n`);
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))

@@ -15,9 +15,10 @@ const ready = new Promise<void>((resolve, reject) => {
 });
 void ready.catch(() => {});
 // 冷启动窗口必须足够宽：主进程要 spawn agent-host 子进程并完成工作区初始化才能回传握手，
-// Windows 上全新安装的首次启动还要过 Defender 实时扫描（远超 5 秒）；过早 reject 会把
-// 健康但慢的启动误判为死连接。真正失败由 host.unavailable 事件立即置位，不等这个兜底。
-const timeout = setTimeout(() => rejectReady(new Error('Host connection timeout')), 30000);
+// Windows 上全新安装的首次启动还要过 Defender 对整套新装文件的实时扫描（CI 实测握手可超
+// 30 秒）；过早 reject 会把健康但慢的启动误判为死连接。真正失败由 host.unavailable 事件
+// 立即置位，不等这个兜底——本守门员只封顶「Host 存活却既不握手也不报错」的病态情形。
+const timeout = setTimeout(() => rejectReady(new Error('Host connection timeout')), 90000);
 ipcRenderer.once(
   'kpbl:connected',
   (event, identity: { hostInstanceId: string; controlEpoch: number }) => {
