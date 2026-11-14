@@ -221,8 +221,10 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          # 补跑只允许工具链差异：产品代码必须与已发布 tag 完全一致，否则安装包内容会偏离 npm 已发布的版本。
-          git diff --exit-code "refs/tags/$RELEASE_TAG" HEAD -- packages/
+          # 补跑只允许工具链与纯测试规格差异：产品代码必须与已发布 tag 完全一致，
+          # 否则安装包内容会偏离 npm 已发布的版本；两套桌面 e2e 规格不进安装包，允许随 UI 修正。
+          git diff --exit-code "refs/tags/$RELEASE_TAG" HEAD -- packages/ \
+            ':(exclude)packages/desktop/e2e' ':(exclude)packages/desktop/packaged-e2e'
       - uses: pnpm/setup@v3
         with:
           version: 12.4.1

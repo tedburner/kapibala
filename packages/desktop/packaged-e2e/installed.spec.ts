@@ -142,9 +142,11 @@ test('复制安装后的应用使用自身依赖、隔离历史和受限 GUI PAT
     await page.getByRole('button', { name: '新建对话', exact: true }).last().click();
     await page.getByRole('textbox', { name: '发送消息' }).fill('验证安装包');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    await page.getByRole('button', { name: '审批 1', exact: true }).click();
-    await page.getByRole('button', { name: '批准一次', exact: true }).click();
-    await page.getByRole('button', { name: '关闭审批队列' }).click();
+    // 新审批自动弹出居中队列，标题栏不再有常驻「审批 N」计数入口；批准一次后队列清空自动收起。
+    const queue = page.getByRole('dialog', { name: '待处理审批', exact: true });
+    await expect(queue).toBeVisible();
+    await queue.getByRole('button', { name: '批准一次', exact: true }).click();
+    await expect(queue).toBeHidden();
     await expect(page.getByText('安装后链路通过。', { exact: true })).toBeVisible();
     const proof = path.join(home, '.kapibala/workspaces/default/installed-proof.txt');
     expect(fs.readFileSync(proof, 'utf8')).toBe('packaged-tool-proof');
