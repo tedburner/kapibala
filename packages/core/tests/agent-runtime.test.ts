@@ -45,7 +45,10 @@ describe('AgentRuntime and spawn launch transactions', () => {
     const unsubscribe = runtime.subscribeTaskChanges((...args) => {
       argumentCounts.push(args.length);
       snapshots.push(
-        runtime.listTasks({ rootTaskId: 'observed-tree', parentSessionId: 'session-root' }),
+        runtime.listTasks({
+          rootTaskId: 'observed-tree',
+          parentSessionId: 'session-root',
+        }),
       );
     });
 
@@ -295,11 +298,19 @@ describe('AgentRuntime and spawn launch transactions', () => {
 
     // 1. Validate parameter requirements
     await expect(
-      runtime.prepareSpawn(context, { description: '', prompt: 'x', role: 'explore' }),
+      runtime.prepareSpawn(context, {
+        description: '',
+        prompt: 'x',
+        role: 'explore',
+      }),
     ).rejects.toThrow(/Description is required/);
 
     await expect(
-      runtime.prepareSpawn(context, { description: 'd', prompt: '', role: 'explore' }),
+      runtime.prepareSpawn(context, {
+        description: 'd',
+        prompt: '',
+        role: 'explore',
+      }),
     ).rejects.toThrow(/Prompt is required/);
 
     // 2. Validate workspace boundary escape
@@ -483,6 +494,67 @@ describe('AgentRuntime and spawn launch transactions', () => {
     expect(runtime.getTask(grandchildReceipt.agentId)?.status).toBe('cancelled');
 
     await runtime.close();
+  });
+
+  it('cascades cancellation to descendants when the wall-clock timeout fires', async () => {
+    let releaseRunner!: () => void;
+    const runnerGate = new Promise<void>((resolve) => {
+      releaseRunner = resolve;
+    });
+    const runtime = new AgentRuntime({
+      // runner 刻意忽略取消信号并正常返回：超时路径不经过 catch，
+      // 对后代的级联取消必须由 runTask 的 finally 兜住（文件头约束 4）。
+      runner: async () => {
+        await runnerGate;
+        return { summary: 'Returned after abort' };
+      },
+    });
+
+    const parentReceipt = await runtime.prepareSpawn(
+      createDefaultContext({ rootTaskId: 'timeout-tree' }),
+      {
+        description: 'Parent Task',
+        prompt: 'Run',
+        role: 'planner',
+        limits: { timeoutMs: 150 },
+      },
+    );
+    await runtime.activateSpawn(parentReceipt.agentId);
+    const childReceipt = await runtime.prepareSpawn(
+      createDefaultContext({
+        rootTaskId: 'timeout-tree',
+        agentId: parentReceipt.agentId,
+        depth: 1,
+      }),
+      {
+        description: 'Child 1',
+        prompt: 'Run C1',
+        role: 'explore',
+        limits: { timeoutMs: 60_000 },
+      },
+    );
+    await runtime.activateSpawn(childReceipt.agentId);
+
+    const waitForStatus = async (agentId: string, status: string) => {
+      for (let i = 0; i < 100; i++) {
+        if (runtime.getTask(agentId)?.status === status) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(`Task ${agentId} did not reach status '${status}'`);
+    };
+
+    try {
+      // 等父任务墙钟超时（runner 仍被 gate 挂起，abort 只置位信号）。
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      // 修复前的缺口：父任务在此处被置为 failed，但子任务继续活跃占槽。
+      releaseRunner();
+      await waitForStatus(parentReceipt.agentId, 'failed');
+      // 修复后：父任务 failed 时 finally 无条件级联，子任务必须终态取消而不是照常完成。
+      await waitForStatus(childReceipt.agentId, 'cancelled');
+    } finally {
+      releaseRunner();
+      await runtime.close();
+    }
   });
 
   it('lists tasks and waits with wait_agent tool without killing pending tasks on timeout', async () => {
@@ -681,14 +753,22 @@ describe('AgentRuntime and spawn launch transactions', () => {
     await expect(
       waitTool.execute(
         { agentIds: [receipt.agentId] },
-        { rootDir: directory, rootTaskId: 'tree-guard-root', agentId: 'peer-subagent-99' },
+        {
+          rootDir: directory,
+          rootTaskId: 'tree-guard-root',
+          agentId: 'peer-subagent-99',
+        },
       ),
     ).rejects.toThrow(/Cannot wait task/);
 
     await expect(
       cancelTool.execute(
         { agentId: receipt.agentId },
-        { rootDir: directory, rootTaskId: 'tree-guard-root', agentId: 'peer-subagent-99' },
+        {
+          rootDir: directory,
+          rootTaskId: 'tree-guard-root',
+          agentId: 'peer-subagent-99',
+        },
       ),
     ).rejects.toThrow(/Cannot cancel task/);
 
@@ -702,7 +782,10 @@ describe('AgentRuntime and spawn launch transactions', () => {
       rules: [],
       availableTools: [
         { name: 'read_file', metadata: { permissions: ['fs:read' as const] } },
-        { name: 'write_file', metadata: { permissions: ['fs:write' as const] } },
+        {
+          name: 'write_file',
+          metadata: { permissions: ['fs:write' as const] },
+        },
         { name: 'run_command', metadata: { permissions: ['exec' as const] } },
       ],
       workspaceRoot: directory,
@@ -720,7 +803,9 @@ describe('AgentRuntime and spawn launch transactions', () => {
 
     const task = runtime.getTask(receipt.agentId);
     expect(task).toBeDefined();
-    const effective = task?.effectivePolicy as { allowedTools?: readonly string[] };
+    const effective = task?.effectivePolicy as {
+      allowedTools?: readonly string[];
+    };
     expect(effective.allowedTools).toContain('read_file');
     // write_file must be filtered out for explore role because explore disallows fs:write
     expect(effective.allowedTools).not.toContain('write_file');

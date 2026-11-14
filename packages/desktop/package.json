@@ -18,7 +18,8 @@
   "dependencies": {
     "@kiturone/kapibala": "workspace:*",
     "zod": "4.6.7",
-    "@kiturone/kapibala-host": "workspace:*"
+    "@kiturone/kapibala-host": "workspace:*",
+    "@kiturone/kapibala-cli": "workspace:*"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

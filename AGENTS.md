@@ -46,7 +46,9 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
   managed session 装配（host/）的唯一真源在宿主层包；CLI 的同名子路径导出只是**兼容转发 barrel**（构建时经 tsconfig paths
   从宿主源码内联进 dist，npm 消费者不感知私有包）。CLI 应用层（commands/local-host/tui/入口）经
   `@kiturone/kapibala-host/internal` 消费装配面（显式命名导出清单，禁用 `export *`——多模块重导出同名符号会被 ESM
-  静默丢弃，已踩过）；desktop 只允许 import `@kiturone/kapibala-host/host|view-model` 子路径（check-desktop 门禁拦截）。
+  静默丢弃，已踩过）；desktop 分层准入（check-desktop 门禁拦截）：renderer 只允许
+  `@kiturone/kapibala-host/view-model`，agent-host 允许 `host|view-model|internal` 与命令系统
+  `@kiturone/kapibala-cli/commands`（唯一 CLI 反向依赖例外），其余一律拦截。
   新增宿主能力时改宿主包与门禁锚点，不要往 CLI 兼容 barrel 里塞实现。
 
 ## 约定

@@ -40,16 +40,22 @@
       "types": "./dist/host/index.d.ts",
       "import": "./dist/host/index.js",
       "default": "./dist/host/index.js"
+    },
+    "./commands": {
+      "types": "./dist/commands/index.d.ts",
+      "import": "./dist/commands/index.js",
+      "default": "./dist/commands/index.js"
     }
   },
   "files": ["dist"],
   "scripts": {
-    "build": "pnpm run build:host && tsup --config tsup.config.ts && pnpm build:view-model && pnpm build:protocol && pnpm build:client && pnpm build:host",
+    "build": "pnpm run build:host && tsup --config tsup.config.ts && pnpm build:view-model && pnpm build:protocol && pnpm build:client && pnpm build:commands && pnpm build:host",
     "build:view-model": "tsup --config tsup.view-model.config.ts",
     "dev": "tsup --watch",
     "build:protocol": "tsup --config tsup.protocol.config.ts",
     "build:client": "tsup --config tsup.client.config.ts",
-    "build:host": "tsup --config tsup.host.config.ts"
+    "build:host": "tsup --config tsup.host.config.ts",
+    "build:commands": "tsup --config tsup.commands.config.ts"
   },
   "dependencies": {
     "@kiturone/kapibala": "workspace:*",

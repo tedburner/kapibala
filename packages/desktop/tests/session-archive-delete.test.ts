@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SessionManager } from '@kiturone/kapibala';
+import type { AgentSession } from '@kiturone/kapibala';
 import type { ManagedHostSession, ManagedSessionOptions } from '@kiturone/kapibala-host/host';
 import { type PresentationEvent, createPresentation } from '@kiturone/kapibala-host/view-model';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -36,6 +37,8 @@ function fakeHandle(conversationId: string, run: () => Promise<void> = async () 
   const state = createPresentation({ conversationId, branchId: 'main', viewEpoch: 1 });
   return {
     conversationId,
+    session: {} as AgentSession,
+    runSkill: vi.fn(async () => {}),
     run: vi.fn(run),
     cancel: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),

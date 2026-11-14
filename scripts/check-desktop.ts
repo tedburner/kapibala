@@ -80,11 +80,15 @@ export function checkDesktop(artifacts = false): void {
             `${relative}: cross-process import`,
           );
         if (relative.startsWith('agent-host/') && specifier.startsWith('@kiturone/kapibala-cli'))
-          insist(false, `${relative}: private CLI import（宿主层已迁至 @kiturone/kapibala-host）`);
+          insist(
+            specifier === '@kiturone/kapibala-cli/commands',
+            `${relative}: private CLI import（命令系统子路径是唯一例外；宿主层已迁至 @kiturone/kapibala-host）`,
+          );
         if (relative.startsWith('agent-host/') && specifier.startsWith('@kiturone/kapibala-host'))
           insist(
             specifier === '@kiturone/kapibala-host/host' ||
-              specifier === '@kiturone/kapibala-host/view-model',
+              specifier === '@kiturone/kapibala-host/view-model' ||
+              specifier === '@kiturone/kapibala-host/internal',
             `${relative}: private host import`,
           );
         if (relative.startsWith('renderer/') && specifier.startsWith('@kiturone/kapibala-host'))
@@ -127,6 +131,7 @@ export function checkDesktop(artifacts = false): void {
   const allowed = new Set([
     '@kiturone/kapibala',
     '@kiturone/kapibala-host',
+    '@kiturone/kapibala-cli',
     '@cloudflare/kumo',
     '@phosphor-icons/react',
     '@tanstack/react-virtual',

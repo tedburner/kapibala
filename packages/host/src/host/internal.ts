@@ -1,12 +1,14 @@
 /**
- * 宿主层内部门面：CLI 应用层（commands/local-host/入口/测试）消费的显式导出清单。
+ * 宿主层内部门面：仓库内宿主应用层（CLI 的 commands/local-host/入口/测试，
+ * 以及桌面 agent-host 的资源服务）消费的显式导出清单。
  *
  * 约束与边界：
- * - 仅供仓库内 CLI 应用层经 `@kiturone/kapibala-host/internal` 消费；不进入 npm 公共导出面；
+ * - 仅供仓库内宿主应用层经 `@kiturone/kapibala-host/internal` 消费；不进入 npm 公共导出面；
+ *   桌面侧的准入范围由 scripts/check-desktop.ts 的 agent-host 门禁锚点显式限定；
  * - 显式命名导出，不用 `export *`：ESM 星号导出在多模块重导出同名符号时会静默丢弃（已踩过），
  *   新增消费符号时必须在此登记；类型重导出走 export type（isolatedModules 约束）。
  */
-export { projectHistory } from './history-projection.js';
+export { EXPLICIT_SKILL_KICKOFF, projectHistory } from './history-projection.js';
 export {
   createManagedSession,
   createManagedSessionResources,
@@ -81,3 +83,12 @@ export {
   formatToolResultSummary,
   sanitizeToolName,
 } from './ui/tool-presentation.js';
+export {
+  getGlobalMcpConfigPath,
+  getProjectMcpConfigPath,
+  mutateGlobalMcpConfig,
+  readMcpResourceSnapshot,
+} from './resource/mcp-config.js';
+export type { McpResourceSnapshot, McpServerSummary } from './resource/mcp-config.js';
+export { readSkillsResourceSnapshot } from './resource/skills-catalog.js';
+export type { SkillSummary, SkillsResourceSnapshot } from './resource/skills-catalog.js';

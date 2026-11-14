@@ -46,6 +46,10 @@ CLI `/host` 新增导出类型 `ManagedInspection`；`ManagedHostSession` 新增
 
 `deleteSession` 是不可逆的物理删除（正文 + sidecar），只拒绝本进程持句柄或其它进程持锁的会话，不提供回收站；`pinSession` 只影响 `list()` 的分组次序，不写活动时间。自定义实现 `ManagedHostSession` 的适配器必须补齐新增的两个方法，否则 TypeScript 编译失败；wire 1.0 形状与版本不变，桌面 RPC 契约属客户端内部面，不构成对外承诺。
 
+## 桌面命令系统与资源面板增量（未发布，随桌面命令宿主进入下一版本）
+
+CLI `/host` 新增导出类型 `LoadedSettings`（`settings`/`sourcePath`/`pendingProject`）：此前该类型仅经 internal 门面提供给仓库内宿主，桌面 agent-host 需要在公共面拿到它与 `loadSettings` 配对使用；纯类型增补，不改变任何函数签名。同批 `ManagedHostSession` 的声明文本随新增 `session` 字段（同进程宿主构造命令上下文专用，禁止跨进程传输）与接口注释修订刷新，成员集合相对上一条记录不变的部分按原样登记。`@kiturone/kapibala-cli` 新增 `./commands` 子路径与声明模块 `commands/assemble.d.ts`、`commands/index.d.ts`（命令目录与装配面，桌面 agent-host 经它接入同一命令系统）。wire 1.0 形状与版本不变。
+
 ## 1. 盘点口径
 
 - 覆盖范围：Core 根入口、MCP 根入口，以及 CLI 的 `protocol`、`client`、`view-model` 及 `host` 四个子路径。当前候选清单以 `scripts/fixtures/public-api/current.json` 为准，新增 `/host` 也列入声明扫描。

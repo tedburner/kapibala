@@ -1,5 +1,11 @@
 import { type PresentationState, reducePresentation } from '@kiturone/kapibala-host/view-model';
-import type { Approval, DesktopAPI, Notification, RunReceipt } from '../shared/contracts.js';
+import type {
+  Approval,
+  DesktopAPI,
+  InteractionRequest,
+  Notification,
+  RunReceipt,
+} from '../shared/contracts.js';
 import type { Inspection, RuntimeSnapshot } from '../shared/observations.js';
 import { SnapshotAssembler } from '../shared/snapshots.js';
 
@@ -10,6 +16,7 @@ export interface ClientFacts {
   valid: boolean;
   runs: Readonly<Record<string, RunReceipt>>;
   approvals: readonly Approval[];
+  interactions: readonly InteractionRequest[];
   error?: string;
   runtime?: RuntimeSnapshot;
   runtimeValid?: boolean;
@@ -17,7 +24,7 @@ export interface ClientFacts {
 }
 /** Renderer 展示安装器；暂存块不污染当前状态，真正缺口冻结发送，不重试 run.start。 */
 export class ViewClient {
-  private facts: ClientFacts = { valid: false, runs: {}, approvals: [] };
+  private facts: ClientFacts = { valid: false, runs: {}, approvals: [], interactions: [] };
   private scope?: Scope;
   private runtimeSubscription?: string;
   private inspectionHalted = false;
@@ -181,6 +188,7 @@ export class ViewClient {
         valid: false,
         error: event.error.message,
         approvals: [],
+        interactions: [],
         runtime: undefined,
         runtimeValid: false,
         inspection: undefined,
@@ -205,6 +213,24 @@ export class ViewClient {
           ...this.facts.approvals.filter((item) => item.approvalId !== event.approvalId),
           event,
         ],
+      });
+      return;
+    }
+    if (event.type === 'interaction.requested') {
+      // 命令交互请求不进订阅范围过滤：对话框按 requestId 全局路由，应答带会话归属校验。
+      this.update({
+        ...this.facts,
+        interactions: [
+          ...this.facts.interactions.filter((item) => item.requestId !== event.requestId),
+          event,
+        ],
+      });
+      return;
+    }
+    if (event.type === 'interaction.closed') {
+      this.update({
+        ...this.facts,
+        interactions: this.facts.interactions.filter((item) => item.requestId !== event.requestId),
       });
       return;
     }

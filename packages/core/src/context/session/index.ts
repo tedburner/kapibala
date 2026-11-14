@@ -1003,6 +1003,9 @@ export class AgentSession {
       let persistedHistoryLength = this.history.length;
       let loopCompleted = false;
       let loopFailed = false;
+      // 消费者在挂起点注入异常（generator.throw）时置位：Loop 会在迭代器收口里闭合内存
+      // 历史，但该异常与内部落盘失败在 catch 里无法区分，必须单独标记才能安全补齐落盘。
+      let consumerInterrupted = false;
 
       try {
         for await (const event of loop.run(this.history)) {
@@ -1090,7 +1093,14 @@ export class AgentSession {
           if (event.type === 'message_stop' || event.type === 'tool_messages') {
             persistedHistoryLength = this.history.length;
           }
-          yield event;
+          try {
+            yield event;
+          } catch (error: unknown) {
+            // 只有命中 yield 挂起点的异常才是消费者注入（.throw）；内部错误都发生在
+            // await 落盘路径上，落盘层可能已失败，不能据此重试写入。
+            consumerInterrupted = true;
+            throw error;
+          }
         }
         loopCompleted = true;
       } catch (error: unknown) {
@@ -1112,7 +1122,10 @@ export class AgentSession {
       } finally {
         // 早退时 Loop 的 finally 已等待工具并闭合历史，但不会再发出落盘事件。
         // 仅追加正常落盘游标之后的消息，避免重复已完成的事务或重试失败的写入。
-        if (!loopCompleted && !loopFailed) {
+        // 消费者 .throw() 注入的异常同样会经 Loop 收口闭合内存历史：此时落盘层是
+        // 健康的（异常来自消费者而非写入），补齐 append 让磁盘与内存历史保持一致；
+        // 内部落盘失败路径（loopFailed 且非消费者注入）维持跳过，不重试已失败的写入。
+        if (!loopCompleted && (!loopFailed || consumerInterrupted)) {
           await executor.rollback();
           if (this.store) {
             for (const message of this.history.slice(persistedHistoryLength)) {

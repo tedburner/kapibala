@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { AgentSession } from '@kiturone/kapibala';
 import type { ManagedHostSession, ManagedSessionOptions } from '@kiturone/kapibala-host/host';
 import { type PresentationEvent, createPresentation } from '@kiturone/kapibala-host/view-model';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -39,6 +40,8 @@ function handle() {
   });
   return {
     conversationId: 'conversation',
+    session: {} as AgentSession,
+    runSkill: vi.fn(async () => {}),
     run: vi.fn(async () => {}),
     cancel: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),

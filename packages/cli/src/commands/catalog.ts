@@ -13,6 +13,11 @@ export interface CommandDefinition {
   usage: string;
   description: string;
   group: 'session' | 'context' | 'model' | 'permissions' | 'diagnostic';
+  /**
+   * 会话内交互分级：宿主据此决定是否解锁该命令（桌面首版只解锁 'none'，
+   * 'select'/'question'/'secret' 待对话框映射分批接入）。缺省视为需要交互，保守降级。
+   */
+  interactionLevel?: 'none' | 'select' | 'question' | 'secret';
   /** 尾部不按空白切分，整段作为单个参数传递（供 /rename 这类自由文本）。 */
   rawTail?: boolean;
   mutates: (args: string[]) => boolean;
@@ -135,6 +140,7 @@ export function parsePromptInvocation(
 export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     name: 'plugins',
+    interactionLevel: 'none',
     aliases: ['plugin'],
     usage: '/plugins [name]',
     description: '查看当前会话已挂载的扩展插件与能力贡献清单',
@@ -144,6 +150,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'mcp',
+    interactionLevel: 'none',
     usage: '/mcp [tools <server> | reconnect <server> | enable <server> | disable <server>]',
     description: '查看 MCP 服务状态、已注册工具或重连/开关当前会话服务',
     group: 'diagnostic',
@@ -152,6 +159,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'prompts',
+    interactionLevel: 'none',
     usage: '/prompts [query]',
     description: '搜索 MCP 提示词模板与参数',
     group: 'diagnostic',
@@ -161,6 +169,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'prompt',
+    interactionLevel: 'none',
     usage: '/prompt <server/name> [arguments-json]',
     description: '执行 MCP 提示词模板任务',
     group: 'session',
@@ -173,6 +182,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'skills',
+    interactionLevel: 'none',
     usage: '/skills [query]',
     description: '搜索技能、来源、诊断和活动状态',
     group: 'diagnostic',
@@ -182,16 +192,18 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'skill',
-    usage: '/skill <name> <task...>',
-    description: '显式加载技能并执行原始任务',
+    interactionLevel: 'none',
+    usage: '/skill <name> [task...]',
+    description: '显式加载技能并执行任务；省略任务时按技能默认启动语直发',
     group: 'session',
     rawTail: true,
     mutates: () => true,
     validate: (args) =>
-      args.length === 1 && parseSkillTask(args[0]) ? undefined : '请输入合法技能名和非空任务',
+      args.length === 1 && parseSkillTask(args[0]) ? undefined : '请输入合法技能名',
   },
   {
     name: 'new',
+    interactionLevel: 'none',
     aliases: ['clear'],
     usage: '/new',
     description: '保留旧历史并新建会话',
@@ -201,6 +213,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'resume',
+    interactionLevel: 'select',
     usage: '/resume [id]',
     description: '选择历史或按唯一 ID 前缀续答',
     group: 'session',
@@ -209,6 +222,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'history',
+    interactionLevel: 'none',
     usage:
       '/history [page] | /history --all [page] | /history --search <query> | /history --tree | /history --agents',
     description: '查看或全文检索历史；支持跨项目、因果树与子代理任务',
@@ -218,6 +232,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'branch',
+    interactionLevel: 'none',
     usage: '/branch [recordId [name]] | /branch switch <branchId>',
     description: '查看、创建或切换历史因果持久分支',
     group: 'session',
@@ -226,6 +241,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'fork',
+    interactionLevel: 'none',
     usage: '/fork [title]',
     description: '从当前活动路径导出全新独立会话',
     group: 'session',
@@ -235,6 +251,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'archive',
+    interactionLevel: 'none',
     usage: '/archive <id> | /archive list [page] | /archive restore <id>',
     description: '查看已归档会话或逻辑归档/恢复指定会话',
     group: 'session',
@@ -243,6 +260,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'agents',
+    interactionLevel: 'none',
     usage: '/agents [show <id> | cancel <id> | collect <id>]',
     description: '查看后台子代理任务树状态、取消或收集结果',
     group: 'diagnostic',
@@ -251,6 +269,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'rename',
+    interactionLevel: 'none',
     usage: '/rename <title>',
     description: '修改当前会话标题',
     group: 'session',
@@ -260,6 +279,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'context',
+    interactionLevel: 'none',
     usage: '/context',
     description: '查看最终请求预算和压缩状态快照',
     group: 'context',
@@ -268,6 +288,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'compact',
+    interactionLevel: 'none',
     usage: '/compact',
     description: '手动摘要旧完整交互，保留当前任务',
     group: 'context',
@@ -276,6 +297,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'model',
+    interactionLevel: 'secret',
     usage:
       '/model [id] | /model <planning|execution|fast|summary> <id> | /model route <default|planning|execution|fast> | /model key [id]',
     description: '选择当前模型或更新密钥；兼容 setup/set-default',
@@ -287,6 +309,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'settings',
+    interactionLevel: 'secret',
     aliases: ['config'],
     usage: '/settings [setup | default <id>]',
     description: '查看配置或设置下次默认启动模型',
@@ -296,6 +319,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'permissions',
+    interactionLevel: 'none',
     aliases: ['mode'],
     usage: '/permissions [approval|plan|auto|full-access]',
     description: '查看或切换权限；FullAccess 需显式确认',
@@ -309,6 +333,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'status',
+    interactionLevel: 'none',
     usage: '/status',
     description: '查看当前会话、模型、权限及消耗概况',
     group: 'diagnostic',
@@ -317,6 +342,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'logs',
+    interactionLevel: 'none',
     usage: '/logs [count]',
     description: '查看最近 1–100 条运行和审批日志',
     group: 'diagnostic',
@@ -325,6 +351,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'instructions',
+    interactionLevel: 'none',
     usage: '/instructions',
     description: '查看当前项目指令来源',
     group: 'diagnostic',
@@ -333,6 +360,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'help',
+    interactionLevel: 'none',
     usage: '/help [command]',
     description: '查看实际注册命令的用法与别名',
     group: 'diagnostic',
@@ -341,6 +369,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   },
   {
     name: 'exit',
+    interactionLevel: 'none',
     aliases: ['quit'],
     usage: '/exit',
     description: '取消并等待资源清理后退出；兼容裸 exit/quit',

@@ -94,11 +94,25 @@ export interface ManagedSessionConfiguration {
   mode?: SessionMode;
 }
 
-/** 公共受管会话；快照和事件均已投影脱敏，不暴露 Session、Provider 或存储句柄。 */
+/**
+ * 公共受管会话：快照与事件投影脱敏，wire 适配不得传输任何原始句柄。
+ * `session` 是唯一的例外面——仅供同进程宿主构造命令上下文；跨进程只允许
+ * 传递 snapshot/事件投影，`runSkill` 与 `run` 共用同一收据管线。
+ */
 export interface ManagedHostSession {
   readonly conversationId: string;
+  /**
+   * 同进程宿主（桌面命令适配器等）所需的会话对象。
+   * 仅供宿主侧在进程内构造命令上下文使用；不得跨进程传输或序列化。
+   */
+  readonly session: AgentSession;
   /** 完整驱动一次运行；并发请求拒绝，外部中止也等待工具事务收口。 */
   run(input: string, signal?: AbortSignal): Promise<void>;
+  /**
+   * 显式技能直发：与 run 共用同一投影、审批与工具事务管线，事件流语义一致。
+   * task 为空或技能名非法时由底层 Session 以 SKILL_INVALID_INPUT 拒绝。
+   */
+  runSkill(skillName: string, task: string, signal?: AbortSignal): Promise<void>;
   /** 中止当前父子任务并等待清理；不因退订展示而自动触发。 */
   cancel(): Promise<void>;
   /** 清理失败保留写锁，可重试；成功后禁止再运行或配置。 */
@@ -457,6 +471,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     const run = async function* (
       input: string,
       signal?: AbortSignal,
+      skillName?: string,
     ): AsyncGenerator<SessionEvent> {
       refresh();
       const controller = new AbortController();
@@ -489,7 +504,9 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           }
           const textRedactor = new StreamingRedactor(credentials);
           const thinkingRedactor = new StreamingRedactor(credentials);
-          for await (const event of current.run(input, { signal: combinedSignal })) {
+          for await (const event of skillName
+            ? current.runSkill(skillName, input, { signal: combinedSignal })
+            : current.run(input, { signal: combinedSignal })) {
             if (event.type === 'text_delta')
               yield { ...event, text: textRedactor.push(event.text) };
             else if (event.type === 'thinking_delta')
@@ -543,8 +560,14 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     };
     const managed: ManagedHostSession = {
       conversationId: ownedHandle.conversationId,
+      session: current,
       async run(input, signal) {
         for await (const _ of run(input, signal)) {
+          /* 投影已在内部完成。 */
+        }
+      },
+      async runSkill(skillName, task, signal) {
+        for await (const _ of run(task, signal, skillName)) {
           /* 投影已在内部完成。 */
         }
       },

@@ -21,6 +21,7 @@ export {
 export {
   type UserSettings,
   type LoadSettingsOptions,
+  type LoadedSettings,
   BUILTIN_PROFILES,
   DEFAULT_MODEL_ID,
   API_KEY_ENV_NONE,

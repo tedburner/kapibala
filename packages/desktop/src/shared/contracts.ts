@@ -127,6 +127,8 @@ const block = z
     state: z.enum(['streaming', 'completed', 'interrupted']),
     revision: z.number(),
     tool: tool.optional(),
+    /** 技能信封文本块的来源技能名；页面据此折叠为徽章，正文不再整段展开。 */
+    skillName: text.optional(),
   })
   .strict();
 const message = z
@@ -139,7 +141,11 @@ const message = z
   })
   .strict();
 const identity = z
-  .object({ conversationId: id, branchId: id, viewEpoch: z.number().int().nonnegative() })
+  .object({
+    conversationId: id,
+    branchId: id,
+    viewEpoch: z.number().int().nonnegative(),
+  })
   .strict();
 const result = z.enum(['completed', 'failed', 'aborted']);
 const notice = z.object({ id: text, level: z.enum(['info', 'warning', 'error']), text }).strict();
@@ -187,7 +193,13 @@ const change = z.discriminatedUnion('type', [
       aliases: z.record(text, text).optional(),
     })
     .strict(),
-  z.object({ type: z.literal('set_expanded'), blockId: text, expanded: z.boolean() }).strict(),
+  z
+    .object({
+      type: z.literal('set_expanded'),
+      blockId: text,
+      expanded: z.boolean(),
+    })
+    .strict(),
   notice.extend({ type: z.literal('diagnostic') }),
 ]);
 /** 顺序增量只承载展示字段，序号不作为授权凭证。 */
@@ -248,6 +260,79 @@ const historyList = z
 /** 归档/删除只按会话身份定位，不接受页面自带的文件路径或桶键。 */
 const conversation = z.object({ workspaceId: id, conversationId: id }).strict();
 
+/** 面板诊断条目；message 已过脱敏管道，不得携带密钥原文。 */
+const mcpDiagnostic = z
+  .object({
+    severity: z.enum(['error', 'warning', 'info']),
+    code: text,
+    serverName: text.optional(),
+    message: text,
+  })
+  .strict();
+const mcpServer = z
+  .object({
+    name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    source: z.enum(['global', 'project']),
+    type: z.enum(['stdio', 'http', 'disabled']),
+    /** 目标摘要（命令行或 URL），已脱敏；env/headers 只报存在性不报值。 */
+    target: text,
+    /**
+     * 编辑回填面：未脱敏的原始 command/args/url。目标串内嵌密钥（触发脱敏）时缺省，
+     * 页面须转 keepTransport 编辑——禁止拿脱敏摘要回写传输字段。
+     */
+    edit: z
+      .object({
+        command: text.optional(),
+        args: z.array(text).max(64).optional(),
+        url: text.optional(),
+      })
+      .strict()
+      .optional(),
+    hasSecretSurface: z.boolean(),
+    enabled: z.boolean(),
+    required: z.boolean(),
+    diagnostics: z.array(mcpDiagnostic).max(64),
+  })
+  .strict();
+const mcpSnapshot = z
+  .object({
+    projectTrusted: z.boolean(),
+    servers: z.array(mcpServer).max(200),
+    diagnostics: z.array(mcpDiagnostic).max(200),
+  })
+  .strict();
+const skillSummary = z
+  .object({
+    name: z.string().min(1).max(128),
+    scope: z.enum(['global', 'project', 'builtin']),
+    available: z.boolean(),
+    unavailableReason: text.optional(),
+    userInvocable: z.boolean(),
+    disabled: z.boolean(),
+    description: text,
+    sourceRoot: text,
+    filePath: text,
+  })
+  .strict();
+const skillsSnapshot = z
+  .object({
+    enabled: z.boolean(),
+    skills: z.array(skillSummary).max(5000),
+    diagnostics: z
+      .array(
+        z
+          .object({
+            code: text,
+            level: z.enum(['warn', 'error']),
+            path: text,
+            message: text,
+          })
+          .strict(),
+      )
+      .max(2000),
+  })
+  .strict();
+
 /** 每个业务入口独立校验；不能通过通用 channel 调用未登记方法。 */
 export const PARAMS = {
   'app.getInfo': empty,
@@ -260,7 +345,12 @@ export const PARAMS = {
   'workspace.openDefault': empty,
   'workspace.pick': empty,
   'workspace.addProject': z
-    .object({ workspaceId: id, name: ProjectNameSchema, trustToken: id, acceptTrust: z.boolean() })
+    .object({
+      workspaceId: id,
+      name: ProjectNameSchema,
+      trustToken: id,
+      acceptTrust: z.boolean(),
+    })
     .strict(),
   'workspace.openRecent': z.object({ recentId: id }).strict(),
   'workspace.confirmTrust': z
@@ -289,6 +379,55 @@ export const PARAMS = {
     .object({
       role: z.enum(['planning', 'execution', 'fast', 'summary']),
       profileId: id.optional(),
+    })
+    .strict(),
+
+  'resources.readMcp': z.object({ workspaceId: id }).strict(),
+  'resources.saveMcpServer': z
+    .object({
+      workspaceId: id,
+      /** 编辑模式提供原名称；新增时省略。编辑保留声明中面板外的字段（env/headers/required）。 */
+      editName: z
+        .string()
+        .regex(/^[a-zA-Z0-9_-]{1,64}$/)
+        .optional(),
+      /**
+       * 原传输声明不满足面板编辑条件（快照未提供未脱敏回填面）时置位：
+       * 服务端保留原 type/command/args/url 原文，仅允许改名与启停。
+       */
+      keepTransport: z.boolean().optional(),
+      draft: z
+        .object({
+          name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+          type: z.enum(['stdio', 'http']),
+          command: z.string().min(1).max(4096).optional(),
+          args: z.array(z.string().max(4096)).max(64).optional(),
+          url: z.string().min(1).max(4096).optional(),
+          enabled: z.boolean().optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+  'resources.deleteMcpServer': z
+    .object({
+      workspaceId: id,
+      name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    })
+    .strict(),
+  'resources.toggleMcpServer': z
+    .object({
+      workspaceId: id,
+      name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+      enabled: z.boolean(),
+    })
+    .strict(),
+  'resources.readSkills': z.object({ workspaceId: id }).strict(),
+  'resources.setSkillsEnabled': z.object({ workspaceId: id, enabled: z.boolean() }).strict(),
+  'resources.setSkillDisabled': z
+    .object({
+      workspaceId: id,
+      name: z.string().min(1).max(128),
+      disabled: z.boolean(),
     })
     .strict(),
   'session.list': z
@@ -320,10 +459,15 @@ export const PARAMS = {
     confirmFullAccess: z.boolean().optional(),
   }),
   /** 标题是独立耐久记录：先 trim 再落盘，运行中的会话也可改名，不打断任务。 */
-  'session.rename': conversation.extend({ title: z.string().trim().min(1).max(200) }),
+  'session.rename': conversation.extend({
+    title: z.string().trim().min(1).max(200),
+  }),
   /** 置顶只写控制记录并改变列表次序，不改活动时间，因此不需要停止在途任务。 */
   'session.pin': conversation.extend({ pinned: z.boolean() }),
-  'run.start': session.extend({ operationId: z.uuid(), input: z.string().min(1).max(512_000) }),
+  'run.start': session.extend({
+    operationId: z.uuid(),
+    input: z.string().min(1).max(512_000),
+  }),
   'run.cancel': session.extend({ runId: id }),
   'run.status': session,
   'approval.reply': session.extend({
@@ -331,6 +475,23 @@ export const PARAMS = {
     runId: id,
     choice: z.enum(['allow_once', 'allow_session', 'deny_once', 'cancel']),
   }),
+  /** 斜杠命令执行；以 `/` 开头的输入由页面拦截后走命令系统，不再作为普通消息发模型。 */
+  'run.command': session.extend({ input: z.string().min(1).max(4096) }).strict(),
+  /** 命令目录（补全数据源）：与 CLI 命令目录同源，含交互分级供页面提示可用性。 */
+  'run.commandList': empty,
+  /**
+   * 会话级技能目录（`/` 补全面板技能组数据源）：来自当前会话运行时 registry，
+   * 宿主已按「现在就能跑」口径过滤（userInvocable 且 available 且未禁用），
+   * 与 CLI 的 `/skill ` 名字补全同口径；诊断与激活态不进此面，仍走 session.inspect。
+   */
+  'run.skillCatalog': session,
+  /** 命令交互应答：question/select/readSecret 的对话框回传；value 缺省视为取消。 */
+  'interaction.reply': session.extend({
+    requestId: id,
+    value: z.string().max(32_768).optional(),
+  }),
+  /** 沙箱内文件路径枚举（相对路径清单），供 composer `@` 文件补全；有界返回。 */
+  'workspace.listFiles': z.object({ workspaceId: id }).strict(),
   'presentation.subscribe': session.extend({ subscriptionId: z.uuid() }),
   'presentation.unsubscribe': session.extend({ subscriptionId: z.uuid() }),
   'presentation.resync': session.extend({ subscriptionId: z.uuid() }),
@@ -383,6 +544,13 @@ export const RESULTS = {
   'settings.listModels': z.object({ models: z.array(text).max(500) }).strict(),
   'settings.setDefault': empty,
   'settings.setRouting': empty,
+  'resources.readMcp': mcpSnapshot,
+  'resources.saveMcpServer': mcpSnapshot,
+  'resources.deleteMcpServer': mcpSnapshot,
+  'resources.toggleMcpServer': mcpSnapshot,
+  'resources.readSkills': skillsSnapshot,
+  'resources.setSkillsEnabled': skillsSnapshot,
+  'resources.setSkillDisabled': skillsSnapshot,
   'session.list': historyList,
   'session.archived': historyList,
   'session.runtimeSubscribe': RuntimeSnapshotSchema,
@@ -401,6 +569,57 @@ export const RESULTS = {
   'run.cancel': runReceipt,
   'run.status': runReceipt.nullable(),
   'approval.reply': empty,
+  'run.command': z.object({ handled: z.boolean(), feedback: z.array(text).max(500) }).strict(),
+  'run.commandList': z
+    .object({
+      commands: z
+        .array(
+          z
+            .object({
+              name: z.string().min(1).max(64),
+              usage: text,
+              description: text,
+              interactionLevel: z.enum(['none', 'select', 'question', 'secret']),
+            })
+            .strict(),
+        )
+        .max(200),
+    })
+    .strict(),
+  'interaction.reply': empty,
+  /**
+   * 会话技能目录的有界投影：只含补全面板需要的名称/描述/来源，
+   * description 由宿主截断到 256 字符（契约上限放宽留余量）；超限置 truncated。
+   */
+  'run.skillCatalog': z
+    .object({
+      /**
+       * 会话目录里是否存在技能条目（含不可调用项）；false 表示一个技能都没装。
+       * installed 为 true 而 skills 为空 = 有技能但全部被禁用或不可调用，
+       * 面板据此展示「已禁用」提示而不是把空目录误报成关闭。
+       */
+      installed: z.boolean(),
+      skills: z
+        .array(
+          z
+            .object({
+              name: z.string().min(1).max(64),
+              description: z.string().max(300),
+              scope: z.enum(['global', 'project', 'builtin']),
+            })
+            .strict(),
+        )
+        .max(500),
+      truncated: z.boolean(),
+    })
+    .strict(),
+  'workspace.listFiles': z
+    .object({
+      files: z.array(text).max(5000),
+      /** 超出深度/条目预算时截断；页面在补全面板明示「未列全」。 */
+      truncated: z.boolean(),
+    })
+    .strict(),
   'presentation.subscribe': empty,
   'presentation.unsubscribe': empty,
   'presentation.resync': empty,
@@ -423,8 +642,16 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
       snapshot: RuntimeSnapshotSchema,
     })
     .strict(),
-  z.object({ type: z.literal('session.runtimeInvalidated'), subscriptionId: id }).strict(),
-  session.extend({ type: z.literal('session.inspectionInvalidated'), subscriptionId: id }),
+  z
+    .object({
+      type: z.literal('session.runtimeInvalidated'),
+      subscriptionId: id,
+    })
+    .strict(),
+  session.extend({
+    type: z.literal('session.inspectionInvalidated'),
+    subscriptionId: id,
+  }),
   session.extend({
     type: z.literal('session.inspectionChanged'),
     subscriptionId: id,
@@ -445,7 +672,11 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
     type: z.literal('presentation.event'),
     event: PresentationEventSchema,
   }),
-  session.extend({ subscriptionId: id, type: z.literal('presentation.invalidated'), reason: text }),
+  session.extend({
+    subscriptionId: id,
+    type: z.literal('presentation.invalidated'),
+    reason: text,
+  }),
   approval.extend({ type: z.literal('approval.requested') }),
   // reason 说明审批为何关闭：超时/中止的自动拒绝与用户主动裁决要能区分，
   // 否则前端无法解释「从未见过审批入口却收到 PERMISSION_DENIED」的死锁现场。
@@ -456,12 +687,34 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
       reason: z.enum(['resolved', 'timeout', 'aborted']).optional(),
     })
     .strict(),
+  session.extend({
+    type: z.literal('interaction.requested'),
+    requestId: id,
+    kind: z.enum(['question', 'secret', 'select']),
+    prompt: text,
+    options: z
+      .array(z.object({ value: text, label: text }).strict())
+      .max(50)
+      .optional(),
+  }),
+  session.extend({
+    type: z.literal('interaction.closed'),
+    requestId: id,
+    reason: z.enum(['resolved', 'timeout', 'aborted']).optional(),
+  }),
   z.object({ type: z.literal('run.changed'), receipt: runReceipt }).strict(),
-  z.object({ type: z.literal('theme.changed'), mode: z.enum(['light', 'dark']) }).strict(),
+  z
+    .object({
+      type: z.literal('theme.changed'),
+      mode: z.enum(['light', 'dark']),
+    })
+    .strict(),
   z.object({ type: z.literal('host.unavailable'), error }).strict(),
 ]);
 /** 页面只能收到这些安全通知，不暴露 MessagePort 或原始 SessionEvent。 */
 export type Notification = z.infer<typeof NOTIFICATION>;
+/** 命令交互请求事件（question/select/secret）；应答经 interaction.reply 单点回传。 */
+export type InteractionRequest = Extract<Notification, { type: 'interaction.requested' }>;
 /** 内部请求只允许登记业务入口；来源和资源归属由 Main/Host 继续校验。 */
 export const RequestSchema = z
   .object({
@@ -474,9 +727,21 @@ export const RequestSchema = z
 /** 回复错误从业务错误 DTO 读取，成功载荷按对应方法二次验证。 */
 export const ReplySchema = z.discriminatedUnion('ok', [
   z
-    .object({ kind: z.literal('reply'), requestId: id, ok: z.literal(true), result: z.unknown() })
+    .object({
+      kind: z.literal('reply'),
+      requestId: id,
+      ok: z.literal(true),
+      result: z.unknown(),
+    })
     .strict(),
-  z.object({ kind: z.literal('reply'), requestId: id, ok: z.literal(false), error }).strict(),
+  z
+    .object({
+      kind: z.literal('reply'),
+      requestId: id,
+      ok: z.literal(false),
+      error,
+    })
+    .strict(),
 ]);
 /** 页面注入的 API 由每个命名方法组成；底层请求、通道和端口不暴露。 */
 export type DesktopAPI = {
@@ -500,6 +765,7 @@ export type DesktopAPI = {
     addProject(params: Params<'workspace.addProject'>): Promise<Workspace>;
     openRecent(recentId: string): Promise<Workspace>;
     confirmTrust(params: Params<'workspace.confirmTrust'>): Promise<Workspace>;
+    listFiles(workspaceId: string): Promise<Output<'workspace.listFiles'>>;
   };
   settings: {
     read(workspaceId?: string): Promise<Output<'settings.read'>>;
@@ -509,6 +775,25 @@ export type DesktopAPI = {
     listModels(params: Params<'settings.listModels'>): Promise<Output<'settings.listModels'>>;
     setDefault(profileId: string): Promise<void>;
     setRouting(params: Params<'settings.setRouting'>): Promise<void>;
+  };
+  resources: {
+    readMcp(workspaceId: string): Promise<Output<'resources.readMcp'>>;
+    saveMcpServer(
+      params: Params<'resources.saveMcpServer'>,
+    ): Promise<Output<'resources.saveMcpServer'>>;
+    deleteMcpServer(
+      params: Params<'resources.deleteMcpServer'>,
+    ): Promise<Output<'resources.deleteMcpServer'>>;
+    toggleMcpServer(
+      params: Params<'resources.toggleMcpServer'>,
+    ): Promise<Output<'resources.toggleMcpServer'>>;
+    readSkills(workspaceId: string): Promise<Output<'resources.readSkills'>>;
+    setSkillsEnabled(
+      params: Params<'resources.setSkillsEnabled'>,
+    ): Promise<Output<'resources.setSkillsEnabled'>>;
+    setSkillDisabled(
+      params: Params<'resources.setSkillDisabled'>,
+    ): Promise<Output<'resources.setSkillDisabled'>>;
   };
   session: {
     runtimeSubscribe(subscriptionId: string): Promise<Output<'session.runtimeSubscribe'>>;
@@ -534,8 +819,13 @@ export type DesktopAPI = {
     start(params: Params<'run.start'>): Promise<RunReceipt>;
     cancel(params: Params<'run.cancel'>): Promise<RunReceipt>;
     status(params: Params<'run.status'>): Promise<RunReceipt | null>;
+    command(params: Params<'run.command'>): Promise<Output<'run.command'>>;
+    commandList(): Promise<Output<'run.commandList'>>;
+    /** 会话技能目录（`/` 补全技能组）；未打开会话时由页面不发请求。 */
+    skillCatalog(params: Params<'run.skillCatalog'>): Promise<Output<'run.skillCatalog'>>;
   };
   approval: { reply(params: Params<'approval.reply'>): Promise<void> };
+  interaction: { reply(params: Params<'interaction.reply'>): Promise<void> };
   presentation: {
     subscribe(params: Params<'presentation.subscribe'>): Promise<void>;
     unsubscribe(params: Params<'presentation.unsubscribe'>): Promise<void>;

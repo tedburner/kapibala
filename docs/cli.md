@@ -132,7 +132,7 @@ pnpm build && node packages/cli/dist/bin.js
 | `/logs [count]` | 最近 1–100 条运行与审批日志，默认 20 条 | `/logs 20` |
 | `/instructions` | 查看当前加载的项目指令来源 | `/instructions` |
 | `/skills [query]` | 检索已发现且已信任的技能清单（不加载正文） | `/skills pdf` |
-| `/skill <name> <task...>` | 按技能名加载其说明并提交任务 | `/skill pdf-review 检查这份设计` |
+| `/skill <name> [task...]` | 按技能名加载其说明并提交任务；省略任务时直接以默认启动语运行 | `/skill pdf-review 检查这份设计` |
 | `/plugins [name]` | 查看已挂载插件及其能力贡献；指定名字看明细 | `/plugins mcp` |
 | `/mcp` | 查看已配置服务清单、连接状态与能力统计 | `/mcp` |
 | `/mcp tools <server>` | 列出该服务导出的工具及只读安全标记 | `/mcp tools git-tools` |

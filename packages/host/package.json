@@ -52,9 +52,7 @@
     },
     "./package.json": "./package.json"
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "scripts": {
     "build": "tsup --config tsup.node.config.ts && pnpm run build:host && pnpm run build:client && pnpm run build:transport && pnpm run build:protocol && pnpm run build:view-model",
     "build:host": "tsup --config tsup.host.config.ts",

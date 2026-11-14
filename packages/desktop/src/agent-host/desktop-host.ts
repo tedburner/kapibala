@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   type ApprovalChannel,
   type ApprovalChoice,
@@ -7,10 +9,20 @@ import {
   WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
 import {
+  type CommandContext,
+  type CommandOutput,
+  type SelectConfig,
+  createDefaultCommandDispatcher,
+} from '@kiturone/kapibala-cli/commands';
+import {
+  type LoadedSettings,
   type ManagedHostSession,
   createManagedSession,
+  loadSettings,
   redactText,
 } from '@kiturone/kapibala-host/host';
+// 启动任务文本只在宿主内部约定里共享：它不进入公共导出面，投影与直发两处必须同一个常量。
+import { EXPLICIT_SKILL_KICKOFF } from '@kiturone/kapibala-host/internal';
 import type { PresentationEvent } from '@kiturone/kapibala-host/view-model';
 import {
   LIMITS,
@@ -27,8 +39,21 @@ import { safeError } from '../shared/rpc.js';
 import { snapshotChunks } from '../shared/snapshots.js';
 import type { Lane } from '../shared/transport.js';
 import { LatestSnapshot } from './latest-snapshot.js';
+import { ResourceService } from './resource-service.js';
 import { SettingsService } from './settings-service.js';
 import { Workspaces } from './workspaces.js';
+
+/**
+ * 桌面端不承接的斜杠命令：这些命令把实际工作委托给 CLI 宿主回调（模型切换/退出）
+ * 或需要运行收据管线适配（提示词任务），桌面首版未接入对应适配面。
+ * 门禁在 dispatch 前拦截并给出明确反馈，`run.commandList` 同步过滤——
+ * 绝不允许命令目录展示一个会假成功或静默空操作的条目。
+ */
+const DESKTOP_UNHANDLED_COMMANDS: ReadonlyMap<string, string> = new Map([
+  ['model', '会话内模型切换依赖 CLI 宿主回调，桌面端请在设置面板管理模型。'],
+  ['exit', '桌面端没有退出命令；请直接关闭窗口或会话标签。'],
+  ['prompt', '提示词任务依赖运行收据管线适配，桌面端暂未开放；可改用该服务的 MCP 工具。'],
+]);
 
 type Scope = { workspaceId: string; sessionId: string };
 interface View {
@@ -69,6 +94,7 @@ interface PendingApproval {
 export class DesktopHost {
   readonly workspaces: Workspaces;
   readonly settings: SettingsService;
+  readonly resources: ResourceService;
   private readonly leases = new WorkspaceLeaseCoordinator();
   private readonly sessions = new Map<string, Slot>();
   private readonly operations = new Map<string, { digest: string; receipt: RunReceipt }>();
@@ -94,7 +120,20 @@ export class DesktopHost {
     );
     this.workspaces = new Workspaces(home);
     this.settings = new SettingsService(this.workspaces);
+    this.resources = new ResourceService(this.workspaces);
   }
+
+  /** 斜杠命令分发器（与 CLI 同一装配源）；首次使用时装配，进程内单例。 */
+  private commandDispatcher?: ReturnType<typeof createDefaultCommandDispatcher>;
+  /** 命令交互（question/select/secret）挂起表；requestId → 应答回调与会话归属。 */
+  private readonly interactionPending = new Map<
+    string,
+    {
+      sessionId: string;
+      timer: ReturnType<typeof setTimeout>;
+      resolve: (value: string | undefined) => void;
+    }
+  >();
 
   /** 仅接收 Main 复核过的业务请求；每个分支仍校验当前 Host 内的资源归属。 */
   async dispatch(method: Method, params: unknown, selection?: string): Promise<unknown> {
@@ -114,6 +153,8 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         return this.workspaces.confirm(p.workspaceId, p.trustToken, p.accept);
       }
+      case 'workspace.listFiles':
+        return this.listFiles(PARAMS[method].parse(params).workspaceId);
       case 'settings.read':
         return this.settings.read(PARAMS[method].parse(params).workspaceId);
       case 'settings.saveProfile': {
@@ -122,7 +163,9 @@ export class DesktopHost {
       }
       case 'settings.listModels': {
         const p = PARAMS[method].parse(params);
-        return { models: await this.settings.listModels(p.baseURL, p.apiKey, p.profileId) };
+        return {
+          models: await this.settings.listModels(p.baseURL, p.apiKey, p.profileId),
+        };
       }
       case 'settings.setDefault':
         this.settings.setDefault(PARAMS[method].parse(params).profileId);
@@ -130,6 +173,67 @@ export class DesktopHost {
       case 'settings.setRouting': {
         const p = PARAMS[method].parse(params);
         this.settings.setRouting(p.role, p.profileId);
+        return {};
+      }
+      case 'resources.readMcp':
+        return this.resources.readMcp(PARAMS[method].parse(params).workspaceId);
+      case 'resources.saveMcpServer': {
+        const p = PARAMS[method].parse(params);
+        return this.resources.saveMcpServer(p);
+      }
+      case 'resources.deleteMcpServer': {
+        const p = PARAMS[method].parse(params);
+        return this.resources.deleteMcpServer(p);
+      }
+      case 'resources.toggleMcpServer': {
+        const p = PARAMS[method].parse(params);
+        return this.resources.toggleMcpServer(p);
+      }
+      case 'resources.readSkills': {
+        const p = PARAMS[method].parse(params);
+        return await this.resources.readSkills(p.workspaceId);
+      }
+      case 'resources.setSkillsEnabled': {
+        const p = PARAMS[method].parse(params);
+        return await this.resources.setSkillsEnabled(p);
+      }
+      case 'resources.setSkillDisabled': {
+        const p = PARAMS[method].parse(params);
+        return await this.resources.setSkillDisabled(p);
+      }
+      case 'run.command':
+        return await this.command(PARAMS[method].parse(params));
+      case 'run.commandList':
+        return {
+          commands: this.commands
+            .getDefinitions()
+            // 门禁外的命令不进补全目录：展示一个点了会假成功的条目比不展示更糟。
+            .filter((definition) => !DESKTOP_UNHANDLED_COMMANDS.has(definition.name))
+            .map((definition) => ({
+              name: definition.name,
+              usage: definition.usage,
+              description: definition.description,
+              interactionLevel: definition.interactionLevel ?? 'select',
+            })),
+        };
+      case 'run.skillCatalog':
+        return this.skillCatalog(PARAMS[method].parse(params));
+      case 'interaction.reply': {
+        const p = PARAMS[method].parse(params);
+        const pending = this.interactionPending.get(p.requestId);
+        if (!pending || pending.sessionId !== p.sessionId) throw new Error('INTERACTION_UNKNOWN');
+        clearTimeout(pending.timer);
+        this.interactionPending.delete(p.requestId);
+        pending.resolve(p.value);
+        this.notify(
+          {
+            ...p,
+            type: 'interaction.closed',
+            requestId: p.requestId,
+            reason: 'resolved',
+          },
+          'data',
+        ).catch(() => {});
         return {};
       }
       case 'session.runtimeSubscribe': {
@@ -208,7 +312,11 @@ export class DesktopHost {
         if (slot.cleanupFailed) throw new Error('SESSION_CLEANUP_FAILED');
         if (slot.closing) throw new Error('SESSION_BUSY');
         if (p.mode === 'FullAccess' && p.confirmFullAccess !== true) throw new Error('FORBIDDEN');
-        slot.handle.configure({ profileId: p.profileId, role: p.role, mode: p.mode });
+        slot.handle.configure({
+          profileId: p.profileId,
+          role: p.role,
+          mode: p.mode,
+        });
         return slot.handle.configuration();
       }
       case 'run.start':
@@ -307,7 +415,12 @@ export class DesktopHost {
       throw new Error('SESSION_CLEANUP_FAILED');
   }
   /** 只供测试和监督读取的数字事实，不暴露会话、Provider、原历史或密钥。 */
-  counts(): { sessions: number; runs: number; approvals: number; operations: number } {
+  counts(): {
+    sessions: number;
+    runs: number;
+    approvals: number;
+    operations: number;
+  } {
     return {
       sessions: this.sessions.size,
       runs: [...this.sessions.values()].filter((slot) => slot.run && slot.run.phase !== 'idle')
@@ -363,18 +476,32 @@ export class DesktopHost {
         await handle.dispose();
         throw new Error('HOST_UNAVAILABLE');
       }
-      slot = { scope, handle, redact: (text) => redactText(text, []), inspectionRevision: 0 };
+      slot = {
+        scope,
+        handle,
+        redact: (text) => redactText(text, []),
+        inspectionRevision: 0,
+      };
       const owned = slot;
       slot.inspectionStream = new LatestSnapshot(
         (subscriptionId, snapshot) =>
           this.notify(
-            { type: 'session.inspectionChanged', ...scope, subscriptionId, snapshot },
+            {
+              type: 'session.inspectionChanged',
+              ...scope,
+              subscriptionId,
+              snapshot,
+            },
             'data',
           ),
         (subscriptionId) => {
           if (!this.dead)
             void this.notify(
-              { type: 'session.inspectionInvalidated', ...scope, subscriptionId },
+              {
+                type: 'session.inspectionInvalidated',
+                ...scope,
+                subscriptionId,
+              },
               'control',
             ).catch(() => {});
         },
@@ -428,7 +555,11 @@ export class DesktopHost {
         slot.inspectionStream?.close();
         if (subscriptionId)
           void this.notify(
-            { type: 'session.inspectionInvalidated', ...slot.scope, subscriptionId },
+            {
+              type: 'session.inspectionInvalidated',
+              ...slot.scope,
+              subscriptionId,
+            },
             'control',
           ).catch(() => {});
       }
@@ -556,12 +687,261 @@ export class DesktopHost {
     this.runtimeChanged();
     return slot.closing;
   }
-  private start(p: {
+  /** 工作区文件路径枚举（相对路径清单），供 composer @ 文件补全。
+   * 保证：仅枚举受信任工作区（requireTrust），条目/深度双重预算，命中预算即截断明示；
+   * 通用忽略目录（依赖、构建产物、版本库元数据）一律跳过；只返回路径，不读文件内容。 */
+  private listFiles(workspaceId: string): Output<'workspace.listFiles'> {
+    const workspace = this.workspaces.get(workspaceId, true);
+    const root = workspace.root;
+    const ignored = new Set([
+      'node_modules',
+      '.git',
+      'dist',
+      'out',
+      'build',
+      'coverage',
+      'test-results',
+      'playwright-report',
+    ]);
+    const maxFiles = 5000;
+    const maxDepth = 16;
+    const files: string[] = [];
+    let truncated = false;
+    const walk = (dir: string, depth: number): void => {
+      if (files.length >= maxFiles || depth > maxDepth) {
+        truncated = true;
+        return;
+      }
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (files.length >= maxFiles || truncated) {
+          truncated = true;
+          return;
+        }
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (ignored.has(entry.name) || entry.name.startsWith('.')) continue;
+          walk(full, depth + 1);
+        } else if (entry.isFile()) {
+          files.push(path.relative(root, full));
+        }
+      }
+    };
+    walk(root, 0);
+    return { files, truncated };
+  }
+
+  /** 斜杠命令执行：与 CLI 同一分发器；输出收集为 feedback，交互经对话框往返。 */
+  private async command(p: {
     workspaceId: string;
     sessionId: string;
-    operationId: string;
     input: string;
-  }): RunReceipt {
+  }): Promise<Output<'run.command'>> {
+    this.workspaces.get(p.workspaceId, true);
+    const slot = this.slot(p);
+    const workspace = this.workspaces.get(p.workspaceId);
+    const loaded: LoadedSettings = loadSettings({
+      homeDir: this.workspaces.home,
+      cwd: workspace.root,
+      includeProject: workspace.trusted,
+    });
+    const feedback: string[] = [];
+    // 斜杠命令取首个 token，裸退出别名（exit/quit）只匹配单词条：'exit now' 这类
+    // 带空格的自然语言输入不是命令，必须继续交给模型处理。
+    const trimmed = p.input.trim();
+    const isCommand = trimmed.startsWith('/') || /^\S+$/.test(trimmed);
+    const commandToken = isCommand
+      ? trimmed.replace(/^\//, '').split(/\s+/)[0]?.toLowerCase()
+      : undefined;
+    const definition = commandToken ? this.commands.getDefinition(commandToken) : undefined;
+    // getDefinition 已把别名归一到主名（quit → exit），未注册的输入交给 dispatcher 报未知命令。
+    const unhandled = definition ? DESKTOP_UNHANDLED_COMMANDS.get(definition.name) : undefined;
+    if (unhandled) {
+      // 明确反馈而不是静默空操作：占位回调式的假成功会直接损害对命令系统的信任。
+      feedback.push(unhandled);
+      return { handled: true, feedback };
+    }
+    // /skill <名称> 无任务直发：桌面把「选技能即运行」作为一等交互（CLI 仍要求显式
+    // 任务并走 dispatcher 校验）。core 对显式技能要求非空 userInput（canonical 历史
+    // 不变量），此处合成启动任务并走与 runSkill 相同的收据管线；start 的同步门禁
+    // 拒绝必须以命令反馈可见，不能静默消失。
+    const skillOnly = /^\/skill\s+(\S+)\s*$/.exec(trimmed);
+    if (skillOnly) {
+      const kickoff = EXPLICIT_SKILL_KICKOFF;
+      try {
+        await this.start(
+          {
+            workspaceId: p.workspaceId,
+            sessionId: p.sessionId,
+            operationId: randomUUID(),
+            input: kickoff,
+          },
+          (handle) => handle.runSkill(skillOnly[1], kickoff),
+        );
+      } catch (error) {
+        feedback.push(`技能执行失败: ${(error as Error).message}`);
+      }
+      return { handled: true, feedback };
+    }
+    const handled = await this.commands.dispatch(
+      p.input,
+      this.commandContext(slot, feedback, loaded),
+    );
+    return { handled, feedback };
+  }
+
+  private get commands() {
+    if (!this.commandDispatcher) this.commandDispatcher = createDefaultCommandDispatcher();
+    return this.commandDispatcher;
+  }
+
+  /**
+   * 会话技能目录的有界投影，供 `/` 补全面板的技能组。
+   * 过滤口径与 CLI 的 `/skill ` 名字补全一致（userInvocable 且 available 且未禁用）：
+   * 面板据此承诺「当前会话现在就能跑」——运行时 registry 不含会话启动后新增或
+   * 改变信任状态的技能，不会虚列。诊断、激活态与目录预算不进此面（仍走
+   * session.inspect），description 截 256 字符并给 truncated 标志，防止超大
+   * 技能目录撑爆 wire 载荷。
+   */
+  private skillCatalog(p: { workspaceId: string; sessionId: string }): Output<'run.skillCatalog'> {
+    const slot = this.slot(p);
+    const catalog = slot.handle.session.getSkills();
+    const limit = 500;
+    const filtered = catalog.skills.filter(
+      (skill) => skill.userInvocable && skill.available && !skill.disabled,
+    );
+    const skills = filtered.slice(0, limit).map((skill) => ({
+      name: skill.name,
+      description:
+        skill.description.length > 256 ? `${skill.description.slice(0, 256)}…` : skill.description,
+      scope: skill.scope,
+    }));
+    return {
+      installed: catalog.skills.length > 0,
+      skills,
+      truncated: filtered.length > limit,
+    };
+  }
+
+  /**
+   * 构造桌面侧 CommandContext：会话来自托管槽位，交互经对话框往返，输出进命令反馈。
+   * question/select/readSecret 三个交互端口由对话框真实承接；依赖 CLI 宿主回调的
+   * 命令（model/exit）已被 dispatch 前的门禁拦截，回调在此仅作兜底——若被绕过
+   * 必须显式抛错，绝不静默空操作制造假成功。
+   */
+  private commandContext(slot: Slot, feedback: string[], loaded: LoadedSettings): CommandContext {
+    const requestInteraction = async (
+      kind: 'question' | 'secret' | 'select',
+      prompt: string,
+      options?: { value: string; label: string }[],
+    ): Promise<string | undefined> => {
+      if (this.interactionPending.size >= LIMITS.approvals) throw new Error('INTERACTION_LIMIT');
+      const requestId = randomUUID();
+      const promise = new Promise<string | undefined>((resolve) => {
+        const timer = setTimeout(() => {
+          const pending = this.interactionPending.get(requestId);
+          if (pending) {
+            this.interactionPending.delete(requestId);
+            pending.resolve(undefined);
+            this.notify(
+              {
+                ...slot.scope,
+                type: 'interaction.closed',
+                requestId,
+                reason: 'timeout',
+              },
+              'data',
+            ).catch(() => {});
+          }
+        }, LIMITS.approvalTimeout);
+        this.interactionPending.set(requestId, {
+          sessionId: slot.scope.sessionId,
+          timer,
+          resolve,
+        });
+      });
+      this.notify(
+        {
+          ...slot.scope,
+          type: 'interaction.requested',
+          requestId,
+          kind,
+          prompt,
+          ...(options ? { options } : {}),
+        },
+        'data',
+      ).catch(() => {});
+      return await promise;
+    };
+    const output: CommandOutput = {
+      log: (message) => feedback.push(message),
+      error: (message) => feedback.push(message),
+      write: (text) => feedback.push(text),
+    };
+    return {
+      session: slot.handle.session,
+      settings: loaded.settings,
+      output,
+      // 透传隔离 HOME 与实际配置路径：命令介导的全局写入（默认模型/路由/密钥）必须
+      // 落在 workspaces.home，settings 读取也要如实报告来源而不是「使用内置默认」。
+      homeDir: this.workspaces.home,
+      settingsPath: loaded.sourcePath,
+      // 门禁外的兜底：正常路径不会到达（model/exit 已在 dispatch 前拦截）。
+      onModelSwitched: () => {
+        throw new Error('桌面端不支持会话内模型切换；请使用设置面板管理模型。');
+      },
+      onExit: async () => {
+        throw new Error('桌面端没有退出命令；请直接关闭窗口或会话标签。');
+      },
+      isInputBusy: () => false,
+      question: (prompt) => requestInteraction('question', prompt),
+      readSecret: async (prompt) => (await requestInteraction('secret', prompt)) ?? '',
+      select: async <T>(config: SelectConfig<T>) => {
+        const reply = await requestInteraction(
+          'select',
+          config.message,
+          config.options.map((option) => ({
+            value: String(option.value),
+            label: option.label,
+          })),
+        );
+        if (reply === undefined) return null;
+        const match = config.options.find((option) => String(option.value) === reply);
+        return match ? match.value : null;
+      },
+      dispatcher: this.commands,
+      runSkill: async (name, task) => {
+        // 显式技能走与 run.start 相同的收据管线：忙碌反映、事件流、取消语义保持一致。
+        // 必须 await：start 的同步门禁（忙碌/展示未就绪/限额）拒绝时要把失败
+        // 交回 dispatcher 输出为命令反馈——fire-and-forget 会让失败静默消失，
+        // 用户只会看到「什么都没发生」。
+        await this.start(
+          {
+            workspaceId: slot.scope.workspaceId,
+            sessionId: slot.scope.sessionId,
+            operationId: randomUUID(),
+            input: task,
+          },
+          (handle) => handle.runSkill(name, task),
+        );
+      },
+    };
+  }
+
+  private start(
+    p: {
+      workspaceId: string;
+      sessionId: string;
+      operationId: string;
+      input: string;
+    },
+    execute?: (handle: ManagedHostSession) => Promise<void>,
+  ): RunReceipt {
     this.workspaces.get(p.workspaceId, true);
     const slot = this.slot(p);
     this.settleIfDone(slot);
@@ -592,8 +972,7 @@ export class DesktopHost {
     slot.run = receipt;
     this.operations.set(p.operationId, { digest, receipt });
     this.emitRun(slot);
-    slot.running = slot.handle
-      .run(p.input)
+    slot.running = (execute ? execute(slot.handle) : slot.handle.run(p.input))
       .then(
         () => {
           receipt.result = slot.handle.snapshot().operation?.result ?? 'completed';
@@ -767,7 +1146,12 @@ export class DesktopHost {
     view.unsubscribe();
     if (!this.dead)
       void this.notify(
-        { type: 'presentation.invalidated', ...slot.scope, subscriptionId: view.id, reason },
+        {
+          type: 'presentation.invalidated',
+          ...slot.scope,
+          subscriptionId: view.id,
+          reason,
+        },
         'control',
       ).catch(() => {});
   }

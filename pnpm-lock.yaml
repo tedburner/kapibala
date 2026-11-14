@@ -66,6 +66,9 @@ importers:
       '@kiturone/kapibala':
         specifier: workspace:*
         version: link:../core
+      '@kiturone/kapibala-cli':
+        specifier: workspace:*
+        version: link:../cli
       '@kiturone/kapibala-host':
         specifier: workspace:*
         version: link:../host

@@ -70,7 +70,9 @@ describe('共享受管宿主', () => {
       }).list();
       expect(list.items.map((item) => item.conversationId)).toContain(host.conversationId);
       expect(host.snapshot().identity.conversationId).toBe(host.conversationId);
-      expect(host).not.toHaveProperty('session');
+      // session 是命令适配器等进程内宿主的合法成员（不跨进程传输）；history/provider 仍不外露。
+      expect(host).toHaveProperty('session');
+      expect(host).not.toHaveProperty('history');
       expect(host).not.toHaveProperty('history');
       expect(host).not.toHaveProperty('provider');
       expect(host.status().gitBranch).toBeUndefined();

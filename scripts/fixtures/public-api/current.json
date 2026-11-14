@@ -158,6 +158,13 @@
           ]
         },
         {
+          "name": "LoadedSettings",
+          "kind": "interface",
+          "declarations": [
+            "export interface LoadedSettings {\n    settings: UserSettings;\n    sourcePath?: string;\n    pendingProject?: PendingProjectSettings;\n}"
+          ]
+        },
+        {
           "name": "loadGlobalSettingsForWrite",
           "kind": "function",
           "declarations": [
@@ -182,7 +189,7 @@
           "name": "ManagedHostSession",
           "kind": "interface",
           "declarations": [
-            "export interface ManagedHostSession {\n    readonly conversationId: string;\n    /** 完整驱动一次运行；并发请求拒绝，外部中止也等待工具事务收口。 */\n    run(input: string, signal?: AbortSignal): Promise<void>;\n    /** 中止当前父子任务并等待清理；不因退订展示而自动触发。 */\n    cancel(): Promise<void>;\n    /** 清理失败保留写锁，可重试；成功后禁止再运行或配置。 */\n    dispose(): Promise<void>;\n    /** 清理中的句柄仍忙碌，只有终态且清理结束才能复用。 */\n    isBusy(): boolean;\n    /** 只更新空闲会话，保持全局设置不变；失效 Profile 明确拒绝。 */\n    configure(configuration: ManagedSessionConfiguration): void;\n    /** 就地重命名：追加 title 控制记录，运行中也可改，不打断当前任务。 */\n    rename(title: string): Promise<void>;\n    /** 就地切换置顶：追加 pin_state 控制记录，只影响列表次序，不改活动时间。 */\n    setPinned(pinned: boolean): Promise<void>;\n    /** 返回脱敏后的公共展示快照，不提供原始历史或资源句柄。 */\n    snapshot(): PresentationState;\n    /** 交付已接受的有序展示事件；退订不取消执行。 */\n    subscribeEvents(listener: (event: PresentationEvent) => void): () => void;\n    /** 当前生效选择的白名单事实，不含 Profile 对象、端点或凭证。 */\n    configuration(): {\n        profileId: string;\n        role: PrimaryModelRole;\n        mode: SessionMode;\n    };\n    /** 仅读取当前状态；缺失的 Provider usage 不以默认零补齐。 */\n    status(): StatusFacts;\n    /** 只读取已知状态，不启动探测或收集；诊断与任务摘要有界脱敏。 */\n    inspection(): ManagedInspection;\n    /** 观察变更不依赖页面正文订阅，退订不影响执行。 */\n    subscribeInspection(listener: () => void): () => void;\n}"
+            "export interface ManagedHostSession {\n    readonly conversationId: string;\n    /**\n     * 同进程宿主（桌面命令适配器等）所需的会话对象。\n     * 仅供宿主侧在进程内构造命令上下文使用；不得跨进程传输或序列化。\n     */\n    readonly session: AgentSession;\n    /** 完整驱动一次运行；并发请求拒绝，外部中止也等待工具事务收口。 */\n    run(input: string, signal?: AbortSignal): Promise<void>;\n    /**\n     * 显式技能直发：与 run 共用同一投影、审批与工具事务管线，事件流语义一致。\n     * task 为空或技能名非法时由底层 Session 以 SKILL_INVALID_INPUT 拒绝。\n     */\n    runSkill(skillName: string, task: string, signal?: AbortSignal): Promise<void>;\n    /** 中止当前父子任务并等待清理；不因退订展示而自动触发。 */\n    cancel(): Promise<void>;\n    /** 清理失败保留写锁，可重试；成功后禁止再运行或配置。 */\n    dispose(): Promise<void>;\n    /** 清理中的句柄仍忙碌，只有终态且清理结束才能复用。 */\n    isBusy(): boolean;\n    /** 只更新空闲会话，保持全局设置不变；失效 Profile 明确拒绝。 */\n    configure(configuration: ManagedSessionConfiguration): void;\n    /** 就地重命名：追加 title 控制记录，运行中也可改，不打断当前任务。 */\n    rename(title: string): Promise<void>;\n    /** 就地切换置顶：追加 pin_state 控制记录，只影响列表次序，不改活动时间。 */\n    setPinned(pinned: boolean): Promise<void>;\n    /** 返回脱敏后的公共展示快照，不提供原始历史或资源句柄。 */\n    snapshot(): PresentationState;\n    /** 交付已接受的有序展示事件；退订不取消执行。 */\n    subscribeEvents(listener: (event: PresentationEvent) => void): () => void;\n    /** 当前生效选择的白名单事实，不含 Profile 对象、端点或凭证。 */\n    configuration(): {\n        profileId: string;\n        role: PrimaryModelRole;\n        mode: SessionMode;\n    };\n    /** 仅读取当前状态；缺失的 Provider usage 不以默认零补齐。 */\n    status(): StatusFacts;\n    /** 只读取已知状态，不启动探测或收集；诊断与任务摘要有界脱敏。 */\n    inspection(): ManagedInspection;\n    /** 观察变更不依赖页面正文订阅，退订不影响执行。 */\n    subscribeInspection(listener: () => void): () => void;\n}"
           ]
         },
         {
@@ -849,7 +856,7 @@
           "name": "ViewBlock",
           "kind": "interface",
           "declarations": [
-            "export interface ViewBlock {\n    readonly id: string;\n    readonly kind: 'text' | 'thinking' | 'tool';\n    readonly text: string;\n    readonly state: 'streaming' | 'completed' | 'interrupted';\n    readonly revision: number;\n    /** 仅工具块使用；不得装入原始入参对象或 Provider/传输层状态。 */\n    readonly tool?: ViewTool;\n}"
+            "export interface ViewBlock {\n    readonly id: string;\n    readonly kind: 'text' | 'thinking' | 'tool';\n    readonly text: string;\n    readonly state: 'streaming' | 'completed' | 'interrupted';\n    readonly revision: number;\n    /** 仅工具块使用；不得装入原始入参对象或 Provider/传输层状态。 */\n    readonly tool?: ViewTool;\n    /**\n     * 技能信封文本块的来源技能名：宿主把显式技能正文附在用户消息里（`<skill_content>`\n     * 包络），渲染层据此折叠为技能徽章而不是整段元数据与正文；普通文本块缺省。\n     */\n    readonly skillName?: string;\n}"
           ]
         },
         {
@@ -3847,6 +3854,11 @@
           "import": "./dist/client/index.js",
           "types": "./dist/client/index.d.ts"
         },
+        "./commands": {
+          "default": "./dist/commands/index.js",
+          "import": "./dist/commands/index.js",
+          "types": "./dist/commands/index.d.ts"
+        },
         "./dist/*": "./dist/*",
         "./host": {
           "default": "./dist/host/index.js",
@@ -3872,6 +3884,7 @@
         "command-output.d.ts",
         "commands/agents.d.ts",
         "commands/archive.d.ts",
+        "commands/assemble.d.ts",
         "commands/branch.d.ts",
         "commands/catalog.d.ts",
         "commands/clear.d.ts",
@@ -3880,6 +3893,7 @@
         "commands/fork.d.ts",
         "commands/help.d.ts",
         "commands/history.d.ts",
+        "commands/index.d.ts",
         "commands/instructions.d.ts",
         "commands/logs.d.ts",
         "commands/mcp.d.ts",

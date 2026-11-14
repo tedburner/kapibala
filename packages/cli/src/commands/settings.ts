@@ -13,9 +13,12 @@ export const settingsCommand: CommandHandler = async (args, ctx) => {
   if (sub === 'setup') {
     if (!ctx.question || !ctx.readSecret || !process.stdin.isTTY)
       throw new Error('配置向导需要交互终端');
+    const answer = ctx.question;
+    const secretReader = ctx.readSecret;
     const { profile } = await runSetupWizard({
-      question: ctx.question,
-      secretReader: ctx.readSecret,
+      // question 的 undefined（用户取消）在向导里按空答案收尾：向导每一步都有缺省值。
+      question: async (prompt) => (await answer(prompt)) ?? '',
+      secretReader,
     });
     ctx.onModelSwitched(profile.id);
     ctx.onCredentialsUpdated?.(profile.id);
@@ -29,7 +32,7 @@ export const settingsCommand: CommandHandler = async (args, ctx) => {
       resolveCommandOutput(ctx).log(`未找到模型 Profile '${defaultId}'。`);
       return;
     }
-    persistDefaultModel(found, ctx.settings);
+    persistDefaultModel(found, ctx.settings, { homeDir: ctx.homeDir });
     resolveCommandOutput(ctx).log(`✔ 已将 '${found.name}' 设为全局默认模型。`);
     return;
   }
