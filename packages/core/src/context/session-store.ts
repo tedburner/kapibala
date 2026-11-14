@@ -40,7 +40,8 @@ export type SessionRecordType =
   | 'branch_created'
   | 'branch_selected'
   | 'branch_summary'
-  | 'archive_state';
+  | 'archive_state'
+  | 'pin_state';
 
 /**
  * 判断指定记录类型是否属于全局控制记录。
@@ -56,6 +57,7 @@ export function isGlobalControlRecordType(type: SessionRecordType): boolean {
     type === 'branch_selected' ||
     type === 'title' ||
     type === 'archive_state' ||
+    type === 'pin_state' ||
     type === 'usage' ||
     type === 'legacy_import'
   );
@@ -157,6 +159,7 @@ const types = new Set<SessionRecordType>([
   'branch_selected',
   'branch_summary',
   'archive_state',
+  'pin_state',
 ]);
 
 /** 判断 Store 是否支持版本化状态；不读取数据或改变旧 Store。 */
@@ -468,6 +471,25 @@ export class SessionStore implements StatefulMessageStore {
       }
     }
     return false;
+  }
+
+  /**
+   * 追加会话置顶控制记录。
+   *
+   * 约束：
+   * - 置顶状态记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；
+   * - payload 结构为 { pinned: boolean }，最后一次写入生效；
+   * - 置顶只影响列表排序，不改变正文活动时间，因此不会让会话挤进「最近」；
+   * - v1 历史会话禁止变更置顶状态。
+   */
+  async setPinnedState(pinned: boolean): Promise<SessionRecord> {
+    if (this.isReadOnly()) {
+      throw new KapibalaError('Cannot modify pin state of legacy v1 session', {
+        code: 'LEGACY_SESSION_READ_ONLY',
+        safeMessage: '无法变更只读历史会话的置顶状态',
+      });
+    }
+    return this.appendRecord('pin_state', { pinned });
   }
 
   /**

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provides global cross-project session discovery across user session directories, bounded streaming full-text search through conversation messages, and durable session logical archiving.
+Provides global cross-project session discovery across user session directories, bounded streaming full-text search through conversation messages, and durable session logical archiving, pinning, and irreversible deletion.
 
 ## ADDED Requirements
 
@@ -34,3 +34,25 @@ The session manager SHALL support marking sessions as archived via durable archi
 #### Scenario: Attempting to archive a session with active sub-agents
 - **WHEN** archiveSession is called on a session that has active running sub-agents
 - **THEN** the operation is rejected with SESSION_IN_USE, requiring tasks to be completed or cancelled prior to archiving
+
+### Requirement: Session pinning
+The session manager SHALL persist pin state as durable pin_state control records and SHALL place pinned sessions before unpinned ones in paginated listings, without changing last activity timestamps, default archived exclusion, or resume-latest selection.
+
+#### Scenario: Pinning an older session
+- **WHEN** pinSession is invoked with pinned=true on a session older than its siblings
+- **THEN** a pin_state record { pinned: true } is persisted and the session is returned in the first page of list output, while its lastActivityAt and the continueRecent candidate remain unchanged
+
+#### Scenario: Unpinning restores the original order
+- **WHEN** pinSession is invoked with pinned=false on a previously pinned session
+- **THEN** the session returns to the position determined by its last activity timestamp
+
+### Requirement: Irreversible session deletion
+The session manager SHALL delete a session's transcript and metadata cache only after re-verifying the header identity of the target file, and SHALL refuse deletion when the session is opened in-process or locked by another process.
+
+#### Scenario: Deleting a closed session
+- **WHEN** deleteSession is invoked on a session that has no in-process handle and no foreign lock
+- **THEN** the .meta.json cache is removed before the .jsonl transcript, and the session disappears from both active and archived listings
+
+#### Scenario: Refusing deletion of an in-use session
+- **WHEN** deleteSession targets a session currently opened by the same manager
+- **THEN** the operation is rejected with SESSION_IN_USE and no file on disk is removed

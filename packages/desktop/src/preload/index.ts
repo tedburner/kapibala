@@ -114,10 +114,16 @@ const api: DesktopAPI = {
     inspect: (params) => call('session.inspect', params),
     list: (workspaceId, page, query) =>
       call('session.list', { workspaceId, page: page ?? 1, query }),
+    archived: (workspaceId, page) => call('session.archived', { workspaceId, page: page ?? 1 }),
     create: (workspaceId, profileId) => call('session.create', { workspaceId, profileId }),
     open: (params) => call('session.open', params),
     close: (params) => done('session.close', params),
+    archive: (params) => done('session.archive', params),
+    restore: (params) => done('session.restore', params),
+    delete: (params) => done('session.delete', params),
     configure: (params) => call('session.configure', params),
+    rename: (params) => done('session.rename', params),
+    pin: (params) => done('session.pin', params),
   },
   run: {
     start: (params) => call('run.start', params),

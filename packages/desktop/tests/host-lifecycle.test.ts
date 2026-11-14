@@ -45,6 +45,9 @@ function handle() {
     // 显式放宽可变写的签名：字面量推断出的窄类型（如 () => false）会让测试覆盖重写时类型失配。
     isBusy: (): boolean => false,
     configure: () => {},
+    // 重命名与置顶只写控制记录：本层测试不落盘，签名满足受管会话即可。
+    rename: vi.fn(async () => {}),
+    setPinned: vi.fn(async () => {}),
     snapshot: () => state,
     subscribeEvents: (_listener: (event: PresentationEvent) => void) => () => {},
     configuration: () => ({

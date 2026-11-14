@@ -584,10 +584,10 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
     await fastRole.click();
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: /会话模式/ }).click();
-    await page.getByRole('menuitem', { name: '计划', exact: true }).click();
-    await expect(page.getByRole('button', { name: /会话模式/ })).toContainText('计划');
+    await page.getByRole('menuitem', { name: /计划模式/ }).click();
+    await expect(page.getByRole('button', { name: /会话模式/ })).toContainText('计划模式');
     await page.getByRole('button', { name: /会话模式/ }).click();
-    await page.getByRole('menuitem', { name: '逐次审批', exact: true }).click();
+    await page.getByRole('menuitem', { name: /变更前确认/ }).click();
     await page.getByRole('textbox', { name: '发送消息' }).fill('切换后保留的草稿');
     const sendButton = page.getByRole('button', { name: '发送', exact: true });
     const styles: unknown[] = [];

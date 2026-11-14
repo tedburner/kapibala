@@ -3,6 +3,7 @@ import {
   type ApprovalChannel,
   type ApprovalChoice,
   type ApprovalRequest,
+  type SessionManager,
   WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
 import {
@@ -15,6 +16,7 @@ import {
   LIMITS,
   type Method,
   type Notification,
+  type Output,
   PARAMS,
   PresentationEventSchema,
   type RunReceipt,
@@ -157,16 +159,19 @@ export class DesktopHost {
             ? (item) => redact(item.title).toLowerCase().includes(keyword)
             : undefined,
         });
-        return {
-          ...list,
-          items: list.items.map((item) => ({
-            conversationId: item.conversationId,
-            title: redact(item.title),
-            messageCount: item.messageCount,
-            lastActivityAt: item.lastActivityAt,
-            unavailableReason: item.unavailableReason,
-          })),
-        };
+        return this.projectHistory(list, redact);
+      }
+      case 'session.archived': {
+        const p = PARAMS[method].parse(params);
+        const manager = this.workspaces.manager(p.workspaceId);
+        const redact = this.settings.captureRedactor(p.workspaceId);
+        // 过滤先于分页在 SessionManager 内完成，页码与总数只统计归档项。
+        const list = await manager.list(p.page, {
+          pageSize: 50,
+          includeArchived: true,
+          filter: (item) => item.archived === true,
+        });
+        return this.projectHistory(list, redact);
       }
       case 'session.create': {
         const p = PARAMS[method].parse(params);
@@ -179,6 +184,23 @@ export class DesktopHost {
       case 'session.close':
         await this.close(this.slot(PARAMS[method].parse(params)));
         return {};
+      case 'session.archive':
+      case 'session.restore':
+      case 'session.delete': {
+        const p = PARAMS[method].parse(params);
+        await this.mutateSession(p.workspaceId, p.conversationId, method);
+        return {};
+      }
+      case 'session.rename': {
+        const p = PARAMS[method].parse(params);
+        await this.renameConversation(p.workspaceId, p.conversationId, p.title);
+        return {};
+      }
+      case 'session.pin': {
+        const p = PARAMS[method].parse(params);
+        await this.pinConversation(p.workspaceId, p.conversationId, p.pinned);
+        return {};
+      }
       case 'session.configure': {
         const p = PARAMS[method].parse(params);
         const slot = this.slot(p);
@@ -416,6 +438,101 @@ export class DesktopHost {
     const slot = this.sessions.get(scope.sessionId);
     if (!slot || slot.scope.workspaceId !== scope.workspaceId) throw new Error('SESSION_NOT_FOUND');
     return slot;
+  }
+  /** 历史页只投影白名单字段并统一脱敏；归档页与活跃页共用同一投影，避免两处字段漂移。 */
+  private projectHistory(
+    list: Awaited<ReturnType<SessionManager['list']>>,
+    redact: (text: string) => string,
+  ): Output<'session.list'> {
+    return {
+      ...list,
+      items: list.items.map((item) => ({
+        conversationId: item.conversationId,
+        title: redact(item.title),
+        messageCount: item.messageCount,
+        lastActivityAt: item.lastActivityAt,
+        pinned: item.pinned === true,
+        unavailableReason: item.unavailableReason,
+      })),
+    };
+  }
+  /**
+   * 归档/恢复/删除都以「会话文件不被本进程持有」为前提。
+   *
+   * - 运行中的会话直接拒绝（SESSION_IN_USE）：归档或删除会中断用户任务，不静默代做；
+   * - 仅持有空闲句柄时先关闭再交给 SessionManager，否则同进程内的写锁会让操作以 SESSION_LOCKED 失败；
+   * - 会话身份只在对应空间的桶内解析，跨空间同名 ID 不会命中别处历史。
+   */
+  private async mutateSession(
+    workspaceId: string,
+    conversationId: string,
+    method: 'session.archive' | 'session.restore' | 'session.delete',
+  ): Promise<void> {
+    const slot = this.findSlot(workspaceId, conversationId);
+    if (slot) {
+      if (slot.closing) throw new Error('SESSION_BUSY');
+      if (slot.run && slot.run.phase !== 'idle') throw new Error('SESSION_IN_USE');
+      await this.close(slot);
+    }
+    const manager = this.workspaces.manager(workspaceId);
+    try {
+      if (method === 'session.archive') await manager.archiveSession(conversationId);
+      else if (method === 'session.restore') await manager.restoreSession(conversationId);
+      else await manager.deleteSession(conversationId);
+    } finally {
+      await manager.close();
+    }
+  }
+  /** 同一空间内按会话 ID 找本进程持有的句柄；跨空间同名 ID 不会命中。 */
+  private findSlot(workspaceId: string, conversationId: string): Slot | undefined {
+    return [...this.sessions.values()].find(
+      (item) =>
+        item.scope.workspaceId === workspaceId && item.handle.conversationId === conversationId,
+    );
+  }
+  /**
+   * 重命名已打开或未打开的会话。
+   *
+   * - 句柄在本进程时走打开的 Store：不必抢写锁，运行中也能改名而不打断任务；
+   * - 未打开时交给 SessionManager 自己取锁、追加 title 记录并释放；
+   * - 两条路径都只写控制记录，不搬动文件、不改正文历史。
+   */
+  private async renameConversation(
+    workspaceId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<void> {
+    const slot = this.findSlot(workspaceId, conversationId);
+    if (slot) {
+      if (slot.closing) throw new Error('SESSION_BUSY');
+      await slot.handle.rename(title);
+      return;
+    }
+    const manager = this.workspaces.manager(workspaceId);
+    try {
+      await manager.renameSession(conversationId, title);
+    } finally {
+      await manager.close();
+    }
+  }
+  /** 置顶只改列表次序；与重命名同样优先复用已打开的句柄，不要求先停止任务。 */
+  private async pinConversation(
+    workspaceId: string,
+    conversationId: string,
+    pinned: boolean,
+  ): Promise<void> {
+    const slot = this.findSlot(workspaceId, conversationId);
+    if (slot) {
+      if (slot.closing) throw new Error('SESSION_BUSY');
+      await slot.handle.setPinned(pinned);
+      return;
+    }
+    const manager = this.workspaces.manager(workspaceId);
+    try {
+      await manager.pinSession(conversationId, pinned);
+    } finally {
+      await manager.close();
+    }
   }
   private async close(slot: Slot): Promise<void> {
     if (slot.closing) return slot.closing;

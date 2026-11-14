@@ -2,6 +2,7 @@ import { Button, InlineCopyText, Input, Select, SensitiveInput, Switch } from '@
 import { Dialog } from '@cloudflare/kumo/primitives/dialog';
 import { Tabs } from '@cloudflare/kumo/primitives/tabs';
 import {
+  ArchiveIcon,
   PaletteIcon,
   PlugsConnectedIcon,
   PulseIcon,
@@ -9,7 +10,8 @@ import {
   XIcon,
 } from '@phosphor-icons/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Output, ProfileDraft } from '../shared/contracts.js';
+import type { Output, ProfileDraft, Workspace } from '../shared/contracts.js';
+import type { SessionTarget } from './session-actions.js';
 
 type Catalog = Output<'settings.read'>;
 type Model = Catalog['profiles'][number];
@@ -32,6 +34,12 @@ const SETTINGS_TABS = [
     label: '外观与应用',
     icon: PaletteIcon,
     subtitle: '主题设置适用于此客户端。',
+  },
+  {
+    value: 'archived',
+    label: '会话归档',
+    icon: ArchiveIcon,
+    subtitle: '已归档的对话不在侧栏显示；可以恢复到列表，也可以永久删除。',
   },
   {
     value: 'diagnostics',
@@ -72,6 +80,10 @@ export function SettingsDialog({
   catalog,
   reload,
   report,
+  spaces = [],
+  archiveRevision = 0,
+  onArchivedChanged,
+  onRequestDelete,
   hostDown = false,
 }: {
   open: boolean;
@@ -79,6 +91,14 @@ export function SettingsDialog({
   catalog?: Catalog;
   reload(): Promise<void>;
   report(message: string): void;
+  /** 已登记空间；归档页按空间分组读取，未信任空间不参与（与侧栏列表同一准入）。 */
+  spaces?: readonly Workspace[];
+  /** 归档集合的变更代数：外部归档/删除后重新拉取，避免展示过期行。 */
+  archiveRevision?: number;
+  /** 恢复成功后通知外部刷新侧栏列表。 */
+  onArchivedChanged?(): void;
+  /** 删除不可逆，统一交给外层二次确认弹窗执行，避免设置页内再叠一层对话框。 */
+  onRequestDelete?(target: SessionTarget): void;
   /** 执行 Host 断开或被阻断时，读取与保存都无法完成；表单明示原因而不是呈现空表单。 */
   hostDown?: boolean;
 }) {
@@ -126,6 +146,59 @@ export function SettingsDialog({
       }
     }
   }, [open, catalog, report]);
+  /** 归档页数据按空间聚合；一次读取失败整体报错，不展示半份分组。 */
+  const [archive, setArchive] = useState<{
+    loading: boolean;
+    error?: string;
+    groups: { space: Workspace; list: Output<'session.archived'> }[];
+  }>({ loading: false, groups: [] });
+  /** 正在恢复的会话 id：只锁该行，其余行仍可操作。 */
+  const [restoring, setRestoring] = useState<string>();
+  /** 恢复成功后自增，触发归档页重新读取；与外部 archiveRevision 分开记，避免互相覆盖。 */
+  const [reloadTick, setReloadTick] = useState(0);
+  useEffect(() => {
+    if (!open || tab !== 'archived') return;
+    // archiveRevision 与 reloadTick 只作失效信号：外部归档/删除、本地恢复都要求重读本页。
+    void archiveRevision;
+    void reloadTick;
+    let cancelled = false;
+    const groups: { space: Workspace; list: Output<'session.archived'> }[] = [];
+    setArchive({ loading: true, groups: [] });
+    void (async () => {
+      try {
+        // 顺序读取：与侧栏搜索同一策略，避免多个空间同时占满 Host 请求预算。
+        for (const space of spaces) {
+          if (!space.trusted) continue;
+          groups.push({ space, list: await window.kapibala.session.archived(space.id) });
+          if (cancelled) return;
+        }
+        if (!cancelled) setArchive({ loading: false, groups });
+      } catch (error) {
+        if (cancelled) return;
+        setArchive({
+          loading: false,
+          groups: [],
+          error: error instanceof Error ? error.message : '读取归档失败，请重试。',
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, tab, archiveRevision, spaces, reloadTick]);
+  /** 恢复只追加 archive_state(false)，不移动文件；成功后刷新本页并要求外层刷新侧栏。 */
+  async function restoreArchived(space: Workspace, conversationId: string) {
+    setRestoring(conversationId);
+    try {
+      await window.kapibala.session.restore({ workspaceId: space.id, conversationId });
+      setReloadTick((value) => value + 1);
+      onArchivedChanged?.();
+    } catch (error) {
+      report(error instanceof Error ? error.message : '恢复失败，请重试。');
+    } finally {
+      setRestoring(undefined);
+    }
+  }
   const change = <K extends keyof ProfileDraft>(field: K, value: ProfileDraft[K]) =>
     setDraft((current) => current && { ...current, [field]: value });
   /** 目录按厂商分组；分组键来自 host 投影（与 CLI /model 菜单同一套 detectProviderFamily 推断）。 */
@@ -717,6 +790,73 @@ export function SettingsDialog({
                       }
                     }}
                   />
+                </Tabs.Panel>
+                <Tabs.Panel value="archived" className="kapibala-settings-panel space-y-4">
+                  {archive.loading && <p className="text-sm text-kumo-subtle">正在读取归档…</p>}
+                  {archive.error && (
+                    <p role="alert" className="text-sm text-kumo-danger">
+                      {archive.error}
+                    </p>
+                  )}
+                  {!archive.loading &&
+                    !archive.error &&
+                    archive.groups.every((group) => group.list.total === 0) && (
+                      <p className="text-sm text-kumo-subtle">
+                        没有已归档的对话。归档不会删除历史文件，之后可以在这里恢复。
+                      </p>
+                    )}
+                  {archive.groups
+                    .filter((group) => group.list.total > 0)
+                    .map(({ space, list }) => (
+                      <section key={space.id} className="space-y-2">
+                        <h3 className="text-sm font-medium">{space.name}</h3>
+                        <ul className="space-y-1">
+                          {list.items.map((item) => (
+                            <li
+                              key={item.conversationId}
+                              className="flex items-center gap-3 rounded-lg px-2 py-2 text-sm hover:bg-kumo-tint"
+                            >
+                              <span className="min-w-0 flex-1 truncate">
+                                {item.title || '未命名对话'}
+                              </span>
+                              <span className="shrink-0 text-xs text-kumo-subtle">
+                                {item.messageCount} 条 ·{' '}
+                                {new Date(item.lastActivityAt).toLocaleDateString()}
+                              </span>
+                              <Button
+                                className="kapibala-action"
+                                variant="secondary"
+                                size="sm"
+                                disabled={restoring === item.conversationId}
+                                onClick={() => void restoreArchived(space, item.conversationId)}
+                              >
+                                恢复
+                              </Button>
+                              <Button
+                                className="kapibala-action text-kumo-danger"
+                                variant="ghost"
+                                size="sm"
+                                disabled={restoring === item.conversationId}
+                                onClick={() =>
+                                  onRequestDelete?.({
+                                    workspaceId: space.id,
+                                    conversationId: item.conversationId,
+                                    title: item.title,
+                                  })
+                                }
+                              >
+                                删除
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                        {list.total > list.items.length && (
+                          <p className="text-xs text-kumo-subtle">
+                            共 {list.total} 条，仅显示最近 {list.items.length} 条。
+                          </p>
+                        )}
+                      </section>
+                    ))}
                 </Tabs.Panel>
                 <Tabs.Panel value="diagnostics" className="kapibala-settings-panel space-y-4">
                   <p className="text-sm">

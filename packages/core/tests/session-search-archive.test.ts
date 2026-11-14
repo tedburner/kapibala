@@ -143,6 +143,138 @@ describe('CrossProjectSessionCatalog & Archive - 跨项目全文检索与逻辑�
     expect(restoredList.items[0].archived).toBe(false);
   });
 
+  it('物理删除会话：活动句柄拒绝，删除后正文与缓存都不复存在', async () => {
+    const manager = new SessionManager({
+      workspaceRoot: projectADir,
+      homeDirectory: tmpHome,
+    });
+
+    const target = await manager.create();
+    await target.store.append({
+      id: 'msg-del-1',
+      role: 'user',
+      timestamp: Date.now(),
+      content: [{ type: 'text', text: '待删除的会话' }],
+    });
+
+    // 1. 持句柄时拒绝删除，避免删掉正在追加的正文
+    await expect(manager.deleteSession(target.conversationId)).rejects.toThrowError(
+      /active or in use/i,
+    );
+
+    const files = fs.readdirSync(manager.directory);
+    expect(files.some((name) => name.endsWith(`_${target.conversationId}.jsonl`))).toBe(true);
+    expect(files.some((name) => name === `${target.conversationId}.meta.json`)).toBe(true);
+
+    // 2. 释放句柄后可删除，正文与 sidecar 一并消失
+    await target.release();
+    await manager.deleteSession(target.conversationId);
+    const after = fs.readdirSync(manager.directory);
+    expect(after.some((name) => name.endsWith(`_${target.conversationId}.jsonl`))).toBe(false);
+    expect(after.some((name) => name === `${target.conversationId}.meta.json`)).toBe(false);
+
+    // 3. 列表不再包含该会话，重复删除按找不到处理
+    expect((await manager.list(1, { includeArchived: true })).items.length).toBe(0);
+    await expect(manager.deleteSession(target.conversationId)).rejects.toThrowError(
+      /Session not found/i,
+    );
+  });
+
+  it('物理删除已归档会话：归档标记不阻止删除，删除后恢复请求同样失败', async () => {
+    const manager = new SessionManager({
+      workspaceRoot: projectADir,
+      homeDirectory: tmpHome,
+    });
+
+    const archived = await manager.create();
+    await archived.store.append({
+      id: 'msg-arch-1',
+      role: 'user',
+      timestamp: Date.now(),
+      content: [{ type: 'text', text: '归档后再删除' }],
+    });
+    const conversationId = archived.conversationId;
+    await archived.release();
+    await manager.archiveSession(conversationId);
+    await manager.deleteSession(conversationId);
+
+    await expect(manager.restoreSession(conversationId)).rejects.toThrowError(/Session not found/i);
+  });
+
+  it('重命名与置顶：标题写入正文，置顶只前置列表且不改活动时间', async () => {
+    const manager = new SessionManager({
+      workspaceRoot: projectADir,
+      homeDirectory: tmpHome,
+    });
+
+    const older = await manager.create();
+    await older.store.append({
+      id: 'msg-old',
+      role: 'user',
+      timestamp: Date.now() - 60_000,
+      content: [{ type: 'text', text: '较早的会话' }],
+    });
+    await older.release();
+    const newer = await manager.create();
+    await newer.store.append({
+      id: 'msg-new',
+      role: 'user',
+      timestamp: Date.now(),
+      content: [{ type: 'text', text: '较新的会话' }],
+    });
+    await newer.release();
+
+    // 默认只按活动时间倒序
+    expect((await manager.list()).items.map((item) => item.conversationId)).toEqual([
+      newer.conversationId,
+      older.conversationId,
+    ]);
+
+    await manager.renameSession(older.conversationId, '  发布前检查  ');
+    await manager.pinSession(older.conversationId, true);
+    const pinned = await manager.list();
+    expect(pinned.items.map((item) => item.conversationId)).toEqual([
+      older.conversationId,
+      newer.conversationId,
+    ]);
+    expect(pinned.items[0].title).toBe('发布前检查');
+    expect(pinned.items[0].pinned).toBe(true);
+    // 置顶不是活动：被置顶的会话仍然更早
+    expect(pinned.items[0].lastActivityAt).toBeLessThan(pinned.items[1].lastActivityAt);
+
+    // 丢掉 sidecar 后从正文重建，标题与置顶都必须保留
+    fs.unlinkSync(path.join(manager.directory, `${older.conversationId}.meta.json`));
+    const rebuilt = await manager.list();
+    expect(rebuilt.items[0].conversationId).toBe(older.conversationId);
+    expect(rebuilt.items[0].pinned).toBe(true);
+    expect(rebuilt.items[0].title).toBe('发布前检查');
+
+    await manager.pinSession(older.conversationId, false);
+    expect((await manager.list()).items.map((item) => item.conversationId)).toEqual([
+      newer.conversationId,
+      older.conversationId,
+    ]);
+
+    // 持句柄时拒绝：标题与置顶都不能与活动写入交错
+    const handle = await manager.open(newer.conversationId);
+    await expect(manager.pinSession(newer.conversationId, true)).rejects.toThrowError(
+      /active or in use/i,
+    );
+    await expect(manager.renameSession(newer.conversationId, '重命名')).rejects.toThrowError(
+      /active or in use/i,
+    );
+    await handle.release();
+
+    await expect(manager.renameSession(older.conversationId, '   ')).rejects.toThrowError(
+      /cannot be empty/i,
+    );
+    // rename() 只改标题却不该留下写锁：紧接着的删除必须成功。
+    await manager.rename(older.conversationId, '再改一次');
+    await manager.deleteSession(older.conversationId);
+    expect((await manager.list()).total).toBe(1);
+    await manager.close();
+  });
+
   it('中文短语与属性限定全文检索：仅匹配可见文本与摘要，支持引号短语与可续答标记', async () => {
     const manager = new SessionManager({
       workspaceRoot: projectADir,

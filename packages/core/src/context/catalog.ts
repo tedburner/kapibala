@@ -788,6 +788,8 @@ export class CrossProjectSessionCatalog {
       let title = '新会话';
       let activeBranchId = MAIN_BRANCH_ID;
       let archived = false;
+      // 置顶标记必须一并回写：重建的 sidecar 会覆盖原缓存，漏字段会让置顶静默丢失。
+      let pinned = false;
       let lastRecordId = headerRecord.recordId;
 
       for (const line of iterator) {
@@ -813,6 +815,8 @@ export class CrossProjectSessionCatalog {
             title = String(rec.payload.title);
           } else if (rec.type === 'archive_state') {
             archived = Boolean(rec.payload.archived);
+          } else if (rec.type === 'pin_state') {
+            pinned = Boolean(rec.payload.pinned);
           } else if (rec.type === 'branch_selected') {
             activeBranchId = String(rec.payload.branchId);
           }
@@ -833,6 +837,7 @@ export class CrossProjectSessionCatalog {
         title,
         activeBranchId,
         archived,
+        pinned,
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         revision: lastRecordId,

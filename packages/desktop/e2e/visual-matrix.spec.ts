@@ -162,7 +162,7 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
     }
     await page.getByRole('button', { name: '新建对话', exact: true }).last().click();
     await page.getByRole('button', { name: /会话模式/ }).click();
-    await page.getByRole('menuitem', { name: '完全访问', exact: true }).click();
+    await page.getByRole('menuitem', { name: /完全访问/ }).click();
     await check(
       page.getByRole('dialog', { name: '启用完全访问？', exact: true }),
       'full-access',

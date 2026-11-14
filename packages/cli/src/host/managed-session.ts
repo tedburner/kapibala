@@ -12,6 +12,7 @@ import {
   SessionManager,
   type SessionMode,
   type WorkspaceLeaseCoordinator,
+  sanitizeSessionTitle,
 } from '@kiturone/kapibala';
 import { type McpPluginInstance, createMcpPlugin } from '@kiturone/kapibala-mcp';
 import { resolveCliMcpOptions } from '../mcp.js';
@@ -106,6 +107,10 @@ export interface ManagedHostSession {
   isBusy(): boolean;
   /** 只更新空闲会话，保持全局设置不变；失效 Profile 明确拒绝。 */
   configure(configuration: ManagedSessionConfiguration): void;
+  /** 就地重命名：追加 title 控制记录，运行中也可改，不打断当前任务。 */
+  rename(title: string): Promise<void>;
+  /** 就地切换置顶：追加 pin_state 控制记录，只影响列表次序，不改活动时间。 */
+  setPinned(pinned: boolean): Promise<void>;
   /** 返回脱敏后的公共展示快照，不提供原始历史或资源句柄。 */
   snapshot(): PresentationState;
   /** 交付已接受的有序展示事件；退订不取消执行。 */
@@ -559,6 +564,18 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       dispose,
       isBusy: () => Boolean(activeController) || current.isBusy() || closing,
       configure: refresh,
+      // 标题与置顶都是全局控制记录：走已打开的 Store 追加，既不必重新取锁，
+      // 也不会打断在途运行；运行中的会话同样允许改名与置顶。
+      async rename(title) {
+        if (disposed || closing) throw new ManagedHostError('SESSION_CLOSED');
+        const value = title.trim();
+        if (!value) throw new ManagedHostError('SESSION_TITLE_REQUIRED');
+        await ownedHandle.store.appendRecord('title', { title: sanitizeSessionTitle(value) });
+      },
+      async setPinned(pinned) {
+        if (disposed || closing) throw new ManagedHostError('SESSION_CLOSED');
+        await ownedHandle.store.setPinnedState(pinned);
+      },
       configuration: () => ({
         profileId: selectedProfileId,
         role: selectedRole,

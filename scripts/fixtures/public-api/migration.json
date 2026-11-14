@@ -93,6 +93,7 @@
       "core:SessionManager",
       "core:SessionManagerOptions",
       "core:SessionMetadata",
+      "core:SessionRecordType",
       "core:SessionStore",
       "core:SpawnContext",
       "core:SubagentSessionRunner",

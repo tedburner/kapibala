@@ -231,9 +231,22 @@ const history = z
     title: text,
     messageCount: z.number(),
     lastActivityAt: z.number(),
+    /** 置顶只影响列表次序；Host 已按置顶优先排好，页面不再二次重排。 */
+    pinned: z.boolean().optional(),
     unavailableReason: text.optional(),
   })
   .strict();
+/** 活跃历史与归档历史共用同一页结构；归档页只换数据来源，不另立字段。 */
+const historyList = z
+  .object({
+    items: z.array(history).max(100),
+    page: z.number().int(),
+    pages: z.number().int(),
+    total: z.number().int(),
+  })
+  .strict();
+/** 归档/删除只按会话身份定位，不接受页面自带的文件路径或桶键。 */
+const conversation = z.object({ workspaceId: id, conversationId: id }).strict();
 
 /** 每个业务入口独立校验；不能通过通用 channel 调用未登记方法。 */
 export const PARAMS = {
@@ -285,18 +298,31 @@ export const PARAMS = {
       query: z.string().trim().max(128).optional(),
     })
     .strict(),
+  /** 只返回已归档会话；列表页与过滤都在 Host 侧完成，页面不自行拼装分页。 */
+  'session.archived': z
+    .object({ workspaceId: id, page: z.number().int().positive().default(1) })
+    .strict(),
   'session.runtimeSubscribe': z.object({ subscriptionId: z.uuid() }).strict(),
   'session.runtimeUnsubscribe': z.object({ subscriptionId: z.uuid() }).strict(),
   'session.inspect': session.extend({ subscriptionId: z.uuid() }),
   'session.create': z.object({ workspaceId: id, profileId: id.optional() }).strict(),
   'session.open': z.object({ workspaceId: id, conversationId: id }).strict(),
   'session.close': session,
+  /** 只追加 archive_state 控制记录，历史正文保持不动，可 restore 还原。 */
+  'session.archive': conversation,
+  'session.restore': conversation,
+  /** 物理删除正文与缓存，不可逆；Host 会先拒绝仍在运行的会话。 */
+  'session.delete': conversation,
   'session.configure': session.extend({
     profileId: id.optional(),
     role: role.optional(),
     mode: mode.optional(),
     confirmFullAccess: z.boolean().optional(),
   }),
+  /** 标题是独立耐久记录：先 trim 再落盘，运行中的会话也可改名，不打断任务。 */
+  'session.rename': conversation.extend({ title: z.string().trim().min(1).max(200) }),
+  /** 置顶只写控制记录并改变列表次序，不改活动时间，因此不需要停止在途任务。 */
+  'session.pin': conversation.extend({ pinned: z.boolean() }),
   'run.start': session.extend({ operationId: z.uuid(), input: z.string().min(1).max(512_000) }),
   'run.cancel': session.extend({ runId: id }),
   'run.status': session,
@@ -357,21 +383,20 @@ export const RESULTS = {
   'settings.listModels': z.object({ models: z.array(text).max(500) }).strict(),
   'settings.setDefault': empty,
   'settings.setRouting': empty,
-  'session.list': z
-    .object({
-      items: z.array(history).max(100),
-      page: z.number().int(),
-      pages: z.number().int(),
-      total: z.number().int(),
-    })
-    .strict(),
+  'session.list': historyList,
+  'session.archived': historyList,
   'session.runtimeSubscribe': RuntimeSnapshotSchema,
   'session.runtimeUnsubscribe': empty,
   'session.inspect': InspectionSchema,
   'session.create': opened,
   'session.open': opened,
   'session.close': empty,
+  'session.archive': empty,
+  'session.restore': empty,
+  'session.delete': empty,
   'session.configure': opened.shape.configuration,
+  'session.rename': empty,
+  'session.pin': empty,
   'run.start': runReceipt,
   'run.cancel': runReceipt,
   'run.status': runReceipt.nullable(),
@@ -490,10 +515,20 @@ export type DesktopAPI = {
     runtimeUnsubscribe(subscriptionId: string): Promise<void>;
     inspect(params: Params<'session.inspect'>): Promise<Output<'session.inspect'>>;
     list(workspaceId: string, page?: number, query?: string): Promise<Output<'session.list'>>;
+    /** 已归档会话单独分页读取；不混进活跃列表，避免归档项挤占侧栏页码。 */
+    archived(workspaceId: string, page?: number): Promise<Output<'session.archived'>>;
     create(workspaceId: string, profileId?: string): Promise<Output<'session.create'>>;
     open(params: Params<'session.open'>): Promise<Output<'session.open'>>;
     close(params: Params<'session.close'>): Promise<void>;
+    archive(params: Params<'session.archive'>): Promise<void>;
+    restore(params: Params<'session.restore'>): Promise<void>;
+    /** 永久删除会话历史；运行中的会话由 Host 拒绝，页面必须先停止任务。 */
+    delete(params: Params<'session.delete'>): Promise<void>;
     configure(params: Params<'session.configure'>): Promise<Output<'session.configure'>>;
+    /** 重命名只写标题记录；已打开与未打开的会话都可用，不要求先停止任务。 */
+    rename(params: Params<'session.rename'>): Promise<void>;
+    /** 置顶只改列表次序，可随时切换。 */
+    pin(params: Params<'session.pin'>): Promise<void>;
   };
   run: {
     start(params: Params<'run.start'>): Promise<RunReceipt>;

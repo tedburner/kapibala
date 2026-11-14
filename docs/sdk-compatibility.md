@@ -16,7 +16,7 @@
 
 0.x 编号政策不是上述差异的免责理由：本版把每一处都作为公开差异登记，删除审查不因把符号改标为"内部"而绕过。
 
-## v0.1.0 阶段 A 候选增量（未发布）
+## v0.1.0 阶段 A 增量（已随 v0.1.0 发布）
 
 以下变更建立在已发布 v0.0.10 之上；上文的 9 项描述保留为 v0.0.10 的历史迁移记录。当前声明快照和 migration.json 已包含本阶段，旧基线仍为固定 v0.0.9 tarball，不重建或覆盖旧证据。
 
@@ -34,11 +34,17 @@
 
 验证过程与实际限制见 [阶段 A 验收记录](verification/v0.1.0-stage-a.md)。未完成 Node 20、Windows 或桌面签名包的人工证据不能由本机检查替代。
 
-## v0.1.0 阶段 C 候选增量（未发布）
+## v0.1.0 阶段 C 增量（已随 v0.1.0 发布）
 
 CLI `/host` 新增导出类型 `ManagedInspection`；`ManagedHostSession` 新增 `inspection()` 和 `subscribeInspection()`，供 Node 宿主只读观察已知状态、Skill/MCP 诊断与直接子任务摘要。文本与条目限额、脱敏，不启动 MCP、不收集结果；原有 wire 1.0 形状和版本不变。自定义实现该新宿主接口的适配器需补齐这两个方法；现役 Core/CLI 调用方式不变。`status().runUsage` 只在所有已完成请求明确给出 usage 时提供，未知不再借默认 metrics 零伪装为实际用量。详见[阶段 C 验收](verification/v0.1.0-stage-c.md)。
 
 本阶段另新增声明模块 `@kiturone/kapibala-cli` 的 `ui/runtime-errors.d.ts`（`describeRuntimeError`）：宿主侧把 core 运行时固定抛出的已知错误文案（如工具等待用户操作导致的暂停）映射为面向用户的可行动提示，未知错误回退脱敏原文；纯增补，不改变既有符号、wire 形状与错误码语义。桌面端同步补齐审批可达性：审批请求到达即自动弹出审批面板，`approval.closed` 通知带 `reason`（`resolved`/`timeout`/`aborted`），审批超时自动拒绝时前端给出明确中文诊断，不再让用户面对无入口的 `PERMISSION_DENIED` 死锁。
+
+## v0.1.0 会话管理增量（已随 v0.1.0 发布）
+
+桌面侧栏的行内操作带出五处公共面变化：Core 的 `SessionManager` 新增 `renameSession(id, title)`、`pinSession(id, pinned)`、`deleteSession(id)`（均自行取锁并在完成后释放），`SessionMetadata` 新增 `pinned`，`SessionRecordType` 增加 `pin_state`，`SessionStore` 新增 `setPinnedState(pinned)`，CLI `/host` 的 `ManagedHostSession` 新增必填成员 `rename(title)` 与 `setPinned(pinned)`，供宿主对已打开句柄原地写入。
+
+`deleteSession` 是不可逆的物理删除（正文 + sidecar），只拒绝本进程持句柄或其它进程持锁的会话，不提供回收站；`pinSession` 只影响 `list()` 的分组次序，不写活动时间。自定义实现 `ManagedHostSession` 的适配器必须补齐新增的两个方法，否则 TypeScript 编译失败；wire 1.0 形状与版本不变，桌面 RPC 契约属客户端内部面，不构成对外承诺。
 
 ## 1. 盘点口径
 

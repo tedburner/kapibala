@@ -15,11 +15,16 @@ import {
   CheckIcon,
   FolderPlusIcon,
   FolderSimpleIcon,
+  HandIcon,
+  LightbulbIcon,
+  ShieldCheckIcon,
+  ShieldWarningIcon,
   StopIcon,
   XIcon,
 } from '@phosphor-icons/react';
 import {
   type CSSProperties,
+  Fragment,
   useCallback,
   useEffect,
   useRef,
@@ -34,6 +39,7 @@ import { HistoryListClient } from './history-list-client.js';
 import { KubaiIcon } from './icons/KubaiIcon.js';
 import { MessageList } from './message-list.js';
 import { ProjectDialog } from './project-dialog.js';
+import { SessionDeleteDialog, SessionRenameDialog, type SessionTarget } from './session-actions.js';
 import { SettingsDialog } from './settings-dialog.js';
 import { useUI } from './ui-state.js';
 import { ViewClient } from './view-client.js';
@@ -48,12 +54,34 @@ const scopeOf = (opened: Opened) => ({
   sessionId: opened.sessionId,
 });
 const MODE_NAMES = {
-  Approval: '逐次审批',
-  Plan: '计划',
-  Auto: '自动',
+  Approval: '变更前确认',
+  Plan: '计划模式',
+  Auto: '自主模式',
   FullAccess: '完全访问',
 } as const;
 type Mode = keyof typeof MODE_NAMES;
+/** 模式菜单的灰色副标题：用一句话说明该模式何时介入，帮助用户区分三个审批档位的强度。 */
+const MODE_HINTS = {
+  Plan: '编辑前先出计划。',
+  Approval: '改文件前先问我。',
+  Auto: '在有风险时询问。',
+  FullAccess: '减少确认次数。',
+} as const;
+/** 各模式的语义图标：计划用灯泡，其余按审批强度从手（逐次确认）递进到盾。 */
+const MODE_ICONS = {
+  Plan: LightbulbIcon,
+  Approval: HandIcon,
+  Auto: ShieldCheckIcon,
+  FullAccess: ShieldWarningIcon,
+} as const;
+/** 菜单展示顺序：计划模式单列一组（它是工作流档位而非审批强度），与三个审批档位之间用分隔线隔开。 */
+const MODE_ORDER: readonly Mode[] = ['Plan', 'Approval', 'Auto', 'FullAccess'];
+
+/** 会话模式图标：菜单项与触发按钮共用，保证同一模式在两处的视觉语义一致。 */
+function ModeGlyph({ mode, size = 16 }: { mode: Mode; size?: number }) {
+  const Glyph = MODE_ICONS[mode];
+  return <Glyph size={size} className="shrink-0 text-kumo-subtle" />;
+}
 const ROLE_NAMES = {
   default: '默认',
   planning: '规划',
@@ -85,6 +113,11 @@ export function App() {
   const [spaces, setSpaces] = useState<Workspace[]>([]);
   const [catalog, setCatalog] = useState<Catalog>();
   const [recent, setRecent] = useState<Output<'preferences.read'>['recent']>([]);
+  /** 归档集合的变更代数：设置页据此重新拉取，不依赖设置页自己猜测何时过期。 */
+  const [archiveRevision, setArchiveRevision] = useState(0);
+  const [pendingDelete, setPendingDelete] = useState<SessionTarget>();
+  /** 待改名的会话；弹窗自身维护草稿，这里只保存身份与当前标题。 */
+  const [pendingRename, setPendingRename] = useState<SessionTarget>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [fullAccess, setFullAccess] = useState(false);
@@ -283,6 +316,67 @@ export function App() {
     const configuration = await api.session.configure(change);
     setOpened({ ...opened, configuration });
   }
+  // 归档或删除后逐空间重取列表：设置页的归档页聚合全部空间，只刷新一个会留下过期行。
+  async function refreshSpaces() {
+    for (const space of spaces) if (space.trusted) await refreshHistory(space);
+    setArchiveRevision((value) => value + 1);
+  }
+  /** 归档/删除都会让 Host 关闭该会话句柄，页面必须同步收敛，否则停在失效快照上。 */
+  async function dropOpenView(workspaceId: string, conversationId: string) {
+    if (opened?.workspaceId !== workspaceId || opened.conversationId !== conversationId) return;
+    ui.select(workspaceId, '');
+    setDetails(undefined);
+    setOpened(undefined);
+    await client.clear();
+  }
+  async function archiveConversation(
+    space: Workspace,
+    row: { conversationId: string; title: string },
+  ) {
+    await act(async () => {
+      await api.session.archive({ workspaceId: space.id, conversationId: row.conversationId });
+      await dropOpenView(space.id, row.conversationId);
+      await refreshSpaces();
+    });
+  }
+  async function deleteConversation(target: SessionTarget) {
+    setPendingDelete(undefined);
+    await act(async () => {
+      await api.session.delete({
+        workspaceId: target.workspaceId,
+        conversationId: target.conversationId,
+      });
+      await dropOpenView(target.workspaceId, target.conversationId);
+      await refreshSpaces();
+    });
+  }
+  /** 改名只写标题记录：保留已打开的视图与运行句柄，仅重取该空间列表以更新标题。 */
+  async function renameConversation(target: SessionTarget, title: string) {
+    setPendingRename(undefined);
+    await act(async () => {
+      await api.session.rename({
+        workspaceId: target.workspaceId,
+        conversationId: target.conversationId,
+        title,
+      });
+      const space = spaces.find((item) => item.id === target.workspaceId);
+      if (space) await refreshHistory(space);
+    });
+  }
+  /** 置顶只改列表次序，Host 已按置顶优先排序，页面不再自行重排。 */
+  async function pinConversation(
+    space: Workspace,
+    row: { conversationId: string; pinned?: boolean },
+  ) {
+    await act(async () => {
+      await api.session.pin({
+        workspaceId: space.id,
+        conversationId: row.conversationId,
+        pinned: !row.pinned,
+      });
+      await refreshHistory(space);
+    });
+  }
   // 已打开会话直接改本会话配置；新对话只暂存选择，创建成功后随首个任务一起生效。
   function chooseModel(profileId: string) {
     if (!opened) {
@@ -449,7 +543,7 @@ export function App() {
                       disabled={Boolean(running) || busy}
                       aria-label={`会话模式：${MODE_NAMES[opened.configuration.mode]}`}
                     >
-                      <KubaiIcon name="信任空间" size={18} />
+                      <ModeGlyph mode={opened.configuration.mode} size={18} />
                       <span className="min-w-0 truncate">
                         {MODE_NAMES[opened.configuration.mode]}
                       </span>
@@ -458,24 +552,25 @@ export function App() {
                   }
                 />
                 <DropdownMenu.Content>
-                  {(
-                    [
-                      ['Approval', '逐次审批'],
-                      ['Plan', '计划'],
-                      ['Auto', '自动'],
-                      ['FullAccess', '完全访问'],
-                    ] as const
-                  ).map(([mode, name]) => (
-                    <DropdownMenu.Item
-                      key={mode}
-                      onClick={() => {
-                        if (mode === 'FullAccess') setFullAccess(true);
-                        else void act(() => configure({ ...scopeOf(opened), mode }));
-                      }}
-                    >
-                      <span className="min-w-0 flex-1">{name}</span>
-                      {opened.configuration.mode === mode && <CheckIcon size={14} />}
-                    </DropdownMenu.Item>
+                  {MODE_ORDER.map((mode, index) => (
+                    <Fragment key={mode}>
+                      {index === 1 && <DropdownMenu.Separator />}
+                      <DropdownMenu.Item
+                        onClick={() => {
+                          if (mode === 'FullAccess') setFullAccess(true);
+                          else void act(() => configure({ ...scopeOf(opened), mode }));
+                        }}
+                      >
+                        <ModeGlyph mode={mode} />
+                        <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+                          <span className="truncate">{MODE_NAMES[mode]}</span>
+                          <span className="truncate text-xs text-kumo-subtle">
+                            {MODE_HINTS[mode]}
+                          </span>
+                        </span>
+                        {opened.configuration.mode === mode && <CheckIcon size={14} />}
+                      </DropdownMenu.Item>
+                    </Fragment>
                   ))}
                 </DropdownMenu.Content>
               </DropdownMenu>
@@ -649,6 +744,22 @@ export function App() {
         onNew={() => void act(() => openConversation())}
         onNewInSpace={(space) => void act(() => openConversation(undefined, space))}
         onOpen={(space, conversationId) => void act(() => openConversation(conversationId, space))}
+        onRename={(space, row) =>
+          setPendingRename({
+            workspaceId: space.id,
+            conversationId: row.conversationId,
+            title: row.title,
+          })
+        }
+        onPin={(space, row) => void pinConversation(space, row)}
+        onArchive={(space, row) => void archiveConversation(space, row)}
+        onDelete={(space, row) =>
+          setPendingDelete({
+            workspaceId: space.id,
+            conversationId: row.conversationId,
+            title: row.title,
+          })
+        }
         onPage={(space, page) => void act(() => refreshHistory(space, page))}
         onSettings={() => ui.settings(true)}
         onRefreshRuntime={() => void act(() => client.connectRuntime())}
@@ -849,6 +960,25 @@ export function App() {
         reload={reloadCatalog}
         report={report}
         hostDown={facts.error !== undefined || facts.runtimeValid === false}
+        spaces={spaces}
+        archiveRevision={archiveRevision}
+        onArchivedChanged={() => void refreshSpaces().catch((reason) => report(failure(reason)))}
+        onRequestDelete={setPendingDelete}
+      />
+      <SessionDeleteDialog
+        target={pendingDelete}
+        onCancel={() => setPendingDelete(undefined)}
+        onConfirm={() => {
+          if (pendingDelete) void deleteConversation(pendingDelete);
+        }}
+      />
+      <SessionRenameDialog
+        target={pendingRename}
+        busy={busy}
+        onCancel={() => setPendingRename(undefined)}
+        onConfirm={(title) => {
+          if (pendingRename) void renameConversation(pendingRename, title);
+        }}
       />
       <LayerDialog
         open={Boolean(trust)}

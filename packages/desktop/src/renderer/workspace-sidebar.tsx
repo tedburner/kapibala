@@ -1,11 +1,23 @@
 import { Button, Collapsible, DropdownMenu, Input, Sidebar, Tooltip } from '@cloudflare/kumo';
-import { CaretDownIcon, DotsThreeIcon, NotePencilIcon, PlusIcon } from '@phosphor-icons/react';
+import {
+  ArchiveIcon,
+  CaretDownIcon,
+  DotsThreeIcon,
+  NotePencilIcon,
+  PencilLineIcon,
+  PlusIcon,
+  PushPinIcon,
+  PushPinSlashIcon,
+  TrashIcon,
+} from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
 import type { Output, Workspace } from '../shared/contracts.js';
 import type { RuntimeSnapshot } from '../shared/observations.js';
 import { KubaiIcon } from './icons/KubaiIcon.js';
 
 type RuntimeItem = RuntimeSnapshot['items'][number];
+/** 会话行的最小身份：标题只用于菜单与弹窗文案，定位始终走空间 ID + 会话 ID。 */
+type SessionRow = { conversationId: string; title: string; pinned?: boolean };
 /** 将 Host 的轻量运行事实转成文字，不用颜色或消息订阅推断后台空闲。 */
 export function runtimeLabel(item?: RuntimeItem, valid = true): string {
   if (!valid) return '状态未知';
@@ -43,6 +55,10 @@ export function WorkspaceSidebar({
   onNewInSpace,
   onOpen,
   onClose,
+  onRename,
+  onPin,
+  onArchive,
+  onDelete,
   onPage,
   onSettings,
   onRefreshRuntime,
@@ -61,6 +77,14 @@ export function WorkspaceSidebar({
   onNewInSpace(space: Workspace): void;
   onOpen(space: Workspace, conversationId: string): void;
   onClose(item: RuntimeItem): void;
+  /** 重命名只追加标题记录，运行中的会话同样可改，因此不随运行状态禁用。 */
+  onRename(space: Workspace, row: SessionRow): void;
+  /** 置顶立即写控制记录并前置到列表头部；再次点击取消置顶。 */
+  onPin(space: Workspace, row: SessionRow): void;
+  /** 归档只做逻辑标记且可恢复；运行中的会话由 Host 拒绝，入口在此先行禁用。 */
+  onArchive(space: Workspace, row: SessionRow): void;
+  /** 删除为物理删除，调用方必须先弹出不可撤销确认，再请求 Host。 */
+  onDelete(space: Workspace, row: SessionRow): void;
   onPage(space: Workspace, page: number): void;
   onSettings(): void;
   onRefreshRuntime(): void;
@@ -365,6 +389,7 @@ export function WorkspaceSidebar({
                         title: '未命名对话',
                         messageCount: 0,
                         lastActivityAt: 0,
+                        pinned: false,
                         unavailableReason: undefined,
                       })),
                     ]
@@ -380,6 +405,8 @@ export function WorkspaceSidebar({
                         const handle = spaceItems.find(
                           (item) => item.conversationId === row.conversationId,
                         );
+                        // 运行中不允许归档或删除：Host 会拒绝，入口先禁用避免点了才报错。
+                        const active = Boolean(handle && handle.phase !== 'idle');
                         return (
                           <Sidebar.MenuItem
                             key={row.conversationId}
@@ -395,13 +422,19 @@ export function WorkspaceSidebar({
                               title={row.unavailableReason ?? row.title}
                               aria-label={row.title || '未命名对话'}
                               aria-description={
-                                runtimeLabel(handle, runtimeValid) ||
-                                activityTime(row.lastActivityAt)
+                                [
+                                  row.pinned ? '已置顶' : '',
+                                  runtimeLabel(handle, runtimeValid) ||
+                                    activityTime(row.lastActivityAt),
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ') || undefined
                               }
                               onClick={() => onOpen(space, row.conversationId)}
                             >
                               <span className="truncate">{row.title || '未命名对话'}</span>
                               <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-kumo-subtle">
+                                {row.pinned && <PushPinIcon size={12} weight="fill" />}
                                 {handle?.phase !== undefined &&
                                   handle.phase !== 'idle' &&
                                   handle.cleanup !== 'failed' && (
@@ -414,24 +447,26 @@ export function WorkspaceSidebar({
                                   activityTime(row.lastActivityAt)}
                               </span>
                             </Sidebar.MenuButton>
-                            {handle && (
-                              <DropdownMenu>
-                                <DropdownMenu.Trigger
-                                  render={
-                                    <Button
-                                      className="kapibala-action absolute right-0 shrink-0 bg-(--kapibala-sidebar-surface) opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100"
-                                      variant="ghost"
-                                      shape="square"
-                                      size="base"
-                                      aria-label={`${row.title || '未命名对话'} 的运行时操作`}
-                                    />
-                                  }
-                                >
-                                  <DotsThreeIcon size={18} />
-                                </DropdownMenu.Trigger>
-                                <DropdownMenu.Content>
+                            {/* 会话动作对每一行都可用：纯历史会话没有运行句柄，
+                                但同样需要归档与删除，入口不能只在运行时可及。 */}
+                            <DropdownMenu>
+                              <DropdownMenu.Trigger
+                                render={
+                                  <Button
+                                    className="kapibala-action pointer-events-none absolute right-0 shrink-0 bg-(--kapibala-sidebar-surface) opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 group-hover/row:pointer-events-auto group-hover/row:opacity-100"
+                                    variant="ghost"
+                                    shape="square"
+                                    size="base"
+                                    aria-label={`${row.title || '未命名对话'} 的会话操作`}
+                                  />
+                                }
+                              >
+                                <DotsThreeIcon size={18} />
+                              </DropdownMenu.Trigger>
+                              <DropdownMenu.Content>
+                                {handle && (
                                   <DropdownMenu.Group>
-                                    <DropdownMenu.Label>关闭运行并保留历史</DropdownMenu.Label>
+                                    <DropdownMenu.Label>运行时</DropdownMenu.Label>
                                     <DropdownMenu.Item onClick={() => onClose(handle)}>
                                       {handle.cleanup === 'failed'
                                         ? '重试清理'
@@ -440,9 +475,45 @@ export function WorkspaceSidebar({
                                           : '停止并关闭'}
                                     </DropdownMenu.Item>
                                   </DropdownMenu.Group>
-                                </DropdownMenu.Content>
-                              </DropdownMenu>
-                            )}
+                                )}
+                                {handle && <DropdownMenu.Separator />}
+                                <DropdownMenu.Item
+                                  disabled={busy}
+                                  onClick={() => onRename(space, row)}
+                                >
+                                  <PencilLineIcon size={16} />
+                                  重命名
+                                </DropdownMenu.Item>
+                                <DropdownMenu.Item
+                                  disabled={busy}
+                                  onClick={() => onPin(space, row)}
+                                >
+                                  {row.pinned ? (
+                                    <PushPinSlashIcon size={16} />
+                                  ) : (
+                                    <PushPinIcon size={16} />
+                                  )}
+                                  {row.pinned ? '取消置顶' : '置顶'}
+                                </DropdownMenu.Item>
+                                <DropdownMenu.Separator />
+                                <DropdownMenu.Item
+                                  disabled={busy || active}
+                                  onClick={() => onArchive(space, row)}
+                                >
+                                  <ArchiveIcon size={16} />
+                                  归档
+                                </DropdownMenu.Item>
+                                <DropdownMenu.Separator />
+                                <DropdownMenu.Item
+                                  variant="danger"
+                                  disabled={busy || active}
+                                  onClick={() => onDelete(space, row)}
+                                >
+                                  <TrashIcon size={16} />
+                                  删除
+                                </DropdownMenu.Item>
+                              </DropdownMenu.Content>
+                            </DropdownMenu>
                           </Sidebar.MenuItem>
                         );
                       })}
