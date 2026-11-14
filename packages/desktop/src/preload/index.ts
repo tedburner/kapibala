@@ -103,10 +103,8 @@ const api: DesktopAPI = {
   },
   settings: {
     read: (workspaceId) => call('settings.read', { workspaceId }),
-    previewProfile: (params) => call('settings.previewProfile', params),
-    saveProfile: (previewToken, credentialMode) =>
-      done('settings.saveProfile', { previewToken, credentialMode }),
-    setCredential: (previewToken, key) => done('settings.setCredential', { previewToken, key }),
+    saveProfile: (params) => call('settings.saveProfile', params),
+    listModels: (params) => call('settings.listModels', params),
     setDefault: (profileId) => done('settings.setDefault', { profileId }),
     setRouting: (params) => done('settings.setRouting', params),
   },

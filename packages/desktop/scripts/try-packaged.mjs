@@ -19,6 +19,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toolchainEnv } from '../../../scripts/process-env.mjs';
+import { desktopLaunchEnv } from './launch-env.mjs';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repository = path.resolve(desktop, '../..');
@@ -55,7 +57,8 @@ const packArgs = [
 ];
 const packed = spawn(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', packArgs, {
   cwd: repository,
-  env: { ...process.env, GITHUB_OUTPUT: output },
+  // 打包子进程只剥掉外部预加载钩子，否则 tsup 清理 dist 时会撞上宿主的批量删除守卫。
+  env: toolchainEnv(process.env, repository, { GITHUB_OUTPUT: output }),
   stdio: 'inherit',
   shell: process.platform === 'win32',
 });
@@ -97,12 +100,12 @@ process.stdout.write(
 );
 const launched = spawn(binary, [], {
   cwd: directory,
-  env: {
-    ...process.env,
+  // 打包产物同样是 Electron 进程：白名单构造，宿主注入的 ELECTRON_RUN_AS_NODE 会让它退化成纯 Node。
+  env: desktopLaunchEnv(process.env, {
     KPBL_DESKTOP_E2E: '1',
     KPBL_DESKTOP_HOME: home,
     KPBL_DESKTOP_USER_DATA: userData,
-  },
+  }),
   stdio: 'inherit',
 });
 process.exitCode = await new Promise((resolve, reject) => {

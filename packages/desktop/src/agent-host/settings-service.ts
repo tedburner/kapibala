@@ -1,18 +1,15 @@
-import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
 import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
   PROVIDER_METAS,
   type UserSettings,
-  credentialGroup,
   describeCredentialGroup,
   ensureProfile,
   loadGlobalSettingsForWrite,
   loadSettings,
   mutateGlobalSettings,
+  providerCategory,
   redactText,
   resolveApiKeyDetailed,
   resolveBaseURL,
@@ -21,18 +18,8 @@ import {
 import { type Output, type ProfileDraft, ProfileDraftSchema } from '../shared/contracts.js';
 import type { Workspaces } from './workspaces.js';
 
-/** 全局配置服务只通过短事务提交字段；预览令牌持有相关原始值，不让页面比较秘密。 */
+/** 全局配置服务只通过短事务提交字段；保存即写盘，不保留预览态或秘密副本。 */
 export class SettingsService {
-  private readonly previews = new Map<
-    string,
-    {
-      draft: ProfileDraft;
-      fingerprint: string;
-      expiresAt: number;
-      workspaceId?: string;
-      projectFingerprint: string;
-    }
-  >();
   constructor(private readonly workspaces: Workspaces) {}
   /** 白名单目录与凭证来源；项目未信任时只读全局，不回显已有密钥。 */
   read(workspaceId?: string): Output<'settings.read'> {
@@ -60,26 +47,31 @@ export class SettingsService {
       ),
     };
   }
-  /** 协议、端点或凭证环境变量变化必须另存；最多保留 64 个、30 秒失效的控制连接内令牌。 */
-  preview(
+  /**
+   * 一次落盘：校验通过后直接写本地 settings.json，并回读刚落盘的 Profile。
+   *
+   * 端点、协议或凭证环境变量变更，以及内置 Profile 的结构改动都必须另存新 id——
+   * 避免把已可用的配置原地改成不可用。密钥留空时沿用同组已存凭证，
+   * 既没有新密钥也没有可复用凭证才拒绝保存。
+   */
+  saveProfile(
     draft: ProfileDraft,
+    apiKey?: string,
     editId?: string,
-    workspaceId?: string,
-  ): Output<'settings.previewProfile'> {
+  ): Output<'settings.saveProfile'> {
     draft = ProfileDraftSchema.parse(draft);
     const settings = this.global();
-    const target = settings.profiles.find((item) => item.id === draft.id);
-    if (editId && editId !== draft.id && target) throw new Error('SETTINGS_CONFLICT');
-    const original = target;
-    const builtin = BUILTIN_PROFILES.find((item) => item.id === draft.id);
+    const original = settings.profiles.find((item) => item.id === draft.id);
+    if (editId && editId !== draft.id && original) throw new Error('SETTINGS_CONFLICT');
     if (
       original &&
+      original.id === draft.id &&
       (original.provider !== draft.provider ||
         original.baseURL !== draft.baseURL ||
-        original.apiKeyEnv !== draft.apiKeyEnv) &&
-      original.id === draft.id
+        original.apiKeyEnv !== draft.apiKeyEnv)
     )
       throw new Error('SAVE_AS_NEW_PROFILE');
+    const builtin = BUILTIN_PROFILES.find((item) => item.id === draft.id);
     if (
       builtin &&
       ['provider', 'baseURL', 'modelName', 'apiKeyEnv', 'contextWindow'].some((field) =>
@@ -90,56 +82,95 @@ export class SettingsService {
       )
     )
       throw new Error('SAVE_AS_NEW_PROFILE');
-    this.prune();
-    if (this.previews.size >= 64) throw new Error('RESOURCE_LIMIT');
-    const previewToken = randomUUID();
-    this.previews.set(previewToken, {
-      draft,
-      fingerprint: this.fingerprint(settings, draft),
-      expiresAt: Date.now() + 30_000,
-      workspaceId,
-      projectFingerprint: this.projectFingerprint(workspaceId),
-    });
-    return {
-      previewToken,
-      profile: this.publicProfile(
-        { ...(original?.id === draft.id ? original : undefined), ...draft },
-        settings,
-      ),
-    };
-  }
-  /** 持锁重读相关字段，任何同组凭证值变化都会使旧预览冲突；无关字段自然保留。 */
-  save(token: string, key?: string, credentialMode?: 'reuse' | 'none'): void {
-    this.prune();
-    const preview = this.previews.get(token);
-    if (!preview) throw new Error('SETTINGS_CONFLICT');
+    if (apiKey === undefined) {
+      const resolved = resolveApiKeyDetailed({ ...original, ...draft }, settings);
+      if ((!resolved || resolved.source === 'none') && draft.apiKeyEnv !== API_KEY_ENV_NONE)
+        throw new Error('CONFIG_REQUIRED');
+    }
     mutateGlobalSettings(
       (raw) => {
-        const settings = this.merge(raw);
-        if (this.projectFingerprint(preview.workspaceId) !== preview.projectFingerprint)
-          throw new Error('SETTINGS_CONFLICT');
-        const resolved = resolveApiKeyDetailed(
-          { ...settings.profiles.find((item) => item.id === preview.draft.id), ...preview.draft },
-          settings,
-        );
-        if (key === undefined && credentialMode === 'none' && resolved?.source !== 'none')
-          throw new Error('INVALID_REQUEST');
-        if (
-          key === undefined &&
-          credentialMode === 'reuse' &&
-          (!resolved || resolved.source === 'none')
-        )
-          throw new Error('CONFIG_REQUIRED');
-        if (this.fingerprint(settings, preview.draft) !== preview.fingerprint)
-          throw new Error('SETTINGS_CONFLICT');
-        const current = raw.profiles.findIndex((item) => item.id === preview.draft.id);
-        if (current < 0) ensureProfile(raw, { ...preview.draft });
-        else raw.profiles[current] = { ...raw.profiles[current], ...preview.draft };
-        if (key !== undefined) updateProfileApiKey(raw, preview.draft.id, key);
+        const current = raw.profiles.findIndex((item) => item.id === draft.id);
+        if (current < 0) ensureProfile(raw, { ...draft });
+        else raw.profiles[current] = { ...raw.profiles[current], ...draft };
+        if (apiKey !== undefined) updateProfileApiKey(raw, draft.id, apiKey);
       },
       { homeDir: this.workspaces.home },
     );
-    this.previews.delete(token);
+    const saved = this.global();
+    const profile = saved.profiles.find((item) => item.id === draft.id);
+    if (!profile) throw new Error('PROFILE_UNAVAILABLE');
+    return { profile: this.publicProfile(profile, saved) };
+  }
+  /**
+   * 按 Base URL 只读探测模型目录，供自定义端点直接选模型。
+   *
+   * 只发一次 GET {baseURL}/models：8 秒超时、1MB 响应上限、500 条结果上限，失败以固定错误码
+   * 交给页面翻译；本次输入的密钥只用于这一次请求，不落盘、不进预览令牌。留空时用 profileId
+   * 指向的已存凭证（同组复用），避免用户重复输入。
+   */
+  async listModels(baseURL: string, apiKey?: string, profileId?: string): Promise<string[]> {
+    const endpoint = new URL(baseURL);
+    if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error('MODEL_LIST_INVALID');
+    endpoint.search = '';
+    endpoint.hash = '';
+    const url = `${endpoint.href.replace(/\/$/, '')}/models`;
+    const settings = this.global();
+    const profile = profileId ? settings.profiles.find((item) => item.id === profileId) : undefined;
+    const stored = profile ? resolveApiKeyDetailed(profile, settings) : undefined;
+    const credential = apiKey ?? (stored && stored.source !== 'none' ? stored.key : undefined);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          accept: 'application/json',
+          ...(credential ? { authorization: `Bearer ${credential}` } : {}),
+        },
+        signal: AbortSignal.timeout(8_000),
+      });
+    } catch (error) {
+      throw new Error(
+        (error as { name?: string }).name === 'TimeoutError'
+          ? 'MODEL_LIST_TIMEOUT'
+          : 'MODEL_LIST_UNAVAILABLE',
+      );
+    }
+    if (!response.ok) throw new Error('MODEL_LIST_UNAVAILABLE');
+    const body = await response.text();
+    if (body.length > 1_000_000) throw new Error('MODEL_LIST_INVALID');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      throw new Error('MODEL_LIST_INVALID');
+    }
+    const record = (value: unknown): value is Record<string, unknown> =>
+      typeof value === 'object' && value !== null;
+    // 兼容三类常见形状：OpenAI `{data:[{id}]}`、Ollama `{models:[{name|model}]}`、裸数组。
+    const entries = Array.isArray(parsed)
+      ? parsed
+      : record(parsed) && Array.isArray(parsed.data)
+        ? parsed.data
+        : record(parsed) && Array.isArray(parsed.models)
+          ? parsed.models
+          : undefined;
+    if (!entries) throw new Error('MODEL_LIST_INVALID');
+    const models = [
+      ...new Set(
+        entries
+          .map((entry) => {
+            if (typeof entry === 'string') return entry;
+            if (!record(entry)) return '';
+            const id = entry.id ?? entry.name ?? entry.model;
+            return typeof id === 'string' ? id : '';
+          })
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0 && value.length <= 256),
+      ),
+    ]
+      .sort()
+      .slice(0, 500);
+    if (entries.length > 0 && models.length === 0) throw new Error('MODEL_LIST_INVALID');
+    return models;
   }
   /** 默认模型仅影响未来装配，不替换已打开会话的临时选择。 */
   setDefault(id: string): void {
@@ -202,28 +233,6 @@ export class SettingsService {
     for (const item of raw.profiles) profiles.set(item.id, { ...profiles.get(item.id), ...item });
     return { ...raw, profiles: [...profiles.values()] };
   }
-  private fingerprint(settings: UserSettings, draft: ProfileDraft): string {
-    const current = settings.profiles.find((item) => item.id === draft.id);
-    const target = { ...current, ...draft };
-    return JSON.stringify({
-      current,
-      group: credentialGroup(target),
-      resolved: resolveApiKeyDetailed(target, settings),
-      endpoint: resolveBaseURL({ ...target, ...draft }),
-    });
-  }
-  private projectFingerprint(workspaceId?: string): string {
-    if (!workspaceId) return '';
-    const workspace = this.workspaces.get(workspaceId, true);
-    const file = path.join(workspace.root, '.kapibala/settings.json');
-    try {
-      if (fs.statSync(file).size > 1024 * 1024) throw new Error('CONFIG_INVALID');
-      return fs.readFileSync(file, 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
-      throw error;
-    }
-  }
   private publicProfile(
     profile: ModelProfile,
     settings: UserSettings,
@@ -259,6 +268,8 @@ export class SettingsService {
         return clean(actual.href);
       })(),
       builtin: BUILTIN_PROFILES.some((item) => item.id === profile.id),
+      // 厂商分组复用 CLI /model 菜单的同一套推断，页面分组与菜单分组永不漂移。
+      providerKey: providerCategory(profile),
       credential: {
         configured: Boolean(resolved && resolved.source !== 'none'),
         source: resolved?.source ?? 'none',
@@ -267,9 +278,5 @@ export class SettingsService {
         fromProfileId: resolved?.fromProfileId,
       },
     };
-  }
-  private prune(): void {
-    for (const [token, item] of this.previews)
-      if (item.expiresAt <= Date.now()) this.previews.delete(token);
   }
 }

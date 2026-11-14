@@ -7,6 +7,7 @@ import {
   CaretRightIcon,
   CheckCircleIcon,
   MinusCircleIcon,
+  PencilSimpleIcon,
   SpinnerGapIcon,
   XCircleIcon,
 } from '@phosphor-icons/react';
@@ -191,12 +192,15 @@ export function MessageList({
   memoryKey,
   scrollRef,
   onTool,
+  onEdit,
   report,
 }: {
   messages: readonly ViewMessage[];
   memoryKey: string;
   scrollRef: RefObject<HTMLDivElement | null>;
   onTool(callId: string, trigger: HTMLElement): void;
+  /** 将用户消息原文回填到输入框供修改重发；只填草稿，不改写已落盘历史。 */
+  onEdit(text: string): void;
   report(message: string): void;
 }) {
   const saved = useUI.getState().scrolls[memoryKey];
@@ -291,7 +295,7 @@ export function MessageList({
               >
                 <article
                   aria-label={isUser ? '你的消息' : 'Kapibala 回复'}
-                  className={isUser ? 'ml-auto w-fit max-w-[85%]' : 'group w-full'}
+                  className={isUser ? 'group ml-auto w-fit max-w-[85%]' : 'group w-full'}
                 >
                   <div
                     className={
@@ -341,6 +345,30 @@ export function MessageList({
                     >
                       <span>复制正文</span>
                     </InlineCopyText>
+                  )}
+                  {/* 用户消息 hover 操作：复制原文 + 回填编辑；协议不支持截断重发，编辑只填草稿。 */}
+                  {isUser && copyText && (
+                    <div className="mt-1 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                      <InlineCopyText
+                        className="kapibala-action text-kumo-subtle"
+                        // 图标由组件内置（hover 显示），空文本节点仅满足 children 类型必填。
+                        value={copyText}
+                        labels={{ copyAction: '复制原文', copied: '已复制' }}
+                      >
+                        {''}
+                      </InlineCopyText>
+                      <Button
+                        className="kapibala-action text-kumo-subtle"
+                        variant="ghost"
+                        size="sm"
+                        shape="square"
+                        aria-label="编辑该消息"
+                        title="编辑该消息"
+                        onClick={() => onEdit(copyText)}
+                      >
+                        <PencilSimpleIcon size={14} />
+                      </Button>
+                    </div>
                   )}
                 </article>
               </div>

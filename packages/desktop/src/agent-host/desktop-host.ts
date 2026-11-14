@@ -59,7 +59,8 @@ interface PendingApproval {
   slot: Slot;
   runId: string;
   sessionAllowed: boolean;
-  finish(choice: ApprovalChoice): void;
+  /** reason 必须随裁决一并上报：超时自动拒绝与用户主动拒绝在渲染层需要不同的解释文案。 */
+  finish(choice: ApprovalChoice, reason: 'resolved' | 'timeout' | 'aborted'): void;
 }
 
 /** 单 utility Host 的资源所有者；所有父子会话显式共享同一个工作区租约协调器。 */
@@ -113,20 +114,13 @@ export class DesktopHost {
       }
       case 'settings.read':
         return this.settings.read(PARAMS[method].parse(params).workspaceId);
-      case 'settings.previewProfile': {
+      case 'settings.saveProfile': {
         const p = PARAMS[method].parse(params);
-        return this.settings.preview(p.profile, p.editId, p.workspaceId);
+        return this.settings.saveProfile(p.profile, p.apiKey, p.editId);
       }
-      case 'settings.saveProfile':
-        {
-          const p = PARAMS[method].parse(params);
-          this.settings.save(p.previewToken, undefined, p.credentialMode);
-        }
-        return {};
-      case 'settings.setCredential': {
+      case 'settings.listModels': {
         const p = PARAMS[method].parse(params);
-        this.settings.save(p.previewToken, p.key);
-        return {};
+        return { models: await this.settings.listModels(p.baseURL, p.apiKey, p.profileId) };
       }
       case 'settings.setDefault':
         this.settings.setDefault(PARAMS[method].parse(params).profileId);
@@ -227,7 +221,7 @@ export class DesktopHost {
         if (!pending || pending.slot !== slot || pending.runId !== p.runId)
           throw new Error('APPROVAL_EXPIRED');
         if (p.choice === 'allow_session' && !pending.sessionAllowed) throw new Error('FORBIDDEN');
-        pending.finish(p.choice);
+        pending.finish(p.choice, 'resolved');
         return {};
       }
       case 'presentation.subscribe':
@@ -274,7 +268,7 @@ export class DesktopHost {
   async disconnect(): Promise<void> {
     this.dead = true;
     this.runtimeStream.close();
-    for (const pending of [...this.approvals.values()]) pending.finish('deny_once');
+    for (const pending of [...this.approvals.values()]) pending.finish('deny_once', 'aborted');
     const openings = await Promise.allSettled([...this.openings]);
     const results = await Promise.allSettled(
       [...this.sessions.values()].map((slot) => this.close(slot)),
@@ -428,7 +422,7 @@ export class DesktopHost {
     slot.cleanupFailed = false;
     slot.closing = (async () => {
       for (const pending of [...this.approvals.values()])
-        if (pending.slot === slot) pending.finish('deny_once');
+        if (pending.slot === slot) pending.finish('deny_once', 'aborted');
       await slot.handle.dispose();
       await slot.running;
       slot.view?.unsubscribe();
@@ -538,17 +532,20 @@ export class DesktopHost {
     const approvalId = randomUUID();
     const runId = slot.run.runId;
     return new Promise((resolve) => {
-      const finish = (choice: ApprovalChoice) => {
+      const finish = (choice: ApprovalChoice, reason: 'resolved' | 'timeout' | 'aborted') => {
         if (!this.approvals.delete(approvalId)) return;
         clearTimeout(timer);
         signal?.removeEventListener('abort', abort);
         this.runtimeChanged();
         if (!this.dead)
-          void this.notify({ type: 'approval.closed', approvalId }, 'control').catch(() => {});
+          void this.notify({ type: 'approval.closed', approvalId, reason }, 'control').catch(
+            () => {},
+          );
         resolve(choice);
       };
-      const abort = () => finish('deny_once');
-      const timer = setTimeout(abort, LIMITS.approvalTimeout);
+      const abort = () => finish('deny_once', 'aborted');
+      // 超时按拒绝收尾并显式广播 reason，让渲染层能解释「没有审批入口却出现 PERMISSION_DENIED」。
+      const timer = setTimeout(() => finish('deny_once', 'timeout'), LIMITS.approvalTimeout);
       this.approvals.set(approvalId, {
         slot,
         runId,

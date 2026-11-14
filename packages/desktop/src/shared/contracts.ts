@@ -66,6 +66,8 @@ const credential = z
 const publicProfile = profile.extend({
   effectiveBaseURL: z.string(),
   builtin: z.boolean(),
+  /** 厂商分组键，与 providers[].key 同源（detectProviderFamily / 'custom'）；页面据此把模型归入左侧厂商列表。 */
+  providerKey: z.string(),
   credential,
 });
 const settings = z
@@ -252,14 +254,22 @@ export const PARAMS = {
     .object({ workspaceId: id, trustToken: id, accept: z.boolean() })
     .strict(),
   'settings.read': z.object({ workspaceId: id.optional() }).strict(),
-  'settings.previewProfile': z
-    .object({ profile, editId: id.optional(), workspaceId: id.optional() })
-    .strict(),
+  /** 一次落盘：配置与密钥一起写进本地 settings.json，不做预览令牌或二次提交。 */
   'settings.saveProfile': z
-    .object({ previewToken: id, credentialMode: z.enum(['reuse', 'none']) })
+    .object({
+      profile,
+      /** 本次输入的新密钥；留空则沿用同组已存凭证，都不存在时由 host 拒绝保存。 */
+      apiKey: z.string().min(1).max(32_768).optional(),
+      editId: id.optional(),
+    })
     .strict(),
-  'settings.setCredential': z
-    .object({ previewToken: id, key: z.string().min(1).max(32_768) })
+  'settings.listModels': z
+    .object({
+      baseURL: z.url(),
+      /** 本次输入的临时密钥，不落盘；留空时由 host 按 profileId 复用已存凭证。 */
+      apiKey: z.string().min(1).max(32_768).optional(),
+      profileId: id.optional(),
+    })
     .strict(),
   'settings.setDefault': z.object({ profileId: id }).strict(),
   'settings.setRouting': z
@@ -341,9 +351,10 @@ export const RESULTS = {
   'workspace.openRecent': workspace,
   'workspace.confirmTrust': workspace,
   'settings.read': settings,
-  'settings.previewProfile': z.object({ previewToken: id, profile: publicProfile }).strict(),
-  'settings.saveProfile': empty,
-  'settings.setCredential': empty,
+  /** 保存后回读的落盘结果，页面用它刷新选中项，不必再发一次 settings.read。 */
+  'settings.saveProfile': z.object({ profile: publicProfile }).strict(),
+  /** 端点返回的模型 id 清单；条目数与长度由 host 设上限，只用于页面选择，不落盘。 */
+  'settings.listModels': z.object({ models: z.array(text).max(500) }).strict(),
   'settings.setDefault': empty,
   'settings.setRouting': empty,
   'session.list': z
@@ -411,7 +422,15 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
   }),
   session.extend({ subscriptionId: id, type: z.literal('presentation.invalidated'), reason: text }),
   approval.extend({ type: z.literal('approval.requested') }),
-  z.object({ type: z.literal('approval.closed'), approvalId: id }).strict(),
+  // reason 说明审批为何关闭：超时/中止的自动拒绝与用户主动裁决要能区分，
+  // 否则前端无法解释「从未见过审批入口却收到 PERMISSION_DENIED」的死锁现场。
+  z
+    .object({
+      type: z.literal('approval.closed'),
+      approvalId: id,
+      reason: z.enum(['resolved', 'timeout', 'aborted']).optional(),
+    })
+    .strict(),
   z.object({ type: z.literal('run.changed'), receipt: runReceipt }).strict(),
   z.object({ type: z.literal('theme.changed'), mode: z.enum(['light', 'dark']) }).strict(),
   z.object({ type: z.literal('host.unavailable'), error }).strict(),
@@ -459,11 +478,10 @@ export type DesktopAPI = {
   };
   settings: {
     read(workspaceId?: string): Promise<Output<'settings.read'>>;
-    previewProfile(
-      params: Params<'settings.previewProfile'>,
-    ): Promise<Output<'settings.previewProfile'>>;
-    saveProfile(previewToken: string, credentialMode: 'reuse' | 'none'): Promise<void>;
-    setCredential(previewToken: string, key: string): Promise<void>;
+    /** 直接写入本地配置并回读结果；不经过预览令牌。 */
+    saveProfile(params: Params<'settings.saveProfile'>): Promise<Output<'settings.saveProfile'>>;
+    /** 只读探测：按 Base URL 拉取模型目录，供自定义端点直接选模型。 */
+    listModels(params: Params<'settings.listModels'>): Promise<Output<'settings.listModels'>>;
     setDefault(profileId: string): Promise<void>;
     setRouting(params: Params<'settings.setRouting'>): Promise<void>;
   };

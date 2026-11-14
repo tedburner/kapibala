@@ -1,7 +1,8 @@
 import { Button, Input, LayerDialog } from '@cloudflare/kumo';
-import { DesktopIcon, FolderPlusIcon } from '@phosphor-icons/react';
+import { DesktopIcon } from '@phosphor-icons/react';
 import { useState } from 'react';
 import { ProjectNameSchema, type Workspace } from '../shared/contracts.js';
+import { KubaiIcon } from './icons/KubaiIcon.js';
 
 /** 项目创建是已有目录的显示入口，不创建目录或任务；信任取消保留表单，原语负责双层弹窗与焦点。 */
 export function ProjectDialog({
@@ -123,7 +124,7 @@ export function ProjectDialog({
                   disabled={busy}
                   onClick={() => void choose()}
                 >
-                  <FolderPlusIcon size={18} aria-hidden="true" />
+                  <KubaiIcon name="新建项目" size={20} />
                   {selected ? '更换' : '添加'}
                 </Button>
                 {selected && (
@@ -190,7 +191,7 @@ export function ProjectDialog({
               )}
               <div className="flex flex-col-reverse gap-3">
                 <Button
-                  className="kapibala-action w-full"
+                  className="kapibala-action w-full justify-center"
                   variant="secondary"
                   disabled={busy}
                   onClick={() => {
@@ -201,7 +202,7 @@ export function ProjectDialog({
                   取消
                 </Button>
                 <Button
-                  className="kapibala-action w-full"
+                  className="kapibala-action w-full justify-center"
                   variant="primary"
                   disabled={busy}
                   onClick={() => void create(true)}

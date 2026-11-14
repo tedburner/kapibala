@@ -1,16 +1,9 @@
-import { Button, Collapsible, DropdownMenu, Input, Sidebar } from '@cloudflare/kumo';
-import {
-  CaretDownIcon,
-  DotsThreeIcon,
-  FolderPlusIcon,
-  GearIcon,
-  HouseIcon,
-  MagnifyingGlassIcon,
-  NotePencilIcon,
-} from '@phosphor-icons/react';
+import { Button, Collapsible, DropdownMenu, Input, Sidebar, Tooltip } from '@cloudflare/kumo';
+import { CaretDownIcon, DotsThreeIcon, NotePencilIcon, PlusIcon } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
 import type { Output, Workspace } from '../shared/contracts.js';
 import type { RuntimeSnapshot } from '../shared/observations.js';
+import { KubaiIcon } from './icons/KubaiIcon.js';
 
 type RuntimeItem = RuntimeSnapshot['items'][number];
 /** 将 Host 的轻量运行事实转成文字，不用颜色或消息订阅推断后台空闲。 */
@@ -38,7 +31,6 @@ function activityTime(timestamp: number): string {
 /** 按登记空间组合 Kumo 侧栏；只折叠视图，不通过切换或折叠释放运行句柄。 */
 export function WorkspaceSidebar({
   spaces,
-  recent,
   histories,
   activeWorkspaceId,
   conversationId,
@@ -46,9 +38,9 @@ export function WorkspaceSidebar({
   runtimeValid,
   busy,
   onSpace,
-  onRecent,
   onDefault,
   onNew,
+  onNewInSpace,
   onOpen,
   onClose,
   onPage,
@@ -56,7 +48,6 @@ export function WorkspaceSidebar({
   onRefreshRuntime,
 }: {
   spaces: readonly Workspace[];
-  recent: Output<'preferences.read'>['recent'];
   histories: Record<string, Output<'session.list'>>;
   activeWorkspaceId?: string;
   conversationId?: string;
@@ -64,9 +55,10 @@ export function WorkspaceSidebar({
   runtimeValid: boolean;
   busy: boolean;
   onSpace(space: Workspace): void;
-  onRecent(id: string): void;
   onDefault(): void;
   onNew(): void;
+  /** 直接在该空间新建对话；调用方负责先完成空间选中与信任流程，未信任空间不展示该入口。 */
+  onNewInSpace(space: Workspace): void;
   onOpen(space: Workspace, conversationId: string): void;
   onClose(item: RuntimeItem): void;
   onPage(space: Workspace, page: number): void;
@@ -137,17 +129,8 @@ export function WorkspaceSidebar({
           hit(space.name) || (search.lists[space.id]?.items ?? []).some((row) => hit(titleOf(row))),
       )
     : spaces;
-  const recentRows = recent.filter((item) => !spaces.some((space) => space.recentId === item.id));
-  const recentVisible = keyword
-    ? recentRows.filter((item) => hit(item.name) || hit(item.parent))
-    : recentRows;
   const searching = Boolean(keyword && (search.loading || search.keyword !== keyword));
-  const noMatch =
-    keyword !== '' &&
-    !searching &&
-    !search.error &&
-    visible.length === 0 &&
-    recentVisible.length === 0;
+  const noMatch = keyword !== '' && !searching && !search.error && visible.length === 0;
   return (
     <Sidebar aria-label="空间与会话">
       <Sidebar.Header className="kapibala-sidebar-header">
@@ -159,7 +142,7 @@ export function WorkspaceSidebar({
         <Sidebar.Group className="kapibala-sidebar-actions">
           <Sidebar.Menu>
             <Sidebar.MenuButton
-              icon={NotePencilIcon}
+              icon={<KubaiIcon name="新建对话" size={20} />}
               className="kapibala-sidebar-action"
               aria-label="新建对话"
               tooltip="新建对话"
@@ -170,7 +153,7 @@ export function WorkspaceSidebar({
             </Sidebar.MenuButton>
             {!spaces.some((space) => space.kind === 'default') && (
               <Sidebar.MenuButton
-                icon={HouseIcon}
+                icon={<KubaiIcon name="默认空间" size={20} />}
                 className="kapibala-sidebar-action"
                 aria-label="默认空间"
                 tooltip="默认空间"
@@ -183,7 +166,7 @@ export function WorkspaceSidebar({
           </Sidebar.Menu>
         </Sidebar.Group>
         <div className="kapibala-sidebar-search group-data-[state=collapsed]/sidebar:hidden">
-          <MagnifyingGlassIcon size={16} aria-hidden="true" />
+          <KubaiIcon name="搜索" size={18} />
           <Input
             size="sm"
             className="h-auto w-full bg-transparent px-0 text-sm ring-0 focus:ring-0"
@@ -208,7 +191,7 @@ export function WorkspaceSidebar({
         )}
         {noMatch && (
           <p className="group-data-[state=collapsed]/sidebar:hidden px-3 pb-2 text-xs text-kumo-subtle">
-            已打开的空间中没有匹配的对话。最近项目需先打开才能搜索。
+            已打开的空间中没有匹配的对话。
           </p>
         )}
         {keyword === '' && (
@@ -275,21 +258,44 @@ export function WorkspaceSidebar({
                 open={keyword !== '' || (expanded[space.id] ?? space.id === activeWorkspaceId)}
                 onOpenChange={(open) => setExpanded((value) => ({ ...value, [space.id]: open }))}
               >
-                <div className="flex min-w-0 items-center">
+                <div className="group/space relative flex min-w-0 items-center">
                   <Sidebar.Menu className="min-w-0 flex-1">
                     <Sidebar.MenuButton
-                      icon={space.kind === 'default' ? HouseIcon : FolderPlusIcon}
+                      icon={
+                        space.kind === 'default' ? (
+                          <KubaiIcon name="默认空间" size={20} />
+                        ) : (
+                          <KubaiIcon name="项目空间" size={20} />
+                        )
+                      }
                       className="kapibala-sidebar-space-button"
                       title={space.root}
                       tooltip={space.name}
                       aria-label={space.name}
                       disabled={busy}
-                      onClick={() => onSpace(space)}
+                      onClick={() => {
+                        // 已是当前空间时点击只切换会话列表展开态，不重复选中
+                        // （重复选中会清空当前对话视图）；搜索态强制展开不参与切换。
+                        if (keyword === '' && space.id === activeWorkspaceId) {
+                          const openNow = expanded[space.id] ?? true;
+                          setExpanded((value) => ({ ...value, [space.id]: !openNow }));
+                          return;
+                        }
+                        onSpace(space);
+                        if (keyword === '')
+                          setExpanded((value) => ({ ...value, [space.id]: true }));
+                      }}
                     >
                       {space.name}
                       {status && (
                         <span
-                          className="ml-auto flex items-center gap-1.5 text-xs text-kumo-subtle"
+                          className={`ml-auto flex items-center gap-1.5 text-xs text-kumo-subtle ${
+                            // 悬停时让位给行内动作按钮：状态用 opacity 淡出而不是位移，
+                            // 标题宽度、行高与右侧图标位置都不抖动。
+                            space.trusted
+                              ? 'transition-opacity group-hover/space:opacity-0 group-focus-within/space:opacity-0'
+                              : ''
+                          }`}
                           aria-label={`${space.name} ${status}`}
                         >
                           <span
@@ -307,6 +313,28 @@ export function WorkspaceSidebar({
                       )}
                     </Sidebar.MenuButton>
                   </Sidebar.Menu>
+                  {/* 行内「新建对话」常驻 DOM 便于键盘到达，默认透明且不接收指针事件，
+                      悬停/聚焦才显形；用绝对定位覆盖右侧状态文本，避免出现时把标题挤窄。
+                      底色留空继承行的悬停色，否则会在行高亮上留出一块异色缺口。
+                      未信任空间没有可用会话上下文，入口直接不挂载。 */}
+                  {space.trusted && (
+                    <Tooltip
+                      content={`在 ${space.name} 新建对话`}
+                      render={
+                        <Button
+                          className="kapibala-action pointer-events-none absolute right-9 shrink-0 opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/space:pointer-events-auto group-focus-within/space:opacity-100 group-hover/space:pointer-events-auto group-hover/space:opacity-100 group-data-[state=collapsed]/sidebar:hidden"
+                          variant="ghost"
+                          shape="square"
+                          size="base"
+                          aria-label={`在 ${space.name} 新建对话`}
+                          disabled={busy}
+                          onClick={() => onNewInSpace(space)}
+                        />
+                      }
+                    >
+                      <PlusIcon size={16} />
+                    </Tooltip>
+                  )}
                   <Collapsible.Trigger
                     render={
                       <Button
@@ -463,28 +491,6 @@ export function WorkspaceSidebar({
             </Sidebar.Group>
           );
         })}
-        {recentVisible.length > 0 && (
-          <Sidebar.Group>
-            <div className="kapibala-sidebar-section group-data-[state=collapsed]/sidebar:hidden">
-              最近项目
-            </div>
-            <Sidebar.Menu>
-              {recentVisible.map((item) => (
-                <Sidebar.MenuButton
-                  key={item.id}
-                  icon={FolderPlusIcon}
-                  disabled={busy}
-                  aria-label={item.name}
-                  title={item.parent}
-                  tooltip={item.name}
-                  onClick={() => onRecent(item.id)}
-                >
-                  {item.name}
-                </Sidebar.MenuButton>
-              ))}
-            </Sidebar.Menu>
-          </Sidebar.Group>
-        )}
       </Sidebar.Content>
       <Sidebar.Footer className="kapibala-sidebar-footer">
         <Button
@@ -496,7 +502,7 @@ export function WorkspaceSidebar({
           title="打开设置"
           onClick={onSettings}
         >
-          <GearIcon size={20} />
+          <KubaiIcon name="设置" size={20} />
         </Button>
         <span className="text-xs text-kumo-subtle group-data-[state=collapsed]/sidebar:hidden">
           {runtimeValid ? (

@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 import electron from 'electron';
 import { build, resolveConfig } from 'electron-vite';
 import { createServer } from 'vite';
+import { toolchainEnv } from '../../../scripts/process-env.mjs';
 import { developmentExecutable } from './dev-runtime.mjs';
+import { desktopLaunchEnv } from './launch-env.mjs';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repository = path.resolve(desktop, '../..');
@@ -62,6 +64,8 @@ function sharedBuild() {
       cwd: repository,
       stdio: 'inherit',
       shell: process.platform === 'win32',
+      // 构建子进程只剥离外部预加载钩子，保留 HOME / CI 变量与堆参数。
+      env: toolchainEnv(process.env, repository),
     });
     proc.once('error', reject);
     proc.once('exit', (code) =>
@@ -92,11 +96,11 @@ async function stopChild() {
 function launch() {
   child = spawn(executable, [desktop], {
     cwd: desktop,
-    env: {
-      ...process.env,
+    // 白名单构造：宿主的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE 绝不能进主进程（会让应用启动即退出）。
+    env: desktopLaunchEnv(process.env, {
       ELECTRON_RENDERER_URL: server.resolvedUrls.local[0].replace(/\/$/, ''),
       KPBL_DESKTOP_DEV_TOKEN: token,
-    },
+    }),
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
   child.once('error', (error) => {

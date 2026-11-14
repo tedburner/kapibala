@@ -4,6 +4,7 @@ import {
   sanitizeModelErrorMessage,
 } from '@kiturone/kapibala';
 import { formatModelError } from '../ui/model-errors.js';
+import { describeRuntimeError } from '../ui/runtime-errors.js';
 import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
 import {
   formatToolDetail,
@@ -178,15 +179,17 @@ export class SessionPresentation {
         this.result = event.metrics.status;
         this.emit({ type: 'operation_result', result: this.result });
         break;
-      case 'error':
-        this.diagnostic(
-          event.modelError
-            ? formatModelError(event.modelError)
-            : sanitizeModelErrorMessage(event.error.message),
-        );
+      case 'error': {
+        // 宿主负责 UI 语言：已知运行期错误映射为可行动的中文提示，其余走脱敏原文。
+        const described = event.modelError
+          ? formatModelError(event.modelError)
+          : (describeRuntimeError(event.error.message) ??
+            sanitizeModelErrorMessage(event.error.message));
+        this.diagnostic(described);
         this.result = 'failed';
         this.emit({ type: 'operation_result', result: 'failed' });
         break;
+      }
     }
   }
 
@@ -213,9 +216,8 @@ export class SessionPresentation {
       failure ??= error;
     }
     if (failure !== undefined) {
-      this.diagnostic(
-        sanitizeModelErrorMessage(failure instanceof Error ? failure.message : String(failure)),
-      );
+      const raw = failure instanceof Error ? failure.message : String(failure);
+      this.diagnostic(describeRuntimeError(raw) ?? sanitizeModelErrorMessage(raw));
       finalResult = 'failed';
     }
     this.emit({ type: 'operation_settled', result: finalResult });

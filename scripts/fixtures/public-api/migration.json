@@ -38,6 +38,7 @@
       "cli/host:presentationScope",
       "cli/host:projectHistory",
       "cli/host:projectStatusFacts",
+      "cli/host:providerCategory",
       "cli/host:redactCommonSecrets",
       "cli/host:redactPresentationChange",
       "cli/host:redactPresentationState",
@@ -76,7 +77,8 @@
       "package:@kiturone/kapibala-cli:module:host/public-projection.d.ts",
       "package:@kiturone/kapibala-cli:module:host/redaction.d.ts",
       "package:@kiturone/kapibala-cli:module:local-host/errors.d.ts",
-      "package:@kiturone/kapibala-cli:module:protocol/results.d.ts"
+      "package:@kiturone/kapibala-cli:module:protocol/results.d.ts",
+      "package:@kiturone/kapibala-cli:module:ui/runtime-errors.d.ts"
     ],
     "removed": ["core:sharedWorkspaceLeaseCoordinator"],
     "changed": [

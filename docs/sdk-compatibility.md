@@ -38,6 +38,8 @@
 
 CLI `/host` 新增导出类型 `ManagedInspection`；`ManagedHostSession` 新增 `inspection()` 和 `subscribeInspection()`，供 Node 宿主只读观察已知状态、Skill/MCP 诊断与直接子任务摘要。文本与条目限额、脱敏，不启动 MCP、不收集结果；原有 wire 1.0 形状和版本不变。自定义实现该新宿主接口的适配器需补齐这两个方法；现役 Core/CLI 调用方式不变。`status().runUsage` 只在所有已完成请求明确给出 usage 时提供，未知不再借默认 metrics 零伪装为实际用量。详见[阶段 C 验收](verification/v0.1.0-stage-c.md)。
 
+本阶段另新增声明模块 `@kiturone/kapibala-cli` 的 `ui/runtime-errors.d.ts`（`describeRuntimeError`）：宿主侧把 core 运行时固定抛出的已知错误文案（如工具等待用户操作导致的暂停）映射为面向用户的可行动提示，未知错误回退脱敏原文；纯增补，不改变既有符号、wire 形状与错误码语义。桌面端同步补齐审批可达性：审批请求到达即自动弹出审批面板，`approval.closed` 通知带 `reason`（`resolved`/`timeout`/`aborted`），审批超时自动拒绝时前端给出明确中文诊断，不再让用户面对无入口的 `PERMISSION_DENIED` 死锁。
+
 ## 1. 盘点口径
 
 - 覆盖范围：Core 根入口、MCP 根入口，以及 CLI 的 `protocol`、`client`、`view-model` 及 `host` 四个子路径。当前候选清单以 `scripts/fixtures/public-api/current.json` 为准，新增 `/host` 也列入声明扫描。

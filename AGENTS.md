@@ -52,6 +52,17 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - **密钥按厂商族共用（一个厂商只需配一次）**：分组键统一走 `credentialGroup()` —— 可识别厂商按 family 归组，`unknown` 退化到按端点 host 隔离（否则多个自建网关会串用同一把 key）；分组展示名走 `describeCredentialGroup()`。
 - 同一分组内**只保留一份密钥**：读取走 `resolveApiKeyDetailed(profile, settings)`（第 2 级即"同厂商族已存密钥"），写入走 `updateProfileApiKey()`（自动清理同组冗余副本）。新增任何密钥读取/写入入口都不要绕过这两个函数，否则会出现「更新了 A 的密钥、B 仍在用旧密钥」的静默不一致。
 - **不自动 git add / commit**，改动保留在工作区由用户审核后手动提交。
+- **进程启动环境必须显式构造，禁止全量继承 `process.env`**：宿主（IDE / 沙箱包装器）会注入
+  `NODE_OPTIONS=--require=<vendor shim>` 与 `ELECTRON_RUN_AS_NODE=1`，前者把宿主的原生模块塞进
+  Electron 主进程（GPU 进程反复崩溃直至 SIGTRAP），后者让 GUI 二进制退化成纯 Node（启动即报
+  `does not provide an export named 'BrowserWindow'`）。启动 Electron 走
+  `packages/desktop/scripts/launch-env.mjs` 的 `desktopLaunchEnv()` 白名单（不枚举黑名单，天然免疫
+  未来新增的注入变量）；运行构建工具链走 `scripts/process-env.mjs` 的 `toolchainEnv()` 过滤
+  （只摘外部预加载钩子，保留 `--max-old-space-size` 与 HOME）。`pnpm check-desktop` 会拦截
+  `env: { ...process.env }` 与缺省用白名单的桌面启动脚本。
+- 根构建入口 `pnpm build` / `build:desktop` / `dev:desktop` 分别是 `scripts/build.mjs` 与
+  `scripts/dev-desktop.mjs`，它们在清洗过的环境里再拉起下一层命令 —— 否则宿主删除守卫会把打包器
+  清理 dist 当成批量删除拦下（报错指向无关的 `.js.map`，看起来像打包器坏了）。
 
 ## 内置模型清单（`packages/cli/src/settings.ts`）
 
@@ -75,9 +86,9 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - 造型铁律：口鼻必须是"上窄下宽"的钝形深色块（水豚最关键辨识特征）；不要大面积奶油色口鼻斑（会读成泰迪熊）；头不要撑满画面（会读成河马）。
 - README 抬头 `<picture>` + `prefers-color-scheme` 双主题（dark 版仅字标换暖白 `#F0E4D6`）；tagline 固定：**心如止水，稳定如初 —— AI Agent Harness**。
 
-## 当前状态（2026-11-01）
+## 当前状态（2026-11-13）
 
-- **v0.1.0 桌面 Harness 已于 2026-10-31 在 `docs/v0.1.0-desktop-harness` 分支落库（5 个 commit，待合并 main）**：Core 历史读取预算与 `projectRootMode: 'exact'`、CLI host 公共投影层与 `mutateGlobalSettings` 配置事务、Electron 桌面客户端（`packages/desktop`，不新增 npm 发布包）、桌面候选构建与发布证据链路。新增门禁：`pnpm check-desktop`（已并入 lint）、`pnpm verify:desktop`（构建+类型+check-desktop --artifacts+单测+e2e）与 desktop-candidate workflow；发布证据追加桌面专项（`--desktop-version`，日常 PR 不要求）。协议会话注入 `~/.kapibala/AGENTS.md` 的迁移边界见 `docs/migration/v0.1.0.md`。
+- **v0.1.0 桌面 Harness 尚未合并 main；现役开发分支 `feat/desktop-pi-style`**（`docs/v0.1.0-desktop-harness` 的 5 个 commit + 按 [设计 006](docs/design/006-desktop-visual-refinement.md) 做的 PI 风格重做，工作区尚有未提交改动），main 仍停在 v0.0.10。能力范围：Core 历史读取预算与 `projectRootMode: 'exact'`、CLI host 公共投影层与 `mutateGlobalSettings` 配置事务、Electron 桌面客户端（`packages/desktop`，不新增 npm 发布包）、桌面候选构建与发布证据链路。新增门禁：`pnpm check-desktop`（已并入 lint）、`pnpm verify:desktop`（构建+类型+check-desktop --artifacts+单测+e2e）与 desktop-candidate workflow；发布证据追加桌面专项（`--desktop-version`，日常 PR 不要求）。协议会话注入 `~/.kapibala/AGENTS.md` 的迁移边界见 `docs/migration/v0.1.0.md`。
 - 版本编号约定于 2026-10-21 更新：采用三段稳定版本，minor/patch 均允许多位整数；默认 `v0.0.9 → v0.0.10`，不逢十进位。稳定整合版为 **v0.0.10**，Electron 桌面客户端为 **v0.1.0**；历史文档中的旧编号不作为现役发布规则。
 - v0.0.1 既有能力与后续路线图见 `docs/RELEASES.md`，不在规则文件重复维护能力清单。
 - **v0.0.10 稳定整合版已于 2026-10-23 发布到 npm 与 GitHub Release**（实际版本号以包清单与 `CLI_VERSION` 为准，升版只由 `pnpm release` 完成）。公开差异的唯一真源是 `docs/sdk-compatibility.md` + `scripts/fixtures/public-api/migration.json`；协议细节 `docs/local-protocol.md`、迁移动作 `docs/migration/v0.0.10.md`、证据与 pending 阻断 `docs/verification/v0.0.10.md`、发布说明 `docs/releases/v0.0.10.md`。三类专项门禁：`pnpm verify:compat`（v0.0.9 tarball × 候选构建四组合）、`pnpm verify:platform`（当前 OS 真实进程 + 三包隔离安装）、`pnpm verify:soak`（PR/nightly/release 分档）；新增宿主或传输能力时必须同步其断言，不允许用短档或模拟测试替代 Node 20、Windows ACL/ConPTY、POSIX PTY 与 release 长时证据。

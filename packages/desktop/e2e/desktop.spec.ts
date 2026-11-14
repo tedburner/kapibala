@@ -6,29 +6,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { SessionManager } from '@kiturone/kapibala';
 import { type ElectronApplication, _electron as electron, expect, test } from '@playwright/test';
+import { desktopLaunchEnv } from '../scripts/launch-env.mjs';
 
 const entry = path.resolve('.');
 const artifacts = path.resolve('../../.workbuddy/desktop-stage-e');
+// 环境构造统一走白名单助手：宿主注入的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE 不能进主进程。
 function environment(home: string, userData: string): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of [
-    'PATH',
-    'TMPDIR',
-    'TEMP',
-    'TMP',
-    'SystemRoot',
-    'WINDIR',
-    'DISPLAY',
-    'XAUTHORITY',
-    'LANG',
-  ])
-    if (process.env[key]) env[key] = process.env[key]!;
-  return {
-    ...env,
+  return desktopLaunchEnv(process.env, {
     KPBL_DESKTOP_E2E: '1',
     KPBL_DESKTOP_HOME: home,
     KPBL_DESKTOP_USER_DATA: userData,
-  };
+  });
 }
 async function stop(app: ElectronApplication) {
   const closed = app.waitForEvent('close', { timeout: 30_000 });
@@ -156,10 +144,14 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       await page.getByRole('button', { name: '发送', exact: true }).click();
     };
     const approve = async () => {
-      await page.getByRole('button', { name: '审批 1', exact: true }).click();
-      await page.getByRole('button', { name: '批准一次', exact: true }).click();
-      await expect(page.getByText('当前没有待处理请求。')).toBeVisible();
-      await page.getByRole('button', { name: '关闭审批队列' }).click();
+      // 新审批自动弹出队列，标题栏不再有常驻计数入口。
+      const queue = page.getByRole('dialog', { name: '待处理审批', exact: true });
+      await expect(queue).toBeVisible();
+      // 弹窗宽度基线 500px（设计 004 §6.3.4）；空队列已无从打开，宽度断言落在这里。
+      await expect(queue).toHaveCSS('max-width', '500px');
+      await queue.getByRole('button', { name: '批准一次', exact: true }).click();
+      // 队列清空后自动收起，不再需要手动关闭浮层。
+      await expect(queue).toBeHidden();
     };
     await send('write-proof-default');
     await approve();
@@ -303,6 +295,14 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       'API 项目',
     );
     expect(requests.length).toBe(beforeProjectCalls);
+    // 项目行的「在该空间新建对话」默认完全透明，指针进入才显形：入口不挤占标题宽度，
+    // 悬停时用自身底色盖住状态文本，离开后恢复隐藏。
+    const rowNew = page.getByRole('button', { name: '在 API 项目 新建对话', exact: true });
+    await expect(rowNew).toHaveCSS('opacity', '0');
+    await page.getByRole('button', { name: 'API 项目', exact: true }).hover();
+    await expect(rowNew).toHaveCSS('opacity', '1');
+    await page.mouse.move(700, 200);
+    await expect(rowNew).toHaveCSS('opacity', '0');
     // 新对话输入区可在已登记项目和默认空间之间切换，再在所选项目中创建会话。
     await page.getByRole('button', { name: '会话空间：API 项目' }).click();
     await page.getByRole('menuitem', { name: '默认空间' }).click();
@@ -316,12 +316,14 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect.poll(() => fs.existsSync(path.join(project, 'proof.txt'))).toBe(true);
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
     await send('write-proof-pending');
-    await expect(page.getByRole('button', { name: '审批 1', exact: true })).toBeVisible();
+    // 待审批只由自动弹出的队列与侧栏状态触达，标题栏不再显示计数。
+    const queue = page.getByRole('dialog', { name: '待处理审批', exact: true });
+    await expect(queue).toBeVisible();
+    await page.getByRole('button', { name: '关闭审批队列' }).click();
+    await expect(queue).toBeHidden();
     await page.getByRole('button', { name: '默认空间', exact: true }).click();
-    await expect(page.getByRole('button', { name: '审批 1', exact: true })).toBeVisible();
     await expect(page.getByLabel('API 项目 待审批', { exact: true })).toBeVisible();
     await page.reload();
-    await expect(page.getByRole('button', { name: '审批 0', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'API 项目', exact: true }).click();
     expect(fs.existsSync(path.join(project, 'pending-proof.txt'))).toBe(false);
     await page.getByRole('button', { name: 'write-proof-project', exact: true }).click();

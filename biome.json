@@ -7,7 +7,16 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "ignore": ["node_modules", "dist", ".kapibala"]
+    "ignore": [
+      "node_modules",
+      "dist",
+      ".kapibala",
+      "packages/desktop/src/renderer/icons/engine.js",
+      "packages/desktop/src/renderer/icons/icons.js",
+      "packages/desktop/src/renderer/icons/app.js",
+      "packages/desktop/src/renderer/icons/index.html",
+      "packages/desktop/src/renderer/icons/check.mjs"
+    ]
   },
   "formatter": {
     "enabled": true,

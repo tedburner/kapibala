@@ -191,6 +191,27 @@ export function checkDesktop(artifacts = false): void {
     'event.senderFrame.url !== expectedURL',
   ])
     insist(main.includes(setting), `Missing desktop source guard: ${setting}`);
+  // 启动环境必须经白名单构造：全量继承会把宿主注入的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE
+  // 带进 Electron 主进程，症状是窗口根本不出现、日志里只有与业务无关的模块加载错误。
+  for (const file of [
+    ...files(path.join(desktop, 'scripts')).filter((item) => item.endsWith('.mjs')),
+    ...files(path.join(desktop, 'e2e')).filter((item) => item.endsWith('.ts')),
+    ...files(path.join(desktop, 'packaged-e2e')).filter((item) => item.endsWith('.ts')),
+  ]) {
+    const source = fs.readFileSync(file, 'utf8');
+    const relative = path.relative(desktop, file).replaceAll('\\', '/');
+    insist(
+      !/\benv:\s*\{\s*\.\.\.process\.env\b/.test(source) && !/\benv:\s*process\.env\b/.test(source),
+      `${relative}: Electron 启动环境必须用 launch-env 的白名单构造，禁止继承整个 process.env`,
+    );
+  }
+  for (const launcher of ['scripts/dev.mjs', 'scripts/try-packaged.mjs'])
+    insist(
+      fs
+        .readFileSync(path.join(desktop, launcher), 'utf8')
+        .includes('desktopLaunchEnv(process.env'),
+      `${launcher}: 必须用 desktopLaunchEnv 构造 Electron 启动环境`,
+    );
   if (artifacts) {
     for (const file of files(path.join(desktop, 'out/renderer')).filter((item) =>
       item.endsWith('.js'),

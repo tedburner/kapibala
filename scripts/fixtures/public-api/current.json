@@ -242,6 +242,13 @@
           ]
         },
         {
+          "name": "providerCategory",
+          "kind": "function",
+          "declarations": [
+            "export declare function providerCategory(profile: ModelProfile): string;"
+          ]
+        },
+        {
           "name": "PROVIDER_METAS",
           "kind": "const",
           "declarations": ["PROVIDER_METAS: ProviderMeta[]"]
@@ -3947,6 +3954,7 @@
         "ui/events.d.ts",
         "ui/metrics.d.ts",
         "ui/model-errors.d.ts",
+        "ui/runtime-errors.d.ts",
         "ui/secret.d.ts",
         "ui/select.d.ts",
         "ui/text-safety.d.ts",

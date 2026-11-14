@@ -73,7 +73,7 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
     const sidebar = page.getByRole('complementary', { name: '空间与会话' });
     const search = page.getByRole('searchbox', { name: '搜索空间与对话' });
     await expect(search).toBeVisible();
-    await expect(sidebar.getByRole('button', { name: '新建对话' })).toBeVisible();
+    await expect(sidebar.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
     // 项目创建入口已收敛到输入框旁的空间选择器，侧栏不再提供常驻添加入口。
     await expect(sidebar.getByRole('button', { name: '添加项目' })).toHaveCount(0);
     const geometry = await sidebar.evaluate((element) => {
@@ -106,7 +106,7 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
     await expect(search).toBeHidden();
     await page.getByRole('button', { name: '展开或收起侧栏' }).click();
     await expect(search).toBeVisible();
-    await expect(sidebar.getByRole('button', { name: '新建对话' })).toBeVisible();
+    await expect(sidebar.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
     await page.screenshot({
       path: path.join(artifacts, 'sidebar-expanded-800.png'),
       animations: 'disabled',
@@ -114,7 +114,7 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
     await page.getByRole('button', { name: '展开或收起侧栏' }).click();
     await expect(search).toBeHidden();
     await expect(sidebar.locator('.kapibala-sidebar-search')).toBeHidden();
-    await expect(sidebar.getByRole('button', { name: '新建对话' })).toBeVisible();
+    await expect(sidebar.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
     await page.screenshot({
       path: path.join(artifacts, 'sidebar-collapsed-800.png'),
       animations: 'disabled',
@@ -169,13 +169,8 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
       440,
     );
     await page.getByRole('button', { name: '取消完全访问', exact: true }).click();
-    await page.getByRole('button', { name: '审批 0', exact: true }).click();
-    await check(page.getByRole('dialog', { name: '待处理审批', exact: true }), 'approvals', 500);
-    await page.screenshot({
-      path: path.join(artifacts, 'approval-800-600.png'),
-      animations: 'disabled',
-    });
-    await page.getByRole('button', { name: '关闭审批队列', exact: true }).click();
+    // 标题栏的常驻审批计数已移除，空审批队列没有可触达的打开路径；500px 宽度基线
+    // 改由 desktop.spec 在真实审批弹出时断言，这里不再截空队列。
     const closed = app.waitForEvent('close');
     await app.evaluate(({ app }) => app.quit());
     await closed;

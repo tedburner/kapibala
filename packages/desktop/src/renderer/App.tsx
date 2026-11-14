@@ -15,7 +15,6 @@ import {
   CheckIcon,
   FolderPlusIcon,
   FolderSimpleIcon,
-  ShieldCheckIcon,
   StopIcon,
   XIcon,
 } from '@phosphor-icons/react';
@@ -32,6 +31,7 @@ import remarkGfm from 'remark-gfm';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
 import { HistoryListClient } from './history-list-client.js';
+import { KubaiIcon } from './icons/KubaiIcon.js';
 import { MessageList } from './message-list.js';
 import { ProjectDialog } from './project-dialog.js';
 import { SettingsDialog } from './settings-dialog.js';
@@ -94,6 +94,8 @@ export function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const detailTrigger = useRef<HTMLElement | null>(null);
+  // 编辑回填后聚焦输入框：composer 在首页与对话页互斥复用，同一时刻只挂载一份。
+  const composerShell = useRef<HTMLDivElement | null>(null);
   const [details, setDetails] = useState<DetailsTarget>();
   const [wide, setWide] = useState(() => matchMedia('(min-width: 1200px)').matches);
   const current = useRef<Workspace | undefined>(undefined);
@@ -130,6 +132,18 @@ export function App() {
       Boolean(composerModel);
   const messages = facts.state ? selectMessages(facts.state) : [];
   const report = setError;
+  // 审批请求到达时立即弹出审批面板：队列没有常驻入口，错过弹窗就只能等超时被拒，
+  // 用户最终只会看到莫名其妙的 PERMISSION_DENIED。
+  // 只在「新增」审批时弹出（对比上次已见数量），用户手动关闭后不被反复打断。
+  const seenApprovals = useRef(0);
+  const approvalsCount = facts.approvals.length;
+  const approvalsOpen = ui.approvalsOpen;
+  const openApprovals = ui.approvals;
+  useEffect(() => {
+    const hasNew = approvalsCount > seenApprovals.current;
+    seenApprovals.current = approvalsCount;
+    if (hasNew && approvalsCount > 0 && !approvalsOpen) openApprovals(true);
+  }, [approvalsCount, approvalsOpen, openApprovals]);
   const reloadCatalog = useCallback(async () => {
     setCatalog(await api.settings.read(current.current?.trusted ? current.current.id : undefined));
   }, []);
@@ -185,8 +199,28 @@ export function App() {
       await api.ready();
       await client.connectRuntime();
       await reloadCatalog();
-      setRecent((await api.preferences.read()).recent);
+      const state = await api.preferences.read();
+      setRecent(state.recent);
       await selectSpace(await api.workspace.openDefault());
+      // Host 的空间登记簿是进程内的：重启后 spaces 只剩默认空间，最近项目若不重新登记
+      // 就只存在于偏好文件里，「项目」区无法按项目聚合。逐个重新登记但不切换视图；
+      // 倒序恢复是因为每次成功登记都会把该项目移到偏好 recent 首位，倒序执行后顺序不变。
+      const restored: Workspace[] = [];
+      for (const item of [...state.recent].reverse()) {
+        try {
+          const workspace = await api.workspace.openRecent(item.id);
+          if (workspace && !restored.some((space) => space.id === workspace.id))
+            restored.push(workspace);
+        } catch {
+          // 目录已删除或登记失败的历史项目直接跳过，不阻断启动。
+        }
+      }
+      restored.reverse();
+      setSpaces((previous) => {
+        const known = new Set(previous.map((space) => space.root));
+        const additions = restored.filter((space) => !known.has(space.root));
+        return additions.length > 0 ? [...previous, ...additions] : previous;
+      });
     });
   }, [act, reloadCatalog, selectSpace]);
   useEffect(() => {
@@ -238,6 +272,10 @@ export function App() {
     setDetails(undefined);
     setOpened(result);
     await client.select(scopeOf(result));
+    // 标题栏不再常驻审批计数，打开一个仍在等审批的会话就进入队列：否则用户手动关掉
+    // 自动弹出的面板后没有第二个入口，只能等审批超时被自动拒绝。
+    if (client.snapshot().approvals.some((item) => item.sessionId === result.conversationId))
+      openApprovals(true);
     await refreshHistory(space);
   }
   async function configure(change: Parameters<DesktopAPI['session']['configure']>[0]) {
@@ -300,7 +338,7 @@ export function App() {
       : undefined;
   // 输入卡在首页与对话页共用：只改变落点，不复制发送、模式与模型选择逻辑。
   const composer = (
-    <div className="relative w-full space-y-2">
+    <div ref={composerShell} className="relative w-full space-y-2">
       {/* 输入、空间、模型、模式与发送同属一张卡：焦点由卡片整体承担，工具条保持低权重。 */}
       <div className="kapibala-composer px-3 pt-3 pb-2">
         <InputArea
@@ -335,7 +373,7 @@ export function App() {
                     disabled={busy}
                     aria-label={workspace ? `会话空间：${workspace.name}` : '选择空间'}
                   >
-                    <FolderSimpleIcon size={15} className="shrink-0" />
+                    <KubaiIcon name="项目空间" size={18} />
                     <span className="min-w-0 truncate">{workspace?.name ?? '选择空间'}</span>
                     <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
                   </Button>
@@ -411,7 +449,7 @@ export function App() {
                       disabled={Boolean(running) || busy}
                       aria-label={`会话模式：${MODE_NAMES[opened.configuration.mode]}`}
                     >
-                      <ShieldCheckIcon size={15} className="shrink-0" />
+                      <KubaiIcon name="信任空间" size={18} />
                       <span className="min-w-0 truncate">
                         {MODE_NAMES[opened.configuration.mode]}
                       </span>
@@ -594,7 +632,6 @@ export function App() {
     >
       <WorkspaceSidebar
         spaces={spaces}
-        recent={recent}
         histories={histories}
         activeWorkspaceId={workspace?.id}
         conversationId={opened?.conversationId}
@@ -609,8 +646,8 @@ export function App() {
           })
         }
         onDefault={() => void act(async () => selectSpace(await api.workspace.openDefault()))}
-        onRecent={(id) => void act(async () => selectSpace(await api.workspace.openRecent(id)))}
         onNew={() => void act(() => openConversation())}
+        onNewInSpace={(space) => void act(() => openConversation(undefined, space))}
         onOpen={(space, conversationId) => void act(() => openConversation(conversationId, space))}
         onPage={(space, page) => void act(() => refreshHistory(space, page))}
         onSettings={() => ui.settings(true)}
@@ -642,15 +679,6 @@ export function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
-              <Button
-                className="kapibala-action kapibala-chip"
-                variant="ghost"
-                size="sm"
-                onClick={() => ui.approvals(true)}
-              >
-                <ShieldCheckIcon size={15} />
-                审批 {facts.approvals.length}
-              </Button>
               {opened && (
                 <Button
                   className="kapibala-action kapibala-chip"
@@ -734,6 +762,16 @@ export function App() {
                   detailTrigger.current = trigger;
                   setDetails({ kind: 'tool', callId });
                 }}
+                onEdit={(text) => {
+                  // 编辑 = 回填草稿并聚焦，不截断已落盘历史；发送即作为新消息继续。
+                  ui.draft(
+                    opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new',
+                    text,
+                  );
+                  requestAnimationFrame(() => {
+                    composerShell.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus();
+                  });
+                }}
                 report={report}
               />
             ) : (
@@ -770,7 +808,17 @@ export function App() {
             </div>
           )}
           {facts.state?.notices.map((notice) => (
-            <output key={notice.id} className="shrink-0 px-6 py-2 text-xs text-kumo-subtle">
+            // 诊断通知必须有容器承载：裸文本浮在对话流里会被当成渲染残渣，
+            // error 级别（如审批等待、运行失败）用醒目横幅，info 保持弱化样式。
+            <output
+              key={notice.id}
+              role={notice.level === 'error' ? 'alert' : undefined}
+              className={
+                notice.level === 'error'
+                  ? 'mx-6 mb-2 shrink-0 rounded-lg border border-kumo-line bg-kumo-warning/15 px-4 py-2 text-sm text-kumo-contrast'
+                  : 'shrink-0 px-6 py-2 text-xs text-kumo-subtle'
+              }
+            >
               {notice.text}
             </output>
           ))}
@@ -798,7 +846,6 @@ export function App() {
         open={ui.settingsOpen}
         onOpenChange={ui.settings}
         catalog={catalog}
-        workspaceId={workspace?.id}
         reload={reloadCatalog}
         report={report}
         hostDown={facts.error !== undefined || facts.runtimeValid === false}
@@ -904,6 +951,16 @@ export function App() {
                               runId: approval.runId,
                               approvalId: approval.approvalId,
                               choice: choice as 'deny_once' | 'allow_once' | 'allow_session',
+                            })
+                            // 队列清空就必须收起面板：审批已生效却留着一张挡住正文的空卡片，
+                            // 用户会以为「批了没反应」，还得再手动叉一次。仍有其它待处理请求时保持打开。
+                            .then(() => {
+                              const remaining = client
+                                .snapshot()
+                                .approvals.filter(
+                                  (item) => item.approvalId !== approval.approvalId,
+                                );
+                              if (remaining.length === 0) openApprovals(false);
                             })
                             .catch((reason) => report(failure(reason)))
                         }

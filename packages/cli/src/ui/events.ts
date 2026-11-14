@@ -11,6 +11,7 @@ import { sanitizeUntrustedOutput } from './text-safety.js';
 /** 保留既有文本渲染器导入入口；Host 与文本模式共享同一个纯净化实现。 */
 export { sanitizeUntrustedOutput } from './text-safety.js';
 import { formatModelError, formatModelFailureSummary } from './model-errors.js';
+import { describeRuntimeError } from './runtime-errors.js';
 import {
   formatToolDetail,
   formatToolInvocation,
@@ -473,7 +474,7 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
           write(`\n${color(formatModelError(info), 31, isTTY)}`);
         } else
           write(
-            `\n${color(`❌ 错误: ${sanitizeModelErrorMessage(event.error.message)}`, 31, isTTY)}\n`,
+            `\n${color(`❌ 错误: ${describeRuntimeError(event.error.message) ?? sanitizeModelErrorMessage(event.error.message)}`, 31, isTTY)}\n`,
           );
       }
     },

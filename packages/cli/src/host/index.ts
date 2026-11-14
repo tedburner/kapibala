@@ -37,6 +37,11 @@ export {
   ensureProfile,
   updateProfileApiKey,
 } from '../settings.js';
-export { PROVIDER_METAS, CUSTOM_PROVIDER_KEY, type ProviderMeta } from '../providers.js';
+export {
+  PROVIDER_METAS,
+  CUSTOM_PROVIDER_KEY,
+  providerCategory,
+  type ProviderMeta,
+} from '../providers.js';
 
 export type { ManagedInspection } from './inspection.js';

@@ -1,6 +1,6 @@
 # v0.1.0 桌面开发指南
 
-> 状态：阶段 A 共享层与阶段 B 桌面最小闭环已实现并通过本地自动验收。功能和架构决策以 [004 设计](design/004-v0.1.0-desktop-harness.md)为准；本文记录已落地入口及后续顺序；阶段 C 的会话体验及本地门禁已落地，创建项目与双层信任弹窗已接入；D1 已提供本机测试打包与安装副本验证入口，跨平台安装、签名和正式发布仍待完成。详见[阶段 C 验收](verification/v0.1.0-stage-c.md)与[D1 验收](verification/v0.1.0-stage-d1.md)。
+> 状态：阶段 A 共享层与阶段 B 桌面最小闭环已实现并通过本地自动验收。功能和架构决策以 [004 设计](design/004-v0.1.0-desktop-harness.md)为准；本文记录已落地入口及后续顺序；阶段 C 的会话体验及本地门禁已落地，创建项目与双层信任弹窗已接入；D1 已提供本机测试打包与安装副本验证入口，阶段 E 完成界面统一、断连修复与候选发布工程；视觉层的当前档位见 [006 视觉精修](design/006-desktop-visual-refinement.md)。跨平台安装、签名和正式发布仍待完成。详见[阶段 C 验收](verification/v0.1.0-stage-c.md)、[D1 验收](verification/v0.1.0-stage-d1.md)与[阶段 E 验收](verification/v0.1.0-stage-e.md)。
 
 从共享宿主抽取开始，再接入 Electron。每一步都保持现有 CLI、Core SDK、MCP 和本地协议可独立使用；不要先复制 CLI 装配，再长期维护两套执行逻辑。
 
@@ -36,6 +36,10 @@ pnpm verify
 `dev:desktop` 使用 `packages/desktop/scripts/dev.mjs`：先构建共享产物，启动仅绑定 loopback 的 Vite Renderer，再通过私有父子 IPC 请求 Main 正常退出，等待工具清理、Host 正常退出及 guard 清除后才重建并启动。源码内容指纹过滤构建器产生的元数据事件；Renderer 更新走 Vite，不以强杀 Host 换取热更新。清理失败停止重启，保留 guard。该开发 IPC 仅在非打包、Node 父子 IPC 和随机开发令牌同时存在时启用，不暴露给 Renderer。macOS 开发入口会在 `.workbuddy/desktop-dev-runtime/` 缓存独立的 Electron 应用包副本，将菜单栏与 Dock 名称设为 Kapibala 并重新签名；不修改依赖中的 Electron 包。
 
 不要只启动 electron-vite 就宣称共享代码已更新。开发重启同样要经过取消和清理；清理失败保留异常 guard，不能靠热更新跳过执行阻断。Renderer 的普通视图更新不重启 Host。
+
+**启动环境分两层，别绕过。** 根 `pnpm build` / `build:desktop` / `dev:desktop` 实际是 `scripts/build.mjs` 与 `scripts/dev-desktop.mjs`：它们先用 `scripts/process-env.mjs` 的 `toolchainEnv()` 摘掉宿主注入的 `--require` / `--import` 与 `ELECTRON_RUN_AS_NODE`，再拉起下一层命令 —— 否则宿主的删除守卫会把打包器清 `out/` 当成批量删除拦下，报错指向无关的 `.js.map`，看起来像打包器坏了。启动 Electron 本身则走 `packages/desktop/scripts/launch-env.mjs` 的 `desktopLaunchEnv()` 白名单。
+
+⚠️ 不要在 IDE 内嵌终端里跑 `pnpm dev:desktop`。那里的进程已处于系统沙箱内，Chromium 再初始化自己的进程级沙箱会被内核拒绝（`sandbox initialization failed` → GPU `exit_code=6` → 主进程 SIGTRAP），退出时来不及清 guard，下次打开就是「上次执行未确认完成清理」。用系统「终端」（Terminal.app）启动。
 
 ### 1.1 本机测试打包（D1）
 

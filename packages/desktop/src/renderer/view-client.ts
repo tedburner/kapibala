@@ -23,6 +23,8 @@ export class ViewClient {
   private inspectionHalted = false;
   private installation = 0;
   private halted = false;
+  /** 已请求审批的上下文（会话与工具名）；关闭事件只带 approvalId，凭它回查以生成可读诊断。 */
+  private readonly approvalContexts = new Map<string, { sessionId: string; toolName: string }>();
   private readonly listeners = new Set<() => void>();
   private readonly assembler = new SnapshotAssembler();
   private readonly unsubscribe: () => void;
@@ -193,6 +195,10 @@ export class ViewClient {
       return;
     }
     if (event.type === 'approval.requested') {
+      this.approvalContexts.set(event.approvalId, {
+        sessionId: event.sessionId,
+        toolName: event.toolName,
+      });
       this.update({
         ...this.facts,
         approvals: [
@@ -203,9 +209,19 @@ export class ViewClient {
       return;
     }
     if (event.type === 'approval.closed') {
+      const context = this.approvalContexts.get(event.approvalId);
+      this.approvalContexts.delete(event.approvalId);
+      // 超时自动拒绝必须显式解释：这是「声称等待用户操作却无审批入口」死锁的唯一可见出口，
+      // 不提示的话用户只会看到 PERMISSION_DENIED 和英文错误，无法自救。
+      const timeoutDenied = event.reason === 'timeout' && context !== undefined;
       this.update({
         ...this.facts,
         approvals: this.facts.approvals.filter((item) => item.approvalId !== event.approvalId),
+        ...(timeoutDenied && context
+          ? {
+              error: `审批请求超时未被处理，「${context.toolName}」已自动按拒绝收尾。重新发起任务后请在自动弹出的审批卡片中及时确认。`,
+            }
+          : {}),
       });
       return;
     }
