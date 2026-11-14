@@ -1,6 +1,6 @@
 {
   "name": "@kiturone/kapibala-desktop",
-  "version": "0.0.10",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Kapibala Electron 测试构建",
