@@ -332,19 +332,15 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     fs.mkdirSync(artifacts, { recursive: true });
     await page.screenshot({ path: path.join(artifacts, 'chat-1280.png') });
     await page.getByRole('button', { name: '打开设置' }).click();
-    await expect(page.getByRole('textbox', { name: '新 API Key', exact: true })).toHaveValue('');
-    const beforeSettings = fs.readFileSync(path.join(home, '.kapibala/settings.json'), 'utf8');
+    // 设置页首屏选中当前默认模型（本地验收模型，自定义端点分组）；自定义端点走 custom 表单，
+    // 密钥字段名是「API Key」，且不会回显已存凭证。
+    await expect(page.getByRole('textbox', { name: 'API Key', exact: true })).toHaveValue('');
     const beforeCalls = requests.length;
+    // 输出预算在默认折叠的高级设置里；保存即落盘，不再有预览令牌与二次确认。
+    await page.getByText('高级设置', { exact: true }).click();
     await page.getByRole('spinbutton', { name: '最大输出 Token', exact: true }).fill('256');
-    await page.getByRole('button', { name: '保存模型', exact: true }).click();
-    await expect(page.getByText('确认模型与凭证', { exact: true })).toBeVisible();
-    expect(fs.readFileSync(path.join(home, '.kapibala/settings.json'), 'utf8')).toBe(
-      beforeSettings,
-    );
-    await page.getByRole('combobox', { name: '本次凭证选择' }).click();
-    await page.getByRole('option', { name: '明确复用目标分组或环境凭证', exact: true }).click();
-    await page.getByRole('button', { name: '确认保存配置', exact: true }).click();
-    await expect(page.getByText('配置已保存。连接是否可用将在明确发送任务后验证。')).toBeVisible();
+    await page.getByRole('button', { name: '保存到本地', exact: true }).click();
+    await expect(page.getByText('已保存到本地配置。', { exact: true })).toBeVisible();
     expect(
       JSON.parse(fs.readFileSync(path.join(home, '.kapibala/settings.json'), 'utf8')).profiles.find(
         (profile: { id: string }) => profile.id === 'fixture',
@@ -552,9 +548,7 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
     const page = await firstWindow(app);
     const search = page.getByRole('searchbox', { name: '搜索空间与对话' });
     await search.fill('test-only-offline-key');
-    await expect(
-      page.getByText('已打开的空间中没有匹配的对话。最近项目需先打开才能搜索。'),
-    ).toBeVisible();
+    await expect(page.getByText('已打开的空间中没有匹配的对话。')).toBeVisible();
     await search.fill('长历史滚动验收');
     await expect(page.getByRole('button', { name: '长历史滚动验收', exact: true })).toBeVisible();
     await search.fill('');

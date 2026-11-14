@@ -76,6 +76,8 @@ test.describe
       await expect(page.getByText(/斜杠命令需要在已打开的会话中使用/).first()).toBeVisible();
       // @ 引用同样轻量：确认后的草稿与文本消息路径一致
       await page.getByLabel('发送消息').fill('看看 @README.md');
+      // 补全面板由 effect 异步挂载：先等候选出现再按 Tab，否则按键可能落在面板之前。
+      await expect(page.getByRole('button', { name: 'README.md', exact: true })).toBeVisible();
       await page.getByLabel('发送消息').press('Tab');
       await expect(page.getByLabel('发送消息')).toHaveValue(/@README\.md /);
     });

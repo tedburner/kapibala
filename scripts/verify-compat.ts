@@ -213,8 +213,20 @@ async function buildCandidate(): Promise<void> {
   await run(process.execPath, [tsupBinary(coreDir)], { cwd: coreDir });
   await run(process.execPath, [tsupBinary(mcpDir)], { cwd: mcpDir });
   // 私有宿主层包先于 CLI 构建产出 dist，供桌面运行时与后续探针消费（CLI 自身经 paths 从源码内联）。
+  // 宿主包没有默认 tsup.config.ts：必须按包的构建脚本顺序逐个传 --config；根入口那条带 clean，
+  // 放最后会把其它子路径产物一并删掉（静默少文件，直到运行时才报模块缺失）。
   const hostDir = path.join(repositoryRoot, 'packages/host');
-  await run(process.execPath, [tsupBinary(hostDir)], { cwd: hostDir });
+  const hostTsup = tsupBinary(hostDir);
+  for (const config of [
+    'tsup.node.config.ts',
+    'tsup.host.config.ts',
+    'tsup.client.config.ts',
+    'tsup.transport.config.ts',
+    'tsup.protocol.config.ts',
+    'tsup.view-model.config.ts',
+  ]) {
+    await run(process.execPath, [hostTsup, '--config', config], { cwd: hostDir });
+  }
   const cliTsup = tsupBinary(cliDir);
   for (const config of [
     'tsup.config.ts',

@@ -95,8 +95,11 @@ describe('CLI presentation boundaries', () => {
   it('keeps the current CLI layers inside the declared boundaries', () => {
     // view-model 规则作用于宿主包；CLI 侧只剩 TUI 目录与兼容 barrel（barrel 不参与目录规则）。
     expect(scanCliBoundary(path.resolve('packages/host/src'))).toEqual([]);
+    // 用 path.join 生成待排除后缀：Windows 扫描结果是反斜杠路径，写死 '/' 会让 barrel 漏过过滤。
     expect(
-      scanCliBoundary(sourceRoot).filter((v) => !v.file.includes('view-model/index.ts')),
+      scanCliBoundary(sourceRoot).filter(
+        (v) => !v.file.endsWith(path.join('view-model', 'index.ts')),
+      ),
     ).toEqual([]);
   });
 

@@ -147,11 +147,7 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
           .locator('.kapibala-settings-rail')
           .evaluate((element) => element.getBoundingClientRect().width),
       ).toBe(275);
-      await settings.getByRole('tab', { name: '模型与服务商', exact: true }).click();
-      await settings.getByRole('button', { name: '保存模型', exact: true }).click();
-      const confirmation = page.getByRole('dialog', { name: '确认模型与凭证', exact: true });
-      await check(confirmation, `credential-${width}-${height}`, 440);
-      await page.getByRole('button', { name: '返回编辑模型', exact: true }).click();
+      // 模型设置已改为一次落盘，凭证二次确认浮层不复存在；这里只保留外观页的密度测量。
       await settings.getByRole('tab', { name: '外观与应用', exact: true }).click();
       await check(settings, `appearance-${width}-${height}`, 'none');
       await page.screenshot({

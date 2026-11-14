@@ -7,8 +7,8 @@
 维护者决定 v0.1.0 以**未签名个人自用版**交付：代码签名、公证、桌面人工安装证据与六类人工验收清单都不再是发布前置。未签名在 Electron 开源项目里是常规形态，Gatekeeper/SmartScreen 只是首次打开多一步，不构成发布门槛。
 
 - `release.yml` 默认跳过 `verify:release-evidence`（只打印 workflow warning），把仓库变量 `KPBL_RELEASE_STRICT` 设为 `true` 即恢复六类专项的同 SHA 审核清单强制检查；
-- 桌面附件默认不随 Release 附带（跳过 `desktop-candidate download`），需要时把仓库变量 `KPBL_DESKTOP_RELEASE` 设为 `true`；
-- 未签名测试包由维护者本机 `pnpm pack:desktop` 生成后手工上传，产物名带 `Test`、appId 为 `dev.kapibala.desktop.test`；
+- 桌面附件默认不走签名候选（跳过 `desktop-candidate download`），需要时把仓库变量 `KPBL_DESKTOP_RELEASE` 设为 `true`；
+- 未签名测试包由 `release.yml` 的 `desktop-unsigned` 作业在 `darwin-arm64 / darwin-x64 / win32-x64 / linux-x64` 四个原生 runner 上自动 `pnpm pack:desktop --no-verify` 生成，并以 `desktop-<target>__<文件名>` 上传到同一次 GitHub Release；产物名带 `Test`、appId 为 `dev.kapibala.desktop.test`，`test-build.json` 的 `verification: skipped` 如实记录未重复跑桌面校验（自动门禁以同 SHA 的 Verify 工作流为准）；
 - **自动化门禁一项没放宽**：`verify` 工作流的 ubuntu/macos/windows 矩阵（含 Windows ConPTY 与进程树断言）、Node 20 安装、compat、release 长跑、`verify:desktop` 的 mac/win e2e 与 registry 安装 smoke 仍然必须通过；
 - 本文第 1 至 3 节描述的是**签名候选**的严格流程，仍然有效，但不是 v0.1.0 的阻塞项。
 
@@ -38,7 +38,7 @@ macOS API key 仅写入 runner 临时文件，结束后删除。候选子进程�
 
 ## 2. 不可变附件与审核
 
-> 本节只在启用签名附件流程（`KPBL_DESKTOP_RELEASE=true`）时构成发布要求；未签名自用版跳过本节，改由本机 `pnpm pack:desktop` 产出并手工上传测试包。
+> 本节只在启用签名附件流程（`KPBL_DESKTOP_RELEASE=true`）时构成发布要求；未签名自用版跳过本节，改由 `release.yml` 的 `desktop-unsigned` 作业产出并上传测试包。
 
 上传 artifact 名称固定 `desktop-<platform>-<arch>-<完整SHA>-<runAttempt>`，30 天保留，包含安装器、ZIP、许可、哈希和 `candidate-build.json`。过期后不能重建替代已审核附件；应重新生成并审核候选。`candidate-build.json` 记录完整 SHA、dirty=false、验证状态、平台/架构、run ID/attempt、实际签名身份，以及缺失许可状态。生成许可不等于人工审核。
 
