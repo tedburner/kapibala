@@ -72,14 +72,28 @@ export function removeDeploymentSelfLink(stage: string, source: string): void {
     throw new Error('DEPENDENCY_ESCAPE');
   fs.unlinkSync(alias);
 }
+/**
+ * 工作区成员名单的唯一真源：从 packages/ 下实际存在的清单推导，不手工维护包名。
+ * 新增或拆分工作区包（如 host 层）自动跟随；任何手工白名单都会在下次拆包时过期。
+ */
+export function workspacePackageNames(repository: string): Set<string> {
+  const packagesDirectory = path.join(repository, 'packages');
+  const names = new Set<string>();
+  for (const entry of fs.readdirSync(packagesDirectory, { withFileTypes: true })) {
+    const manifest = path.join(packagesDirectory, entry.name, 'package.json');
+    if (!entry.isDirectory() || !fs.existsSync(manifest)) continue;
+    const name = json(manifest).name;
+    if (typeof name === 'string' && name) names.add(name);
+  }
+  if (names.size === 0) throw new Error('WORKSPACE_PACKAGES_EMPTY');
+  return names;
+}
 /** 仅将同版本 Kapibala 工作区依赖改为实际精确版本；原子替换部署清单，避免硬链接改写源仓库。 */
-export function normalizeWorkspaceRanges(stage: string, version: string): void {
-  const known = new Set([
-    '@kiturone/kapibala',
-    '@kiturone/kapibala-cli',
-    '@kiturone/kapibala-mcp',
-    '@kiturone/kapibala-desktop',
-  ]);
+export function normalizeWorkspaceRanges(
+  stage: string,
+  version: string,
+  known: ReadonlySet<string>,
+): void {
   const root = fs.realpathSync.native(stage);
   for (const { directory, manifest } of closure(root, true)) {
     let changed = false;
@@ -435,7 +449,7 @@ export async function packDesktop(args: string[]): Promise<void> {
   manifest.scripts = undefined;
   writeManifest(path.join(stage, 'package.json'), manifest);
   removeDeploymentSelfLink(stage, desktop);
-  normalizeWorkspaceRanges(stage, version);
+  normalizeWorkspaceRanges(stage, version, workspacePackageNames(repository));
   assertPortableTree(stage);
   const licenses = writeNotices(stage, stage);
   fs.mkdirSync(artifacts, { recursive: true });

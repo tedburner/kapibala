@@ -6,6 +6,8 @@ import {
   assertPortableTree,
   candidatePreflight,
   desktopPackageConfig,
+  normalizeWorkspaceRanges,
+  workspacePackageNames,
   writeNotices,
 } from '../desktop-package.js';
 
@@ -135,17 +137,29 @@ it('只移除 legacy deploy 指向原桌面包的辅助自链接，不放行其�
   assertPortableTree(root);
   expect(fs.existsSync(alias)).toBe(false);
 });
-it('工作区协议只绑定实际同版本产物，清单改写不穿过硬链接污染原源码', async () => {
-  const { normalizeWorkspaceRanges } = await import('../desktop-package.js');
+it('工作区协议只绑定实际同版本产物，名单以真实工作区为准，清单改写不穿过硬链接污染原源码', async () => {
   const root = temporary();
   const original = path.join(temporary(), 'source.json');
   const metadata = {
     name: '@kiturone/kapibala-desktop',
     version: '1.0.0',
-    dependencies: { '@kiturone/kapibala': 'workspace:*' },
+    dependencies: {
+      '@kiturone/kapibala-host': 'workspace:*',
+      '@kiturone/kapibala': 'workspace:*',
+    },
   };
   fs.writeFileSync(original, JSON.stringify(metadata));
   fs.linkSync(original, path.join(root, 'package.json'));
+  const host = path.join(root, 'node_modules/@kiturone/kapibala-host');
+  fs.mkdirSync(host, { recursive: true });
+  fs.writeFileSync(
+    path.join(host, 'package.json'),
+    JSON.stringify({
+      name: '@kiturone/kapibala-host',
+      version: '1.0.0',
+      dependencies: { '@kiturone/kapibala': 'workspace:*' },
+    }),
+  );
   const core = path.join(root, 'node_modules/@kiturone/kapibala');
   fs.mkdirSync(core, { recursive: true });
   fs.writeFileSync(
@@ -153,14 +167,30 @@ it('工作区协议只绑定实际同版本产物，清单改写不穿过硬链�
     JSON.stringify({ name: '@kiturone/kapibala', version: '1.0.0' }),
   );
   expect(() => assertPortableTree(root)).toThrow('WORKSPACE_PROTOCOL_REMAINING');
-  normalizeWorkspaceRanges(root, '1.0.0');
+  // 名单传真实工作区推导结果：桌面 → host → core 链路全部放行并改写为精确版本。
+  normalizeWorkspaceRanges(root, '1.0.0', workspacePackageNames(process.cwd()));
   assertPortableTree(root);
+  const rewritten = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  expect(rewritten.dependencies['@kiturone/kapibala-host']).toBe('1.0.0');
+  expect(rewritten.dependencies['@kiturone/kapibala']).toBe('1.0.0');
   expect(
-    JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).dependencies[
+    JSON.parse(fs.readFileSync(path.join(host, 'package.json'), 'utf8')).dependencies[
       '@kiturone/kapibala'
     ],
   ).toBe('1.0.0');
   expect(JSON.parse(fs.readFileSync(original, 'utf8'))).toEqual(metadata);
+});
+it('工作区名单从 packages/ 实际清单推导，拆包后自动跟随而非手工维护', () => {
+  // 测试进程的 cwd 即仓库根：名单必须包含全部现役工作区成员，缺一即打包门禁会误杀新拆的包。
+  const names = workspacePackageNames(process.cwd());
+  for (const name of [
+    '@kiturone/kapibala',
+    '@kiturone/kapibala-cli',
+    '@kiturone/kapibala-mcp',
+    '@kiturone/kapibala-host',
+    '@kiturone/kapibala-desktop',
+  ])
+    expect(names.has(name)).toBe(true);
 });
 it('原生 DMG 是显式的 macOS 测试选项，不能冒充目录包或在其它平台降级', async () => {
   const { packagingPlan } = await import('../desktop-package.js');
