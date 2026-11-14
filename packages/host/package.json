@@ -1,6 +1,6 @@
 {
   "name": "@kiturone/kapibala-host",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reusable Kapibala host layer: protocol, view-model, transport, client and managed session assembly",
   "license": "MIT",
   "author": "tedburner",
