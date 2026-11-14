@@ -10,6 +10,13 @@ on:
         description: Existing stable tag to publish or retry (for example v0.0.4)
         required: true
         type: string
+      desktop_only:
+        # 补跑未签名桌面包：跳过 verify 与 publish，只向已存在的 Release 增量上传四平台安装包。
+        # 用于发布后 desktop-unsigned 部分平台失败且 npm/Release 已成型的场景，不重建 Release。
+        description: 只重打未签名桌面包并补传到已存在的 Release（跳过 verify 与 publish）
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -80,6 +87,7 @@ jobs:
 
   verify:
     needs: prepare
+    if: inputs.desktop_only != true
     uses: ./.github/workflows/verify.yml
     with:
       ref: ${{ needs.prepare.outputs.sha }}
@@ -87,6 +95,7 @@ jobs:
 
   publish:
     needs: [prepare, verify]
+    if: inputs.desktop_only != true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -177,10 +186,12 @@ jobs:
 
   desktop-unsigned:
     # 未签名自用版：Release 发布后自动补齐四平台测试安装包，替代维护者本机打包再手工上传。
+    # desktop_only 补跑时 publish 被跳过，因此需 always() 才能进入本作业，向已存在的 Release 增量上传；
+    # 构建脚本取自 dispatch 的 ref（含打包工具链修复），产品代码与 tag 的一致性由 packages/ diff 守卫断言。
     # KPBL_DESKTOP_RELEASE=true 时由签名候选流程接管（publish 里下载审核附件），这里不再产出，
     # 避免两套产物在同一 Release 上重名覆盖。
     needs: [prepare, publish]
-    if: needs.prepare.outputs.desktop == 'true' && vars.KPBL_DESKTOP_RELEASE != 'true'
+    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.desktop == 'true' && vars.KPBL_DESKTOP_RELEASE != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -199,9 +210,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        # 补跑时构建脚本来自 dispatch ref（main 的工具链修复）；常规发布固定构建 tag 提交。
         with:
-          ref: ${{ needs.prepare.outputs.sha }}
+          ref: ${{ inputs.desktop_only && github.ref || needs.prepare.outputs.sha }}
           fetch-depth: 0
+      - name: Assert product code matches the release tag
+        if: inputs.desktop_only == true
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # 补跑只允许工具链差异：产品代码必须与已发布 tag 完全一致，否则安装包内容会偏离 npm 已发布的版本。
+          git diff --exit-code "refs/tags/$RELEASE_TAG" HEAD -- packages/
       - uses: pnpm/setup@v3
         with:
           version: 12.4.1

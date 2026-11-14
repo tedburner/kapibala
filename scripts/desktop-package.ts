@@ -414,13 +414,17 @@ export async function packDesktop(args: string[]): Promise<void> {
   const stage = path.join(output, 'stage');
   const artifacts = path.join(output, 'artifacts');
   process.stdout.write('部署独立生产依赖…\n');
+  // legacy deploy 按共享 lockfile 重放依赖树，仍需读取 registry 元数据；CI 的元数据缓存不完整，
+  // --offline 会在任何干净机器上解析失败（本机能过只是缓存恰好齐全）。改为 prefer-offline：
+  // 有缓存用缓存、缺失时联网补齐，并用 --frozen-lockfile 把解析钉死在共享 lockfile 上防版本漂移。
   pnpm([
     '--filter',
     '@kiturone/kapibala-desktop',
     'deploy',
     '--legacy',
     '--prod',
-    '--offline',
+    '--prefer-offline',
+    '--frozen-lockfile',
     '--ignore-scripts',
     stage,
   ]);
