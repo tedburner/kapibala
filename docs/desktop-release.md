@@ -1,6 +1,18 @@
 # 桌面候选构建与发布
 
-当前代码已接入签名、候选、附件校验及发布编排，尚未使用真实证书运行远端候选。不能据本地策略测试宣称签名、公证、跨平台安装或正式发布完成。桌面版本随工作区同步，当前仍为 0.0.10；desktop 保持 private，npm 发布集合仍是 Core、MCP、CLI 三包。
+当前代码已接入签名、候选、附件校验及发布编排，尚未使用真实证书运行远端候选。不能据本地策略测试宣称签名、公证、跨平台安装或正式发布完成。桌面版本随工作区同步（以各包清单与 `CLI_VERSION` 为准）；desktop 保持 private，npm 发布集合仍是 Core、MCP、CLI 三包。
+
+## 发布口径（2026-11-14，先读这一节）
+
+维护者决定 v0.1.0 以**未签名个人自用版**交付：代码签名、公证、桌面人工安装证据与六类人工验收清单都不再是发布前置。未签名在 Electron 开源项目里是常规形态，Gatekeeper/SmartScreen 只是首次打开多一步，不构成发布门槛。
+
+- `release.yml` 默认跳过 `verify:release-evidence`（只打印 workflow warning），把仓库变量 `KPBL_RELEASE_STRICT` 设为 `true` 即恢复六类专项的同 SHA 审核清单强制检查；
+- 桌面附件默认不随 Release 附带（跳过 `desktop-candidate download`），需要时把仓库变量 `KPBL_DESKTOP_RELEASE` 设为 `true`；
+- 未签名测试包由维护者本机 `pnpm pack:desktop` 生成后手工上传，产物名带 `Test`、appId 为 `dev.kapibala.desktop.test`；
+- **自动化门禁一项没放宽**：`verify` 工作流的 ubuntu/macos/windows 矩阵（含 Windows ConPTY 与进程树断言）、Node 20 安装、compat、release 长跑、`verify:desktop` 的 mac/win e2e 与 registry 安装 smoke 仍然必须通过；
+- 本文第 1 至 3 节描述的是**签名候选**的严格流程，仍然有效，但不是 v0.1.0 的阻塞项。
+
+未签名包在 macOS 需右键打开或 `xattr -dr com.apple.quarantine`，Windows 会触发 SmartScreen。仓库不得据此宣称桌面正式发布、签名或跨平台安装验收完成。
 
 ## 1. 受控候选
 
@@ -26,6 +38,8 @@ macOS API key 仅写入 runner 临时文件，结束后删除。候选子进程�
 
 ## 2. 不可变附件与审核
 
+> 本节只在启用签名附件流程（`KPBL_DESKTOP_RELEASE=true`）时构成发布要求；未签名自用版跳过本节，改由本机 `pnpm pack:desktop` 产出并手工上传测试包。
+
 上传 artifact 名称固定 `desktop-<platform>-<arch>-<完整SHA>-<runAttempt>`，30 天保留，包含安装器、ZIP、许可、哈希和 `candidate-build.json`。过期后不能重建替代已审核附件；应重新生成并审核候选。`candidate-build.json` 记录完整 SHA、dirty=false、验证状态、平台/架构、run ID/attempt、实际签名身份，以及缺失许可状态。生成许可不等于人工审核。
 
 审核人先下载实际四个平台附件，执行安装、启动、升级、卸载、用户数据保留与原生交互验收，再向原 `KPBL_RELEASE_EVIDENCE` JSON 增加 `desktop` 对象：
@@ -43,7 +57,7 @@ pnpm verify:release-evidence --sha <完整候选SHA> --desktop-version 0.1.0 --m
 
 ## 3. 发布同一批字节
 
-人工审核并设置证据变量后，维护者再手动推送同一标签。Release 在 prepare 与 publish 两次检查六类原专项和桌面证据，下载审核的 artifact ID，核对仓库、工作流路径、workflow_dispatch、成功结论、SHA、run attempt、archive digest、候选元数据及逐文件哈希；拒绝额外文件、替换字节、目录逃逸或符号链接。
+人工审核并设置证据变量后，维护者再手动推送同一标签。Release 在 prepare 与 publish 两次检查证据：默认跳过（个人自用版口径），`KPBL_RELEASE_STRICT=true` 时按六类原专项强制校验；`KPBL_DESKTOP_RELEASE=true` 时才下载审核的 artifact ID，核对仓库、工作流路径、workflow_dispatch、成功结论、SHA、run attempt、archive digest、候选元数据及逐文件哈希；拒绝额外文件、替换字节、目录逃逸或符号链接。
 
 校验完成后才发布原三份 npm 包，桌面不重新构建、签名或上传新候选。GitHub Release 中桌面附件加 `desktop-<target>__` 前缀并将子目录分隔替换为 `__`，避免四平台的同名许可/清单冲突；只复制、改上传名称，字节和 SHA256 保持不变。命名映射须结合审核的原始 `files` 使用。artifact 的机制与生命周期参考 [GitHub 官方说明](https://docs.github.com/en/actions/tutorials/store-and-share-data)。
 

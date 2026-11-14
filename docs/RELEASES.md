@@ -36,8 +36,19 @@
 | **v0.0.8** | **产品化终端体验**（已发布；[发布说明](releases/v0.0.8.md)，[验收记录](verification/v0.0.8.md)，[迁移说明](migration/v0.0.8.md)） | 现代终端守护（ConPTY/CSI-u 拼包、Bracketed Paste 隔离、异常自愈恢复）、共享前端纯展示模型（`@kiturone/kapibala-cli/view-model` 导出，0 Node 依赖，WeakMap 缓存）、宿主桥接中枢与防抖分发、全量 Slash 命令结构化解耦（CommandOutput 统一输出，check-cli-boundary 门禁）、多任务状态观察（subscribeTaskChanges） | CLI 内部模块增量，不新增包 |
 | **v0.0.9** | **本地客户端契约与发布前加固**（已于 2026-10-21 发布；[发布说明](releases/v0.0.9.md)，[验收记录](verification/v0.0.9.md)，[迁移说明](migration/v0.0.9.md)） | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；已实现有界快照、审批与宿主隔离；Linux 与 Windows CI 全量门禁已通过，Windows ACL/进程树与 Node 20 等平台验收仍待补齐。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
 | **v0.0.10** | **阶段性整合版本**（已于 2026-10-23 发布；[发布说明](releases/v0.0.10.md)，[技术方案](design/003-v0.0.10-stable-integration.md)，[验收记录](verification/v0.0.10.md)，[迁移说明](migration/v0.0.10.md)，[SDK 兼容性说明](sdk-compatibility.md)） | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约：显式工作区身份、宿主级写租约与父子协调器传递、类型化错误与取消语义、按方法具体化的客户端结果与整个连接的恢复单位；新增 `verify:compat` / `verify:platform` / `verify:soak` 三类门禁。不新增客户端类型或运行时子系统；Node 20、Windows 跨用户 ACL/ConPTY、POSIX PTY、双解释器进程树及 release 长跑已在同一发布 SHA 上通过并获维护者审核 | CLI + Core SDK + 扩展包 |
-| **v0.1.0** | **桌面 Harness（Electron，阶段 A/B/C/D1 与界面统一已完成本地验收，视觉精修 P0 已实施，未发布）** | 基于现有 Core、MCP 与共享 ViewModel，采用单个 utilityProcess Agent Host、受控 IPC 与 React 界面；交付项目/模型配置、历史对话、工具展示、审批取消、多会话及平台安装包，签名与公证纳入正式门禁；详见[功能与开发方案](design/004-v0.1.0-desktop-harness.md)与[视觉精修](design/006-desktop-visual-refinement.md) | 私有桌面应用包 `packages/desktop`，不新增 npm 发布包 |
+| **v0.1.0** | **桌面 Harness（Electron；2026-11-14 以未签名个人自用版发布，[发布说明](releases/v0.1.0.md)）** | 基于现有 Core、MCP 与共享 ViewModel，采用单个 utilityProcess Agent Host、受控 IPC 与 React 界面；交付项目/模型配置、历史对话、工具展示、审批取消、多会话（重命名/置顶/归档/删除）及 macOS arm64 测试包；签名与公证**不是 v0.1.0 发布前置**（见下节），详见[功能与开发方案](design/004-v0.1.0-desktop-harness.md)与[视觉精修](design/006-desktop-visual-refinement.md) | 私有桌面应用包 `packages/desktop`，不新增 npm 发布包 |
 | **v0.1.1** | **跨会话引用与多任务派发（双主题）**（规划中；多任务派发见[设计 005](design/005-v0.1.1-multi-task-delegation.md)） | 跨会话引用：同项目桶内把其它会话（含本会话其它分支）的历史消息作为冻结快照引入当前会话，宿主经 `runPreparedTask` 注入带溯源头的引用块（源会话 + `recordId` + 角色 + 时间戳 + 正文片段）并随 user 消息落盘，Core 新增只读不取锁的会话读取 API，CLI `/quote` 与桌面端 mention 弹层（接入全文检索），补齐 v0.0.7 未交付的 `branchWithSummary`；多任务派发：委派会话升级为用户可见、可续聊的一等会话（`spawn_agent` detached 保留预算、`send_agent` 续聊、requestId 幂等、「子任务名 · 父会话名」命名），CLI `/delegate` `/tasks` 用户级派发与任务面板，桌面委派会话可见可接续；单条/单轮引用预算上限，压缩投影保留溯源头、可降级正文。跨项目桶引用、活引用、跨 Harness 托管、Worktree 隔离、编排画布明确未交付 | Core + CLI + 桌面增量 |
+
+### v0.1.0 桌面发布口径调整（2026-11-14）
+
+维护者决定 v0.1.0 以**未签名个人自用版**发布，桌面签名与人工安装证据不再作为发布前置。改动的只有发布口径，桌面代码与候选流程的能力边界不变：
+
+- `release.yml` 默认跳过 `verify:release-evidence`（prepare 与 publish 各一次，只打印 `::warning::`）：六类专项与桌面证据都不是 v0.1.0 的阻塞项；把仓库变量 `KPBL_RELEASE_STRICT` 设为 `true` 可恢复六类专项的同 SHA 强制校验，阈值与字段不变。
+- **自动门禁没有放宽**：`verify` 工作流的 ubuntu/macos/windows 矩阵、Node 20 安装、compat、release 长跑、`verify:desktop` 的 mac/win e2e 与三包 registry 安装 smoke 仍须全绿，任一失败即不发版。
+- 桌面附件默认不随 Release 附带；需要时把仓库变量 `KPBL_DESKTOP_RELEASE` 设为 `true` 恢复“只下载已审核候选”的严格流程。
+- 未签名测试包由 `pnpm pack:desktop` 在本机生成（产物名带 `Test`、appId `dev.kapibala.desktop.test`），由维护者手工上传；macOS 首次打开需右键或 `xattr -dr com.apple.quarantine`，Windows 会触发 SmartScreen。
+- 因此 v0.1.0 不宣称：四平台安装验收、签名与公证、自动更新。托盘（Windows/Linux）与失焦系统通知已实现，但只有 macOS arm64 做过人工实机确认。发布说明必须逐条写明。
+- `desktop-candidate.yml` 未改动，仍在缺凭证时拒绝产出候选，避免把测试包误当正式字节。
 
 ### v0.1.1 跨会话引用与多任务派发（2026-11-01 规划）
 

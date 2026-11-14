@@ -61,15 +61,21 @@ jobs:
           else
             echo "desktop=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Require reviewed acceptance evidence for the source commit
+      # 2026-11-14 维护者决定：v0.1.0 以未签名个人自用版交付，人工验收证据不再是发布前置。
+      # 默认只跑自动门禁（verify 工作流全矩阵 + release 长跑 + 安装 smoke）；把仓库变量
+      # KPBL_RELEASE_STRICT 设为 true 即恢复六类专项的同 SHA 审核清单强制检查。
+      # 口径见 docs/release-evidence.md 与 docs/desktop-release.md。
+      - name: Check reviewed acceptance evidence
         env:
           RELEASE_SHA: ${{ steps.source.outputs.sha }}
+          KPBL_STRICT: ${{ vars.KPBL_RELEASE_STRICT }}
         shell: bash
         run: |
-          if [ "${{ steps.source.outputs.desktop }}" = true ]; then
-            pnpm verify:release-evidence --sha "$RELEASE_SHA" --desktop-version "${RELEASE_TAG#v}"
-          else
+          set -euo pipefail
+          if [ "$KPBL_STRICT" = "true" ]; then
             pnpm verify:release-evidence --sha "$RELEASE_SHA"
+          else
+            echo "::warning::已按个人自用版口径跳过六类人工验收证据检查（KPBL_RELEASE_STRICT 未开启）。本次发布不宣称 Node 20、Windows 跨用户 ACL/ConPTY、POSIX PTY、跨解释器进程树、MCP 与 release 长跑已完成人工审核。"
           fi
 
   verify:
@@ -111,14 +117,16 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - name: Validate source and pack
+        env:
+          KPBL_STRICT: ${{ vars.KPBL_RELEASE_STRICT }}
         run: |
           set -euo pipefail
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
           node scripts/release.ts check "$RELEASE_TAG"
-          if [ "${{ needs.prepare.outputs.desktop }}" = true ]; then
-            pnpm verify:release-evidence --sha "$RELEASE_SHA" --desktop-version "$RELEASE_VERSION"
-          else
+          if [ "$KPBL_STRICT" = "true" ]; then
             pnpm verify:release-evidence --sha "$RELEASE_SHA"
+          else
+            echo "::warning::发布前证据检查按个人自用版口径跳过；恢复严格门禁请设置 KPBL_RELEASE_STRICT=true。"
           fi
           release_dir="$RUNNER_TEMP/kapibala-release"
           echo "RELEASE_DIR=$release_dir" >> "$GITHUB_ENV"
@@ -126,8 +134,10 @@ jobs:
           pnpm -C packages/core pack --pack-destination "$release_dir"
           pnpm -C packages/mcp pack --pack-destination "$release_dir"
           pnpm -C packages/cli pack --pack-destination "$release_dir"
+      # 默认跳过：未签名自用版只发三份 npm 包，桌面测试包由维护者手工上传。
+      # 将来拿到证书、走完候选审核后，把仓库变量 KPBL_DESKTOP_RELEASE 设为 true 即恢复严格附件流程。
       - name: Download only reviewed desktop artifacts
-        if: needs.prepare.outputs.desktop == 'true'
+        if: needs.prepare.outputs.desktop == 'true' && vars.KPBL_DESKTOP_RELEASE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/desktop-candidate.ts download "$RELEASE_SHA" "$RELEASE_VERSION" "$RELEASE_DIR/desktop"
