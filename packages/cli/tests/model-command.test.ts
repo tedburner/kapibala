@@ -17,7 +17,9 @@ describe('updateModelApiKey', () => {
     profile.apiKey = 'sk-old';
     const settings: UserSettings = { defaultModel: profile.id, profiles: [profile] };
     const onModelSwitched = vi.fn();
-    const saveSettings = vi.fn(() => 'C:/fake/.kapibala/settings.json');
+    const saveSettings = vi.fn(
+      (_settings: UserSettings, _options: unknown) => 'C:/fake/.kapibala/settings.json',
+    );
     const context: CommandContext = {
       session: { getActiveProfile: () => profile } as unknown as AgentSession,
       settings,
@@ -27,7 +29,11 @@ describe('updateModelApiKey', () => {
 
     const updated = await updateModelApiKey(profile, context, {
       secretReader: async () => ' sk-new ',
-      saveSettings,
+      mutateSettings: (change, options) => {
+        const draft = structuredClone(settings);
+        change(draft);
+        return saveSettings(draft, options);
+      },
       globalSettings: settings,
     });
 
@@ -41,7 +47,7 @@ describe('updateModelApiKey', () => {
     const profile = builtinProfile('gpt-5.6-terra');
     profile.apiKey = 'sk-existing';
     const settings: UserSettings = { defaultModel: profile.id, profiles: [profile] };
-    const saveSettings = vi.fn(() => 'unused');
+    const saveSettings = vi.fn((_settings: UserSettings, _options: unknown) => 'unused');
     const context: CommandContext = {
       session: { getActiveProfile: () => profile } as unknown as AgentSession,
       settings,
@@ -51,7 +57,11 @@ describe('updateModelApiKey', () => {
 
     const updated = await updateModelApiKey(profile, context, {
       secretReader: async () => '   ',
-      saveSettings,
+      mutateSettings: (change, options) => {
+        const draft = structuredClone(settings);
+        change(draft);
+        return saveSettings(draft, options);
+      },
       globalSettings: settings,
     });
 
@@ -74,7 +84,7 @@ describe('updateModelApiKey', () => {
       defaultModel: runtimeProfile.id,
       profiles: [runtimeProfile],
     };
-    const saveSettings = vi.fn(() => 'saved');
+    const saveSettings = vi.fn((_settings: UserSettings, _options: unknown) => 'saved');
     const context: CommandContext = {
       session: { getActiveProfile: () => runtimeProfile } as unknown as AgentSession,
       settings: runtimeSettings,
@@ -84,7 +94,11 @@ describe('updateModelApiKey', () => {
 
     await updateModelApiKey(runtimeProfile, context, {
       secretReader: async () => 'new-key',
-      saveSettings,
+      mutateSettings: (change, options) => {
+        const draft = structuredClone(globalSettings);
+        change(draft);
+        return saveSettings(draft, options);
+      },
       globalSettings,
     });
 
@@ -113,7 +127,7 @@ describe('updateModelApiKey', () => {
       defaultModel: targetProfile.id,
       profiles: [{ ...targetProfile }],
     };
-    const saveSettings = vi.fn(() => 'saved');
+    const saveSettings = vi.fn((_settings: UserSettings, _options: unknown) => 'saved');
     const context: CommandContext = {
       session: { getActiveProfile: () => targetProfile } as unknown as AgentSession,
       settings: runtimeSettings,
@@ -123,7 +137,11 @@ describe('updateModelApiKey', () => {
 
     await updateModelApiKey(targetProfile, context, {
       secretReader: async () => 'sk-fresh-key',
-      saveSettings,
+      mutateSettings: (change, options) => {
+        const draft = structuredClone(globalSettings);
+        change(draft);
+        return saveSettings(draft, options);
+      },
       globalSettings,
     });
 

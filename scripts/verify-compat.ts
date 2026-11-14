@@ -218,6 +218,7 @@ async function buildCandidate(): Promise<void> {
     'tsup.view-model.config.ts',
     'tsup.protocol.config.ts',
     'tsup.client.config.ts',
+    'tsup.host.config.ts',
   ]) {
     await run(process.execPath, [cliTsup, '--config', config], { cwd: cliDir });
   }

@@ -18,16 +18,11 @@ import {
   nextVersion,
   readWorkspaceVersion,
   validateReleaseNotes,
+  versionManifestFiles,
 } from './release.js';
 
 const BRANCH_PREFIXES = ['feat', 'fix', 'chore', 'docs'] as const;
 type BranchPrefix = (typeof BRANCH_PREFIXES)[number];
-const VERSION_MANIFEST_FILES = [
-  'package.json',
-  'packages/core/package.json',
-  'packages/mcp/package.json',
-  'packages/cli/package.json',
-] as const;
 const CLI_VERSION_FILE = 'packages/cli/src/version.ts';
 
 // ---------- 纯函数（可单测） ----------
@@ -104,7 +99,7 @@ export function parseTargetVersion(arg: string | undefined, current: string): st
 }
 
 /**
- * 四个 package.json 的版本字段推进。
+ * 现役 package.json 的版本字段推进。
  * 只对版本字段做定点文本替换，其余字节原样保留：整份 JSON.stringify 重序列化会把
  * biome 期望保持单行的短数组（如 "files": ["dist"]）展开成多行，让 lint 门禁在发布路径上失败。
  */
@@ -138,7 +133,7 @@ interface VersionChange {
 
 /** 先计算所有版本文件的新内容；任何源文件无效时均不写入。 */
 export function prepareVersionBump(root: string, version: string): VersionChange[] {
-  const changes: VersionChange[] = VERSION_MANIFEST_FILES.map((file) => {
+  const changes: VersionChange[] = versionManifestFiles(root).map((file) => {
     const original = fs.readFileSync(path.join(root, file), 'utf8');
     return { file, original, updated: bumpPackageJson(original, version) };
   });
@@ -348,7 +343,9 @@ async function release(root: string, options: ReleaseOptions): Promise<void> {
 
   if (options.dryRun) {
     console.log(`[dry-run] 版本：${current} → ${version}（标签 ${tag}）`);
-    console.log(`[dry-run] 版本推进：${[...VERSION_MANIFEST_FILES, CLI_VERSION_FILE].join(', ')}`);
+    console.log(
+      `[dry-run] 版本推进：${[...versionManifestFiles(root), CLI_VERSION_FILE].join(', ')}`,
+    );
     console.log(`[dry-run] 发布说明：${notesFile}（要求已存在）`);
     console.log('[dry-run] 校验：pnpm verify（失败自动回滚版本改动）');
     console.log(`[dry-run] 提交：:bookmark: 发布 ${tag}`);

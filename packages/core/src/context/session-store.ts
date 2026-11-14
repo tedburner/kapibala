@@ -4,7 +4,12 @@ import { KapibalaError } from '../errors/index.js';
 import { validateProtocolContent } from '../models/protocol-state.js';
 import type { CanonicalMessage, ContentBlock } from '../types/index.js';
 import { type HistoryRepair, createMessageId, normalizeHistory } from './history.js';
-import { readJsonlLines, syncSessionDirectory } from './jsonl-lines.js';
+import {
+  type HistoryReadOptions,
+  assertHistoryReadBudget,
+  readJsonlLines,
+  syncSessionDirectory,
+} from './jsonl-lines.js';
 import type { MessageStore } from './store/index.js';
 
 /** 会话正文 schema v1 版本常量（只读兼容）。 */
@@ -35,7 +40,8 @@ export type SessionRecordType =
   | 'branch_created'
   | 'branch_selected'
   | 'branch_summary'
-  | 'archive_state';
+  | 'archive_state'
+  | 'pin_state';
 
 /**
  * 判断指定记录类型是否属于全局控制记录。
@@ -51,6 +57,7 @@ export function isGlobalControlRecordType(type: SessionRecordType): boolean {
     type === 'branch_selected' ||
     type === 'title' ||
     type === 'archive_state' ||
+    type === 'pin_state' ||
     type === 'usage' ||
     type === 'legacy_import'
   );
@@ -152,6 +159,7 @@ const types = new Set<SessionRecordType>([
   'branch_selected',
   'branch_summary',
   'archive_state',
+  'pin_state',
 ]);
 
 /** 判断 Store 是否支持版本化状态；不读取数据或改变旧 Store。 */
@@ -283,7 +291,12 @@ export class SessionStore implements StatefulMessageStore {
   private activeBranchId = 'main';
   private branchLeaves = new Map<string, string>();
 
-  private constructor(filePath: string, schemaVersion = SESSION_SCHEMA_VERSION_V2) {
+  private constructor(
+    filePath: string,
+    schemaVersion = SESSION_SCHEMA_VERSION_V2,
+    private readonly readOptions: HistoryReadOptions = {},
+  ) {
+    assertHistoryReadBudget(0, readOptions);
     this.filePath = path.resolve(filePath);
     this.schemaVersion = schemaVersion;
   }
@@ -318,8 +331,12 @@ export class SessionStore implements StatefulMessageStore {
   }
 
   /** 以独占创建方式安装新头部（默认生成 Schema v2 格式），已有文件明确失败，绝不覆盖其它会话。 */
-  static async create(filePath: string, header: SessionHeader): Promise<SessionStore> {
-    const store = new SessionStore(filePath, SESSION_SCHEMA_VERSION_V2);
+  static async create(
+    filePath: string,
+    header: SessionHeader,
+    options: HistoryReadOptions = {},
+  ): Promise<SessionStore> {
+    const store = new SessionStore(filePath, SESSION_SCHEMA_VERSION_V2, { ...options });
     fs.mkdirSync(path.dirname(store.filePath), { recursive: true });
     const record = store.makeRecord('header', {
       ...header,
@@ -340,8 +357,8 @@ export class SessionStore implements StatefulMessageStore {
   }
 
   /** 打开并验证已有会话；尾部残片先保存到隔离文件，中部损坏与未知版本拒绝恢复。 */
-  static async open(filePath: string): Promise<SessionStore> {
-    const store = new SessionStore(filePath);
+  static async open(filePath: string, options: HistoryReadOptions = {}): Promise<SessionStore> {
+    const store = new SessionStore(filePath, SESSION_SCHEMA_VERSION_V2, { ...options });
     store.records = store.readFile(true);
     store.refreshStamp();
     return store;
@@ -454,6 +471,25 @@ export class SessionStore implements StatefulMessageStore {
       }
     }
     return false;
+  }
+
+  /**
+   * 追加会话置顶控制记录。
+   *
+   * 约束：
+   * - 置顶状态记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；
+   * - payload 结构为 { pinned: boolean }，最后一次写入生效；
+   * - 置顶只影响列表排序，不改变正文活动时间，因此不会让会话挤进「最近」；
+   * - v1 历史会话禁止变更置顶状态。
+   */
+  async setPinnedState(pinned: boolean): Promise<SessionRecord> {
+    if (this.isReadOnly()) {
+      throw new KapibalaError('Cannot modify pin state of legacy v1 session', {
+        code: 'LEGACY_SESSION_READ_ONLY',
+        safeMessage: '无法变更只读历史会话的置顶状态',
+      });
+    }
+    return this.appendRecord('pin_state', { pinned });
   }
 
   /**
@@ -821,14 +857,16 @@ export class SessionStore implements StatefulMessageStore {
 
   /** 校验每个完整记录，只有最后非空行的 JSON 残片可隔离，语义损坏绝不作为残片吞掉。 */
   private readFile(recover: boolean): SessionRecord[] {
-    const iterator = readJsonlLines(this.filePath);
+    const iterator = readJsonlLines(this.filePath, this.readOptions);
     let lastTerminated = true;
     let blankSeen = false;
     const records: SessionRecord[] = [];
     const identities = new Set<string>();
     const messages = new Set<string>();
-    this.branchLeaves.clear();
-    this.activeBranchId = MAIN_BRANCH_ID;
+    // 先在局部重建派生状态；预算、解析或 IO 失败都不能改变现有写者的因果链。
+    const branchLeaves = new Map<string, string>();
+    let activeBranchId = MAIN_BRANCH_ID;
+    let schemaVersion = this.schemaVersion;
     let detectedSchemaVersion: number | null = null;
 
     let i = -1;
@@ -846,7 +884,7 @@ export class SessionStore implements StatefulMessageStore {
       } catch {
         if (
           !recover ||
-          this.schemaVersion === SESSION_SCHEMA_VERSION_V1 ||
+          schemaVersion === SESSION_SCHEMA_VERSION_V1 ||
           !records.length ||
           Array.from(iterator).some((next) => next.text.trim())
         )
@@ -878,7 +916,7 @@ export class SessionStore implements StatefulMessageStore {
           throw new Error('Unsupported session schema version');
         }
         detectedSchemaVersion = record.schemaVersion;
-        this.schemaVersion = detectedSchemaVersion;
+        schemaVersion = detectedSchemaVersion;
       } else if (record.schemaVersion !== detectedSchemaVersion) {
         throw new Error(`Session corrupt schema version mismatch at line ${i + 1}`);
       }
@@ -912,11 +950,11 @@ export class SessionStore implements StatefulMessageStore {
         throw new Error('Session corrupt: repeated header');
       }
 
-      if (this.schemaVersion === SESSION_SCHEMA_VERSION_V1) {
+      if (schemaVersion === SESSION_SCHEMA_VERSION_V1) {
         if (record.parentId !== (records.at(-1)?.recordId ?? null)) {
           throw new Error(`Session corrupt parent at line ${i + 1}`);
         }
-        this.branchLeaves.set(MAIN_BRANCH_ID, record.recordId);
+        branchLeaves.set(MAIN_BRANCH_ID, record.recordId);
       } else {
         // v2 Schema 约束与校验
         if (typeof record.seq !== 'number' || record.seq !== records.length) {
@@ -932,38 +970,38 @@ export class SessionStore implements StatefulMessageStore {
             throw new Error(`Session corrupt control record parent at line ${i + 1}`);
           }
           if (record.type === 'header') {
-            this.branchLeaves.set(MAIN_BRANCH_ID, record.recordId);
-            this.activeBranchId = MAIN_BRANCH_ID;
+            branchLeaves.set(MAIN_BRANCH_ID, record.recordId);
+            activeBranchId = MAIN_BRANCH_ID;
           } else if (record.type === 'branch_created') {
             const bId = record.payload.branchId;
             const baseId = record.payload.baseRecordId;
             if (typeof bId !== 'string' || !bId) {
               throw new Error(`Session corrupt branch_created branchId at line ${i + 1}`);
             }
-            if (this.branchLeaves.has(bId)) {
+            if (branchLeaves.has(bId)) {
               throw new Error(`Duplicate branch ID: ${bId}`);
             }
             if (typeof baseId !== 'string' || !identities.has(baseId)) {
               throw new Error(`Session corrupt branch_created baseRecordId at line ${i + 1}`);
             }
-            this.branchLeaves.set(bId, baseId);
+            branchLeaves.set(bId, baseId);
           } else if (record.type === 'branch_selected') {
             const bId = record.payload.branchId;
-            if (typeof bId !== 'string' || !this.branchLeaves.has(bId)) {
+            if (typeof bId !== 'string' || !branchLeaves.has(bId)) {
               throw new Error(`Selected branch not found: ${bId}`);
             }
-            this.activeBranchId = bId;
+            activeBranchId = bId;
           }
         } else {
           // 分支记录
           const bId = record.branchId;
-          if (typeof bId !== 'string' || !this.branchLeaves.has(bId)) {
+          if (typeof bId !== 'string' || !branchLeaves.has(bId)) {
             throw new Error(`Session corrupt branchId at line ${i + 1}`);
           }
           if (typeof record.parentId !== 'string' || !identities.has(record.parentId)) {
             throw new Error(`Session corrupt parent at line ${i + 1}`);
           }
-          this.branchLeaves.set(bId, record.recordId);
+          branchLeaves.set(bId, record.recordId);
         }
       }
 
@@ -993,7 +1031,7 @@ export class SessionStore implements StatefulMessageStore {
       recover &&
       !lastTerminated &&
       records.length === i + 1 &&
-      this.schemaVersion !== SESSION_SCHEMA_VERSION_V1
+      schemaVersion !== SESSION_SCHEMA_VERSION_V1
     ) {
       const fd = fs.openSync(this.filePath, 'a');
       try {
@@ -1003,6 +1041,9 @@ export class SessionStore implements StatefulMessageStore {
         fs.closeSync(fd);
       }
     }
+    this.branchLeaves = branchLeaves;
+    this.activeBranchId = activeBranchId;
+    this.schemaVersion = schemaVersion;
     return records;
   }
 }

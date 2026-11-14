@@ -1,0 +1,818 @@
+/* 产品语义主题唯一真源；形状和交互沿用 Kumo，不复制组件样式。 */
+:root {
+  color-scheme: light;
+  /* 中性墨色阶：设置页、侧栏与正文只靠三层色阶和留白分层，不靠描边。 */
+  --color-kumo-canvas: #f9f9f9;
+  --color-kumo-overlay: rgba(26, 28, 31, 0.32);
+  --color-kumo-base: #ffffff;
+  --color-kumo-elevated: #ffffff;
+  --color-kumo-recessed: #f5f5f5;
+  --color-kumo-tint: color-mix(in oklab, #1a1c1f 5%, transparent);
+  --color-kumo-fill: color-mix(in oklab, #1a1c1f 7%, transparent);
+  --color-kumo-fill-hover: color-mix(in oklab, #1a1c1f 10%, transparent);
+  --color-kumo-control: #ffffff;
+  --color-kumo-line: color-mix(in oklab, #1a1c1f 9%, transparent);
+  --color-kumo-hairline: color-mix(in oklab, #1a1c1f 6%, transparent);
+  --color-kumo-contrast: #1a1c1f;
+  --color-kumo-brand: #1a1c1f;
+  --color-kumo-brand-hover: #303030;
+  --color-kumo-focus: #1a1c1f;
+  --text-color-kumo-default: #1a1c1f;
+  --text-color-kumo-strong: #0d0d0d;
+  --text-color-kumo-subtle: #5d5d5d;
+  --text-color-kumo-placeholder: #737373;
+  --text-color-kumo-inverse: #ffffff;
+  --text-color-kumo-brand: #303030;
+  --text-color-kumo-link: #303030;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+  --kapibala-sidebar-width: 275px;
+  --kapibala-sidebar-icon-width: 56px;
+  --kapibala-sidebar-surface: #f3f3f3;
+  --kapibala-dock-surface: #fafafa;
+  --kapibala-titlebar-height: 46px;
+  --kapibala-content-max: 760px;
+  --kapibala-dock-width: 360px;
+  --kapibala-tile: color-mix(in oklab, #1a1c1f 3.5%, transparent);
+  --kapibala-tile-hover: color-mix(in oklab, #1a1c1f 6%, transparent);
+  --kapibala-field-inset: color-mix(in oklab, #1a1c1f 5%, transparent);
+  --kapibala-shadow-composer: 0 3px 7.5px rgba(0, 0, 0, 0.04), 0 0 20px rgba(0, 0, 0, 0.05);
+  --kapibala-shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.08);
+  /* 品牌信号只标记「正在发生」；PI 风格保持单色，不引入第二强调色。 */
+  --kapibala-signal: #1a1c1f;
+  --kapibala-signal-soft: color-mix(in oklab, #1a1c1f 10%, transparent);
+}
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --color-kumo-canvas: #131313;
+  --color-kumo-overlay: rgba(0, 0, 0, 0.55);
+  --color-kumo-base: #181818;
+  --color-kumo-elevated: #232323;
+  --color-kumo-recessed: #1f1f1f;
+  --color-kumo-tint: color-mix(in oklab, #ffffff 6%, transparent);
+  --color-kumo-fill: color-mix(in oklab, #ffffff 8%, transparent);
+  --color-kumo-fill-hover: color-mix(in oklab, #ffffff 11%, transparent);
+  --color-kumo-control: #212121;
+  --color-kumo-line: color-mix(in oklab, #ffffff 8%, transparent);
+  --color-kumo-hairline: color-mix(in oklab, #ffffff 5%, transparent);
+  --color-kumo-contrast: #f2f2f2;
+  --color-kumo-brand: #eeeeee;
+  --color-kumo-brand-hover: #ffffff;
+  --color-kumo-focus: #f2f2f2;
+  --text-color-kumo-default: #ededed;
+  --text-color-kumo-strong: #ffffff;
+  --text-color-kumo-subtle: color-mix(in oklab, #ffffff 55%, transparent);
+  --text-color-kumo-placeholder: color-mix(in oklab, #ffffff 40%, transparent);
+  --text-color-kumo-inverse: #111111;
+  --text-color-kumo-brand: #d4d4d4;
+  --text-color-kumo-link: #d4d4d4;
+  --kapibala-sidebar-surface: #000000;
+  --kapibala-dock-surface: #212121;
+  --kapibala-tile: color-mix(in oklab, #ffffff 3.5%, transparent);
+  --kapibala-tile-hover: color-mix(in oklab, #ffffff 6%, transparent);
+  --kapibala-field-inset: color-mix(in oklab, #ffffff 5%, transparent);
+  --kapibala-shadow-composer: 0 3px 7.5px rgba(0, 0, 0, 0.3), 0 0 20px rgba(0, 0, 0, 0.25);
+  --kapibala-shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --kapibala-signal: #f2f2f2;
+  --kapibala-signal-soft: color-mix(in oklab, #ffffff 12%, transparent);
+}
+/* Kumo LayerDialog 使用公开 Tailwind 尺寸 token，集中收紧各类浮层，避免页面各自覆盖库内部结构。 */
+@theme {
+  --container-md: 27.5rem;
+  --container-xl: 31.25rem;
+  --container-2xl: 37.5rem;
+  --text-base: 0.875rem;
+  --text-sm: 0.8125rem;
+  --text-lg: 1rem;
+  --text-xl: 1.125rem;
+}
+@theme inline {
+  --color-kumo-success: light-dark(#128a45, #5fd38d);
+  --color-kumo-danger: light-dark(#d1241b, #ff7b72);
+  --color-kumo-warning: light-dark(#b45309, #f0b35c);
+  --color-kumo-info: light-dark(#3f6f8a, #8cc7e0);
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+body {
+  font-size: 14px;
+  line-height: 1.45;
+  font-family: var(--font-sans);
+  background: var(--color-kumo-base);
+  color: var(--text-color-kumo-default);
+  -webkit-font-smoothing: antialiased;
+}
+#root {
+  isolation: isolate;
+}
+.kapibala-action:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 2px;
+}
+.kapibala-prose {
+  font-size: 15px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.kapibala-prose p {
+  margin: 0 0 0.8em;
+}
+.kapibala-prose p:last-child {
+  margin-bottom: 0;
+}
+.kapibala-prose pre {
+  overflow-x: auto;
+}
+.kapibala-prose a {
+  color: var(--text-color-kumo-link);
+  text-decoration: underline;
+}
+.kapibala-prose ul,
+.kapibala-prose ol {
+  padding-left: 1.5em;
+}
+.kapibala-prose table {
+  border-collapse: collapse;
+  max-width: 100%;
+}
+.kapibala-prose th,
+.kapibala-prose td {
+  border: 1px solid var(--color-kumo-line);
+  padding: 0.5em;
+}
+
+/* 减少动效统一覆盖浮层与折叠的库默认过渡；不影响键盘、焦点或滚动操作。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    transition-duration: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 使用库显式提供的浮层 backdrop 标记，仅调整遮罩材质，保留原语的动效、层级与交互。 */
+[data-layer-dialog-backdrop] {
+  background-color: var(--color-kumo-overlay);
+}
+
+/* 长设置表单在弹窗内滚动，避免内容越多就把整块浮层撑满桌面。 */
+[role="dialog"]:has([data-kapibala-modal]) {
+  max-height: min(560px, calc(100dvh - 48px));
+}
+
+/* ---------- 窗口骨架：46px 标题栏、可拖拽区与侧栏 ---------- */
+.kapibala-titlebar {
+  height: var(--kapibala-titlebar-height);
+  background: var(--color-kumo-base);
+  -webkit-app-region: drag;
+}
+.kapibala-titlebar button,
+.kapibala-titlebar [role="button"],
+.kapibala-no-drag {
+  -webkit-app-region: no-drag;
+}
+.kapibala-sidebar-header {
+  height: var(--kapibala-titlebar-height);
+  padding: 0 10px;
+  -webkit-app-region: drag;
+}
+[data-platform="darwin"] .kapibala-sidebar-header {
+  padding-left: 72px;
+}
+[data-platform="darwin"] .kapibala-sidebar-wordmark {
+  display: none;
+}
+[data-platform="darwin"] .kapibala-titlebar {
+  padding-left: 28px;
+}
+[data-sidebar="sidebar"] {
+  border-right: 0;
+}
+
+/* ---------- 首页：标题居中、输入卡停靠底部（与对话页落点一致） ---------- */
+.kapibala-home {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+.kapibala-home-stack {
+  display: flex;
+  width: 100%;
+  max-width: var(--kapibala-content-max);
+  min-height: 100%;
+  margin: 0 auto;
+  flex-direction: column;
+  padding: 32px 24px 24px;
+}
+.kapibala-home-hero {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding-bottom: 16px;
+}
+.kapibala-home-mark {
+  width: 84px;
+  height: 84px;
+  margin-bottom: 8px;
+  border-radius: 21px;
+}
+.kapibala-home-title {
+  margin: 0;
+  color: var(--text-color-kumo-strong);
+  font-size: 28px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.kapibala-home-subtitle {
+  margin: 0;
+  max-width: 34rem;
+  color: var(--text-color-kumo-subtle);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+.kapibala-home-starters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.kapibala-starter {
+  border-radius: 9999px;
+}
+.kapibala-home-composer {
+  width: 100%;
+  margin-top: auto;
+}
+
+/* ---------- 会话流：760px 阅读列与 PI 气泡 ---------- */
+.kapibala-thread {
+  width: 100%;
+  max-width: var(--kapibala-content-max);
+  margin: 0 auto;
+}
+.kapibala-user-bubble {
+  border-radius: 18px 18px 8px 18px;
+  background: color-mix(in oklab, var(--text-color-kumo-default) 8%, transparent);
+  padding: 10px 15px;
+}
+.kapibala-tool-group {
+  border-radius: 12px;
+  background: var(--kapibala-tile);
+}
+.kapibala-composer-dock {
+  display: flex;
+  justify-content: center;
+  padding: 12px 24px 16px;
+}
+
+/* ---------- 输入卡：20px 圆角、阴影分层、无描边 ---------- */
+.kapibala-composer {
+  width: 100%;
+  max-width: var(--kapibala-content-max);
+  margin: 0 auto;
+  border-radius: 20px;
+  background: var(--color-kumo-base);
+  box-shadow: var(--kapibala-shadow-composer);
+}
+.kapibala-composer:focus-within {
+  box-shadow: 0 7px 24px color-mix(in oklab, var(--text-color-kumo-default) 9%, transparent);
+}
+.kapibala-chip {
+  min-height: 28px;
+  border-radius: 9999px;
+  padding-inline: 8px;
+  background: transparent;
+  color: var(--text-color-kumo-subtle);
+  font-size: 12px;
+}
+.kapibala-chip:hover {
+  background: var(--kapibala-field-inset);
+  color: var(--text-color-kumo-default);
+}
+.kapibala-send {
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+}
+.kapibala-composer-hint {
+  color: var(--text-color-kumo-subtle);
+  font-size: 12px;
+}
+
+/* ---------- 详情工作面板：PI 右侧 dock ---------- */
+.kapibala-dock {
+  background: var(--kapibala-dock-surface);
+  border-left: 1px solid var(--color-kumo-line);
+}
+.kapibala-dock-header {
+  border-bottom: 1px solid var(--color-kumo-line);
+}
+
+/* ---------- 设置：整页 275px 导航栏 + 卡片化内容 ---------- */
+.kapibala-settings-popup {
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--color-kumo-base);
+}
+.kapibala-settings {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-kumo-base);
+}
+.kapibala-settings-rail {
+  display: flex;
+  width: var(--kapibala-sidebar-width);
+  flex: 0 0 var(--kapibala-sidebar-width);
+  flex-direction: column;
+  min-height: 0;
+  background: var(--kapibala-sidebar-surface);
+  padding: 0 10px 10px;
+}
+[data-platform="darwin"] .kapibala-settings-rail {
+  padding-top: 46px;
+  /* 整页设置覆盖了应用标题栏，左栏顶部继续承担窗口拖拽；导航与关闭按钮保持可点。 */
+  -webkit-app-region: drag;
+}
+[data-platform="darwin"] .kapibala-settings-rail-top button,
+[data-platform="darwin"] .kapibala-settings-nav,
+[data-platform="darwin"] .kapibala-settings-rail-footer {
+  -webkit-app-region: no-drag;
+}
+.kapibala-settings-rail-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 8px 14px;
+}
+.kapibala-settings-rail-title {
+  margin: 0;
+  color: var(--text-color-kumo-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+.kapibala-settings-nav {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  padding: 4px 2px 16px;
+}
+.kapibala-settings-nav-label {
+  padding: 12px 10px 6px;
+  color: var(--text-color-kumo-subtle);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.kapibala-settings-nav-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border-radius: 12px;
+  padding: 7px 10px;
+  color: var(--text-color-kumo-subtle);
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: left;
+  outline: none;
+}
+.kapibala-settings-nav-item:hover {
+  background: var(--color-kumo-tint);
+  color: var(--text-color-kumo-default);
+}
+.kapibala-settings-nav-item:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: -2px;
+}
+.kapibala-settings-nav-item[aria-selected="true"] {
+  background: color-mix(in oklab, var(--text-color-kumo-default) 10%, transparent);
+  color: var(--text-color-kumo-default);
+  font-weight: 500;
+}
+.kapibala-settings-nav-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+.kapibala-settings-rail-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 8px 2px 0;
+  border-top: 1px solid var(--color-kumo-line);
+}
+.kapibala-settings-content {
+  min-width: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 54px 48px 56px 40px;
+}
+.kapibala-settings-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 28px;
+}
+.kapibala-settings-page-icon {
+  display: inline-flex;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: var(--kapibala-tile);
+  color: var(--text-color-kumo-default);
+}
+.kapibala-settings-title {
+  margin: 0;
+  color: var(--text-color-kumo-strong);
+  font-size: 28px;
+  font-weight: 560;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.kapibala-settings-subtitle {
+  margin: 4px 0 0;
+  color: var(--text-color-kumo-subtle);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.kapibala-settings-panel {
+  border-radius: 16px;
+  background: var(--kapibala-tile);
+  padding: 16px;
+}
+/* 保存/校验反馈位于面板上方，滚动时也不被长表单挤出视野。 */
+.kapibala-settings-notice {
+  color: var(--text-color-kumo-default);
+  margin: -8px 0 12px;
+}
+.kapibala-settings-section-label {
+  color: var(--text-color-kumo-subtle);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ---------- 设置：模型与服务商（厂商列表 + 详情双栏） ---------- */
+.kapibala-models {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.kapibala-models-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.kapibala-models-toolbar > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.kapibala-models-body {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.kapibala-models-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 58vh;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--color-kumo-hairline);
+  border-radius: 12px;
+  background: var(--color-kumo-base);
+}
+.kapibala-models-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border-radius: 9px;
+  padding: 6px 8px;
+  color: var(--text-color-kumo-subtle);
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: left;
+  outline: none;
+}
+.kapibala-models-item:hover {
+  background: var(--color-kumo-tint);
+  color: var(--text-color-kumo-default);
+}
+.kapibala-models-item:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: -2px;
+}
+.kapibala-models-item[aria-pressed="true"] {
+  background: color-mix(in oklab, var(--text-color-kumo-default) 10%, transparent);
+  color: var(--text-color-kumo-default);
+  font-weight: 500;
+}
+.kapibala-models-item-badge {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: var(--kapibala-tile);
+  color: var(--text-color-kumo-default);
+  font-size: 11px;
+  font-weight: 600;
+}
+.kapibala-models-item-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kapibala-models-item-tag {
+  flex: 0 0 auto;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 999px;
+  color: var(--text-color-kumo-subtle);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
+  padding: 1px 6px;
+}
+.kapibala-models-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  /* 密钥状态沿用单色语言：已配置是实心墨点，未配置是浅点，不引入第二强调色。 */
+  background: color-mix(in oklab, var(--text-color-kumo-subtle) 45%, transparent);
+}
+.kapibala-models-dot.is-on {
+  background: var(--text-color-kumo-default);
+}
+.kapibala-models-detail {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 4px;
+}
+.kapibala-models-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.kapibala-models-detail-title {
+  margin: 0;
+  color: var(--text-color-kumo-strong);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+.kapibala-models-detail-desc {
+  margin: 2px 0 0;
+  color: var(--text-color-kumo-subtle);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.kapibala-models-state {
+  flex: 0 0 auto;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 999px;
+  color: var(--text-color-kumo-subtle);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 9px;
+}
+.kapibala-models-state.is-on {
+  background: var(--kapibala-signal-soft);
+  border-color: transparent;
+  color: var(--text-color-kumo-default);
+  font-weight: 600;
+}
+.kapibala-models-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.kapibala-models-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-kumo-base);
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 999px;
+  color: var(--text-color-kumo-subtle);
+  font-size: 12px;
+  outline: none;
+  padding: 5px 10px;
+}
+.kapibala-models-chip:hover {
+  background: var(--color-kumo-tint);
+  color: var(--text-color-kumo-default);
+}
+.kapibala-models-chip:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: -2px;
+}
+.kapibala-models-chip[aria-pressed="true"] {
+  background: color-mix(in oklab, var(--text-color-kumo-default) 8%, transparent);
+  border-color: color-mix(in oklab, var(--text-color-kumo-default) 35%, transparent);
+  color: var(--text-color-kumo-default);
+  font-weight: 500;
+}
+.kapibala-models-chip-tag {
+  color: var(--text-color-kumo-subtle);
+  font-size: 10px;
+  font-style: normal;
+}
+.kapibala-models-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-top: 1px solid var(--color-kumo-hairline);
+  padding-top: 14px;
+}
+.kapibala-models-empty {
+  color: var(--text-color-kumo-subtle);
+  font-size: 13px;
+  margin: 0;
+}
+.kapibala-models-probe {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.kapibala-models-hint {
+  color: var(--text-color-kumo-subtle);
+  font-size: 12px;
+  line-height: 1.45;
+}
+/* 高级项默认收起：日常只需端点、密钥与模型名。 */
+.kapibala-models-advanced {
+  border-top: 1px solid var(--color-kumo-hairline);
+  padding-top: 12px;
+}
+.kapibala-models-advanced > summary {
+  color: var(--text-color-kumo-subtle);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  list-style: none;
+  outline: none;
+  padding: 2px 0;
+}
+.kapibala-models-advanced > summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 6px;
+  transition: none;
+}
+.kapibala-models-advanced[open] > summary::before {
+  content: "⌄";
+}
+.kapibala-models-advanced > summary:hover {
+  color: var(--text-color-kumo-default);
+}
+.kapibala-models-advanced > summary:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 2px;
+}
+.kapibala-models-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 10px;
+}
+
+/* ---------- 侧栏：搜索胶囊、会话/项目两段式 ---------- */
+.kapibala-sidebar-actions {
+  margin-bottom: 8px;
+}
+.kapibala-sidebar-action {
+  min-height: 34px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.kapibala-sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 32px;
+  margin: 4px 2px 8px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 9999px;
+  color: var(--text-color-kumo-subtle);
+  background: var(--kapibala-field-inset);
+}
+[data-sidebar="sidebar"][data-state="collapsed"] .kapibala-sidebar-search {
+  display: none;
+}
+.kapibala-sidebar-search:focus-within {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 1px;
+}
+.kapibala-sidebar-search input {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-color-kumo-default);
+  font: inherit;
+}
+.kapibala-sidebar-search input::placeholder {
+  color: var(--text-color-kumo-placeholder);
+}
+.kapibala-sidebar-section {
+  padding: 14px 10px 6px;
+  color: var(--text-color-kumo-subtle);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.kapibala-sidebar-empty {
+  margin: 0;
+  padding: 4px 10px 8px;
+  color: var(--text-color-kumo-subtle);
+  font-size: 12px;
+}
+.kapibala-sidebar-space {
+  margin-bottom: 2px;
+}
+.kapibala-sidebar-space-button {
+  min-height: 34px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.kapibala-sidebar-chevron {
+  color: var(--text-color-kumo-subtle);
+}
+.kapibala-sidebar-conversations {
+  padding: 2px 0 3px;
+}
+.kapibala-sidebar-conversation {
+  min-height: 32px;
+  border-radius: 10px;
+  padding-left: 40px;
+  font-weight: 400;
+}
+.kapibala-sidebar-conversation[data-active] {
+  font-weight: 500;
+}
+.kapibala-sidebar-temp {
+  min-height: 34px;
+  border-radius: 10px;
+}
+.kapibala-sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 2px;
+}
+.kapibala-sidebar-version {
+  margin-left: auto;
+  color: var(--text-color-kumo-subtle);
+  font-size: 11px;
+}

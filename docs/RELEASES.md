@@ -5,6 +5,7 @@
 > 不允许前导零；默认只递增补丁段，`v0.0.9 → v0.0.10 → v0.0.11`，不逢十进位。
 > 稳定整合版由原规划 v0.1.0 调整为 **v0.0.10**，Electron 桌面客户端由原规划 v0.1.1 调整为 **v0.1.0**；
 > 次版本/主版本通过发布命令显式选择。已发布版本与历史验收记录不重命名。
+> 2026-11-01 确认规划：**v0.1.1** 为双主题补丁位版本（桌面端 v0.1.0 之后）——跨会话消息引用与上下文复用、多任务派发（后者见 [设计 005](design/005-v0.1.1-multi-task-delegation.md)）。
 
 ---
 
@@ -35,8 +36,36 @@
 | **v0.0.8** | **产品化终端体验**（已发布；[发布说明](releases/v0.0.8.md)，[验收记录](verification/v0.0.8.md)，[迁移说明](migration/v0.0.8.md)） | 现代终端守护（ConPTY/CSI-u 拼包、Bracketed Paste 隔离、异常自愈恢复）、共享前端纯展示模型（`@kiturone/kapibala-cli/view-model` 导出，0 Node 依赖，WeakMap 缓存）、宿主桥接中枢与防抖分发、全量 Slash 命令结构化解耦（CommandOutput 统一输出，check-cli-boundary 门禁）、多任务状态观察（subscribeTaskChanges） | CLI 内部模块增量，不新增包 |
 | **v0.0.9** | **本地客户端契约与发布前加固**（已于 2026-10-21 发布；[发布说明](releases/v0.0.9.md)，[验收记录](verification/v0.0.9.md)，[迁移说明](migration/v0.0.9.md)） | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；已实现有界快照、审批与宿主隔离；Linux 与 Windows CI 全量门禁已通过，Windows ACL/进程树与 Node 20 等平台验收仍待补齐。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
 | **v0.0.10** | **阶段性整合版本**（已于 2026-10-23 发布；[发布说明](releases/v0.0.10.md)，[技术方案](design/003-v0.0.10-stable-integration.md)，[验收记录](verification/v0.0.10.md)，[迁移说明](migration/v0.0.10.md)，[SDK 兼容性说明](sdk-compatibility.md)） | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约：显式工作区身份、宿主级写租约与父子协调器传递、类型化错误与取消语义、按方法具体化的客户端结果与整个连接的恢复单位；新增 `verify:compat` / `verify:platform` / `verify:soak` 三类门禁。不新增客户端类型或运行时子系统；Node 20、Windows 跨用户 ACL/ConPTY、POSIX PTY、双解释器进程树及 release 长跑已在同一发布 SHA 上通过并获维护者审核 | CLI + Core SDK + 扩展包 |
-| **v0.1.0** | **跨平台桌面客户端 (Electron)** | 基于 Electron 的现代化跨平台桌面客户端（Windows / macOS / Linux）；前端采用现代 Web 技术栈复用流式渲染与 ViewModel，主进程直连复用 Headless Core 与 MCP 模块；支持系统托盘、全局呼出快捷键、富文本思考过程与工具调用交互 | 独立桌面包 (`packages/desktop`) |
+| **v0.1.0** | **桌面 Harness（Electron；2026-11-14 以未签名个人自用版发布，[发布说明](releases/v0.1.0.md)）** | 基于现有 Core、MCP 与共享 ViewModel，采用单个 utilityProcess Agent Host、受控 IPC 与 React 界面；交付项目/模型配置、历史对话、工具展示、审批取消、多会话（重命名/置顶/归档/删除）及 macOS arm64 测试包；签名与公证**不是 v0.1.0 发布前置**（见下节），详见[功能与开发方案](design/004-v0.1.0-desktop-harness.md)与[视觉精修](design/006-desktop-visual-refinement.md) | 私有桌面应用包 `packages/desktop`，不新增 npm 发布包 |
+| **v0.1.1** | **跨会话引用与多任务派发（双主题）**（规划中；多任务派发见[设计 005](design/005-v0.1.1-multi-task-delegation.md)） | 跨会话引用：同项目桶内把其它会话（含本会话其它分支）的历史消息作为冻结快照引入当前会话，宿主经 `runPreparedTask` 注入带溯源头的引用块（源会话 + `recordId` + 角色 + 时间戳 + 正文片段）并随 user 消息落盘，Core 新增只读不取锁的会话读取 API，CLI `/quote` 与桌面端 mention 弹层（接入全文检索），补齐 v0.0.7 未交付的 `branchWithSummary`；多任务派发：委派会话升级为用户可见、可续聊的一等会话（`spawn_agent` detached 保留预算、`send_agent` 续聊、requestId 幂等、「子任务名 · 父会话名」命名），CLI `/delegate` `/tasks` 用户级派发与任务面板，桌面委派会话可见可接续；单条/单轮引用预算上限，压缩投影保留溯源头、可降级正文。跨项目桶引用、活引用、跨 Harness 托管、Worktree 隔离、编排画布明确未交付 | Core + CLI + 桌面增量 |
 
+### v0.1.0 桌面发布口径调整（2026-11-14）
+
+维护者决定 v0.1.0 以**未签名个人自用版**发布，桌面签名与人工安装证据不再作为发布前置。改动的只有发布口径，桌面代码与候选流程的能力边界不变：
+
+- `release.yml` 默认跳过 `verify:release-evidence`（prepare 与 publish 各一次，只打印 `::warning::`）：六类专项与桌面证据都不是 v0.1.0 的阻塞项；把仓库变量 `KPBL_RELEASE_STRICT` 设为 `true` 可恢复六类专项的同 SHA 强制校验，阈值与字段不变。
+- **自动门禁没有放宽**：`verify` 工作流的 ubuntu/macos/windows 矩阵、Node 20 安装、compat、release 长跑、`verify:desktop` 的 mac/win e2e 与三包 registry 安装 smoke 仍须全绿，任一失败即不发版。
+- 桌面附件默认不随 Release 附带；需要时把仓库变量 `KPBL_DESKTOP_RELEASE` 设为 `true` 恢复“只下载已审核候选”的严格流程。
+- 未签名测试包由 `pnpm pack:desktop` 在本机生成（产物名带 `Test`、appId `dev.kapibala.desktop.test`），由维护者手工上传；macOS 首次打开需右键或 `xattr -dr com.apple.quarantine`，Windows 会触发 SmartScreen。
+- 因此 v0.1.0 不宣称：四平台安装验收、签名与公证、自动更新。托盘（Windows/Linux）与失焦系统通知已实现，但只有 macOS arm64 做过人工实机确认。发布说明必须逐条写明。
+- `desktop-candidate.yml` 未改动，仍在缺凭证时拒绝产出候选，避免把测试包误当正式字节。
+
+### v0.1.1 跨会话引用与多任务派发（2026-11-01 规划）
+
+> 双主题补丁位版本（2026-11-01 确认，与 [设计 005](design/005-v0.1.1-multi-task-delegation.md) 的 v0.1.1 定版合并）：两个主题共用既有会话、任务树与权限基础设施，互不依赖、可独立交付。
+>
+> **主题一 · 跨会话消息引用与上下文复用**：把其它会话（含本会话其它分支）的历史消息作为**确定性上下文**引入当前会话，走显式、可追溯、可复现的冻结快照回放，与自动提炼的长期记忆互补。v0.0.7 已交付的跨项目全文检索（`CrossProjectSessionCatalog.search` 返回命中 `recordId`）是定位基础，本版补齐其消费端。开源对标：Zed Agent Panel 的 `@` mention previous threads 与 Cursor `@ Past Chats` 已验证该交互形态；Claude Code 无原生支持。
+
+主题一交付边界：
+
+- **引用注入与落盘**：宿主经 `AgentSession.runPreparedTask` 在运行锁内把引用展开为带溯源头的引用块（来源元数据语义与 MCP Prompt 的 `promptSource` 对齐），随本轮 user 消息经 `MessageStore` 消息级落盘；引用为冻结快照，源会话后续压缩、分叉或归档不改变已注入内容，且不产生未闭合工具事务。
+- **Core 只读读取 API**：新增按会话与 `recordId` 读取消息的受控只读宿主 API，复用 Envelope 因果链（`parentId`/`branchId`）与投影能力；只读路径不获取 `SessionLock`、不创建目录，不破坏单写者与项目桶校验模型。
+- **宿主入口**：CLI 新增 `/quote`（复用 `/resume` 选择菜单与 `--search` 全文检索交互，支持会话级与消息级粒度）；桌面端输入区提供 mention 弹层，复用侧栏会话列表并接入全文检索（桌面端当前只搜标题）。
+- **预算与压缩**：单条引用与单轮引用总量设上限，超预算拒绝并提示（沿用任务自身超预算零追加拒绝语义）；引用块携带来源标记，压缩投影优先保留溯源头与摘要、允许降级正文，不误伤未被引用消息；剪裁白名单与 `normalizeHistory` 行为不变。
+- **收编遗留项**：v0.0.7 明确未交付的 `branchWithSummary` 跨分支摘要注入并入本版（`branch_summary` 记录类型与投影注入位已预留，本版补齐写入方）。
+- **主题一明确未交付**：跨项目桶（跨工作区）引用——需先与 v0.0.5 项目信任模型对齐后另行设计；活引用（引用随源会话演进联动）；引用内容自动记忆化提炼；对被引用会话的任何写操作。技术方案另行编写。
+
+**主题二 · 多任务派发**：交付范围以 [设计 005](design/005-v0.1.1-multi-task-delegation.md) 为准（提案草稿已入库），分三段交付（D1 Core 委派会话生命周期 → D2 CLI 用户级派发 → D3 桌面可见化，任一段独立可用）：`spawn_agent` 新增 detached 保留型委派会话与保留预算（数量 + 闲置天数，LIFO 清理）、`send_agent` 对空闲 detached 会话续聊（busy 即拒绝不排队）、工具层 requestId 幂等（显式去重，不做隐式摘要窗）、「子任务名 · 父会话名」命名；CLI `/delegate` `/tasks` 用户级派发与任务面板；桌面侧栏委派会话可见、流式看进度、终态后接续聊天。跨 Harness 托管（把外部 CLI agent 接入为派发目标）与被 ACP 客户端托管维持 005 §3.3 非目标，列为后续探索项；本版不捆绑 Worktree 隔离（005 开放问题 4）。
 
 ### v0.0.10 稳定整合与发布边界（2026-10-21）
 
@@ -108,9 +137,9 @@
 
 该能力分阶段交付，折叠只影响 CLI 展示，不改变 Core 的消息历史、工具事务闭合或落盘规则。
 
-- **v0.0.4 — 事件基础**：Anthropic 原生 Provider 将模型实际提供、允许展示的思考内容以结构化事件传给 CLI；OpenAI Responses 只在 API 明确返回可见推理摘要时提供相应展示事件，加密推理 Item 不展示。工具调用及结果继续保留完整事件；Provider 未提供或已隐藏的思考内容不由 CLI 推测生成。
-- **v0.0.5 — 默认折叠（已发布）**：CLI 默认将思考、工具调用和工具结果显示为简短摘要；TTY Ctrl+O 切换本轮详情，菜单/密钥/审批期间禁用。所有回答文本、错误、取消和权限请求完整可见；`--output-detail detailed` 提供非交互完整公开过程。当前轮次缓存最多 1 MiB，不能回收任意终端 scrollback；非 TTY detailed 流不受缓存截断。
-- **后续终端专项，版本待定 — 点击展开**：在可重绘、可滚动的终端会话视图中，支持点击过程块展开或收起；同时处理鼠标事件、窗口尺寸变化、终端兼容及复制文本体验，并为不支持鼠标的环境保留键盘操作。此项不属于 v0.0.10 稳定整合或 v0.1.0 桌面端的默认交付范围。
+- **v0.0.4 事件基础**：Anthropic 原生 Provider 将模型实际提供、允许展示的思考内容以结构化事件传给 CLI；OpenAI Responses 只在 API 明确返回可见推理摘要时提供相应展示事件，加密推理 Item 不展示。工具调用及结果继续保留完整事件；Provider 未提供或已隐藏的思考内容不由 CLI 推测生成。
+- **v0.0.5 默认折叠（已发布）**：CLI 默认将思考、工具调用和工具结果显示为简短摘要；TTY Ctrl+O 切换本轮详情，菜单/密钥/审批期间禁用。所有回答文本、错误、取消和权限请求完整可见；`--output-detail detailed` 提供非交互完整公开过程。当前轮次缓存最多 1 MiB，不能回收任意终端 scrollback；非 TTY detailed 流不受缓存截断。
+- **后续终端专项，版本待定，点击展开**：在可重绘、可滚动的终端会话视图中，支持点击过程块展开或收起；同时处理鼠标事件、窗口尺寸变化、终端兼容及复制文本体验，并为不支持鼠标的环境保留键盘操作。此项不属于 v0.0.10 稳定整合或 v0.1.0 桌面端的默认交付范围。
 
 验收时应确认折叠/展开不会遗漏流式输出，不会影响 SessionEvent 消费、消息落盘、工具结果闭合与会话恢复。
 
@@ -128,52 +157,33 @@
 
 ## 🖥️ 跨平台桌面客户端规划（Electron，v0.1.0）
 
-> 选型确立于 2026-10-15：基于工程务实性、全栈 TypeScript 一致性与 AI 编程生态（Monaco Editor、node-pty 原生终端、Shiki 高亮、IME 输入法成熟度），选用 **Electron** 作为 Kapibala 跨平台桌面客户端（Windows / macOS / Linux）核心底座。主进程直接复用已有 TypeScript Headless Core 与 MCP 模块，以极高研发效率交付高品质桌面体验。
+> 2026-10-24 确认：基于现有 Harness 实现桌面版，不另建执行引擎。功能清单、接口、文件级任务和验收以 [v0.1.0 功能与开发方案](design/004-v0.1.0-desktop-harness.md)为准，共享层阶段 A 与桌面最小闭环阶段 B 已通过本地自动验收；[阶段 A](verification/v0.1.0-stage-a.md)与[阶段 B](verification/v0.1.0-stage-b.md)记录真实检查和跨平台 pending。阶段 C 的完整会话体验与本地门禁已落地，见[阶段 C 验收](verification/v0.1.0-stage-c.md)；2026-10-25 已补创建项目与信任文件夹双层交互，D1 已提供测试打包、生产依赖闭包、安装副本 smoke、许可与哈希附件，见[D1 验收](verification/v0.1.0-stage-d1.md)。紧凑黑白 UI 与两项断连问题已修复，D2/D3 的签名候选、版本同步和审核附件发布代码已接入；实际证书、远端流水线、其它安装目标及完整发布证据仍待验收，v0.1.0 尚未发布。
 
-### 1. 架构定位与设计模式
+实施步骤、现有代码入口与故障测试见[桌面开发指南](desktop-development.md)。
 
-- **严格遵守 Headless Core 原则**：桌面客户端作为独立包 `packages/desktop`（`@kiturone/kapibala-desktop`）交付，Core 保持 0 外部运行时依赖与纯粹 Headless。
-- **主进程（Main Process，Node.js 环境）直连引擎**：
-  - 主进程作为宿主直接 `import { AgentSession } from '@kiturone/kapibala'` 与 `@kiturone/kapibala-mcp`；
-  - 零 Rust 胶水代码，零 Sidecar 进程管理、端口分配与鉴权握手成本；
-  - 负责原生窗口生命周期、系统托盘（System Tray）、全局快捷键唤醒、原生菜单与系统通知；
-  - 调度文件 IO 与子进程，天然支持集成 `node-pty` 提供工业级交互式终端能力。
-- **安全隔离桥接（Preload & ContextBridge）**：
-  - 严格开启 `contextIsolation: true` 与 `sandbox: true`；
-  - 主进程与渲染进程之间通过强类型 IPC（Typed IPC / TRPC）通道传输规范的 `SessionEvent` 与控制信令，渲染进程无 Node 原生特权。
-- **渲染进程（Renderer Process，Web 前端）**：
-  - 采用 React / Vite / Tailwind CSS，复用 v0.0.8 沉淀的前端 ViewModel；
-  - 实现流畅的流式 Markdown 打字机、Thinking 推理块折叠/展开、代码语法高亮与工具调用审批卡片。
+### 架构与功能范围
 
-### 2. 面向桌面客户端的关键技术调整（顺应路线图演进）
+Electron Main 管理原生窗口、托盘、通知和 Host 生命周期，单个 `utilityProcess` Agent Host 复用 Core、MCP 和共享宿主装配。React 界面经沙箱 Preload 和受控 Typed IPC 操作会话，只接收脱敏展示数据。此方案替代原 Main 直连引擎的规划，不启动外部 daemon 或监听端口。
 
-1. **工作区上下文彻底参数化（消除 `process.cwd()` 隐式依赖，v0.0.7~v0.0.8 落实）**：
-   - `AgentSession`、`PathSandbox` 以及内置文件与命令工具一律由显式注入的 `workspaceRoot` 与 `executionCwd` 驱动；
-   - 彻底解除全局进程环境依赖，支持桌面端在单进程内同时托管多个独立项目的工作区会话，互不串扰。
-2. **事件 DTO 版本化与双向 RPC 控制信令（v0.0.9 落实）**：
-   - 将 `SessionEvent` 规范化为结构稳定的数据传输对象（`WireSessionEvent`，版本号显式声明）；
-   - 扩展双向控制流：工具执行前审批通过带唯一 `requestId` 和超时控制的 `approval_requested` 信令发起，渲染层弹窗确认后回发 `approval_response` 闭环；窗口异常或超时自动安全熔断。
-3. **跨平台进程树强制回收与生命周期守卫（v0.0.9 ~ v0.1.0 分阶段落实）**：
-   - 主进程统一管理工具命令子进程生命周期；
-   - 任务中断或客户端退出时，统一通过 Windows Job Object / `taskkill /T /F` 与 macOS/POSIX 进程组 `kill(-pid, SIGKILL)` 深度回收所有子命令进程树，杜绝孤儿进程后台残留。
+首版交付默认空间与项目空间、共用模型及凭证设置、历史对话、流式 Markdown、思考折叠、按需工具详情、审批取消、多工作区会话、真实指标、Skill/MCP 状态及子任务观察。未绑定项目的新会话归默认空间，工作目录固定为 `~/.kapibala/workspaces/default`；默认空间是应用自有的可信根，首次启动把信任写入全局记录（与 CLI 共用），无需重复确认，项目空间仍须显式信任；权限检查保持不变，历史沿用既有项目桶。
 
-### 3. 分阶段实施路径
+主界面采用空间会话侧栏与对话主体两栏，工具详情默认关闭，点击后在右侧抽屉查看；模型配置放在设置中。视觉语言定为“纸面与静水”：白纸画布、墨色正文、静水青单一强调，细线分隔，阴影只给浮层。默认白底，支持深色与跟随系统，具体布局、色值和文案以 004 第 6.3 节为准。原始历史仍是唯一耐久事实，Core 保持 Headless 和零外部运行时依赖，现役本地 wire 协议保持 1.0。
 
-| 阶段 | 关联版本 | 交付重点 |
+界面组件只用一个体系：`@cloudflare/kumo`（内含 Base UI 原语）提供组件与交互，Phosphor 为唯一图标来源，动画使用与 Kumo 同主版本的 Motion，Zustand 只保存易失 UI 状态，Markdown 与长列表分别用 react-markdown 和 `@tanstack/react-virtual`。首版不引入 Radix、shadcn/ui 或第二套图标、动画库，也不为暂不存在的可调分栏和拖拽安装布局库。已有依赖能正确表达时禁止自写焦点、弹层、组合框、虚拟化或高亮逻辑；新增依赖须先更新选型表并审许可证。约束见 004 第 6.1 与 6.1.1 节。
+
+不做完整 IDE、Monaco 编辑器、交互式 PTY 终端、Git Worktree、多代理编排画布、云同步、远程服务或插件市场。自动更新、全局呼出小窗与拖拽附件留到后续版本，不把既有 CLI 的全部增强项纳入桌面首版。
+
+### 开发顺序
+
+| 阶段 | 交付重点 | 独立完成条件 |
 |---|---|---|
-| **准备阶段：路径解耦与前端抽象** | **v0.0.7 ~ v0.0.8** | 消除 Core 内对 `process.cwd()` 的隐式依赖；在终端产品化演进中抽象出共享前端 `ViewModel`（流式 Markdown、Thinking 块折叠、工具参数脱敏展示），供 TUI 与桌面端双向复用。 |
-| **第一阶段：通信契约与双向信令** | **v0.0.9** | 规范化版本化事件 DTO；实现本地守护进程与双向审批 RPC 信令通道，为主进程与多宿主提供统一的通信契约。 |
-| **第二阶段：稳定整合与全量门禁** | **v0.0.10** | 按 [技术方案](design/003-v0.0.10-stable-integration.md)稳定 Core 公共 API 与本地客户端通信协议，完成多平台宿主隔离与回归测试，不引入新客户端业务。 |
-| **第三阶段：桌面客户端核心交付** | **v0.1.0** | 初始化 `packages/desktop`（`@kiturone/kapibala-desktop`）；构建 Electron 主进程与 Typed IPC 桥接；接入 Web 前端流式对话、历史抽屉与弹窗审批；交付 Win（NSIS / 免安装压缩包）与 Mac（DMG）安装包。 |
-| **第四阶段：体验增强与自动更新** | **v0.1.x+** | 接入 `electron-updater` 增量自动更新；配置 macOS Apple Notarization 公证与 Windows 代码签名流水线；支持全局快捷键呼出小窗与拖拽文件输入。 |
+| A：共享宿主 | 新增 CLI `/host` 窄出口、精确根身份、共享投影、全局配置写事务 | CLI/daemon 和公共 API 回归通过，桌面尚未接入也可合并 |
+| B：桌面最小闭环 | 原生窗口、Host、默认/项目空间、信任、配置、新建/恢复、两栏对话、审批和取消；Kumo 与 Tailwind v4 接入及首帧主题 | 内部开发构建可完成真实任务，安全边界不留到后续补做 |
+| C：完整会话体验 | 空间会话聚合、Kumo 原语实现的详情抽屉、三态主题、状态、子任务观察与通知，扩展阶段 B 已有的快照恢复压力测试 | 功能清单完成，长列表、输入法和异常路径通过验收，UI 依赖唯一性与主题门禁通过 |
+| D：平台交付 | Windows NSIS/ZIP、macOS DMG、Linux AppImage，签名、公证与发布证据 | 各目标平台实际安装验证，所有正式发布门禁通过 |
 
-### 4. Windows 与 macOS 平台差异适配基线
+### 平台与发布边界
 
-- **路径一致性**：文件与工作区交互严格采用 `fs.realpathSync.native` 规范化绝对路径，杜绝 Windows 8.3 短路径别名与 macOS 路径失配。
-- **窗口与生命周期体验**：
-  - **macOS**：隐藏默认标题栏并保留原生交通灯控制区（`hiddenInset`），支持毛玻璃背景质感（Vibrancy）；关闭主窗口保持 Dock 常驻，按 `Cmd+Q` 彻底退出并安全回收所有进程树。
-  - **Windows**：原生支持 Snap Layout 窗口吸附布局与深色/浅色模式自适应；支持最小化到系统托盘（System Tray）并在后台保持状态。
-- **安全与权限边界**：工具调用执行前授权与沙箱拦截逻辑统一由 Core 侧裁决，桌面端仅作为用户审批与交互展示通道，不私设越权通道。
+macOS 关闭窗口保留应用，Cmd+Q 进入清理退出；Windows 支持托盘隐藏，Linux 无托盘时走退出确认。窗口隐藏不取消任务，Renderer 控制连接丢失触发取消；Host 崩溃或强制退出后保留未知清理状态，禁止自动重发写任务，不承诺强杀后所有后代都已回收。
 
-
-
+桌面包 `packages/desktop` 为私有应用包，不新增 npm 发布包。**macOS 签名和公证、Windows 代码签名前移到 v0.1.0 正式发布门禁**，不再与自动更新一起延后；缺少凭证时只能交付明确标记的未签名测试包。原六类发布证据继续要求，桌面专项不能替代 Node 20、ACL、PTY、进程树、MCP 和正式长跑验收。

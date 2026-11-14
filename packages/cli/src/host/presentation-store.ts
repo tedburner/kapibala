@@ -14,6 +14,9 @@ import {
 export class PresentationStore {
   private state: PresentationState;
   private readonly listeners = new Set<() => void>();
+  private readonly eventListeners = new Set<(event: PresentationEvent) => void>();
+  private readonly eventQueue: PresentationEvent[] = [];
+  private publishingEvents = false;
   private scheduled = false;
   private closed = false;
   private generation = 0;
@@ -36,12 +39,22 @@ export class PresentationStore {
     };
   }
 
+  /** 同步逐个发布已接受事件；重入排队保持所有观察者的顺序，返回幂等退订函数。 */
+  subscribeEvents(listener: (event: PresentationEvent) => void): () => void {
+    if (!this.closed) this.eventListeners.add(listener);
+    return () => {
+      this.eventListeners.delete(listener);
+    };
+  }
+
   /** 只接受当前视图/操作事件；返回是否更新，拒绝事件不触发额外绘制。 */
   dispatch(event: PresentationEvent): boolean {
     if (this.closed) return false;
+    event = structuredClone(event);
     const next = reducePresentation(this.state, event);
     if (next === this.state) return false;
     this.state = next;
+    this.publishEvent(event);
     if (event.change.type === 'append') this.schedule();
     else this.flush();
     return true;
@@ -86,6 +99,30 @@ export class PresentationStore {
     this.generation++;
     this.scheduled = false;
     this.listeners.clear();
+    this.eventListeners.clear();
+    this.eventQueue.length = 0;
+  }
+
+  /** 发布副本防止观察者修改内部状态；嵌套 dispatch 追加到当前事件之后。 */
+  private publishEvent(event: PresentationEvent): void {
+    this.eventQueue.push(event);
+    if (this.publishingEvents) return;
+    this.publishingEvents = true;
+    try {
+      while (this.eventQueue.length && !this.closed) {
+        const next = this.eventQueue.shift()!;
+        for (const listener of [...this.eventListeners]) {
+          if (!this.eventListeners.has(listener)) continue;
+          try {
+            listener(structuredClone(next));
+          } catch {
+            /* 观察者失败不影响运行。 */
+          }
+        }
+      }
+    } finally {
+      this.publishingEvents = false;
+    }
   }
 
   /** 合并同一微任务之前的状态通知，不引入固定 33ms 等待或第二个绘制计时器。 */

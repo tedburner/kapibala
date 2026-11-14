@@ -1,0 +1,600 @@
+import { Button, Collapsible, DropdownMenu, Input, Sidebar, Tooltip } from '@cloudflare/kumo';
+import {
+  ArchiveIcon,
+  CaretDownIcon,
+  DotsThreeIcon,
+  NotePencilIcon,
+  PencilLineIcon,
+  PlusIcon,
+  PushPinIcon,
+  PushPinSlashIcon,
+  TrashIcon,
+} from '@phosphor-icons/react';
+import { useEffect, useState } from 'react';
+import type { Output, Workspace } from '../shared/contracts.js';
+import type { RuntimeSnapshot } from '../shared/observations.js';
+import { KubaiIcon } from './icons/KubaiIcon.js';
+
+type RuntimeItem = RuntimeSnapshot['items'][number];
+/** 会话行的最小身份：标题只用于菜单与弹窗文案，定位始终走空间 ID + 会话 ID。 */
+type SessionRow = { conversationId: string; title: string; pinned?: boolean };
+/** 将 Host 的轻量运行事实转成文字，不用颜色或消息订阅推断后台空闲。 */
+export function runtimeLabel(item?: RuntimeItem, valid = true): string {
+  if (!valid) return '状态未知';
+  if (!item) return '';
+  if (item.cleanup === 'failed') return '清理未完成';
+  if (item.cleanup === 'closing') return '正在关闭';
+  if (item.approvals) return `待审批 ${item.approvals}`;
+  if (item.phase !== 'idle')
+    return { running: '运行中', cancelling: '正在取消', settling: '正在清理' }[item.phase];
+  return item.result === 'failed' ? '失败' : item.result === 'aborted' ? '已停止' : '';
+}
+/** 相对时间只展示历史活动；异常或缺失时间不伪造最近活动。 */
+function activityTime(timestamp: number): string {
+  if (!timestamp || !Number.isFinite(timestamp)) return '';
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  return days < 7 ? `${days} 天前` : new Date(timestamp).toLocaleDateString();
+}
+/** 按登记空间组合 Kumo 侧栏；只折叠视图，不通过切换或折叠释放运行句柄。 */
+export function WorkspaceSidebar({
+  spaces,
+  histories,
+  activeWorkspaceId,
+  conversationId,
+  runtime,
+  runtimeValid,
+  busy,
+  onSpace,
+  onDefault,
+  onNew,
+  onNewInSpace,
+  onOpen,
+  onClose,
+  onRename,
+  onPin,
+  onArchive,
+  onDelete,
+  onPage,
+  onSettings,
+  onRefreshRuntime,
+}: {
+  spaces: readonly Workspace[];
+  histories: Record<string, Output<'session.list'>>;
+  activeWorkspaceId?: string;
+  conversationId?: string;
+  runtime?: RuntimeSnapshot;
+  runtimeValid: boolean;
+  busy: boolean;
+  onSpace(space: Workspace): void;
+  onDefault(): void;
+  onNew(): void;
+  /** 直接在该空间新建对话；调用方负责先完成空间选中与信任流程，未信任空间不展示该入口。 */
+  onNewInSpace(space: Workspace): void;
+  onOpen(space: Workspace, conversationId: string): void;
+  onClose(item: RuntimeItem): void;
+  /** 重命名只追加标题记录，运行中的会话同样可改，因此不随运行状态禁用。 */
+  onRename(space: Workspace, row: SessionRow): void;
+  /** 置顶立即写控制记录并前置到列表头部；再次点击取消置顶。 */
+  onPin(space: Workspace, row: SessionRow): void;
+  /** 归档只做逻辑标记且可恢复；运行中的会话由 Host 拒绝，入口在此先行禁用。 */
+  onArchive(space: Workspace, row: SessionRow): void;
+  /** 删除为物理删除，调用方必须先弹出不可撤销确认，再请求 Host。 */
+  onDelete(space: Workspace, row: SessionRow): void;
+  onPage(space: Workspace, page: number): void;
+  onSettings(): void;
+  onRefreshRuntime(): void;
+}) {
+  const [version, setVersion] = useState('');
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState('');
+  const [searchPages, setSearchPages] = useState<Record<string, number>>({});
+  const [search, setSearch] = useState<{
+    keyword: string;
+    loading: boolean;
+    lists: Record<string, Output<'session.list'>>;
+    error?: string;
+  }>({ keyword: '', loading: false, lists: {} });
+  const keyword = query.trim().toLowerCase();
+  useEffect(() => {
+    if (!keyword) return;
+    let cancelled = false;
+    setSearch({ keyword, loading: true, lists: {} });
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const lists: Record<string, Output<'session.list'>> = {};
+        try {
+          // 顺序读取已授权空间，避免大量空间同时占满 Host 请求预算。
+          for (const space of spaces) {
+            if (!space.trusted) continue;
+            lists[space.id] = await window.kapibala.session.list(
+              space.id,
+              searchPages[space.id] ?? 1,
+              keyword,
+            );
+            if (cancelled) return;
+          }
+          if (!cancelled) setSearch({ keyword, loading: false, lists });
+        } catch {
+          if (!cancelled)
+            setSearch({ keyword, loading: false, lists, error: '搜索未完成，请重试。' });
+        }
+      })();
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [keyword, spaces, searchPages]);
+
+  useEffect(() => {
+    void window.kapibala.app
+      .getInfo()
+      .then((info) => setVersion(info.version))
+      .catch(() => {});
+  }, []);
+  const items = runtime?.items ?? [];
+  const running = items.filter((item) => item.phase !== 'idle').length;
+  // 「会话」段只列仍有运行句柄的对话；空闲历史归入所属项目，避免同一对话出现两次。
+  const temporary = items.filter((item) => item.phase !== 'idle' || item.cleanup === 'failed');
+  const titleOfSession = (item: RuntimeItem) =>
+    histories[item.workspaceId]?.items.find((row) => row.conversationId === item.conversationId)
+      ?.title || '未命名对话';
+  // 搜索只过滤视图：命中的空间自动展开，运行中的任务、句柄预算与历史读取都不受影响。
+  const hit = (value: string) => value.toLowerCase().includes(keyword);
+  const titleOf = (row: { title: string }) => row.title || '未命名对话';
+  const visible = keyword
+    ? spaces.filter(
+        (space) =>
+          hit(space.name) || (search.lists[space.id]?.items ?? []).some((row) => hit(titleOf(row))),
+      )
+    : spaces;
+  const searching = Boolean(keyword && (search.loading || search.keyword !== keyword));
+  const noMatch = keyword !== '' && !searching && !search.error && visible.length === 0;
+  return (
+    <Sidebar aria-label="空间与会话">
+      <Sidebar.Header className="kapibala-sidebar-header">
+        <span className="kapibala-sidebar-wordmark flex h-10 items-center px-1 font-semibold group-data-[state=collapsed]/sidebar:hidden">
+          Kapibala
+        </span>
+      </Sidebar.Header>
+      <Sidebar.Content>
+        <Sidebar.Group className="kapibala-sidebar-actions">
+          <Sidebar.Menu>
+            <Sidebar.MenuButton
+              icon={<KubaiIcon name="新建对话" size={20} />}
+              className="kapibala-sidebar-action"
+              aria-label="新建对话"
+              tooltip="新建对话"
+              disabled={!activeWorkspaceId || busy}
+              onClick={onNew}
+            >
+              新建对话
+            </Sidebar.MenuButton>
+            {!spaces.some((space) => space.kind === 'default') && (
+              <Sidebar.MenuButton
+                icon={<KubaiIcon name="默认空间" size={20} />}
+                className="kapibala-sidebar-action"
+                aria-label="默认空间"
+                tooltip="默认空间"
+                disabled={busy}
+                onClick={onDefault}
+              >
+                默认空间
+              </Sidebar.MenuButton>
+            )}
+          </Sidebar.Menu>
+        </Sidebar.Group>
+        <div className="kapibala-sidebar-search group-data-[state=collapsed]/sidebar:hidden">
+          <KubaiIcon name="搜索" size={18} />
+          <Input
+            size="sm"
+            className="h-auto w-full bg-transparent px-0 text-sm ring-0 focus:ring-0"
+            type="search"
+            aria-label="搜索空间与对话"
+            placeholder="搜索空间与对话"
+            maxLength={128}
+            value={query}
+            onValueChange={(value) => {
+              setSearchPages({});
+              setQuery(value);
+            }}
+          />
+        </div>
+        {searching && (
+          <output className="block px-3 pb-2 text-xs text-kumo-subtle">正在搜索已打开空间…</output>
+        )}
+        {keyword && search.error && !searching && (
+          <p role="alert" className="px-3 pb-2 text-xs text-kumo-danger">
+            {search.error}
+          </p>
+        )}
+        {noMatch && (
+          <p className="group-data-[state=collapsed]/sidebar:hidden px-3 pb-2 text-xs text-kumo-subtle">
+            已打开的空间中没有匹配的对话。
+          </p>
+        )}
+        {keyword === '' && (
+          <div className="group-data-[state=collapsed]/sidebar:hidden">
+            <div className="kapibala-sidebar-section">会话</div>
+            {temporary.length === 0 ? (
+              <p className="kapibala-sidebar-empty">暂无临时对话</p>
+            ) : (
+              <Sidebar.Menu>
+                {temporary.map((item) => {
+                  const space = spaces.find((entry) => entry.id === item.workspaceId);
+                  const title = titleOfSession(item);
+                  return (
+                    <Sidebar.MenuItem key={item.sessionId}>
+                      <Sidebar.MenuButton
+                        icon={NotePencilIcon}
+                        className="kapibala-sidebar-temp"
+                        title={title}
+                        tooltip={title}
+                        aria-label={`${title} · ${space?.name ?? '未知空间'} 临时对话`}
+                        disabled={!space}
+                        onClick={() => space && onOpen(space, item.conversationId)}
+                      >
+                        <span className="min-w-0 truncate">{title}</span>
+                        <span className="ml-auto shrink-0 text-xs text-kumo-subtle">
+                          {runtimeLabel(item, runtimeValid)}
+                        </span>
+                      </Sidebar.MenuButton>
+                    </Sidebar.MenuItem>
+                  );
+                })}
+              </Sidebar.Menu>
+            )}
+          </div>
+        )}
+        <div className="kapibala-sidebar-section group-data-[state=collapsed]/sidebar:hidden">
+          项目
+        </div>
+        {visible.map((space) => {
+          const history =
+            keyword && !hit(space.name) ? search.lists[space.id] : histories[space.id];
+          const spaceItems = items.filter((item) => item.workspaceId === space.id);
+          const status = spaceItems.some((item) => item.cleanup === 'failed')
+            ? '清理未完成'
+            : spaceItems.some((item) => item.approvals)
+              ? '待审批'
+              : spaceItems.some((item) => item.phase !== 'idle')
+                ? '运行中'
+                : '';
+          // 搜索命中的空间直接展开并把会话列表收窄到命中项；空间名命中时保留全部会话。
+          const all = history?.items ?? [];
+          const list =
+            keyword === '' ? all : all.filter((row) => hit(space.name) || hit(titleOf(row)));
+          // 仍在运行但尚未进入历史的会话不参与搜索补位，否则会把未命中的行重新塞回列表。
+          const missing =
+            keyword === ''
+              ? spaceItems.filter(
+                  (item) => !all.some((row) => row.conversationId === item.conversationId),
+                )
+              : [];
+          return (
+            <Sidebar.Group key={space.id} className="kapibala-sidebar-space">
+              <Collapsible.Root
+                open={keyword !== '' || (expanded[space.id] ?? space.id === activeWorkspaceId)}
+                onOpenChange={(open) => setExpanded((value) => ({ ...value, [space.id]: open }))}
+              >
+                <div className="group/space relative flex min-w-0 items-center">
+                  <Sidebar.Menu className="min-w-0 flex-1">
+                    <Sidebar.MenuButton
+                      icon={
+                        space.kind === 'default' ? (
+                          <KubaiIcon name="默认空间" size={20} />
+                        ) : (
+                          <KubaiIcon name="项目空间" size={20} />
+                        )
+                      }
+                      className="kapibala-sidebar-space-button"
+                      title={space.root}
+                      tooltip={space.name}
+                      aria-label={space.name}
+                      disabled={busy}
+                      onClick={() => {
+                        // 已是当前空间时点击只切换会话列表展开态，不重复选中
+                        // （重复选中会清空当前对话视图）；搜索态强制展开不参与切换。
+                        if (keyword === '' && space.id === activeWorkspaceId) {
+                          const openNow = expanded[space.id] ?? true;
+                          setExpanded((value) => ({ ...value, [space.id]: !openNow }));
+                          return;
+                        }
+                        onSpace(space);
+                        if (keyword === '')
+                          setExpanded((value) => ({ ...value, [space.id]: true }));
+                      }}
+                    >
+                      {space.name}
+                      {status && (
+                        <span
+                          className={`ml-auto flex items-center gap-1.5 text-xs text-kumo-subtle ${
+                            // 悬停时让位给行内动作按钮：状态用 opacity 淡出而不是位移，
+                            // 标题宽度、行高与右侧图标位置都不抖动。
+                            space.trusted
+                              ? 'transition-opacity group-hover/space:opacity-0 group-focus-within/space:opacity-0'
+                              : ''
+                          }`}
+                          aria-label={`${space.name} ${status}`}
+                        >
+                          <span
+                            className={`size-1.5 shrink-0 rounded-full ${
+                              status === '运行中'
+                                ? 'bg-(--kapibala-signal)'
+                                : status === '待审批'
+                                  ? 'bg-kumo-warning'
+                                  : 'bg-kumo-danger'
+                            }`}
+                            aria-hidden="true"
+                          />
+                          {status}
+                        </span>
+                      )}
+                    </Sidebar.MenuButton>
+                  </Sidebar.Menu>
+                  {/* 行内「新建对话」常驻 DOM 便于键盘到达，默认透明且不接收指针事件，
+                      悬停/聚焦才显形；用绝对定位覆盖右侧状态文本，避免出现时把标题挤窄。
+                      底色留空继承行的悬停色，否则会在行高亮上留出一块异色缺口。
+                      未信任空间没有可用会话上下文，入口直接不挂载。 */}
+                  {space.trusted && (
+                    <Tooltip
+                      content={`在 ${space.name} 新建对话`}
+                      render={
+                        <Button
+                          className="kapibala-action pointer-events-none absolute right-9 shrink-0 opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/space:pointer-events-auto group-focus-within/space:opacity-100 group-hover/space:pointer-events-auto group-hover/space:opacity-100 group-data-[state=collapsed]/sidebar:hidden"
+                          variant="ghost"
+                          shape="square"
+                          size="base"
+                          aria-label={`在 ${space.name} 新建对话`}
+                          disabled={busy}
+                          onClick={() => onNewInSpace(space)}
+                        />
+                      }
+                    >
+                      <PlusIcon size={16} />
+                    </Tooltip>
+                  )}
+                  <Collapsible.Trigger
+                    render={
+                      <Button
+                        className="kapibala-action kapibala-sidebar-chevron group-data-[state=collapsed]/sidebar:hidden"
+                        variant="ghost"
+                        shape="square"
+                        size="base"
+                        aria-label={`展开或收起 ${space.name} 的对话`}
+                      />
+                    }
+                  >
+                    <CaretDownIcon
+                      size={14}
+                      className={
+                        keyword !== '' || (expanded[space.id] ?? space.id === activeWorkspaceId)
+                          ? ''
+                          : '-rotate-90'
+                      }
+                    />
+                  </Collapsible.Trigger>
+                </div>
+                <Collapsible.Panel className="group-data-[state=collapsed]/sidebar:hidden">
+                  <Sidebar.Menu className="kapibala-sidebar-conversations">
+                    {[
+                      ...list,
+                      ...missing.map((item) => ({
+                        conversationId: item.conversationId,
+                        title: '未命名对话',
+                        messageCount: 0,
+                        lastActivityAt: 0,
+                        pinned: false,
+                        unavailableReason: undefined,
+                      })),
+                    ]
+                      .sort((a, b) => {
+                        // 待审批和运行中的会话优先，其他会话保留原有历史顺序。
+                        const priority = (id: string) => {
+                          const item = spaceItems.find((entry) => entry.conversationId === id);
+                          return item?.approvals ? 2 : item && item.phase !== 'idle' ? 1 : 0;
+                        };
+                        return priority(b.conversationId) - priority(a.conversationId);
+                      })
+                      .map((row) => {
+                        const handle = spaceItems.find(
+                          (item) => item.conversationId === row.conversationId,
+                        );
+                        // 运行中不允许归档或删除：Host 会拒绝，入口先禁用避免点了才报错。
+                        const active = Boolean(handle && handle.phase !== 'idle');
+                        return (
+                          <Sidebar.MenuItem
+                            key={row.conversationId}
+                            className="group/row relative flex min-w-0 items-center"
+                          >
+                            <Sidebar.MenuButton
+                              className="kapibala-sidebar-conversation min-w-0 flex-1"
+                              active={
+                                space.id === activeWorkspaceId &&
+                                conversationId === row.conversationId
+                              }
+                              disabled={busy || Boolean(row.unavailableReason)}
+                              title={row.unavailableReason ?? row.title}
+                              aria-label={row.title || '未命名对话'}
+                              aria-description={
+                                [
+                                  row.pinned ? '已置顶' : '',
+                                  runtimeLabel(handle, runtimeValid) ||
+                                    activityTime(row.lastActivityAt),
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ') || undefined
+                              }
+                              onClick={() => onOpen(space, row.conversationId)}
+                            >
+                              <span className="truncate">{row.title || '未命名对话'}</span>
+                              <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-kumo-subtle">
+                                {row.pinned && <PushPinIcon size={12} weight="fill" />}
+                                {handle?.phase !== undefined &&
+                                  handle.phase !== 'idle' &&
+                                  handle.cleanup !== 'failed' && (
+                                    <span
+                                      className="size-1.5 rounded-full bg-(--kapibala-signal)"
+                                      aria-hidden="true"
+                                    />
+                                  )}
+                                {runtimeLabel(handle, runtimeValid) ||
+                                  activityTime(row.lastActivityAt)}
+                              </span>
+                            </Sidebar.MenuButton>
+                            {/* 会话动作对每一行都可用：纯历史会话没有运行句柄，
+                                但同样需要归档与删除，入口不能只在运行时可及。 */}
+                            <DropdownMenu>
+                              <DropdownMenu.Trigger
+                                render={
+                                  <Button
+                                    className="kapibala-action pointer-events-none absolute right-0 shrink-0 bg-(--kapibala-sidebar-surface) opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 group-hover/row:pointer-events-auto group-hover/row:opacity-100"
+                                    variant="ghost"
+                                    shape="square"
+                                    size="base"
+                                    aria-label={`${row.title || '未命名对话'} 的会话操作`}
+                                  />
+                                }
+                              >
+                                <DotsThreeIcon size={18} />
+                              </DropdownMenu.Trigger>
+                              <DropdownMenu.Content>
+                                {handle && (
+                                  <DropdownMenu.Group>
+                                    <DropdownMenu.Label>运行时</DropdownMenu.Label>
+                                    <DropdownMenu.Item onClick={() => onClose(handle)}>
+                                      {handle.cleanup === 'failed'
+                                        ? '重试清理'
+                                        : handle.phase === 'idle'
+                                          ? '关闭运行时'
+                                          : '停止并关闭'}
+                                    </DropdownMenu.Item>
+                                  </DropdownMenu.Group>
+                                )}
+                                {handle && <DropdownMenu.Separator />}
+                                <DropdownMenu.Item
+                                  disabled={busy}
+                                  onClick={() => onRename(space, row)}
+                                >
+                                  <PencilLineIcon size={16} />
+                                  重命名
+                                </DropdownMenu.Item>
+                                <DropdownMenu.Item
+                                  disabled={busy}
+                                  onClick={() => onPin(space, row)}
+                                >
+                                  {row.pinned ? (
+                                    <PushPinSlashIcon size={16} />
+                                  ) : (
+                                    <PushPinIcon size={16} />
+                                  )}
+                                  {row.pinned ? '取消置顶' : '置顶'}
+                                </DropdownMenu.Item>
+                                <DropdownMenu.Separator />
+                                <DropdownMenu.Item
+                                  disabled={busy || active}
+                                  onClick={() => onArchive(space, row)}
+                                >
+                                  <ArchiveIcon size={16} />
+                                  归档
+                                </DropdownMenu.Item>
+                                <DropdownMenu.Separator />
+                                <DropdownMenu.Item
+                                  variant="danger"
+                                  disabled={busy || active}
+                                  onClick={() => onDelete(space, row)}
+                                >
+                                  <TrashIcon size={16} />
+                                  删除
+                                </DropdownMenu.Item>
+                              </DropdownMenu.Content>
+                            </DropdownMenu>
+                          </Sidebar.MenuItem>
+                        );
+                      })}
+                  </Sidebar.Menu>
+                  {history && history.pages > 1 && (
+                    <div className="flex items-center justify-between px-2 py-2 text-xs">
+                      <Button
+                        className="kapibala-action"
+                        variant="ghost"
+                        size="sm"
+                        disabled={history.page <= 1 || busy}
+                        onClick={() =>
+                          keyword && !hit(space.name)
+                            ? setSearchPages((pages) => ({
+                                ...pages,
+                                [space.id]: history.page - 1,
+                              }))
+                            : onPage(space, history.page - 1)
+                        }
+                      >
+                        上一页
+                      </Button>
+                      <span>
+                        {history.page} / {history.pages}
+                      </span>
+                      <Button
+                        className="kapibala-action"
+                        variant="ghost"
+                        size="sm"
+                        disabled={history.page >= history.pages || busy}
+                        onClick={() =>
+                          keyword && !hit(space.name)
+                            ? setSearchPages((pages) => ({
+                                ...pages,
+                                [space.id]: history.page + 1,
+                              }))
+                            : onPage(space, history.page + 1)
+                        }
+                      >
+                        下一页
+                      </Button>
+                    </div>
+                  )}
+                </Collapsible.Panel>
+              </Collapsible.Root>
+            </Sidebar.Group>
+          );
+        })}
+      </Sidebar.Content>
+      <Sidebar.Footer className="kapibala-sidebar-footer">
+        <Button
+          className="kapibala-action"
+          variant="ghost"
+          shape="square"
+          size="base"
+          aria-label="打开设置"
+          title="打开设置"
+          onClick={onSettings}
+        >
+          <KubaiIcon name="设置" size={20} />
+        </Button>
+        <span className="text-xs text-kumo-subtle group-data-[state=collapsed]/sidebar:hidden">
+          {runtimeValid ? (
+            running > 0 && <span className="text-(--kapibala-signal)">{running} 个任务运行中</span>
+          ) : (
+            <Button
+              className="kapibala-action"
+              size="sm"
+              variant="ghost"
+              onClick={onRefreshRuntime}
+            >
+              状态未知，重新订阅
+            </Button>
+          )}
+        </span>
+        {version && (
+          <span className="kapibala-sidebar-version group-data-[state=collapsed]/sidebar:hidden">
+            v{version}
+          </span>
+        )}
+      </Sidebar.Footer>
+    </Sidebar>
+  );
+}

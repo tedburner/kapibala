@@ -31,12 +31,20 @@ const packageNames = [
   '@kiturone/kapibala-mcp',
   '@kiturone/kapibala-cli',
 ] as const;
-const versionManifestFiles = [
+const baseVersionManifestFiles = [
   'package.json',
   'packages/core/package.json',
   'packages/mcp/package.json',
   'packages/cli/package.json',
 ];
+
+/** 版本同步与读取共用一份路径清单；历史检出没有桌面包时保留三包流程，桌面存在时不可漏检。 */
+export function versionManifestFiles(root: string): string[] {
+  const files = [...baseVersionManifestFiles];
+  if (fs.existsSync(path.join(root, 'packages/desktop/package.json')))
+    files.push('packages/desktop/package.json');
+  return files;
+}
 
 /** 稳定版本的三段均允许多位非负整数；拒绝前导零、预发布段、构建段及尾随空白。 */
 export const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?![\s\S])/;
@@ -50,15 +58,20 @@ export function validateNpmVersion(version: string): void {
   }
 }
 
-/** 发布标签、四个清单与 CLI 展示版本必须一致；版本格式统一复用稳定版本规则。 */
+/** 发布标签、现役包清单与 CLI 展示版本必须一致；版本格式统一复用稳定版本规则。 */
 export function validateRelease(tag: string, manifests: Manifest[], cliVersion: string): string {
   if (!tag.startsWith('v') || !STABLE_VERSION_PATTERN.test(tag.slice(1))) {
     throw new Error(`Invalid release tag: ${tag}`);
   }
   const version = tag.slice(1);
-  if (manifests.length !== 4 || manifests.some((manifest) => manifest.version !== version)) {
+  if (
+    ![4, 5].includes(manifests.length) ||
+    manifests.some((manifest) => manifest.version !== version)
+  ) {
     throw new Error('Release tag and package versions must match');
   }
+  if (manifests.length === 5 && manifests[4].name !== '@kiturone/kapibala-desktop')
+    throw new Error('Unexpected desktop package name');
   if (cliVersion !== version) throw new Error('CLI display version must match the release tag');
   if (
     manifests[1].name !== packageNames[0] ||
@@ -77,10 +90,10 @@ export function nextVersion(current: string): string {
   return `${major}.${minor}.${BigInt(patch) + 1n}`;
 }
 
-/** 工作区版本唯一真源：三个清单与 CLI 展示版本必须完全一致，否则拒绝继续。 */
+/** 工作区版本唯一真源：全部现役清单与 CLI 展示版本必须完全一致，否则拒绝继续。 */
 export function readWorkspaceVersion(root: string): string {
   const versions = new Set<string>();
-  for (const file of versionManifestFiles) {
+  for (const file of versionManifestFiles(root)) {
     versions.add(readJson(path.join(root, file)).version);
   }
   const cliSource = fs.readFileSync(path.join(root, 'packages/cli/src/version.ts'), 'utf8');
@@ -185,7 +198,7 @@ function readJson(file: string): Manifest {
 }
 
 function checkWorkspace(root: string, tag: string): string {
-  const manifests = versionManifestFiles.map((file) => readJson(path.join(root, file)));
+  const manifests = versionManifestFiles(root).map((file) => readJson(path.join(root, file)));
   const cliSource = fs.readFileSync(path.join(root, 'packages/cli/src/version.ts'), 'utf8');
   const cliVersion = /CLI_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(cliSource)?.[1] ?? '';
   const version = validateRelease(tag, manifests, cliVersion);

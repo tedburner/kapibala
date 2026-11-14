@@ -4,6 +4,7 @@ import {
   sanitizeModelErrorMessage,
 } from '@kiturone/kapibala';
 import { formatModelError } from '../ui/model-errors.js';
+import { describeRuntimeError } from '../ui/runtime-errors.js';
 import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
 import {
   formatToolDetail,
@@ -20,6 +21,8 @@ import type {
 } from '../view-model/index.js';
 import { displayMessageId, projectHistory } from './history-projection.js';
 import type { PresentationStore } from './presentation-store.js';
+import { type PublicTextRedactor, redactPresentationChange } from './public-projection.js';
+import { redactText } from './redaction.js';
 
 /** 展示身份只按会话/分支分组；viewEpoch 隔离事件但不改变 canonical 消息自身身份。 */
 export function presentationScope(identity: ViewIdentity): string {
@@ -48,6 +51,7 @@ export class SessionPresentation {
     private readonly store: PresentationStore,
     private readonly operationId: string,
     private readonly getHistory: () => readonly CanonicalMessage[],
+    private readonly redact: PublicTextRedactor = (text) => redactText(text, []),
   ) {
     this.identity = { ...store.snapshot().identity };
     this.scope = presentationScope(this.identity);
@@ -175,15 +179,17 @@ export class SessionPresentation {
         this.result = event.metrics.status;
         this.emit({ type: 'operation_result', result: this.result });
         break;
-      case 'error':
-        this.diagnostic(
-          event.modelError
-            ? formatModelError(event.modelError)
-            : sanitizeModelErrorMessage(event.error.message),
-        );
+      case 'error': {
+        // 宿主负责 UI 语言：已知运行期错误映射为可行动的中文提示，其余走脱敏原文。
+        const described = event.modelError
+          ? formatModelError(event.modelError)
+          : (describeRuntimeError(event.error.message) ??
+            sanitizeModelErrorMessage(event.error.message));
+        this.diagnostic(described);
         this.result = 'failed';
         this.emit({ type: 'operation_result', result: 'failed' });
         break;
+      }
     }
   }
 
@@ -210,9 +216,8 @@ export class SessionPresentation {
       failure ??= error;
     }
     if (failure !== undefined) {
-      this.diagnostic(
-        sanitizeModelErrorMessage(failure instanceof Error ? failure.message : String(failure)),
-      );
+      const raw = failure instanceof Error ? failure.message : String(failure);
+      this.diagnostic(describeRuntimeError(raw) ?? sanitizeModelErrorMessage(raw));
       finalResult = 'failed';
     }
     this.emit({ type: 'operation_settled', result: finalResult });
@@ -255,7 +260,7 @@ export class SessionPresentation {
    */
   private syncHistory(target?: CanonicalMessage): void {
     const history = this.getHistory();
-    const projected = projectHistory(history, this.scope);
+    const projected = projectHistory(history, this.scope, this.redact);
     const targetIndex = target
       ? history.findIndex(
           (message) => message === target || (target.id !== undefined && message.id === target.id),
@@ -318,7 +323,7 @@ export class SessionPresentation {
       ...this.identity,
       operationId: this.operationId,
       sequence: this.store.snapshot().sequence + 1,
-      change,
+      change: redactPresentationChange(change, this.redact),
     });
   }
 }

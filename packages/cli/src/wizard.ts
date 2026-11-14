@@ -7,9 +7,9 @@ import {
   type UserSettings,
   describeCredentialGroup,
   loadGlobalSettingsForWrite,
+  mutateGlobalSettings,
   resolveApiKeyDetailed,
   resolveBaseURL,
-  saveGlobalSettings,
   updateProfileApiKey,
 } from './settings.js';
 import { formatTokenCount } from './ui/metrics.js';
@@ -187,6 +187,7 @@ async function executeSetupWizard(
   // 文件存在但损坏/含非法值时 loadGlobalSettingsForWrite 直接抛错 —— 静默回退空骨架会把
   // 用户已有 profile（含内联 apiKey）在下一次写盘时全部清空。
   const settings: UserSettings = structuredClone(loadGlobalSettingsForWrite());
+  let reusedCredential = false;
   const existingProfile = settings.profiles.find((profile) => profile.id === selectedProfile.id);
   if (existingProfile) {
     selectedProfile = {
@@ -203,6 +204,7 @@ async function executeSetupWizard(
       .trim()
       .toLowerCase();
     if (replace !== 'y' && replace !== 'yes') {
+      reusedCredential = true;
       enteredKey = existingProfile.apiKey.trim();
       keyPrompt = undefined;
     }
@@ -222,6 +224,7 @@ async function executeSetupWizard(
         .trim()
         .toLowerCase();
       if (reuse !== 'n' && reuse !== 'no') {
+        reusedCredential = true;
         enteredKey = available.key;
         keyPrompt = undefined;
       }
@@ -262,23 +265,39 @@ async function executeSetupWizard(
     );
   }
 
-  // 保存到全局 settings.json
-  const existingIndex = settings.profiles.findIndex((p) => p.id === selectedProfile.id);
-  if (existingIndex >= 0) {
-    settings.profiles[existingIndex] = selectedProfile;
-  } else {
-    settings.profiles.push(selectedProfile);
-  }
-  if (enteredKey && selectedProfile.apiKeyEnv !== API_KEY_ENV_NONE)
-    updateProfileApiKey(settings, selectedProfile.id, enteredKey);
-  settings.defaultModel = selectedProfile.id;
+  // 交互和端点探测全部结束后才获取短锁；只提交本次选中模型和默认项。
+  let committed: UserSettings | undefined;
+  const savedPath = mutateGlobalSettings((latest) => {
+    const current = latest.profiles.find((item) => item.id === selectedProfile.id);
+    if (
+      reusedCredential &&
+      resolveApiKeyDetailed({ ...selectedProfile, apiKey: current?.apiKey }, latest)?.key !==
+        enteredKey
+    )
+      throw new Error('SETTINGS_CONFLICT: 验证期间厂商密钥已更新，请重新运行配置向导。');
+    const next = {
+      ...selectedProfile,
+      maxOutputTokens: current?.maxOutputTokens ?? selectedProfile.maxOutputTokens,
+      chatCapabilities: current?.chatCapabilities ?? selectedProfile.chatCapabilities,
+      anthropicWorkspaceId: current?.anthropicWorkspaceId ?? selectedProfile.anthropicWorkspaceId,
+      apiKey: current?.apiKey,
+    };
+    const index = latest.profiles.findIndex((item) => item.id === next.id);
+    if (index < 0) latest.profiles.push(next);
+    else latest.profiles[index] = next;
+    if (enteredKey && selectedProfile.apiKeyEnv !== API_KEY_ENV_NONE)
+      updateProfileApiKey(latest, next.id, enteredKey);
+    latest.defaultModel = next.id;
+    committed = latest;
+  });
+  // 保存可能迁移目录字段或刷新预算；只交付已提交版本，不能把旧密钥快照带回调用方。
+  selectedProfile = committed!.profiles.find((profile) => profile.id === selectedProfile.id)!;
 
   if (enteredKey && enteredKey !== 'ollama') {
     console.log(
       '\x1b[33m⚠ API Key 将保存在全局配置 ~/.kapibala/settings.json，请确保仅当前用户可访问。\x1b[0m',
     );
   }
-  const savedPath = saveGlobalSettings(settings);
   console.log(`\x1b[32m✔ 配置已成功持久化至全局：${savedPath}\x1b[0m`);
 
   if (enteredKey && enteredKey !== 'ollama') {

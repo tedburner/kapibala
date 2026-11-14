@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -504,7 +505,19 @@ describe('cross-platform shell discovery and execution', () => {
       }
       expect(fs.existsSync(started)).toBe(true);
       controller.abort();
-      await expect(pending).rejects.toMatchObject({ code: 'ABORTED' });
+      // CI runner 可能因环境差异走到 OUTCOME_UNKNOWN；失败时输出错误属性与进程组快照帮助定位。
+      const aborted = await pending.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      if (aborted && (aborted as { code?: string }).code !== 'ABORTED') {
+        console.log('[shell-diag] error:', JSON.stringify(aborted));
+        const snapshot = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,comm='], {
+          encoding: 'utf8',
+        });
+        console.log(`[shell-diag] ps:\n${String(snapshot.stdout ?? snapshot.error)}`);
+      }
+      await expect(aborted).toMatchObject({ code: 'ABORTED' });
       await new Promise((resolve) => setTimeout(resolve, 3_300));
       expect(fs.existsSync(completed)).toBe(false);
     } finally {

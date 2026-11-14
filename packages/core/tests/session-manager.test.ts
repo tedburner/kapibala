@@ -148,6 +148,16 @@ describe('independent sessions', () => {
       expect(second.items).toHaveLength(5);
       expect(new Set([...first.items, ...second.items].map((m) => m.conversationId)).size).toBe(25);
       expect((await sessions.list(3)).items).toEqual([]);
+      const filtered = await sessions.list(1, {
+        pageSize: 3,
+        filter: (item) => item.title.startsWith('task-2'),
+      });
+      expect(filtered.total).toBe(6);
+      expect(filtered.items).toHaveLength(3);
+      expect(
+        (await sessions.list(2, { pageSize: 3, filter: (item) => item.title.startsWith('task-2') }))
+          .items,
+      ).toHaveLength(3);
     } finally {
       spy.mockRestore();
       await sessions.close();

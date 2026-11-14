@@ -25,6 +25,7 @@ jobs:
       tag: ${{ steps.source.outputs.tag }}
       sha: ${{ steps.source.outputs.sha }}
       version: ${{ steps.source.outputs.version }}
+      desktop: ${{ steps.source.outputs.desktop }}
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       KPBL_RELEASE_EVIDENCE: ${{ vars.KPBL_RELEASE_EVIDENCE }}
@@ -37,6 +38,12 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          install: false
+          cache: false
+      - run: pnpm install --frozen-lockfile
       - name: Validate release source and version
         id: source
         shell: bash
@@ -49,10 +56,27 @@ jobs:
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
-      - name: Require reviewed acceptance evidence for the source commit
+          if [ -f packages/desktop/package.json ]; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
+      # 2026-11-14 维护者决定：v0.1.0 以未签名个人自用版交付，人工验收证据不再是发布前置。
+      # 默认只跑自动门禁（verify 工作流全矩阵 + release 长跑 + 安装 smoke）；把仓库变量
+      # KPBL_RELEASE_STRICT 设为 true 即恢复六类专项的同 SHA 审核清单强制检查。
+      # 口径见 docs/release-evidence.md 与 docs/desktop-release.md。
+      - name: Check reviewed acceptance evidence
         env:
           RELEASE_SHA: ${{ steps.source.outputs.sha }}
-        run: node scripts/check-release-evidence.ts --sha "$RELEASE_SHA"
+          KPBL_STRICT: ${{ vars.KPBL_RELEASE_STRICT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$KPBL_STRICT" = "true" ]; then
+            pnpm verify:release-evidence --sha "$RELEASE_SHA"
+          else
+            echo "::warning::已按个人自用版口径跳过六类人工验收证据检查（KPBL_RELEASE_STRICT 未开启）。本次发布不宣称 Node 20、Windows 跨用户 ACL/ConPTY、POSIX PTY、跨解释器进程树、MCP 与 release 长跑已完成人工审核。"
+          fi
 
   verify:
     needs: prepare
@@ -66,6 +90,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
       id-token: write
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -92,17 +117,30 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - name: Validate source and pack
+        env:
+          KPBL_STRICT: ${{ vars.KPBL_RELEASE_STRICT }}
         run: |
           set -euo pipefail
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
           node scripts/release.ts check "$RELEASE_TAG"
-          node scripts/check-release-evidence.ts --sha "$RELEASE_SHA"
+          if [ "$KPBL_STRICT" = "true" ]; then
+            pnpm verify:release-evidence --sha "$RELEASE_SHA"
+          else
+            echo "::warning::发布前证据检查按个人自用版口径跳过；恢复严格门禁请设置 KPBL_RELEASE_STRICT=true。"
+          fi
           release_dir="$RUNNER_TEMP/kapibala-release"
           echo "RELEASE_DIR=$release_dir" >> "$GITHUB_ENV"
           mkdir -p "$release_dir"
           pnpm -C packages/core pack --pack-destination "$release_dir"
           pnpm -C packages/mcp pack --pack-destination "$release_dir"
           pnpm -C packages/cli pack --pack-destination "$release_dir"
+      # 默认跳过：未签名自用版只发三份 npm 包，桌面测试包由维护者手工上传。
+      # 将来拿到证书、走完候选审核后，把仓库变量 KPBL_DESKTOP_RELEASE 设为 true 即恢复严格附件流程。
+      - name: Download only reviewed desktop artifacts
+        if: needs.prepare.outputs.desktop == 'true' && vars.KPBL_DESKTOP_RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/desktop-candidate.ts download "$RELEASE_SHA" "$RELEASE_VERSION" "$RELEASE_DIR/desktop"
       - name: Publish Core, MCP, then CLI using npm trusted publishing
         run: node scripts/release.ts publish "$RELEASE_TAG" "$RELEASE_DIR"
       - name: Verify installation from the public registry
@@ -114,6 +152,14 @@ jobs:
           set -euo pipefail
           node scripts/release.ts notes "$RELEASE_TAG" "$RELEASE_DIR/release-notes.md"
           assets=("$RELEASE_DIR/kiturone-kapibala-$RELEASE_VERSION.tgz" "$RELEASE_DIR/kiturone-kapibala-mcp-$RELEASE_VERSION.tgz" "$RELEASE_DIR/kiturone-kapibala-cli-$RELEASE_VERSION.tgz" "$RELEASE_DIR/SHA256SUMS.txt")
+          if [ -d "$RELEASE_DIR/desktop" ]; then
+            while IFS= read -r -d '' file; do
+              relative="${file#"$RELEASE_DIR/desktop/"}"
+              name="desktop-${relative//\//__}"
+              cp "$file" "$RELEASE_DIR/$name"
+              assets+=("$RELEASE_DIR/$name")
+            done < <(find "$RELEASE_DIR/desktop" -type f -print0)
+          fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest

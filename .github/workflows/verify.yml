@@ -2,7 +2,14 @@ name: Verify
 
 on:
   push:
+    branches-ignore: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
   workflow_call:
     inputs:
       ref:
@@ -23,6 +30,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: verify-${{ github.event_name }}-${{ inputs.ref != '' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ inputs.ref == '' }}
+
 jobs:
   cross-platform:
     strategy:
@@ -40,6 +51,7 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
+          cache: true
       - name: Build and verify
         if: runner.os != 'Windows'
         run: pnpm dev --no-start
@@ -92,6 +104,7 @@ jobs:
           version: 12.4.1
           runtime: node@20
           require-lockfile: true
+          cache: true
       - name: Record minimum runtime
         run: |
           node --version
@@ -120,6 +133,8 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
+          cache: true
+          save-cache: false
       - name: Verify pinned v0.0.9 and candidate clients and hosts over stdio and socket
         run: pnpm verify:compat --prepare
       - name: Preserve compatibility evidence
@@ -131,7 +146,7 @@ jobs:
           if-no-files-found: error
 
   soak-pr:
-    if: github.event_name != 'workflow_call' || inputs.soak_tier == 'pr'
+    if: inputs.soak_tier == '' || inputs.soak_tier == 'pr'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -143,6 +158,8 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
+          cache: true
+          save-cache: false
       - name: Build candidate
         run: pnpm build
       - name: PR soak (10 rounds)
@@ -168,6 +185,8 @@ jobs:
           version: 12.4.1
           runtime: node@24
           require-lockfile: true
+          cache: true
+          save-cache: false
       - name: Build candidate
         run: pnpm build
       - name: Require the reviewed release baseline
@@ -188,4 +207,36 @@ jobs:
         with:
           name: soak-release
           path: .workbuddy/v0.0.10-soak/evidence/*.json
+          if-no-files-found: ignore
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          runtime: node@24
+          require-lockfile: true
+          cache: true
+          save-cache: false
+      - name: Install pinned Electron runtime
+        run: pnpm --filter @kiturone/kapibala-desktop exec install-electron
+      - name: Verify isolated desktop flows
+        run: pnpm verify:desktop
+      - name: Preserve desktop evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.os }}-node24
+          path: |
+            packages/desktop/test-results
+            .workbuddy/desktop-stage-b/*.png
           if-no-files-found: ignore

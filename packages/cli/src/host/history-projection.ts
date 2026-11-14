@@ -6,6 +6,7 @@ import {
   sanitizeToolName,
 } from '../ui/tool-presentation.js';
 import type { ViewBlock, ViewMessage, ViewTool } from '../view-model/index.js';
+import { type PublicTextRedactor, redactViewMessage } from './public-projection.js';
 
 interface MatchedResult {
   block: ToolResultBlock;
@@ -27,7 +28,11 @@ export function displayBlockId(messageId: string, index: number): string {
  * 工具结果按历史顺序匹配最近尚未闭合的调用，合入调用卡片，兼容逆序结束与后续复用 ID。
  * 未配对结果保留为可检查卡片；历史中缺结果的调用标中断，不恢复为仍在执行。
  */
-export function projectHistory(history: readonly CanonicalMessage[], scope: string): ViewMessage[] {
+export function projectHistory(
+  history: readonly CanonicalMessage[],
+  scope: string,
+  redact?: PublicTextRedactor,
+): ViewMessage[] {
   const waiting = new Map<string, string>();
   const results = new Map<string, MatchedResult>();
   const pairedResults = new Set<string>();
@@ -127,5 +132,5 @@ export function projectHistory(history: readonly CanonicalMessage[], scope: stri
             : 'completed',
       });
   }
-  return projected;
+  return projected.map((message) => redactViewMessage(message, redact));
 }

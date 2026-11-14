@@ -13,6 +13,7 @@ const migrationPath = path.join(fixtureRoot, 'migration.json');
 
 /** 公开 API 入口；只覆盖实际发布包根与 CLI 子路径，不把源码内部模块当作 SDK 入口。 */
 export const PUBLIC_API_ENTRIES = [
+  { id: 'cli/host', package: '@kiturone/kapibala-cli', entry: 'packages/cli/src/host/index.ts' },
   { id: 'core', package: '@kiturone/kapibala', entry: 'packages/core/src/index.ts' },
   { id: 'mcp', package: '@kiturone/kapibala-mcp', entry: 'packages/mcp/src/index.ts' },
   {

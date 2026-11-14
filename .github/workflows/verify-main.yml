@@ -1,0 +1,14 @@
+name: Verify main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+    with:
+      ref: ${{ github.sha }}

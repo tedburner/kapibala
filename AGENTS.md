@@ -15,7 +15,7 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - ⚠️ **`--verify-only` 必须与 `pnpm verify` 同源**（typecheck → test → lint，含 check-secrets）。
   早前该分支只跑 typecheck + test 却输出「校验全部通过」，会漏掉 lint 错误与密钥泄露 —— 修过一次，别再退化。
 - `pnpm dev:cli` 是 `tsup --watch`，**只监听重建、不启动 REPL**；启动请用 `pnpm dev` 或直接 `node packages/cli/dist/bin.js`。
-- **验证门禁：`pnpm verify` = typecheck → test → lint**。注意 tsup/esbuild 不做类型检查，`pnpm build` 绿 ≠ 类型没问题。
+- **验证门禁：`pnpm verify` = typecheck → test（先 `pnpm build` 再 vitest）→ lint**。注意 tsup/esbuild 不做类型检查，`pnpm build` 绿 ≠ 类型没问题；test 前置构建是为了桌面集成测试依赖的 core/CLI host dist 制品保持新鲜，单独 `pnpm test` 同样会先构建。
 - 密钥扫描 `pnpm check-secrets` 已并入 lint 流程，严禁提交真实 API Key。
 
 ### 已知环境坑（Windows）
@@ -28,15 +28,16 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 ## 分支与发布流程
 
 - **日常开发在分支上进行，main 始终保持可发布**：`pnpm flow feat <topic>`（支持 `fix` / `chore` / `docs`，topic 省略时自动生成「日期-时分」名）联网成功时从最新 `origin/main` 切出，获取远端失败时从本地 `main` 切出并自动切换；任意命名用 `pnpm flow branch <name>`。合并回主干用 `git merge --no-ff <分支>`。
-- **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。默认仅递增补丁段（`0.0.9 → 0.0.10`，不自动向次版本进位），次版本/主版本由显式参数选择；同步五处版本号（4 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 vX.Y.Z`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明必须先写好 `docs/releases/vX.Y.Z.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）。
+- **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。默认仅递增补丁段（`0.0.9 → 0.0.10`，不自动向次版本进位），次版本/主版本由显式参数选择；同步六处版本号（根、Core、MCP、CLI、desktop 的 5 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 vX.Y.Z`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明必须先写好 `docs/releases/vX.Y.Z.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）。
 - **推送永远手动**：先 `git push origin main` 并等 main 的 Verify 工作流通过，再 `git push origin vX.Y.Z`（提前暴露门禁失败，避免移动已推送的标签）；tag 推送触发 Actions（verify → npm trusted publishing → GitHub Release）。
 - 版本推演与工作区版本读取的唯一实现在 `scripts/release.ts`（`nextVersion` / `readWorkspaceVersion`），不要在别处另写逻辑；分支与发布编排在 `scripts/flow.ts`。
-- **正式发布必须通过证据预检**：`pnpm verify:release-evidence --sha <最终候选完整SHA> --manifest <审核清单>` 检查 G-N20 / G-ACL / G-PTY / G-TREE / G-MCP / G-SOAK 的同 SHA、passed、平台覆盖与审核信息；缺项、pending、脏工作区、调试运行或短档 soak 均阻断。Release 从仓库变量 `KPBL_RELEASE_EVIDENCE` 读取人工审核的 JSON，缺失时失败；清单格式见 `docs/release-evidence.md`，禁止伪造通过证据。日常 PR 不要求这些人工专项全部完成。
+- **发布门禁分两层**：自动门禁（`pnpm verify` + `verify` 工作流全矩阵 + release 长跑 + 三包 registry 安装 smoke）始终强制；人工验收证据（`pnpm verify:release-evidence` 的六类专项与桌面专项）自 2026-11-14 起**默认跳过**，工作流只打印 warning，`KPBL_RELEASE_STRICT=true` 即恢复同 SHA 审核清单强制校验。桌面附件默认不附带，`KPBL_DESKTOP_RELEASE=true` 恢复严格附件流程。跳过不等于通过：文档与 Release 不得宣称人工专项、签名或跨平台安装验收已完成，禁止伪造通过证据。口径见 `docs/release-evidence.md` 与 `docs/desktop-release.md`。
 
 ## 核心不变量
 
 - **历史必须闭合**：assistant 的 `tool_use` 一旦进入历史，对应 `tool_result` 必须紧跟其后（设计文档 §4.3 / §4.4）。loop 内任何 `break` / `throw` 必须发生在该不变量满足之后。
 - 落盘是**消息级**：user / assistant / tool_result 三类消息都要经 `MessageStore.append` 落盘。
+- **会话控制记录要三处同步、两处重建**：新增全局控制记录类型（如 `archive_state` / `pin_state`）时，必须同时改 `SessionRecordType` 联合、`SessionStore` 内的类型集合与 `isGlobalControlRecordType`，并在**两份**元数据重建实现里处理——`SessionManager.buildMetadata` 与 `CrossProjectSessionCatalog` 的内联扫描。漏掉任一份，sidecar 重建会静默丢失该状态（`archived`、`pinned` 各踩中过一次）。控制记录不推进上下文叶子，也不改变正文活动时间。
 - **工作区身份必须显式传入**：`AgentSession` 构造必须给出绝对 `workspaceRoot`，兼容仅提供绝对 `rootDir` 的旧输入；两者至少有一项（都缺失抛 `WORKSPACE_ROOT_REQUIRED`），同时提供但物理身份冲突时拒绝。`packages/core/src` 严禁读取 `process.cwd()`（架构门禁拦截）；沙箱与写租约（`WorkspaceLeaseCoordinator`）按会话持有，不做全局单例。
 - 消费者提前结束事件迭代时，必须取消并等待在途工具清理、闭合并落盘工具事务后再释放 Session 锁；已完成的工具保留真实结果。
 - **Core 必须保持 Headless**：`packages/core/src` 不得依赖 CLI、直接读写终端或包含 ANSI/UI 渲染；所有宿主通过 `AgentSession` / `SessionEvent` 复用同一 Agent Harness。`pnpm check-architecture` 已并入 lint，新增宿主能力不得绕过该门禁。
@@ -52,6 +53,17 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - **密钥按厂商族共用（一个厂商只需配一次）**：分组键统一走 `credentialGroup()` —— 可识别厂商按 family 归组，`unknown` 退化到按端点 host 隔离（否则多个自建网关会串用同一把 key）；分组展示名走 `describeCredentialGroup()`。
 - 同一分组内**只保留一份密钥**：读取走 `resolveApiKeyDetailed(profile, settings)`（第 2 级即"同厂商族已存密钥"），写入走 `updateProfileApiKey()`（自动清理同组冗余副本）。新增任何密钥读取/写入入口都不要绕过这两个函数，否则会出现「更新了 A 的密钥、B 仍在用旧密钥」的静默不一致。
 - **不自动 git add / commit**，改动保留在工作区由用户审核后手动提交。
+- **进程启动环境必须显式构造，禁止全量继承 `process.env`**：宿主（IDE / 沙箱包装器）会注入
+  `NODE_OPTIONS=--require=<vendor shim>` 与 `ELECTRON_RUN_AS_NODE=1`，前者把宿主的原生模块塞进
+  Electron 主进程（GPU 进程反复崩溃直至 SIGTRAP），后者让 GUI 二进制退化成纯 Node（启动即报
+  `does not provide an export named 'BrowserWindow'`）。启动 Electron 走
+  `packages/desktop/scripts/launch-env.mjs` 的 `desktopLaunchEnv()` 白名单（不枚举黑名单，天然免疫
+  未来新增的注入变量）；运行构建工具链走 `scripts/process-env.mjs` 的 `toolchainEnv()` 过滤
+  （只摘外部预加载钩子，保留 `--max-old-space-size` 与 HOME）。`pnpm check-desktop` 会拦截
+  `env: { ...process.env }` 与缺省用白名单的桌面启动脚本。
+- 根构建入口 `pnpm build` / `build:desktop` / `dev:desktop` 分别是 `scripts/build.mjs` 与
+  `scripts/dev-desktop.mjs`，它们在清洗过的环境里再拉起下一层命令 —— 否则宿主删除守卫会把打包器
+  清理 dist 当成批量删除拦下（报错指向无关的 `.js.map`，看起来像打包器坏了）。
 
 ## 内置模型清单（`packages/cli/src/settings.ts`）
 
@@ -75,8 +87,9 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - 造型铁律：口鼻必须是"上窄下宽"的钝形深色块（水豚最关键辨识特征）；不要大面积奶油色口鼻斑（会读成泰迪熊）；头不要撑满画面（会读成河马）。
 - README 抬头 `<picture>` + `prefers-color-scheme` 双主题（dark 版仅字标换暖白 `#F0E4D6`）；tagline 固定：**心如止水，稳定如初 —— AI Agent Harness**。
 
-## 当前状态（2026-10-23）
+## 当前状态（2026-11-13）
 
+- **v0.1.0 已发布（未签名个人自用版，2026-11-14）**：桌面 Harness 已合并 main 并以 `v0.1.0` 标签发布，main 从 `v0.0.10` 前进一版。能力范围：Core 历史读取预算与 `projectRootMode: 'exact'`、CLI host 公共投影层与 `mutateGlobalSettings` 配置事务、Electron 桌面客户端（`packages/desktop`，不新增 npm 发布包）、桌面候选构建与发布证据链路。新增门禁：`pnpm check-desktop`（已并入 lint）、`pnpm verify:desktop`（构建+类型+check-desktop --artifacts+单测+e2e）与 desktop-candidate workflow；人工验收证据（六类专项与桌面专项）自 2026-11-14 起默认跳过，`KPBL_RELEASE_STRICT=true` 恢复，口径见 `docs/release-evidence.md`。协议会话注入 `~/.kapibala/AGENTS.md` 的迁移边界见 `docs/migration/v0.1.0.md`。
 - 版本编号约定于 2026-10-21 更新：采用三段稳定版本，minor/patch 均允许多位整数；默认 `v0.0.9 → v0.0.10`，不逢十进位。稳定整合版为 **v0.0.10**，Electron 桌面客户端为 **v0.1.0**；历史文档中的旧编号不作为现役发布规则。
 - v0.0.1 既有能力与后续路线图见 `docs/RELEASES.md`，不在规则文件重复维护能力清单。
 - **v0.0.10 稳定整合版已于 2026-10-23 发布到 npm 与 GitHub Release**（实际版本号以包清单与 `CLI_VERSION` 为准，升版只由 `pnpm release` 完成）。公开差异的唯一真源是 `docs/sdk-compatibility.md` + `scripts/fixtures/public-api/migration.json`；协议细节 `docs/local-protocol.md`、迁移动作 `docs/migration/v0.0.10.md`、证据与 pending 阻断 `docs/verification/v0.0.10.md`、发布说明 `docs/releases/v0.0.10.md`。三类专项门禁：`pnpm verify:compat`（v0.0.9 tarball × 候选构建四组合）、`pnpm verify:platform`（当前 OS 真实进程 + 三包隔离安装）、`pnpm verify:soak`（PR/nightly/release 分档）；新增宿主或传输能力时必须同步其断言，不允许用短档或模拟测试替代 Node 20、Windows ACL/ConPTY、POSIX PTY 与 release 长时证据。

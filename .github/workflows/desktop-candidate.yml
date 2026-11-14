@@ -1,0 +1,115 @@
+name: Desktop candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Frozen full SHA at the current main HEAD, after the version commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-candidate-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    environment: ${{ matrix.signing_environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-arm64
+            signing_environment: desktop-macos
+          - runner: macos-15-intel
+            target: darwin-x64
+            signing_environment: desktop-macos
+          - runner: windows-2025
+            target: win32-x64
+            signing_environment: desktop-windows
+          - runner: ubuntu-24.04
+            target: linux-x64
+            signing_environment: desktop-linux
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      KPBL_DESKTOP_CANDIDATE: '1'
+      KPBL_CANDIDATE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - name: Require an immutable main source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$SOURCE_SHA" = "$DISPATCH_SHA"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+      - uses: pnpm/setup@v3
+        with:
+          version: 12.4.1
+          runtime: node@24
+          require-lockfile: true
+          cache: true
+      - name: Check native target and version
+        shell: bash
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_TARGET) process.exit(1)'
+          node scripts/release.ts check "v$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')"
+      - name: Install pinned Electron
+        run: pnpm --filter @kiturone/kapibala-desktop exec install-electron
+      - name: Prepare Apple API key
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          node -e 'const fs=require("fs"),p=require("path").join(process.env.RUNNER_TEMP,"kapibala-notary.p8");if(!process.env.APPLE_API_KEY_BASE64)throw Error("SIGNING_REQUIRED");fs.writeFileSync(p,Buffer.from(process.env.APPLE_API_KEY_BASE64,"base64"),{mode:0o600});fs.appendFileSync(process.env.GITHUB_ENV,`APPLE_API_KEY=${p}\n`);'
+      - name: Build and verify native signed candidate
+        if: runner.os != 'Linux'
+        id: package
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_NAME: ${{ secrets.CSC_NAME }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          KPBL_WINDOWS_SIGNER_THUMBPRINT: ${{ secrets.KPBL_WINDOWS_SIGNER_THUMBPRINT }}
+        run: pnpm pack:desktop --candidate
+      - name: Build Linux candidate under a real virtual display
+        if: runner.os == 'Linux'
+        id: linux-package
+        run: xvfb-run -a pnpm pack:desktop --candidate
+      - name: Preserve immutable candidate files for human installation review
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.target }}-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}/*.dmg
+            ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}/*.exe
+            ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}/*.zip
+            ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}/*.AppImage
+            ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}/*.blockmap
+            ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}/*.json
+            ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}/*.md
+            ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}/SHA256SUMS.txt
+            ${{ steps.package.outputs.artifacts || steps.linux-package.outputs.artifacts }}/licenses/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove temporary notarization key
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: node -e 'require("fs").rmSync(require("path").join(process.env.RUNNER_TEMP,"kapibala-notary.p8"),{force:true})'

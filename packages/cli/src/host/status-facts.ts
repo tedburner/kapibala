@@ -1,13 +1,18 @@
 import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
 import type { StatusFacts } from '../view-model/status.js';
+import type { PublicTextRedactor } from './public-projection.js';
+import { redactText } from './redaction.js';
 
 /**
  * 白名单复制宿主传入的真实状态事实；上下文和运行累计独立保留，未知用量不补零。
  * 不读取 Session、Git 或文件，不从任务数推导用量，也不保留输入中的私有扩展字段。
  */
-export function projectStatusFacts(input: StatusFacts): StatusFacts {
+export function projectStatusFacts(
+  input: StatusFacts,
+  redact: PublicTextRedactor = (text) => redactText(text, []),
+): StatusFacts {
   const clean = (value: string | undefined) =>
-    value === undefined ? undefined : sanitizeUntrustedOutput(value);
+    value === undefined ? undefined : redact(sanitizeUntrustedOutput(value));
   return {
     phase: input.phase,
     model: clean(input.model),

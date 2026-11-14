@@ -573,9 +573,14 @@ export function migrateGlobalSettingsCatalog(
 ): string[] {
   const raw = readRawGlobalSettings(options);
   if (!raw) return [];
-  const { settings, changes, changed } = migrateBuiltinCatalog(raw);
+  const { changed } = migrateBuiltinCatalog(raw);
   if (!changed) return [];
-  saveGlobalSettings(settings, options);
+  let changes: string[] = [];
+  mutateGlobalSettings((latest) => {
+    const migration = migrateBuiltinCatalog(latest);
+    changes = migration.changes;
+    Object.assign(latest, migration.settings);
+  }, options);
   return changes;
 }
 
@@ -656,7 +661,8 @@ export function loadSettings(options: LoadSettingsOptions = {}): LoadedSettings 
 }
 
 /**
- * 原子写入全局配置；先写同目录临时文件再替换，失败保留旧文件和完整入参。
+ * 事务内部的原子替换原语；生产字段变更必须调用 mutateGlobalSettings 持锁重读。
+ * 此函数保留给既有测试夹具，不单独提供并发读改写保证；失败保留旧文件和完整入参。
  * 成功后将迁移后的 profiles、引用及版本号一并同步回入参；调用方须重新读取其中的
  * Profile，不能依赖保存前的对象引用，避免连续保存时以新版本号覆盖回旧协议。
  */
@@ -702,6 +708,52 @@ export function saveGlobalSettings(
   return globalPath;
 }
 
+/**
+ * 全局字段变更的唯一生产写入口：独占锁内重读、同步修改、校验并原子替换。
+ * 回调不得等待输入或网络；竞争立即报 SETTINGS_BUSY，不按 PID/时间抢占遗留锁。
+ * 损坏配置或回调失败保留原文件，释放时核验随机所有者，绝不删除他人的锁。
+ */
+export function mutateGlobalSettings(
+  mutate: (settings: UserSettings) => void,
+  options: Pick<LoadSettingsOptions, 'homeDir'> = {},
+): string {
+  const file = getGlobalSettingsPath(options.homeDir);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const lock = `${file}.lock`;
+  const owner = randomUUID();
+  let descriptor: number;
+  try {
+    descriptor = fs.openSync(lock, 'wx', 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST')
+      throw Object.assign(
+        new Error(
+          `SETTINGS_BUSY: 全局配置锁 ${lock} 已存在；请确认所有写入进程退出后人工核验，不能自动抢锁。`,
+        ),
+        { code: 'SETTINGS_BUSY' },
+      );
+    throw error;
+  }
+  try {
+    fs.writeFileSync(descriptor, JSON.stringify({ owner, pid: process.pid }));
+    const draft = loadGlobalSettingsForWrite(options);
+    const result: unknown = mutate(draft);
+    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+      // 非法异步回调即便稍后拒绝也不能变成未处理异常，更不能在锁外落盘。
+      void Promise.resolve(result).catch(() => {});
+      throw new Error('配置事务回调必须同步完成');
+    }
+    return saveGlobalSettings(draft, options);
+  } finally {
+    fs.closeSync(descriptor);
+    try {
+      if (JSON.parse(fs.readFileSync(lock, 'utf8')).owner === owner) fs.unlinkSync(lock);
+    } catch {
+      /* 锁被移除、替换或损坏时保留现场，不删除无法确认身份的文件。 */
+    }
+  }
+}
+
 /** 只把项目真实路径写入原始全局信任列表；不将合并后的模型或项目配置反写全局。 */
 export function trustProject(
   settings: UserSettings,
@@ -709,13 +761,14 @@ export function trustProject(
   options: Pick<LoadSettingsOptions, 'homeDir'> = {},
 ): string {
   const normalized = normalizeProjectPath(projectPath);
-  const raw = loadGlobalSettingsForWrite(options);
-  const trustedProjects = raw.trustedProjects ?? [];
-  if (!trustedProjects.some((trusted) => pathsEqual(trusted, normalized))) {
-    raw.trustedProjects = [...trustedProjects, normalized];
-  }
-  const savedPath = saveGlobalSettings(raw, options);
-  settings.trustedProjects = [...(raw.trustedProjects ?? [])];
+  let committed: string[] = [];
+  const savedPath = mutateGlobalSettings((raw) => {
+    const trustedProjects = raw.trustedProjects ?? [];
+    if (!trustedProjects.some((trusted) => pathsEqual(trusted, normalized)))
+      raw.trustedProjects = [...trustedProjects, normalized];
+    committed = [...(raw.trustedProjects ?? [])];
+  }, options);
+  settings.trustedProjects = committed;
   return savedPath;
 }
 

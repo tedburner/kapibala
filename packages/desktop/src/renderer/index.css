@@ -1,0 +1,4 @@
+@import "@cloudflare/kumo/styles";
+@import "tailwindcss";
+@import "./theme-kapibala.css";
+@source '../../node_modules/@cloudflare/kumo/dist';

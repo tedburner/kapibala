@@ -1,6 +1,6 @@
 # GitHub Actions 自动发布
 
-正式发布还必须通过[验收证据预检](../release-evidence.md)：六类专项的审核清单由仓库变量 `KPBL_RELEASE_EVIDENCE` 提供，全部报告必须属于最终候选 SHA。缺失、pending 或覆盖不全都会阻断 Release，不因当前 OS 平台门禁为绿而跳过。
+正式发布的**人工验收证据**默认不再强制（2026-11-14 口径，v0.1.0 未签名个人自用版）：六类专项的审核清单本应由仓库变量 `KPBL_RELEASE_EVIDENCE` 提供且全部属于最终候选 SHA，现在只在 `KPBL_RELEASE_STRICT=true` 时校验，缺失、pending 或覆盖不全都阻断 Release。跳过时工作流打印 `::warning::`，文档与 Release 不得据此宣称人工专项已完成；格式见[发布证据说明](../release-evidence.md)。**自动门禁始终强制**：`verify` 矩阵、Node 20 安装、compat、release 长跑、桌面 e2e 与 registry 安装 smoke 任一失败即停止。
 
 工作流文件为 `.github/workflows/release.yml`。推送稳定版本标签后，固定发布源提交，复用 `verify.yml` 执行 Windows/macOS/Linux 构建与完整门禁，再在 Ubuntu 构建、打包、依次发布 Core、MCP 和 CLI、验证 registry 安装，最后创建 GitHub Release 并附压缩包和 SHA256 校验文件。
 
@@ -23,7 +23,7 @@
 
 1. 在 `main` 上准备并提交 `docs/releases/vX.Y.Z.md`，同步迁移与验收说明。可先运行 `pnpm release --scaffold` 生成骨架；发布前必须补全占位内容。三段版本均允许多位非负整数且不允许前导零；默认只递增补丁段，例如 `v0.0.9 → v0.0.10 → v0.0.11`。次版本/主版本通过显式参数选择，例如桌面客户端发布时执行 `pnpm release 0.1.0`；不会因补丁达到 9 自动进入该版本。
 2. 确保工作区干净且本地 `main` 不落后远端，运行 `pnpm release [version]`。脚本同步根、Core、MCP、CLI 的 `package.json` 和 `CLI_VERSION`（五处版本真源），运行 `pnpm verify`，经交互确认后创建 `:bookmark: 发布 vX.Y.Z` 提交及附注标签。可先用 `pnpm release --dry-run` 查看计划；非交互调用必须显式传入 `--yes`。
-3. 手动推送分两步：先 `git push origin main` 并在 Actions 确认该提交的 Verify 工作流通过，补齐同一 SHA 的人工专项和正式 release 长跑，审核清单后手动更新 `KPBL_RELEASE_EVIDENCE`，最后推标签。标签指向同一提交，提前在 `main` 上暴露门禁失败，避免为过门禁而移动已推送的标签。发布源提交必须先包含在远端 `main`；性能基线必须在最终升版前提交，不能提交自引用 SHA 的验收清单。下例仅说明推送顺序，不替代其中的验收和审核步骤，也不代表当前已经实现 v0.0.4：
+3. 手动推送分两步：先 `git push origin main` 并在 Actions 确认该提交的 Verify 工作流通过；严格口径下还要补齐同一 SHA 的人工专项和正式 release 长跑、审核清单后手动更新 `KPBL_RELEASE_EVIDENCE`（个人自用版默认跳过这一步，见[发布证据说明](../release-evidence.md)）；最后推标签。标签指向同一提交，提前在 `main` 上暴露门禁失败，避免为过门禁而移动已推送的标签。发布源提交必须先包含在远端 `main`；性能基线必须在最终升版前提交，不能提交自引用 SHA 的验收清单。下例仅说明推送顺序，不替代其中的验收和审核步骤，也不代表当前已经实现 v0.0.4：
 
 ```bash
 git push origin main
