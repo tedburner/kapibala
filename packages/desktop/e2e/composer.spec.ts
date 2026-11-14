@@ -66,7 +66,8 @@ test.describe
       await expect(page.getByRole('button', { name: /src[/\\]demo\.ts/ })).toBeVisible();
       // Tab 确认：草稿变为 @src/demo.ts（带尾随空格），模型未收到任何请求
       await page.getByLabel('发送消息').press('Tab');
-      await expect(page.getByLabel('发送消息')).toHaveValue('@src/demo.ts ');
+      // 文件清单来自宿主的原生相对路径：Windows 是反斜杠，断言不能写死 POSIX 分隔符。
+      await expect(page.getByLabel('发送消息')).toHaveValue(/@src[\\/]demo\.ts $/);
     });
 
     test('/ 输入被命令系统拦截，不作为普通消息发给模型', async () => {
