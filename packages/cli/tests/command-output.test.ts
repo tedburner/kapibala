@@ -1,11 +1,11 @@
 import type { AgentSession, ModelProfile } from '@kiturone/kapibala';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { type CommandOutput, resolveCommandOutput } from '../src/command-output.js';
 import { agentsCommand } from '../src/commands/agents.js';
 import { clearCommand } from '../src/commands/clear.js';
 import { type CommandContext, CommandDispatcher } from '../src/commands/dispatcher.js';
 import { helpCommand } from '../src/commands/help.js';
 import { modelCommand, updateModelApiKey } from '../src/commands/model.js';
-import { type CommandOutput, resolveCommandOutput } from '../src/host/command-output.js';
 
 const profile: ModelProfile = {
   id: 'local',

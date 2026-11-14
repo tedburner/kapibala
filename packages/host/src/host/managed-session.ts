@@ -15,22 +15,22 @@ import {
   sanitizeSessionTitle,
 } from '@kiturone/kapibala';
 import { type McpPluginInstance, createMcpPlugin } from '@kiturone/kapibala-mcp';
-import { resolveCliMcpOptions } from '../mcp.js';
-import { CliModelBindings, ROUTABLE_MODEL_ROLES } from '../model-bindings.js';
 import { toWireErrorCode } from '../protocol/index.js';
 import type { JsonValue } from '../protocol/index.js';
+import { resolveCliMcpOptions } from './mcp.js';
+import { CliModelBindings, ROUTABLE_MODEL_ROLES } from './model-bindings.js';
+import { StreamingRedactor, redactText } from './redaction.js';
 import {
   BUILTIN_PROFILES,
   type UserSettings,
   isProjectTrusted,
   loadSettings,
   resolveApiKeyDetailed,
-} from '../settings.js';
-import { getCliSkillOptions, hasProjectSkills } from '../skills.js';
-import { createCliSubagentRunner } from '../subagent-runner.js';
-import { registerBuiltinTools } from '../tool-registration.js';
-import { formatToolDetail } from '../ui/tool-presentation.js';
-import { StreamingRedactor, redactText } from './redaction.js';
+} from './settings.js';
+import { getCliSkillOptions, hasProjectSkills } from './skills.js';
+import { createCliSubagentRunner } from './subagent-runner.js';
+import { registerBuiltinTools } from './tool-registration.js';
+import { formatToolDetail } from './ui/tool-presentation.js';
 
 import type { PresentationEvent, PresentationState } from '../view-model/index.js';
 import type { StatusFacts } from '../view-model/status.js';

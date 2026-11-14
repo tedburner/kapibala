@@ -6,13 +6,13 @@ import {
   OpenAIResponsesProvider,
 } from '@kiturone/kapibala';
 import { SummaryService } from '@kiturone/kapibala';
-import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CliModelBindings,
   createModelBinding,
   parsePrimaryModelRole,
-} from '../src/model-bindings.js';
-import { type UserSettings, updateProfileApiKey } from '../src/settings.js';
+} from '@kiturone/kapibala-host/internal';
+import { type UserSettings, updateProfileApiKey } from '@kiturone/kapibala-host/internal';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const profile = (
   id: string,

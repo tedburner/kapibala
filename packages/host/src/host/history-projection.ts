@@ -1,12 +1,12 @@
 import type { CanonicalMessage, ToolResultBlock } from '@kiturone/kapibala';
-import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
+import type { ViewBlock, ViewMessage, ViewTool } from '../view-model/index.js';
+import { type PublicTextRedactor, redactViewMessage } from './public-projection.js';
+import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 import {
   formatToolDetail,
   formatToolInvocation,
   sanitizeToolName,
-} from '../ui/tool-presentation.js';
-import type { ViewBlock, ViewMessage, ViewTool } from '../view-model/index.js';
-import { type PublicTextRedactor, redactViewMessage } from './public-projection.js';
+} from './ui/tool-presentation.js';
 
 interface MatchedResult {
   block: ToolResultBlock;

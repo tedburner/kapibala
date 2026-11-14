@@ -8,6 +8,20 @@ import {
   ToolRegistry,
   WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
+import { attachMcpToSession, resolveCliMcpOptions } from '@kiturone/kapibala-host/internal';
+import { CliModelBindings, parsePrimaryModelRole } from '@kiturone/kapibala-host/internal';
+import { detectProjectRoot } from '@kiturone/kapibala-host/internal';
+import {
+  API_KEY_ENV_NONE,
+  BUILTIN_PROFILES,
+  isProjectTrusted,
+  loadSettings,
+  migrateGlobalSettingsCatalog,
+  resolveApiKey,
+} from '@kiturone/kapibala-host/internal';
+import { getCliSkillOptions } from '@kiturone/kapibala-host/internal';
+import { createCliSubagentRunner } from '@kiturone/kapibala-host/internal';
+import { registerBuiltinTools } from '@kiturone/kapibala-host/internal';
 import minimist from 'minimist';
 import { ActiveSessionController } from './active-session.js';
 import { agentsCommand } from './commands/agents.js';
@@ -32,24 +46,10 @@ import { skillCommand, skillsCommand } from './commands/skills.js';
 import { statusCommand } from './commands/status.js';
 import { CliInputCoordinator } from './input-coordinator.js';
 import { parseLocalCommand, runLocalCommand } from './local-host/entry.js';
-import { attachMcpToSession, resolveCliMcpOptions } from './mcp.js';
-import { CliModelBindings, parsePrimaryModelRole } from './model-bindings.js';
 import { runOneShot } from './oneshot.js';
-import { detectProjectRoot } from './project-root.js';
 import { resolveProjectTrust } from './project-trust.js';
 import { startREPL } from './repl.js';
 import { openStartupSession, validateSessionStartup } from './session-startup.js';
-import {
-  API_KEY_ENV_NONE,
-  BUILTIN_PROFILES,
-  isProjectTrusted,
-  loadSettings,
-  migrateGlobalSettingsCatalog,
-  resolveApiKey,
-} from './settings.js';
-import { getCliSkillOptions } from './skills.js';
-import { createCliSubagentRunner } from './subagent-runner.js';
-import { registerBuiltinTools } from './tool-registration.js';
 import { CliApprovalChannel } from './ui/approval.js';
 import { parseOutputDetail } from './ui/events.js';
 import { CLI_VERSION } from './version.js';

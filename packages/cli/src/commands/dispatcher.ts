@@ -1,8 +1,8 @@
 import type { AgentSession, ModelRole, PrimaryModelRole } from '@kiturone/kapibala';
+import type { UserSettings } from '@kiturone/kapibala-host/internal';
 import type { ActiveSessionController } from '../active-session.js';
-import { resolveCommandOutput } from '../host/command-output.js';
-import type { CommandOutput } from '../host/command-output.js';
-import type { UserSettings } from '../settings.js';
+import { resolveCommandOutput } from '../command-output.js';
+import type { CommandOutput } from '../command-output.js';
 import type { SelectConfig } from '../ui/select.js';
 import type { CommandDefinition } from './catalog.js';
 

@@ -1,0 +1,74 @@
+{
+  "name": "@kiturone/kapibala-host",
+  "version": "0.1.0",
+  "description": "Reusable Kapibala host layer: protocol, view-model, transport, client and managed session assembly",
+  "license": "MIT",
+  "author": "tedburner",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tedburner/kapibala.git",
+    "directory": "packages/host"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./host": {
+      "types": "./dist/host/index.d.ts",
+      "import": "./dist/host/index.js",
+      "default": "./dist/host/index.js"
+    },
+    "./internal": {
+      "types": "./dist/host/internal.d.ts",
+      "import": "./dist/host/internal.js",
+      "default": "./dist/host/internal.js"
+    },
+    "./view-model": {
+      "types": "./dist/view-model/index.d.ts",
+      "import": "./dist/view-model/index.js",
+      "default": "./dist/view-model/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "import": "./dist/protocol/index.js",
+      "default": "./dist/protocol/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "default": "./dist/client/index.js"
+    },
+    "./transport": {
+      "types": "./dist/transport/index.d.ts",
+      "import": "./dist/transport/index.js",
+      "default": "./dist/transport/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup --config tsup.node.config.ts && pnpm run build:host && pnpm run build:client && pnpm run build:transport && pnpm run build:protocol && pnpm run build:view-model",
+    "build:host": "tsup --config tsup.host.config.ts",
+    "build:client": "tsup --config tsup.client.config.ts",
+    "build:transport": "tsup --config tsup.transport.config.ts",
+    "build:protocol": "tsup --config tsup.protocol.config.ts",
+    "build:view-model": "tsup --config tsup.view-model.config.ts"
+  },
+  "dependencies": {
+    "@kiturone/kapibala": "workspace:*",
+    "@kiturone/kapibala-mcp": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.3"
+  }
+}

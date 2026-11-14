@@ -4,7 +4,7 @@ import {
   type EventPayloads,
   type WireEvent,
   validateEvent,
-} from '../protocol/index.js';
+} from '@kiturone/kapibala-host/protocol';
 
 /** 发布输入不接受外部 sequence，避免调用者伪造流身份与水位。 */
 export type EventChange = {

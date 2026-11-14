@@ -1,6 +1,6 @@
 import { Button, InlineCopyText } from '@cloudflare/kumo';
 import { Dialog } from '@cloudflare/kumo/primitives/dialog';
-import type { ViewTool } from '@kiturone/kapibala-cli/view-model';
+import type { ViewTool } from '@kiturone/kapibala-host/view-model';
 import { XIcon } from '@phosphor-icons/react';
 import { type RefObject, useEffect, useState } from 'react';
 import type { Inspection, RuntimeSnapshot } from '../shared/observations.js';

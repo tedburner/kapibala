@@ -1,10 +1,10 @@
 import type { CanonicalMessage } from '@kiturone/kapibala';
+import { projectHistory } from '@kiturone/kapibala-host/internal';
+import { PresentationStore } from '@kiturone/kapibala-host/internal';
+import { redactText } from '@kiturone/kapibala-host/internal';
+import { SessionPresentation } from '@kiturone/kapibala-host/internal';
+import { projectStatusFacts } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it } from 'vitest';
-import { projectHistory } from '../src/host/history-projection.js';
-import { PresentationStore } from '../src/host/presentation-store.js';
-import { redactText } from '../src/host/redaction.js';
-import { SessionPresentation } from '../src/host/session-presentation.js';
-import { projectStatusFacts } from '../src/host/status-facts.js';
 
 it('恢复历史与实时工具卡片共享脱敏和调用身份，私有块不进入展示', () => {
   const secret = 'opaque-fixture-credential';

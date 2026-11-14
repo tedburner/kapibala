@@ -4,7 +4,7 @@ import {
   type UserSettings,
   ensureProfile,
   mutateGlobalSettings,
-} from './settings.js';
+} from '@kiturone/kapibala-host/internal';
 
 /** 设置下次默认启动模型；只补所选 profile，保存成功后才更新内存，不热切换或物化内置目录。 */
 export function persistDefaultModel(

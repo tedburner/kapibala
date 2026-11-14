@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ToolRegistry } from '@kiturone/kapibala';
+import { registerBuiltinTools } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it } from 'vitest';
-import { registerBuiltinTools } from '../src/tool-registration.js';
 
 describe('CLI builtin tool registration', () => {
   it('registers run_command by default and keeps an explicitly disabled registry closed', () => {

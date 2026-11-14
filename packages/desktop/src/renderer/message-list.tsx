@@ -1,5 +1,5 @@
 import { Button, Collapsible, InlineCopyText } from '@cloudflare/kumo';
-import type { ViewBlock, ViewMessage, ViewTool } from '@kiturone/kapibala-cli/view-model';
+import type { ViewBlock, ViewMessage, ViewTool } from '@kiturone/kapibala-host/view-model';
 import {
   ArrowDownIcon,
   BrainIcon,

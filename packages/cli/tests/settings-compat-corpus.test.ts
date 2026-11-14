@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BUILTIN_CATALOG_VERSION,
   BUILTIN_PROFILES,
@@ -15,7 +14,8 @@ import {
   resolveApiKeyDetailed,
   saveGlobalSettings,
   updateProfileApiKey,
-} from '../src/settings.js';
+} from '@kiturone/kapibala-host/internal';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const fixtureDirectory = fileURLToPath(new URL('./fixtures/compat', import.meta.url));
 const fixturePath = path.join(fixtureDirectory, 'settings-v0.0.9.json');

@@ -1,13 +1,10 @@
 import { type ModelProfile, type ModelRole, resolveContextWindow } from '@kiturone/kapibala';
-import { persistDefaultModel, persistModelRole } from '../default-model.js';
-import { resolveCommandOutput } from '../host/command-output.js';
-import { isInteractiveTerminal } from '../input-coordinator.js';
 import {
   ROUTABLE_MODEL_ROLES,
   createModelBinding,
   parsePrimaryModelRole,
-} from '../model-bindings.js';
-import { PROVIDER_METAS, providerCategory } from '../providers.js';
+} from '@kiturone/kapibala-host/internal';
+import { PROVIDER_METAS, providerCategory } from '@kiturone/kapibala-host/internal';
 import {
   API_KEY_ENV_NONE,
   type LoadSettingsOptions,
@@ -18,7 +15,10 @@ import {
   mutateGlobalSettings,
   resolveApiKeyDetailed,
   updateProfileApiKey,
-} from '../settings.js';
+} from '@kiturone/kapibala-host/internal';
+import { resolveCommandOutput } from '../command-output.js';
+import { persistDefaultModel, persistModelRole } from '../default-model.js';
+import { isInteractiveTerminal } from '../input-coordinator.js';
 import { formatTokenCount } from '../ui/metrics.js';
 import type { SelectOption } from '../ui/select.js';
 import type { CommandHandler } from './dispatcher.js';

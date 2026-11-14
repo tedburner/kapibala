@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_LIMITS, type JsonValue, type SnapshotPage } from '../protocol/index.js';
+import {
+  DEFAULT_LIMITS,
+  type JsonValue,
+  type SnapshotPage,
+} from '@kiturone/kapibala-host/protocol';
 
 /** 每连接有界快照缓存；分页形状由协议入口固定，游标是修订加位置且不能跨会话复用。 */
 export class SnapshotPager {

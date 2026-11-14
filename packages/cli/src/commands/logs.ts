@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { type LogEvent, createDefaultLogSinks } from '@kiturone/kapibala';
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 import type { CommandHandler } from './dispatcher.js';
 
 /**

@@ -39,6 +39,9 @@ importers:
         specifier: ^1.2.8
         version: 1.2.8
     devDependencies:
+      '@kiturone/kapibala-host':
+        specifier: workspace:*
+        version: link:../host
       '@types/minimist':
         specifier: ^1.2.5
         version: 1.2.5
@@ -63,12 +66,9 @@ importers:
       '@kiturone/kapibala':
         specifier: workspace:*
         version: link:../core
-      '@kiturone/kapibala-cli':
+      '@kiturone/kapibala-host':
         specifier: workspace:*
-        version: link:../cli
-      '@kiturone/kapibala-mcp':
-        specifier: workspace:*
-        version: link:../mcp
+        version: link:../host
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -127,6 +127,22 @@ importers:
       zustand:
         specifier: 5.0.16
         version: 5.0.16(@types/react@19.3.0)(react@19.3.1)(use-sync-external-store@1.7.0(react@19.3.1))
+
+  packages/host:
+    dependencies:
+      '@kiturone/kapibala':
+        specifier: workspace:*
+        version: link:../core
+      '@kiturone/kapibala-mcp':
+        specifier: workspace:*
+        version: link:../mcp
+    devDependencies:
+      tsup:
+        specifier: ^8.3.6
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.28)(supports-color@7.2.0)(tsx@4.23.13)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
 
   packages/mcp:
     dependencies:

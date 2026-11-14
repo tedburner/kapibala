@@ -1,7 +1,7 @@
 import type { AgentSession } from '@kiturone/kapibala';
 import type { McpServerStatus } from '@kiturone/kapibala-mcp';
-import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
 import type { StatusFacts } from '../view-model/status.js';
+import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 
 /** 只读宿主观察；列表和字符串有界，省略数量显式保留，不承载原始配置、进程或执行能力。 */
 export interface ManagedInspection {

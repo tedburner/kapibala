@@ -99,6 +99,7 @@ export function publicApiSourceIncludes(sourceRoot: string): string[] {
   return [
     path.join(sourceRoot, 'packages/core/src/index.ts'),
     path.join(sourceRoot, 'packages/mcp/src/index.ts'),
+    path.join(sourceRoot, 'packages/host/src/**/*.ts'),
     path.join(sourceRoot, 'packages/cli/src/**/*.ts'),
   ].map((pattern) => pattern.replace(/\\/g, '/'));
 }
@@ -126,6 +127,23 @@ function emitDeclarations(sourceRoot: string, outDir: string): void {
       paths: {
         '@kiturone/kapibala': [path.join(sourceRoot, 'packages/core/src/index.ts')],
         '@kiturone/kapibala-mcp': [path.join(sourceRoot, 'packages/mcp/src/index.ts')],
+        '@kiturone/kapibala-host': [path.join(sourceRoot, 'packages/host/src/index.ts')],
+        '@kiturone/kapibala-host/host': [path.join(sourceRoot, 'packages/host/src/host/index.ts')],
+        '@kiturone/kapibala-host/internal': [
+          path.join(sourceRoot, 'packages/host/src/internal.ts'),
+        ],
+        '@kiturone/kapibala-host/protocol': [
+          path.join(sourceRoot, 'packages/host/src/protocol/index.ts'),
+        ],
+        '@kiturone/kapibala-host/view-model': [
+          path.join(sourceRoot, 'packages/host/src/view-model/index.ts'),
+        ],
+        '@kiturone/kapibala-host/client': [
+          path.join(sourceRoot, 'packages/host/src/client/index.ts'),
+        ],
+        '@kiturone/kapibala-host/transport': [
+          path.join(sourceRoot, 'packages/host/src/transport/index.ts'),
+        ],
       },
     },
     include: publicApiSourceIncludes(sourceRoot),
@@ -154,6 +172,23 @@ function createDeclarationProgram(outDir: string): ts.Program {
     paths: {
       '@kiturone/kapibala': [declarationPath(outDir, 'packages/core/src/index.ts')],
       '@kiturone/kapibala-mcp': [declarationPath(outDir, 'packages/mcp/src/index.ts')],
+      '@kiturone/kapibala-host': [declarationPath(outDir, 'packages/host/src/index.ts')],
+      '@kiturone/kapibala-host/host': [declarationPath(outDir, 'packages/host/src/host/index.ts')],
+      '@kiturone/kapibala-host/internal': [
+        declarationPath(outDir, 'packages/host/src/internal.ts'),
+      ],
+      '@kiturone/kapibala-host/protocol': [
+        declarationPath(outDir, 'packages/host/src/protocol/index.ts'),
+      ],
+      '@kiturone/kapibala-host/view-model': [
+        declarationPath(outDir, 'packages/host/src/view-model/index.ts'),
+      ],
+      '@kiturone/kapibala-host/client': [
+        declarationPath(outDir, 'packages/host/src/client/index.ts'),
+      ],
+      '@kiturone/kapibala-host/transport': [
+        declarationPath(outDir, 'packages/host/src/transport/index.ts'),
+      ],
     },
   });
   const errors = ts

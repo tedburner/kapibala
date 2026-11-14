@@ -1,16 +1,16 @@
 import type { AgentSession } from '@kiturone/kapibala';
+import {
+  bindSessionMcpPlugin,
+  createCliServerStartAuthorizer,
+  resolveCliMcpOptions,
+} from '@kiturone/kapibala-host/internal';
+import { formatToolInvocation } from '@kiturone/kapibala-host/internal';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { COMMAND_CATALOG } from '../src/commands/catalog.js';
 import { type CommandContext, CommandDispatcher } from '../src/commands/dispatcher.js';
 import { mcpCommand } from '../src/commands/mcp.js';
 import { promptCommand, promptsCommand } from '../src/commands/prompts.js';
 import { CliInputCoordinator } from '../src/input-coordinator.js';
-import {
-  bindSessionMcpPlugin,
-  createCliServerStartAuthorizer,
-  resolveCliMcpOptions,
-} from '../src/mcp.js';
-import { formatToolInvocation } from '../src/ui/tool-presentation.js';
 
 describe('CLI MCP commands and host integration', () => {
   let mockPlugin: any;

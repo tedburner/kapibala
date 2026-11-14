@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { listBuiltinProviders } from '@kiturone/kapibala-host/internal';
+import { loadGlobalSettingsForWrite, mutateGlobalSettings } from '@kiturone/kapibala-host/internal';
 import { afterEach, expect, it, vi } from 'vitest';
-import { listBuiltinProviders } from '../src/providers.js';
-import { loadGlobalSettingsForWrite, mutateGlobalSettings } from '../src/settings.js';
 import { runSetupWizard } from '../src/wizard.js';
 
 let home = '';

@@ -1,5 +1,5 @@
 import { createDefaultLogSinks } from '@kiturone/kapibala';
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 import { formatContextUsage } from '../ui/metrics.js';
 import type { CommandHandler } from './dispatcher.js';
 

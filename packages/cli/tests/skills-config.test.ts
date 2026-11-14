@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { loadSettings } from '@kiturone/kapibala-host/internal';
+import { getCliSkillOptions } from '@kiturone/kapibala-host/internal';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveProjectTrust } from '../src/project-trust.js';
-import { loadSettings } from '../src/settings.js';
-import { getCliSkillOptions } from '../src/skills.js';
 
 const roots: string[] = [];
 function workspace() {

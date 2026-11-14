@@ -1,4 +1,4 @@
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 /**
  * @fileoverview /prompts 与 /prompt 命令：MCP 提示词模板检索与受控任务执行
  *
@@ -13,8 +13,8 @@ import { resolveCommandOutput } from '../host/command-output.js';
  *    绝不向模型伪造真实的 assistant 消息，不破坏模型合法续答前缀。
  */
 
+import { getSessionMcpPlugin } from '@kiturone/kapibala-host/internal';
 import { prepareMcpPromptTask, validatePromptArguments } from '@kiturone/kapibala-mcp';
-import { getSessionMcpPlugin } from '../mcp.js';
 import { color, sanitizeUntrustedOutput } from '../ui/events.js';
 import { parsePromptInvocation } from './catalog.js';
 import type { CommandContext, CommandHandler } from './dispatcher.js';

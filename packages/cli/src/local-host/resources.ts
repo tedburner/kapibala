@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import { WorkspaceLeaseCoordinator } from '@kiturone/kapibala';
-import { createManagedSessionResources } from '../host/managed-session.js';
-import { detectProjectRoot } from '../project-root.js';
+import { createManagedSessionResources } from '@kiturone/kapibala-host/internal';
+import { detectProjectRoot } from '@kiturone/kapibala-host/internal';
 import type { ResourceFactory } from './types.js';
-export { loadCredentialSecrets } from '../host/managed-session.js';
+export { loadCredentialSecrets } from '@kiturone/kapibala-host/internal';
 
 /** 本地协议用户目录覆盖；未传时保留原有系统 home 规则。 */
 export interface ResourceFactoryOptions {

@@ -3,14 +3,6 @@ import {
   type SessionEvent,
   sanitizeModelErrorMessage,
 } from '@kiturone/kapibala';
-import { formatModelError } from '../ui/model-errors.js';
-import { describeRuntimeError } from '../ui/runtime-errors.js';
-import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
-import {
-  formatToolDetail,
-  formatToolInvocation,
-  sanitizeToolName,
-} from '../ui/tool-presentation.js';
 import type {
   OperationResult,
   PresentationChange,
@@ -23,6 +15,14 @@ import { displayMessageId, projectHistory } from './history-projection.js';
 import type { PresentationStore } from './presentation-store.js';
 import { type PublicTextRedactor, redactPresentationChange } from './public-projection.js';
 import { redactText } from './redaction.js';
+import { formatModelError } from './ui/model-errors.js';
+import { describeRuntimeError } from './ui/runtime-errors.js';
+import { sanitizeUntrustedOutput } from './ui/text-safety.js';
+import {
+  formatToolDetail,
+  formatToolInvocation,
+  sanitizeToolName,
+} from './ui/tool-presentation.js';
 
 /** 展示身份只按会话/分支分组；viewEpoch 隔离事件但不改变 canonical 消息自身身份。 */
 export function presentationScope(identity: ViewIdentity): string {

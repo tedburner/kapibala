@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadSettings, resolveApiKey, resolveBaseURL } from '../packages/cli/src/settings.js';
 import { detectShell } from '../packages/core/src/capabilities/shell/detect.js';
 import { createRunCommandTool } from '../packages/core/src/capabilities/shell/tool.js';
 import { builtinTools } from '../packages/core/src/capabilities/tools/builtin/fs.js';
@@ -19,6 +18,7 @@ import type {
   SessionEvent,
   Usage,
 } from '../packages/core/src/types/index.js';
+import { loadSettings, resolveApiKey, resolveBaseURL } from '../packages/host/src/host/settings.js';
 
 // 本文件仅执行已授权的隔离验收，不修改默认配置，不放宽产品摘要保护规则。
 const { settings } = loadSettings();

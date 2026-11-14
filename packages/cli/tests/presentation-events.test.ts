@@ -1,5 +1,5 @@
+import { PresentationStore } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it } from 'vitest';
-import { PresentationStore } from '../src/host/presentation-store.js';
 
 const identity = { conversationId: 'c', branchId: 'main', viewEpoch: 1 };
 describe('展示顺序订阅', () => {

@@ -93,7 +93,11 @@ describe('CLI presentation boundaries', () => {
   });
 
   it('keeps the current CLI layers inside the declared boundaries', () => {
-    expect(scanCliBoundary(sourceRoot)).toEqual([]);
+    // view-model 规则作用于宿主包；CLI 侧只剩 TUI 目录与兼容 barrel（barrel 不参与目录规则）。
+    expect(scanCliBoundary(path.resolve('packages/host/src'))).toEqual([]);
+    expect(
+      scanCliBoundary(sourceRoot).filter((v) => !v.file.includes('view-model/index.ts')),
+    ).toEqual([]);
   });
 
   it('returns a failing process status for an on-disk negative fixture', () => {

@@ -1,4 +1,4 @@
-import { type PresentationState, reducePresentation } from '@kiturone/kapibala-cli/view-model';
+import { type PresentationState, reducePresentation } from '@kiturone/kapibala-host/view-model';
 import type { Approval, DesktopAPI, Notification, RunReceipt } from '../shared/contracts.js';
 import type { Inspection, RuntimeSnapshot } from '../shared/observations.js';
 import { SnapshotAssembler } from '../shared/snapshots.js';

@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as settingsModule from '@kiturone/kapibala-host/internal';
 import { afterEach, describe, expect, it } from 'vitest';
-import * as settingsModule from '../src/settings.js';
 
 const homes: string[] = [];
 function home() {
@@ -82,7 +82,9 @@ describe('全局配置短事务', () => {
     const ready = path.join(homeDir, 'ready');
     // 子进程经 tsx 直接导入源码入口：verify 的 test 阶段可能先于构建执行，dist 产物既可能缺失
     // 也可能是旧实现编译出的陈旧版本；导入源码保证本用例与父进程测的是同一份当前实现。
-    const entry = pathToFileURL(fileURLToPath(new URL('../src/settings.ts', import.meta.url))).href;
+    const entry = pathToFileURL(
+      fileURLToPath(new URL('../../host/src/host/settings.ts', import.meta.url)),
+    ).href;
     const script = `import fs from 'node:fs'; import { mutateGlobalSettings } from ${JSON.stringify(entry)}; mutateGlobalSettings(draft => { draft.trustedProjects = ['/writer']; fs.writeFileSync(${JSON.stringify(ready)}, 'ready'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); }, { homeDir: ${JSON.stringify(homeDir)} });`;
     const child = spawn(
       process.execPath,

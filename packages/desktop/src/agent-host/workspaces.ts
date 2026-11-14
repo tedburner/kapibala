@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SessionManager, resolveSessionProject } from '@kiturone/kapibala';
-import { isProjectTrusted, loadSettings, trustProject } from '@kiturone/kapibala-cli/host';
+import { isProjectTrusted, loadSettings, trustProject } from '@kiturone/kapibala-host/host';
 import { LIMITS, ProjectNameSchema, type Workspace } from '../shared/contracts.js';
 
 /** Host 的空间登记簿；页面只能使用随机 ID，路径仅来自 Main 原生选择或固定默认位置。 */

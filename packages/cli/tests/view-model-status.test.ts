@@ -3,7 +3,7 @@ import {
   type StatusSegment,
   buildStatusSegments,
   selectStatusSegments,
-} from '../src/view-model/status.js';
+} from '../../host/src/view-model/status.js';
 
 describe('pure status segments', () => {
   it('keeps request context, run cumulative tokens and unknown child usage separate', () => {

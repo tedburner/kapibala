@@ -1,5 +1,5 @@
-import { resolveCommandOutput } from '../host/command-output.js';
-import { sanitizeToolName } from '../ui/tool-presentation.js';
+import { sanitizeToolName } from '@kiturone/kapibala-host/internal';
+import { resolveCommandOutput } from '../command-output.js';
 import type { CommandHandler } from './dispatcher.js';
 
 /** 解析一个技能名和原始任务；只消费一个分隔空白，保留任务的引号、其余空格与换行。 */

@@ -1,5 +1,5 @@
+import { resolveCommandOutput } from '../command-output.js';
 import { persistDefaultModel } from '../default-model.js';
-import { resolveCommandOutput } from '../host/command-output.js';
 import { runSetupWizard } from '../wizard.js';
 import type { CommandHandler } from './dispatcher.js';
 

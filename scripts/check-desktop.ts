@@ -80,10 +80,17 @@ export function checkDesktop(artifacts = false): void {
             `${relative}: cross-process import`,
           );
         if (relative.startsWith('agent-host/') && specifier.startsWith('@kiturone/kapibala-cli'))
+          insist(false, `${relative}: private CLI import（宿主层已迁至 @kiturone/kapibala-host）`);
+        if (relative.startsWith('agent-host/') && specifier.startsWith('@kiturone/kapibala-host'))
           insist(
-            specifier === '@kiturone/kapibala-cli/host' ||
-              specifier === '@kiturone/kapibala-cli/view-model',
-            `${relative}: private CLI import`,
+            specifier === '@kiturone/kapibala-host/host' ||
+              specifier === '@kiturone/kapibala-host/view-model',
+            `${relative}: private host import`,
+          );
+        if (relative.startsWith('renderer/') && specifier.startsWith('@kiturone/kapibala-host'))
+          insist(
+            specifier === '@kiturone/kapibala-host/view-model',
+            `${relative}: renderer may only import the view-model subpath`,
           );
       }
       ts.forEachChild(node, visit);
@@ -119,8 +126,7 @@ export function checkDesktop(artifacts = false): void {
   };
   const allowed = new Set([
     '@kiturone/kapibala',
-    '@kiturone/kapibala-cli',
-    '@kiturone/kapibala-mcp',
+    '@kiturone/kapibala-host',
     '@cloudflare/kumo',
     '@phosphor-icons/react',
     '@tanstack/react-virtual',

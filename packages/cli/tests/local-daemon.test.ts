@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { LocalClient } from '@kiturone/kapibala-host/client';
+import * as socket from '@kiturone/kapibala-host/transport';
+import type { LocalTransport } from '@kiturone/kapibala-host/transport';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LocalClient } from '../src/client/index.js';
 import {
   getDaemonStatus,
   getLocalRuntimeDirectory,
@@ -10,8 +12,6 @@ import {
   startDaemon,
   stopDaemon,
 } from '../src/local-host/daemon.js';
-import * as socket from '../src/transport/socket.js';
-import type { LocalTransport } from '../src/transport/types.js';
 
 const roots: string[] = [];
 afterEach(() => {

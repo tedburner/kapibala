@@ -1,8 +1,8 @@
 import type { AgentSession } from '@kiturone/kapibala';
+import { BUILTIN_PROFILES, type UserSettings } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from '../src/commands/dispatcher.js';
 import { updateModelApiKey } from '../src/commands/model.js';
-import { BUILTIN_PROFILES, type UserSettings } from '../src/settings.js';
 
 /** 取一个现役内置 profile 做夹具。id 随内置清单换代，别在断言里写死。 */
 function builtinProfile(id: string) {

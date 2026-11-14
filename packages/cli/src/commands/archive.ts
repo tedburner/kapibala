@@ -1,4 +1,4 @@
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 /**
  * @fileoverview 会话逻辑归档与恢复命令（/archive）。
  *

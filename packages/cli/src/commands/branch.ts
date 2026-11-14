@@ -1,4 +1,4 @@
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 /**
  * @fileoverview 分支创建、切换与查看命令（/branch）。
  *

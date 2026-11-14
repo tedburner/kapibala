@@ -11,7 +11,7 @@ import {
   SERVER_CAPABILITIES,
   WIRE_ERROR_CODES,
   type WireMethod,
-} from '../packages/cli/src/protocol/index.js';
+} from '../packages/host/src/protocol/index.js';
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const contractPath = path.join(

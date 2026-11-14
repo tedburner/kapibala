@@ -1,5 +1,5 @@
+import { PRIMARY_MODEL_ROLES, ROUTABLE_MODEL_ROLES } from '@kiturone/kapibala-host/internal';
 import { isInteractiveTerminal } from '../input-coordinator.js';
-import { PRIMARY_MODEL_ROLES, ROUTABLE_MODEL_ROLES } from '../model-bindings.js';
 import { parseSkillTask } from './skills.js';
 
 /**

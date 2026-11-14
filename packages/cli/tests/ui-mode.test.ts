@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseUiMode, parseUiMode } from '../src/host/ui-mode.js';
+import { chooseUiMode, parseUiMode } from '../src/ui-mode.js';
 
 describe('side-effect-free UI admission', () => {
   const terminal = { stdinTTY: true, stdoutTTY: true, capable: true, oneShot: false };

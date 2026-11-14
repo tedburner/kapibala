@@ -3,7 +3,7 @@
 ## 定位
 
 Kapibala（CLI 命令 `kpbl`）：从零构建的 TypeScript AI Agent Harness + 交互式 CLI。
-pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ `packages/cli`（bin: `kpbl`）。
+pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ `packages/host`（`@kiturone/kapibala-host`，私有可复用宿主层，不进 npm 发布集）+ `packages/cli`（bin: `kpbl`）+ `packages/desktop`（Electron 桌面端）。
 设计基线：`docs/design/001-agent-framework-design.md`（**用户本人维护，勿擅改章节编号与交叉引用**）。
 
 ## 怎么跑
@@ -28,7 +28,7 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 ## 分支与发布流程
 
 - **日常开发在分支上进行，main 始终保持可发布**：`pnpm flow feat <topic>`（支持 `fix` / `chore` / `docs`，topic 省略时自动生成「日期-时分」名）联网成功时从最新 `origin/main` 切出，获取远端失败时从本地 `main` 切出并自动切换；任意命名用 `pnpm flow branch <name>`。合并回主干用 `git merge --no-ff <分支>`。
-- **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。默认仅递增补丁段（`0.0.9 → 0.0.10`，不自动向次版本进位），次版本/主版本由显式参数选择；同步六处版本号（根、Core、MCP、CLI、desktop 的 5 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 vX.Y.Z`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明必须先写好 `docs/releases/vX.Y.Z.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）。
+- **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。默认仅递增补丁段（`0.0.9 → 0.0.10`，不自动向次版本进位），次版本/主版本由显式参数选择；同步七处版本号（根、Core、MCP、CLI、host、desktop 的 6 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 vX.Y.Z`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明必须先写好 `docs/releases/vX.Y.Z.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）。
 - **推送永远手动**：先 `git push origin main` 并等 main 的 Verify 工作流通过，再 `git push origin vX.Y.Z`（提前暴露门禁失败，避免移动已推送的标签）；tag 推送触发 Actions（verify → npm trusted publishing → GitHub Release）。
 - 版本推演与工作区版本读取的唯一实现在 `scripts/release.ts`（`nextVersion` / `readWorkspaceVersion`），不要在别处另写逻辑；分支与发布编排在 `scripts/flow.ts`。
 - **发布门禁分两层**：自动门禁（`pnpm verify` + `verify` 工作流全矩阵 + release 长跑 + 三包 registry 安装 smoke）始终强制；人工验收证据（`pnpm verify:release-evidence` 的六类专项与桌面专项）自 2026-11-14 起**默认跳过**，工作流只打印 warning，`KPBL_RELEASE_STRICT=true` 即恢复同 SHA 审核清单强制校验。桌面附件默认不附带，`KPBL_DESKTOP_RELEASE=true` 恢复严格附件流程。跳过不等于通过：文档与 Release 不得宣称人工专项、签名或跨平台安装验收已完成，禁止伪造通过证据。口径见 `docs/release-evidence.md` 与 `docs/desktop-release.md`。
@@ -42,6 +42,13 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - 消费者提前结束事件迭代时，必须取消并等待在途工具清理、闭合并落盘工具事务后再释放 Session 锁；已完成的工具保留真实结果。
 - **Core 必须保持 Headless**：`packages/core/src` 不得依赖 CLI、直接读写终端或包含 ANSI/UI 渲染；所有宿主通过 `AgentSession` / `SessionEvent` 复用同一 Agent Harness。`pnpm check-architecture` 已并入 lint，新增宿主能力不得绕过该门禁。
 
+- **宿主层包边界（`packages/host`）**：协议（protocol）、视图模型（view-model）、传输（transport）、客户端（client）与
+  managed session 装配（host/）的唯一真源在宿主层包；CLI 的同名子路径导出只是**兼容转发 barrel**（构建时经 tsconfig paths
+  从宿主源码内联进 dist，npm 消费者不感知私有包）。CLI 应用层（commands/local-host/tui/入口）经
+  `@kiturone/kapibala-host/internal` 消费装配面（显式命名导出清单，禁用 `export *`——多模块重导出同名符号会被 ESM
+  静默丢弃，已踩过）；desktop 只允许 import `@kiturone/kapibala-host/host|view-model` 子路径（check-desktop 门禁拦截）。
+  新增宿主能力时改宿主包与门禁锚点，不要往 CLI 兼容 barrel 里塞实现。
+
 ## 约定
 
 - **注释约定（强制）**：所有导出符号（class / function / interface / type / const / enum）必须有简体中文 JSDoc，写**约束、边界、为什么**
@@ -49,7 +56,7 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
   **新增功能代码必须随实现同步带注释**，不留无注释的导出面；禁止复述代码的空话注释、禁止引用 review/PR/日期。
   修改行为时同步修订受影响注释 —— 注释与代码语义不符按 bug 处理。
 - 品牌拼写只允许 **`Kapibala`**（禁止少一个 i 的旧拼法）；配置目录 **`.kapibala`**；错误基类 `KapibalaError`；默认 `agentName` 为 `'Kapibala'`。
-- `/model` 的厂商族推断统一走 `packages/cli/src/settings.ts` 的 `detectProviderFamily`，不要在命令层另写启发式；密钥解析走同族回退（`FAMILY_KEY_ENV`），不做跨厂商兜底。
+- `/model` 的厂商族推断统一走 `packages/host/src/host/settings.ts` 的 `detectProviderFamily`，不要在命令层另写启发式；密钥解析走同族回退（`FAMILY_KEY_ENV`），不做跨厂商兜底。
 - **密钥按厂商族共用（一个厂商只需配一次）**：分组键统一走 `credentialGroup()` —— 可识别厂商按 family 归组，`unknown` 退化到按端点 host 隔离（否则多个自建网关会串用同一把 key）；分组展示名走 `describeCredentialGroup()`。
 - 同一分组内**只保留一份密钥**：读取走 `resolveApiKeyDetailed(profile, settings)`（第 2 级即"同厂商族已存密钥"），写入走 `updateProfileApiKey()`（自动清理同组冗余副本）。新增任何密钥读取/写入入口都不要绕过这两个函数，否则会出现「更新了 A 的密钥、B 仍在用旧密钥」的静默不一致。
 - **不自动 git add / commit**，改动保留在工作区由用户审核后手动提交。
@@ -65,10 +72,10 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
   `scripts/dev-desktop.mjs`，它们在清洗过的环境里再拉起下一层命令 —— 否则宿主删除守卫会把打包器
   清理 dist 当成批量删除拦下（报错指向无关的 `.js.map`，看起来像打包器坏了）。
 
-## 内置模型清单（`packages/cli/src/settings.ts`）
+## 内置模型清单（`packages/host/src/host/settings.ts`）
 
-- `BUILTIN_PROFILES` 是唯一的内置模型真源（现为 8 家厂商 / 20 个模型），默认模型 `DEFAULT_MODEL_ID = 'deepseek-flash'`。
-  厂商展示元数据（名称 / 描述 / 索要密钥的提示语）在 `packages/cli/src/providers.ts`，**`/model` 菜单与冷启动向导都从这里取**，
+- `BUILTIN_PROFILES` 是唯一的内置模型真源（真源文件 `packages/host/src/host/settings.ts`，经 `@kiturone/kapibala-host/host` 公共导出）（现为 8 家厂商 / 20 个模型），默认模型 `DEFAULT_MODEL_ID = 'deepseek-flash'`。
+  厂商展示元数据（名称 / 描述 / 索要密钥的提示语）在 `packages/host/src/host/providers.ts`，**`/model` 菜单与冷启动向导都从这里取**，
   不要在命令层或向导里再硬编码一份模型 id 清单 —— 那会退化成模型换代后 `BUILTIN_PROFILES.find(...)!` 的运行时崩溃（已发生过一次）。
 - ⚠️ **改动 `BUILTIN_PROFILES` 必须同步两件事**：
   1. `BUILTIN_CATALOG_VERSION` **+1**（不加版本号，`migrateBuiltinCatalog` 不会触发，老用户菜单里会一直挂着已退役的模型）；

@@ -77,17 +77,17 @@ tsx scripts/check-public-api.ts --update  # 人工审阅候选差异后显式刷
 - 声明模块：`@kiturone/kapibala-cli` 的 `protocol/results.d.ts`、`local-host/errors.d.ts`。
 - 新增均为纯增补，不改变既有符号签名语义；`SessionOptions` 是为让"扩展非根选项"有可写的接口面而拆出的类型。
 
-**签名或形状变化（11 项）**
+**签名或形状变化（12 项）**
 
-- Core：`SessionConfig`（interface → 交集联合 type）、`SpawnContext`（新增必填 `leaseCoordinator`）、`SubagentSessionRunner`（第三参数 `SubagentRunnerContext`）、`ToolContext`（提供只读 `leaseCoordinator` 引用）、`AgentRuntime`（runner 调用带上下文，内部引用按 agentId 只在内存持有）。
+- Core：`SessionConfig`（interface → 交集联合 type）、`SpawnContext`（新增必填 `leaseCoordinator`）、`SubagentSessionRunner`（第三参数 `SubagentRunnerContext`）、`ToolContext`（提供只读 `leaseCoordinator` 引用）、`AgentRuntime`（runner 调用带上下文，内部引用按 agentId 只在内存持有）、`ToolExecutor`（实现按概念模块化后，声明中的私有 `withTimeout` 成员随实现外移，公开构造项与公开成员签名不变）。
 - CLI `client`：`LocalClient`（`call` 结果按方法与参数具体化）、`LocalTransport`（新增必填 `setLimits`）。
-- CLI `protocol`：`WireSchema`、`REQUEST_SCHEMAS`、`EVENT_PAYLOAD_SCHEMAS`、`APPROVAL_RESPONSE_SCHEMA` 及新增的结果 Schema 面（`RESULT_SCHEMAS` / `RESULT_SELECTORS`）。
+- CLI `protocol`：`WireSchema`、`REQUEST_SCHEMAS`、`EVENT_PAYLOAD_SCHEMAS`、`APPROVAL_RESPONSE_SCHEMA` 及新增的结果 Schema 面（`RESULT_SCHEMAS` / `RESULT_SELECTORS`）。`REQUEST_SCHEMAS` / `RESULT_SCHEMAS` 在 Core 实现模块化后声明文本中的 `required` 联合键序重排，成员集合与运行时校验语义不变。
 
 ## 3. `./dist/*` 与入口可达性
 
 CLI 包保留既有 `./dist/*` 导出模式，但不把通配模式本身当成"已枚举"：以 v0.0.9 tarball 中实际匹配的文件为有限集合，逐个比较具体导入地址、模块格式（ESM/CJS）、声明可达性与导出清单；JS、`.d.ts` 与静态资源分别比较存在性和可访问性。候选文件集合的**增加与删除都显式报告**，声明可用入口再比较签名。原始清单允许保留 `.map` 等构建资源，但不因此把它们列为推荐代码 API。
 
-本版不做整体 barrel 重构，也不新增 npm 包；发布仍是 `@kiturone/kapibala`、`@kiturone/kapibala-cli`、`@kiturone/kapibala-mcp` 三个包。
+本版不做整体 barrel 重构，npm 发布集保持 `@kiturone/kapibala`、`@kiturone/kapibala-cli`、`@kiturone/kapibala-mcp` 三个包不变。宿主层实现（protocol / view-model / transport / client / managed session 装配与 settings/providers 等装配模块）物理迁移到私有工作区包 `@kiturone/kapibala-host`（不发布）：CLI 的四个子路径（`/host` `/protocol` `/client` `/view-model`）变为兼容转发 barrel，构建时从宿主源码内联进 dist，导出符号名、种类与声明文本经 `check-public-api` 门禁确认与基线一致；声明模块清单随文件迁移重排（`packages` 段的 module 记录），属机械结果。
 
 ## 4. 导入副作用与可执行入口
 

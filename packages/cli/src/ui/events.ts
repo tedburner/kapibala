@@ -5,19 +5,19 @@ import {
   describeModelError,
   sanitizeModelErrorMessage,
 } from '@kiturone/kapibala';
+import { sanitizeUntrustedOutput } from '@kiturone/kapibala-host/internal';
 import { getCurrentGitBranch } from '../git.js';
 import { formatContextUsage, formatTokenCount } from './metrics.js';
-import { sanitizeUntrustedOutput } from './text-safety.js';
 /** 保留既有文本渲染器导入入口；Host 与文本模式共享同一个纯净化实现。 */
-export { sanitizeUntrustedOutput } from './text-safety.js';
-import { formatModelError, formatModelFailureSummary } from './model-errors.js';
-import { describeRuntimeError } from './runtime-errors.js';
+export { sanitizeUntrustedOutput } from '@kiturone/kapibala-host/internal';
+import { formatModelError, formatModelFailureSummary } from '@kiturone/kapibala-host/internal';
+import { describeRuntimeError } from '@kiturone/kapibala-host/internal';
 import {
   formatToolDetail,
   formatToolInvocation,
   formatToolResultSummary,
   sanitizeToolName,
-} from './tool-presentation.js';
+} from '@kiturone/kapibala-host/internal';
 import { charWidth, displayWidth } from './width.js';
 
 /** 事件渲染器的可注入项；全部缺省时直接写 stdout，宿主可替换以复用同一渲染逻辑。 */

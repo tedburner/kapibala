@@ -8,8 +8,8 @@ import {
   SessionManager,
   WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
+import { createManagedSession } from '@kiturone/kapibala-host/internal';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createManagedSession } from '../src/host/managed-session.js';
 
 const roots: string[] = [];
 const directory = () => {

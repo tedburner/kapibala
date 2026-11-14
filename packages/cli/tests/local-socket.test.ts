@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { LocalClient } from '@kiturone/kapibala-host/client';
+import { connectLocal, listenLocalHost } from '@kiturone/kapibala-host/transport';
 import { describe, expect, it } from 'vitest';
-import { LocalClient } from '../src/client/index.js';
 import { LocalHostServer } from '../src/local-host/server.js';
-import { connectLocal, listenLocalHost } from '../src/transport/socket.js';
 
 describe('authenticated local socket', () => {
   it('exchanges RPC over a real local endpoint and removes only its own socket', async () => {

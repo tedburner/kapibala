@@ -1,6 +1,6 @@
 import { type AgentRuntime, isTerminalTaskStatus } from '@kiturone/kapibala';
-import { sanitizeUntrustedOutput } from '../ui/text-safety.js';
 import type { TaskDeliveryStatus, TaskSummary } from '../view-model/status.js';
+import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 
 /**
  * 展示任务的真实身份范围；父会话必填，根身份只在宿主确知时附加，禁止自行拼接或猜测。

@@ -1,9 +1,9 @@
 import type { AgentPlugin, AgentSession } from '@kiturone/kapibala';
+import { bindSessionMcpPlugin } from '@kiturone/kapibala-host/internal';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { COMMAND_CATALOG } from '../src/commands/catalog.js';
 import { type CommandContext, CommandDispatcher } from '../src/commands/dispatcher.js';
 import { pluginsCommand } from '../src/commands/plugins.js';
-import { bindSessionMcpPlugin } from '../src/mcp.js';
 
 describe('CLI /plugins command and extension contributions', () => {
   let mockSession: any;

@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { ApprovalChannel } from '@kiturone/kapibala';
-import { detectProjectRoot } from '../project-root.js';
+import { detectProjectRoot } from '@kiturone/kapibala-host/internal';
 import {
   DEFAULT_LIMITS,
   type JsonValue,
   type PendingApproval,
   type SessionControl,
   type SnapshotMetadata,
-} from '../protocol/index.js';
+} from '@kiturone/kapibala-host/protocol';
 import { LocalHostError } from './errors.js';
 import { SessionEventFeed } from './events.js';
 import { redactText, sanitizeDisplayText } from './redaction.js';

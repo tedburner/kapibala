@@ -1,5 +1,5 @@
+import { formatToolInvocation, formatToolResultSummary } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it } from 'vitest';
-import { formatToolInvocation, formatToolResultSummary } from '../src/ui/tool-presentation.js';
 
 describe('tool presentation', () => {
   it('formats built-in file tools as concise commands', () => {

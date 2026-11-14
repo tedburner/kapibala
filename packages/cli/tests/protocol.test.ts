@@ -1,4 +1,3 @@
-import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_LIMITS,
   PROTOCOL_VERSION,
@@ -9,7 +8,8 @@ import {
   validateRequest,
   validateResponse,
   wireCodeForRpcCode,
-} from '../src/protocol/index.js';
+} from '@kiturone/kapibala-host/protocol';
+import { describe, expect, it } from 'vitest';
 
 const request = (method: string, params: unknown) => ({
   jsonrpc: '2.0',

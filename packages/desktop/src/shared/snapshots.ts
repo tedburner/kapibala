@@ -1,4 +1,4 @@
-import type { PresentationState } from '@kiturone/kapibala-cli/view-model';
+import type { PresentationState } from '@kiturone/kapibala-host/view-model';
 import {
   LIMITS,
   NOTIFICATION,

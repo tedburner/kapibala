@@ -1,7 +1,7 @@
 import { stdin as input, stdout as output } from 'node:process';
 import readline, { type Interface as ReadlineInterface } from 'node:readline/promises';
 import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
-import { type ProviderMeta, listBuiltinProviders } from './providers.js';
+import { type ProviderMeta, listBuiltinProviders } from '@kiturone/kapibala-host/internal';
 import {
   API_KEY_ENV_NONE,
   type UserSettings,
@@ -11,7 +11,7 @@ import {
   resolveApiKeyDetailed,
   resolveBaseURL,
   updateProfileApiKey,
-} from './settings.js';
+} from '@kiturone/kapibala-host/internal';
 import { formatTokenCount } from './ui/metrics.js';
 import { readSecret } from './ui/secret.js';
 

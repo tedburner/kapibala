@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BUILTIN_CATALOG_VERSION,
   BUILTIN_PROFILES,
@@ -9,7 +8,8 @@ import {
   loadSettings,
   migrateBuiltinCatalog,
   saveGlobalSettings,
-} from '../src/settings.js';
+} from '@kiturone/kapibala-host/internal';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const directories: string[] = [];
 afterEach(() => {

@@ -11,7 +11,14 @@
       "@kiturone/kapibala-cli/protocol": ["./packages/cli/src/protocol/index.ts"],
       "@kiturone/kapibala-cli/client": ["./packages/cli/src/client/index.ts"],
       "@kiturone/kapibala-cli/view-model": ["./packages/cli/src/view-model/index.ts"],
-      "@kiturone/kapibala-cli/host": ["./packages/cli/src/host/index.ts"]
+      "@kiturone/kapibala-cli/host": ["./packages/cli/src/host/index.ts"],
+      "@kiturone/kapibala-host": ["./packages/host/src/index.ts"],
+      "@kiturone/kapibala-host/host": ["./packages/host/src/host/index.ts"],
+      "@kiturone/kapibala-host/internal": ["./packages/host/src/internal.ts"],
+      "@kiturone/kapibala-host/protocol": ["./packages/host/src/protocol/index.ts"],
+      "@kiturone/kapibala-host/view-model": ["./packages/host/src/view-model/index.ts"],
+      "@kiturone/kapibala-host/client": ["./packages/host/src/client/index.ts"],
+      "@kiturone/kapibala-host/transport": ["./packages/host/src/transport/index.ts"]
     }
   },
   "include": [
@@ -20,6 +27,8 @@
     "packages/mcp/src/**/*",
     "packages/mcp/tests/**/*",
     "packages/cli/src/**/*",
+    "packages/host/src/**/*",
+    "packages/host/tests/**/*",
     "packages/cli/tests/**/*",
     "examples/**/*",
     "scripts/**/*"

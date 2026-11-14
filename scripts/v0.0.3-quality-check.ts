@@ -1,13 +1,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadSettings, resolveApiKey, resolveBaseURL } from '../packages/cli/src/settings.js';
 import { identifyHistory } from '../packages/core/src/context/history.js';
 import { ContextManager } from '../packages/core/src/context/manager.js';
 import { SessionStore } from '../packages/core/src/context/session-store.js';
 import { OpenAICompatibleProvider } from '../packages/core/src/models/openai-compatible/index.js';
 import { SimpleModelRouter } from '../packages/core/src/models/router.js';
 import type { CanonicalMessage, ModelRequest, Usage } from '../packages/core/src/types/index.js';
+import { loadSettings, resolveApiKey, resolveBaseURL } from '../packages/host/src/host/settings.js';
 
 const { settings } = loadSettings();
 const configured = settings.profiles.find((p) => p.id === settings.defaultModel);

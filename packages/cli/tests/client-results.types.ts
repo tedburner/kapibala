@@ -1,4 +1,4 @@
-import type { LocalClient } from '../src/client/index.js';
+import type { LocalClient } from '@kiturone/kapibala-host/client';
 
 async function checkResults(client: LocalClient, cursor?: string) {
   const full = await client.call('session/snapshot', { sessionId: 's' });

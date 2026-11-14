@@ -4,7 +4,7 @@ import {
   isProjectTrusted,
   loadSettings,
   trustProject,
-} from './settings.js';
+} from '@kiturone/kapibala-host/internal';
 import { select } from './ui/select.js';
 
 /** 用户对项目配置的选择：trust 永久信任并应用，reject 退出且不读取。 */
@@ -109,5 +109,5 @@ async function promptProjectTrust(projectPath: string): Promise<ProjectTrustDeci
   });
 }
 import fs from 'node:fs';
-import { detectProjectRoot } from './project-root.js';
-import { hasProjectSkills } from './skills.js';
+import { detectProjectRoot } from '@kiturone/kapibala-host/internal';
+import { hasProjectSkills } from '@kiturone/kapibala-host/internal';

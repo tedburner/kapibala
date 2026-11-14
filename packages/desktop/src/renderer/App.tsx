@@ -8,7 +8,7 @@ import {
   Sidebar,
 } from '@cloudflare/kumo';
 import brandMark from '@kapibala-assets/icon.svg';
-import { selectMessages } from '@kiturone/kapibala-cli/view-model';
+import { selectMessages } from '@kiturone/kapibala-host/view-model';
 import {
   ArrowUpIcon,
   CaretDownIcon,

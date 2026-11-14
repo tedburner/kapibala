@@ -116,6 +116,7 @@ export function findCliBoundaryViolations(
             ? isInside(tuiRoot, target) || isInside(viewRoot, target)
             : name !== undefined &&
               (name === '@kiturone/kapibala-cli/view-model' ||
+                name === '@kiturone/kapibala-host/view-model' ||
                 !/^(?:@kiturone\/kapibala(?:-mcp|-cli)?)(?:\/|$)/.test(name));
         if (!permitted)
           add(
@@ -174,14 +175,38 @@ export function scanCliBoundary(sourceRoot: string): CliBoundaryViolation[] {
   return findCliBoundaryViolations(files, sourceRoot);
 }
 
-/** 独立 CLI 分层门禁；违规时设置非零退出码，不接管或替换 Core 门禁。 */
-export function runCheckCliBoundary(sourceRoot = path.resolve('packages/cli/src')): void {
-  const violations = scanCliBoundary(sourceRoot);
+/** 只扫描 TUI 目录；view-model 规则由宿主包侧的 scanCliBoundary 承担。 */
+function scanTuiBoundary(sourceRoot: string): CliBoundaryViolation[] {
+  const files: CliBoundarySource[] = [];
+  const visit = (directory: string): void => {
+    if (!fs.existsSync(directory)) return;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(file);
+      else if (entry.isFile() && sourceExtensions.has(path.extname(file)))
+        files.push({ file, source: fs.readFileSync(file, 'utf8') });
+    }
+  };
+  visit(path.join(sourceRoot, 'tui'));
+  return findCliBoundaryViolations(files, sourceRoot);
+}
+
+/**
+ * 独立展示分层门禁；违规时设置非零退出码，不接管或替换 Core 门禁。
+ * view-model 规则作用于宿主包（packages/host/src/view-model），TUI 规则作用于 CLI 应用层；
+ * CLI 内的 view-model 兼容 barrel 只做整体转发，不参与目录内依赖规则。
+ */
+export function runCheckCliBoundary(
+  sourceRoot = path.resolve('packages/cli/src'),
+  viewModelRoot = path.resolve('packages/host/src'),
+): void {
+  const violations = [...scanCliBoundary(viewModelRoot), ...scanTuiBoundary(sourceRoot)];
   for (const violation of violations)
     console.error(`${violation.file}:${violation.line} [${violation.rule}] ${violation.message}`);
   if (violations.length) process.exitCode = 1;
   else console.log('✔ [Architecture] CLI ViewModel/TUI 分层边界校验通过。');
 }
 
+// CLI 入参是负向夹具的 view-model 根；view-model 规则现在作用于宿主包目录。
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  runCheckCliBoundary(process.argv[2]);
+  runCheckCliBoundary(undefined, process.argv[2]);

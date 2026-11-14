@@ -44,7 +44,7 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsup --config tsup.config.ts && pnpm build:view-model && pnpm build:protocol && pnpm build:client && pnpm build:host",
+    "build": "pnpm run build:host && tsup --config tsup.config.ts && pnpm build:view-model && pnpm build:protocol && pnpm build:client && pnpm build:host",
     "build:view-model": "tsup --config tsup.view-model.config.ts",
     "dev": "tsup --watch",
     "build:protocol": "tsup --config tsup.protocol.config.ts",
@@ -59,6 +59,7 @@
   "devDependencies": {
     "@types/minimist": "^1.2.5",
     "tsup": "^8.3.6",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "@kiturone/kapibala-host": "workspace:*"
   }
 }

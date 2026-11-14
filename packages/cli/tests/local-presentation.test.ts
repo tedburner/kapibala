@@ -1,6 +1,6 @@
+import { selectMessages } from '@kiturone/kapibala-host/view-model';
 import { describe, expect, it } from 'vitest';
 import { ConnectedPresentation } from '../src/local-host/presentation.js';
-import { selectMessages } from '../src/view-model/index.js';
 
 describe('connected presentation projection', () => {
   it('reuses the existing reducer and replaces provisional output with canonical snapshot', () => {

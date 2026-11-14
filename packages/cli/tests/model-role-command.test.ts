@@ -2,17 +2,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentSession, ModelProfile } from '@kiturone/kapibala';
+import { CliModelBindings } from '@kiturone/kapibala-host/internal';
+import {
+  type UserSettings,
+  loadGlobalSettingsForWrite,
+  saveGlobalSettings,
+} from '@kiturone/kapibala-host/internal';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COMMAND_CATALOG } from '../src/commands/catalog.js';
 import { type CommandContext, CommandDispatcher } from '../src/commands/dispatcher.js';
 import { modelCommand, updateModelApiKey } from '../src/commands/model.js';
 import { persistModelRole } from '../src/default-model.js';
-import { CliModelBindings } from '../src/model-bindings.js';
-import {
-  type UserSettings,
-  loadGlobalSettingsForWrite,
-  saveGlobalSettings,
-} from '../src/settings.js';
 
 const directories: string[] = [];
 afterEach(() => {

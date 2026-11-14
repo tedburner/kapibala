@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
-import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BUILTIN_CATALOG_VERSION,
   BUILTIN_PROFILES,
@@ -21,7 +20,8 @@ import {
   resolveBaseURL,
   trustProject,
   updateProfileApiKey,
-} from '../src/settings.js';
+} from '@kiturone/kapibala-host/internal';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { makeCustomProfileId } from '../src/wizard.js';
 
 const DEEPSEEK_PROFILE: ModelProfile = {

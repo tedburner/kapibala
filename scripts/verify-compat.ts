@@ -212,6 +212,9 @@ async function buildCandidate(): Promise<void> {
   const cliDir = path.join(repositoryRoot, 'packages/cli');
   await run(process.execPath, [tsupBinary(coreDir)], { cwd: coreDir });
   await run(process.execPath, [tsupBinary(mcpDir)], { cwd: mcpDir });
+  // 私有宿主层包先于 CLI 构建产出 dist，供桌面运行时与后续探针消费（CLI 自身经 paths 从源码内联）。
+  const hostDir = path.join(repositoryRoot, 'packages/host');
+  await run(process.execPath, [tsupBinary(hostDir)], { cwd: hostDir });
   const cliTsup = tsupBinary(cliDir);
   for (const config of [
     'tsup.config.ts',

@@ -3,26 +3,26 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { AgentSession, SessionManager } from '@kiturone/kapibala';
+import { LocalClient } from '@kiturone/kapibala-host/client';
+import { CliModelBindings } from '@kiturone/kapibala-host/internal';
+import {
+  type UserSettings,
+  createUserSettingsSkeleton,
+  loadSettings,
+  saveGlobalSettings,
+} from '@kiturone/kapibala-host/internal';
+import { registerBuiltinTools } from '@kiturone/kapibala-host/internal';
+import type { WireEvent } from '@kiturone/kapibala-host/protocol';
+import { createStdioTransport } from '@kiturone/kapibala-host/transport';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type LocalModelServer,
   type LocalProtocol,
   startLocalModelServer,
 } from '../../core/tests/helpers/local-model-server.js';
-import { LocalClient } from '../src/client/index.js';
 import { createResourceFactory } from '../src/local-host/resources.js';
 import { LocalHostServer } from '../src/local-host/server.js';
-import { CliModelBindings } from '../src/model-bindings.js';
 import { runOneShot } from '../src/oneshot.js';
-import type { WireEvent } from '../src/protocol/index.js';
-import {
-  type UserSettings,
-  createUserSettingsSkeleton,
-  loadSettings,
-  saveGlobalSettings,
-} from '../src/settings.js';
-import { registerBuiltinTools } from '../src/tool-registration.js';
-import { createStdioTransport } from '../src/transport/stdio.js';
 
 const FIXTURE_KEY = 'fixture-model-key-0001';
 const ENV_SENTINEL = 'env-credential-must-not-be-used';

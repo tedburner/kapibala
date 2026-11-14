@@ -1,4 +1,4 @@
-import { resolveCommandOutput } from '../host/command-output.js';
+import { resolveCommandOutput } from '../command-output.js';
 /**
  * @fileoverview /mcp 管理命令：查看服务状态、工具列表、重连与会话级开关
  *
@@ -13,7 +13,7 @@ import { resolveCommandOutput } from '../host/command-output.js';
  *    严禁写回磁盘 `mcp.json` 配置文件，保证磁盘配置的声明性与只读完整性。
  */
 
-import { getSessionMcpPlugin } from '../mcp.js';
+import { getSessionMcpPlugin } from '@kiturone/kapibala-host/internal';
 import { color, sanitizeUntrustedOutput } from '../ui/events.js';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
 

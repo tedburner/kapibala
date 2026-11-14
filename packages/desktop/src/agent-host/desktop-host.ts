@@ -10,8 +10,8 @@ import {
   type ManagedHostSession,
   createManagedSession,
   redactText,
-} from '@kiturone/kapibala-cli/host';
-import type { PresentationEvent } from '@kiturone/kapibala-cli/view-model';
+} from '@kiturone/kapibala-host/host';
+import type { PresentationEvent } from '@kiturone/kapibala-host/view-model';
 import {
   LIMITS,
   type Method,

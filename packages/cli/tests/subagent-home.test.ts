@@ -8,10 +8,10 @@ import {
   SessionManager,
   WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
+import { CliModelBindings } from '@kiturone/kapibala-host/internal';
+import type { UserSettings } from '@kiturone/kapibala-host/internal';
+import { createCliSubagentRunner } from '@kiturone/kapibala-host/internal';
 import { afterEach, expect, it, vi } from 'vitest';
-import { CliModelBindings } from '../src/model-bindings.js';
-import type { UserSettings } from '../src/settings.js';
-import { createCliSubagentRunner } from '../src/subagent-runner.js';
 
 const directories: string[] = [];
 afterEach(() => {

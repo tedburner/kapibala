@@ -32,6 +32,8 @@ const manifests: Manifest[] = [
       '@kiturone/kapibala-mcp': 'workspace:*',
     },
   },
+  // 私有宿主层包：版本随全仓同步，但不进入 npm 发布集。
+  { name: '@kiturone/kapibala-host', version: '0.0.4' },
 ];
 const expected = { name: '@kiturone/kapibala', version: '0.0.4', integrity: 'sha512-test' };
 const existing = {
@@ -65,14 +67,26 @@ describe('release validation', () => {
     expect(() =>
       validateRelease(
         'v0.0.4',
-        [manifests[0], { ...manifests[1], version: '0.0.3' }, manifests[2], manifests[3]],
+        [
+          manifests[0],
+          { ...manifests[1], version: '0.0.3' },
+          manifests[2],
+          manifests[3],
+          manifests[4],
+        ],
         '0.0.4',
       ),
     ).toThrow(/version/i);
     expect(() =>
       validateRelease(
         'v0.0.4',
-        [manifests[0], manifests[1], { ...manifests[2], version: '0.0.3' }, manifests[3]],
+        [
+          manifests[0],
+          manifests[1],
+          { ...manifests[2], version: '0.0.3' },
+          manifests[3],
+          manifests[4],
+        ],
         '0.0.4',
       ),
     ).toThrow(/version/i);
@@ -87,10 +101,24 @@ describe('release validation', () => {
           manifests[1],
           { name: '@kiturone/wrong-pkg', version: '0.0.4' },
           manifests[3],
+          manifests[4],
         ],
         '0.0.4',
       ),
     ).toThrow(/Unexpected release package names/i);
+    expect(() =>
+      validateRelease(
+        'v0.0.4',
+        [
+          manifests[0],
+          manifests[1],
+          manifests[2],
+          manifests[3],
+          { name: '@kiturone/wrong-host', version: '0.0.4' },
+        ],
+        '0.0.4',
+      ),
+    ).toThrow(/Unexpected host package name/i);
   });
 
   it('accepts stable versions with multiple-digit minor and patch components', () => {
@@ -211,7 +239,7 @@ describe('release validation', () => {
     );
   });
 
-  it('verifies all 5 canonical version sources and fails when any is missing or inconsistent', () => {
+  it('verifies all 6 canonical version sources and fails when any is missing or inconsistent', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kapibala-release-'));
     try {
       const manifests = [
@@ -219,6 +247,7 @@ describe('release validation', () => {
         'packages/core/package.json',
         'packages/mcp/package.json',
         'packages/cli/package.json',
+        'packages/host/package.json',
       ];
       for (const file of manifests) {
         fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
@@ -296,6 +325,7 @@ it('工作区版本检查包含桌面清单，拒绝 SDK 与客户端版本漂�
       'packages/core/package.json',
       'packages/mcp/package.json',
       'packages/cli/package.json',
+      'packages/host/package.json',
       'packages/desktop/package.json',
     ]) {
       fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
