@@ -14,7 +14,10 @@ const ready = new Promise<void>((resolve, reject) => {
   rejectReady = reject;
 });
 void ready.catch(() => {});
-const timeout = setTimeout(() => rejectReady(new Error('Host connection timeout')), 5000);
+// 冷启动窗口必须足够宽：主进程要 spawn agent-host 子进程并完成工作区初始化才能回传握手，
+// Windows 上全新安装的首次启动还要过 Defender 实时扫描（远超 5 秒）；过早 reject 会把
+// 健康但慢的启动误判为死连接。真正失败由 host.unavailable 事件立即置位，不等这个兜底。
+const timeout = setTimeout(() => rejectReady(new Error('Host connection timeout')), 30000);
 ipcRenderer.once(
   'kpbl:connected',
   (event, identity: { hostInstanceId: string; controlEpoch: number }) => {
@@ -34,6 +37,9 @@ ipcRenderer.once(
         if (!listeners.size) {
           if (notification.type === 'host.unavailable') {
             initialFault = notification;
+            // 连接尚未建立就收到不可用事件：主进程已判定 host 无法工作（如 spawn 失败）。
+            // 立即终止 ready 等待，把「初始化失败」与「冷启动过慢」区分开，不拖到兜底超时。
+            rejectReady(new Error(notification.error.message));
             return;
           }
           throw new Error('No presentation consumer');
