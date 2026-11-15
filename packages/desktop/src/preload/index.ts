@@ -14,11 +14,12 @@ const ready = new Promise<void>((resolve, reject) => {
   rejectReady = reject;
 });
 void ready.catch(() => {});
-// 冷启动窗口必须足够宽：主进程要 spawn agent-host 子进程并完成工作区初始化才能回传握手，
-// Windows 上全新安装的首次启动还要过 Defender 对整套新装文件的实时扫描（CI 实测握手可超
-// 30 秒）；过早 reject 会把健康但慢的启动误判为死连接。本兜底只封顶「连接端口始终未投递
-// 也没有任何故障」的病态情形；真实失败由主进程随连接端口投递 host.unavailable（见 main 的
-// connect()），到达后立即终止 ready 等待，不拖到这里。
+// 冷启动窗口给主进程留足余量：要 spawn agent-host 子进程并完成工作区初始化才能回传握手。
+// 本兜底只封顶「连接端口始终未投递也没有任何故障」的病态情形；真实失败由主进程随连接端口
+// 投递 host.unavailable（见 main 的 connect()），到达后立即终止 ready 等待，不拖到这里。
+// 注意：Windows CI 安装副本 smoke 的稳定失败并非启动慢，而是 8.3 短名里的 ~ 被 pathToFileURL
+// 编码成 %7E、与 Chromium 帧 URL 的字面 ~ 不等，kpbl:ready 守卫静默拒绝、连接端口永不投递
+// （见 main/url.ts 的 normalizeUrl）；放宽超时不是该失败的修复。
 const timeout = setTimeout(() => rejectReady(new Error('Host connection timeout')), 90000);
 ipcRenderer.once(
   'kpbl:connected',

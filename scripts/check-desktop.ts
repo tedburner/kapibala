@@ -193,13 +193,16 @@ export function checkDesktop(artifacts = false): void {
     'Missing first-frame theme or CSP',
   );
   const main = fs.readFileSync(path.join(desktop, 'src/main/index.ts'), 'utf8');
+  // URL 守卫必须两侧都经 normalizeUrl：pathToFileURL 会把 8.3 短名里的 ~ 编码成 %7E，
+  // 而 Chromium 帧 URL 保留字面 ~，字面比较在 Windows 短路径下永不相等（控制端口永不投递）。
   for (const setting of [
     'contextIsolation: true',
     'sandbox: true',
     'nodeIntegration: false',
     'webSecurity: true',
     'senderFrame !== window.webContents.mainFrame',
-    'event.senderFrame.url !== expectedURL',
+    'normalizeUrl(event.senderFrame.url) !== expectedURL',
+    'expectedURL = normalizeUrl(initial.href)',
   ])
     insist(main.includes(setting), `Missing desktop source guard: ${setting}`);
   // 启动环境必须经白名单构造：全量继承会把宿主注入的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE

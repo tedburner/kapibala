@@ -143,8 +143,8 @@ jobs:
           pnpm -C packages/core pack --pack-destination "$release_dir"
           pnpm -C packages/mcp pack --pack-destination "$release_dir"
           pnpm -C packages/cli pack --pack-destination "$release_dir"
-      # 默认跳过：未签名自用版只发三份 npm 包，桌面测试包由维护者手工上传。
-      # 将来拿到证书、走完候选审核后，把仓库变量 KPBL_DESKTOP_RELEASE 设为 true 即恢复严格附件流程。
+      # 默认跳过：未签名测试包已由 desktop-unsigned 作业自动生成并上传（v0.1.1 起）。
+      # 拿到证书、走完候选审核后，把仓库变量 KPBL_DESKTOP_RELEASE 设为 true 即改为只下载已审核候选的严格附件流程。
       - name: Download only reviewed desktop artifacts
         if: needs.prepare.outputs.desktop == 'true' && vars.KPBL_DESKTOP_RELEASE == 'true'
         env:
@@ -238,20 +238,6 @@ jobs:
         run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_TARGET) process.exit(1)'
       - name: Install pinned Electron
         run: pnpm --filter @kiturone/kapibala-desktop exec install-electron
-      - name: Exclude smoke temp directories from Defender real-time scan
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # 安装副本 smoke 把全新安装拷进临时目录冷启动，Defender 实时扫描会让首次 asar
-          # 加载耗时分钟级，稳定误杀健康握手（v0.1.1/v0.1.2 Windows 打包失败的根因）。
-          # 只排除本 job 用到的临时目录，不关闭全局实时保护；失败仅告警，由 240 秒 smoke 超时兜底。
-          $paths = @($env:TEMP, $env:TMP, $env:RUNNER_TEMP) | Where-Object { $_ } | Select-Object -Unique
-          try {
-            Add-MpPreference -ExclusionPath $paths -ErrorAction Stop
-            Write-Host "Defender exclusions: $($paths -join ', ')"
-          } catch {
-            Write-Host "::warning::Defender exclusion unavailable: $_"
-          }
       # 自动门禁已由同 SHA 的 Verify 工作流跑过（含 mac/win 桌面 e2e），这里只做打包与安装副本 smoke，
       # 因此用 --no-verify 跳过重复校验；产物的 test-build.json 会如实写明 verification=skipped。
       - name: Build unsigned test package

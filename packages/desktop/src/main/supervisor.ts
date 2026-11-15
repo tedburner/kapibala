@@ -17,9 +17,11 @@ type Waiter = {
 const SHUTDOWN_GRACE_MS = 30_000;
 /**
  * Host 子进程冷启动握手的等待上限（spawn 后等 host.ready，控制连接建立后等 host.connected）。
- * utilityProcess 启动要解包 asar 并初始化工作区，Windows 全新安装首启还要过 Defender 对整套新装
- * 文件的实时扫描，5 秒会稳定误杀健康启动；这里与 renderer 侧的就绪兜底取同一量级，避免出现
- * 「主进程先超时、renderer 还在等」的静默挂起。
+ * utilityProcess 启动要解包 asar 并初始化工作区，这里给冷启动留足余量，并与 renderer 侧的
+ * 就绪兜底取同一量级，避免「主进程先超时、renderer 还在等」的静默挂起。
+ * 注意：Windows CI 安装副本 smoke 的稳定失败并非握手慢，而是 8.3 短名里的 ~ 被 pathToFileURL
+ * 编码成 %7E、与 Chromium 帧 URL 的字面 ~ 不等，kpbl:ready 守卫静默拒绝（见 main/url.ts 的
+ * normalizeUrl）；放宽超时不是该失败的修复，真正的失败由 host.unavailable 立即上报。
  */
 const HOST_HANDSHAKE_TIMEOUT_MS = 60_000;
 /** Main 只监督 Host 和转发安全 DTO；不读取模型配置、Provider 或原始会话历史。 */

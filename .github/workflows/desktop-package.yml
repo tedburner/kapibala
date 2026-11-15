@@ -68,20 +68,6 @@ jobs:
         run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_TARGET) process.exit(1)'
       - name: Install pinned Electron
         run: pnpm --filter @kiturone/kapibala-desktop exec install-electron
-      - name: Exclude smoke temp directories from Defender real-time scan
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # 安装副本 smoke 把全新安装拷进临时目录冷启动，Defender 实时扫描会让首次 asar
-          # 加载耗时分钟级，稳定误杀健康握手（v0.1.1/v0.1.2 Windows 打包失败的根因）。
-          # 只排除本 job 用到的临时目录，不关闭全局实时保护；失败仅告警，由 240 秒 smoke 超时兜底。
-          $paths = @($env:TEMP, $env:TMP, $env:RUNNER_TEMP) | Where-Object { $_ } | Select-Object -Unique
-          try {
-            Add-MpPreference -ExclusionPath $paths -ErrorAction Stop
-            Write-Host "Defender exclusions: $($paths -join ', ')"
-          } catch {
-            Write-Host "::warning::Defender exclusion unavailable: $_"
-          }
       # --no-verify 跳过重复的桌面门禁（同 SHA 的 Verify 工作流已覆盖），只做打包与安装副本冒烟。
       - name: Build test package
         if: runner.os != 'Linux'

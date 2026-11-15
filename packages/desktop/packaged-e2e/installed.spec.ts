@@ -13,7 +13,10 @@ test('复制安装后的应用使用自身依赖、隔离历史和受限 GUI PAT
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-installed-'));
   const home = path.join(root, 'home');
   const userData = path.join(root, 'state');
-  const installed = path.join(root, 'installed');
+  // 目录名刻意带 ~：Windows 8.3 短名（RUNNER~1）天然含 ~，而 pathToFileURL 会把 ~
+  // 编码成 %7E、Chromium 帧 URL 保留字面 ~，曾使 kpbl:ready 守卫静默拒绝、安装副本
+  // 冷启动挂死。这里在所有平台确定性复现该路径形态，作为 URL 规范化的回归门禁。
+  const installed = path.join(root, 'installed~copy');
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(installed);
   const target = path.join(installed, path.basename(source));

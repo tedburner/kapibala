@@ -30,6 +30,7 @@ import { HostGuard } from './guard.js';
 import { NativeNotices } from './native-notices.js';
 import { Preferences } from './preferences.js';
 import { HostSupervisor } from './supervisor.js';
+import { normalizeUrl } from './url.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 app.setName('Kapibala');
@@ -432,8 +433,8 @@ function createWindow(): void {
       contents === win.webContents &&
         permission === 'clipboard-sanitized-write' &&
         details.isMainFrame &&
-        details.requestingUrl === expectedURL &&
-        contents.mainFrame.url === expectedURL,
+        normalizeUrl(details.requestingUrl) === expectedURL &&
+        normalizeUrl(contents.mainFrame.url) === expectedURL,
     ),
   );
   win.webContents.session.setPermissionCheckHandler(
@@ -441,13 +442,13 @@ function createWindow(): void {
       contents === win.webContents &&
       permission === 'clipboard-sanitized-write' &&
       details.isMainFrame &&
-      details.requestingUrl === expectedURL &&
-      contents.mainFrame.url === expectedURL,
+      normalizeUrl(details.requestingUrl ?? '') === expectedURL &&
+      normalizeUrl(contents.mainFrame.url) === expectedURL,
   );
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => {
-    const url = details.url;
+    const url = normalizeUrl(details.url);
     const allowedFile = url.startsWith(
-      pathToFileURL(path.resolve(directory, '../renderer') + path.sep).href,
+      normalizeUrl(pathToFileURL(path.resolve(directory, '../renderer') + path.sep).href),
     );
     const allowedDevelopment =
       developmentURL &&
@@ -502,7 +503,9 @@ function createWindow(): void {
   });
   const initial = new URL(developmentURL ?? pathToFileURL(rendererFile).href);
   initial.searchParams.set('mode', displayMode());
-  expectedURL = initial.href;
+  // 与 Chromium 回读的帧 URL 对齐：pathToFileURL 会把 8.3 短名里的 ~ 编码成 %7E，
+  // 帧 URL 却保留字面 ~；两侧统一规范化后再做字面比较（见 url.ts）。
+  expectedURL = normalizeUrl(initial.href);
   if (developmentURL) void win.loadURL(expectedURL);
   else void win.loadFile(rendererFile, { query: { mode: displayMode() } });
 }
@@ -565,7 +568,7 @@ else {
         window &&
         event.sender === window.webContents &&
         event.senderFrame === window.webContents.mainFrame &&
-        event.senderFrame.url === expectedURL
+        normalizeUrl(event.senderFrame.url) === expectedURL
           ? displayMode()
           : 'light';
     });
@@ -574,7 +577,7 @@ else {
         !window ||
         event.sender !== window.webContents ||
         event.senderFrame !== window.webContents.mainFrame ||
-        event.senderFrame.url !== expectedURL ||
+        normalizeUrl(event.senderFrame.url) !== expectedURL ||
         renderer
       )
         return;
