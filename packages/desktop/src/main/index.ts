@@ -360,10 +360,18 @@ async function connect(): Promise<void> {
   );
   renderer = rpc;
   if (supervisor && !blocked)
-    backend = await supervisor.attach(epoch, (notification) => {
-      notices.observe(notification);
-      return rpc.sendEvent(notification, notificationLane(notification.type));
-    });
+    try {
+      backend = await supervisor.attach(epoch, (notification) => {
+        notices.observe(notification);
+        return rpc.sendEvent(notification, notificationLane(notification.type));
+      });
+    } catch {
+      // attach 失败（握手超时、Host 退出）不能吞掉连接投递：不发 kpbl:connected，renderer 的
+      // ready 会永远等待，故障又被 post 到从未转移的端口直接丢失——安装副本 smoke 曾因此
+      // 静默挂起到自身超时。这里置位 blocked 后继续交付端口与故障，让 renderer 立即失败
+      // 并显示原因；后续业务 RPC 按 HOST_UNAVAILABLE 拒绝，恢复走既有 blocked 流程。
+      unavailable();
+    }
   else if (blocked)
     // 启动失败通常发生在 renderer 建链之前，当时的 unavailable 通知没有投递对象；
     // 这里补发给新附加的控制连接，让 renderer 立即失败并显示原因，而不是干等到自身兜底超时。

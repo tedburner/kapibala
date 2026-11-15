@@ -16,8 +16,9 @@ const ready = new Promise<void>((resolve, reject) => {
 void ready.catch(() => {});
 // 冷启动窗口必须足够宽：主进程要 spawn agent-host 子进程并完成工作区初始化才能回传握手，
 // Windows 上全新安装的首次启动还要过 Defender 对整套新装文件的实时扫描（CI 实测握手可超
-// 30 秒）；过早 reject 会把健康但慢的启动误判为死连接。真正失败由 host.unavailable 事件
-// 立即置位，不等这个兜底——本守门员只封顶「Host 存活却既不握手也不报错」的病态情形。
+// 30 秒）；过早 reject 会把健康但慢的启动误判为死连接。本兜底只封顶「连接端口始终未投递
+// 也没有任何故障」的病态情形；真实失败由主进程随连接端口投递 host.unavailable（见 main 的
+// connect()），到达后立即终止 ready 等待，不拖到这里。
 const timeout = setTimeout(() => rejectReady(new Error('Host connection timeout')), 90000);
 ipcRenderer.once(
   'kpbl:connected',
@@ -35,14 +36,17 @@ ipcRenderer.once(
       identity,
       (frame) => port.postMessage(frame),
       async (notification) => {
+        if (notification.type === 'host.unavailable') {
+          initialFault = notification;
+          // 连接前的故障必须终止 ready 等待，且不能因监听者在场而豁免：ViewClient 在模块
+          // 顶层就订阅事件，故障到达时监听者恒在场，旧的「仅无监听者才 reject」分支实际
+          // 从未生效，挂起的 RPC（如安装副本 smoke 的 getInfo）只能干等到兜底超时。
+          // ready 已解析时 reject 是空操作；连接后的故障仍照常经 RPC 错误上报。
+          rejectReady(new Error(notification.error.message));
+        }
         if (!listeners.size) {
-          if (notification.type === 'host.unavailable') {
-            initialFault = notification;
-            // 连接尚未建立就收到不可用事件：主进程已判定 host 无法工作（如 spawn 失败）。
-            // 立即终止 ready 等待，把「初始化失败」与「冷启动过慢」区分开，不拖到兜底超时。
-            rejectReady(new Error(notification.error.message));
-            return;
-          }
+          // 尚无展示消费者：故障留待 onEvent 订阅时重放，其它事件无人消费即协议错误。
+          if (notification.type === 'host.unavailable') return;
           throw new Error('No presentation consumer');
         }
         for (const listener of [...listeners]) await listener(notification);
