@@ -94,7 +94,13 @@ test('复制安装后的应用使用自身依赖、隔离历史和受限 GUI PAT
     XDG_CONFIG_HOME: path.join(root, 'config'),
     ...(candidate
       ? {}
-      : { KPBL_DESKTOP_E2E: '1', KPBL_DESKTOP_HOME: home, KPBL_DESKTOP_USER_DATA: userData }),
+      : {
+          KPBL_DESKTOP_E2E: '1',
+          KPBL_DESKTOP_HOME: home,
+          KPBL_DESKTOP_USER_DATA: userData,
+          // TEMP-DIAG: 把宿主 RPC 真实错误写进 test-results，失败时随诊断 artifact 上传；定位后删除。
+          KPBL_DIAG_FILE: path.resolve(process.cwd(), 'test-results/kpbl-rpc-diag.log'),
+        }),
   };
   for (const key of [
     'SystemRoot',

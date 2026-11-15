@@ -1,6 +1,33 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { RpcEndpoint, safeError } from '../shared/rpc.js';
 import type { ControlIdentity } from '../shared/transport.js';
 import { DesktopHost } from './desktop-host.js';
+
+// TEMP-DIAG: 间歇性 INTERNAL_ERROR 排查用，把被 safeError 折叠前的真实错误落盘；定位后删除。
+function diagRpcError(method: string, error: unknown): void {
+  if (!process.env.KPBL_DESKTOP_E2E) return;
+  try {
+    const e = error as { name?: string; code?: string; message?: string; stack?: string };
+    const file = process.env.KPBL_DIAG_FILE ?? path.join(os.tmpdir(), 'kpbl-rpc-diag.log');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(
+      file,
+      `${JSON.stringify({
+        t: Date.now(),
+        layer: 'host',
+        method,
+        name: e?.name,
+        code: e?.code,
+        message: String(e?.message),
+        stack: String(e?.stack).slice(0, 3000),
+      })}\n`,
+    );
+  } catch {
+    /* 诊断失败不影响业务错误回传。 */
+  }
+}
 
 const parent = process.parentPort;
 if (!parent) throw new Error('Utility Host requires Electron parent port');
@@ -53,7 +80,19 @@ parent.on('message', (event) => {
         identity,
         (frame) => port.postMessage(frame),
         () => {},
-        (method, params, selection) => service.dispatch(method, params, selection),
+        (method, params, selection) => {
+          // TEMP-DIAG: 记录真实错误后原样重抛，不改变 safeError 的对外折叠行为；定位后删除。
+          try {
+            const result = service.dispatch(method, params, selection);
+            return result.catch((error: unknown) => {
+              diagRpcError(method, error);
+              throw error;
+            });
+          } catch (error) {
+            diagRpcError(method, error);
+            throw error;
+          }
+        },
         () => {
           port.close();
           void cleanup(identity.controlEpoch).then(
