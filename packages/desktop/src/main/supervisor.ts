@@ -15,6 +15,13 @@ type Waiter = {
  * 提供保留记录退出，绝不把超时当成清理成功；迟到的真实退出仍会正常收口 guard。
  */
 const SHUTDOWN_GRACE_MS = 30_000;
+/**
+ * Host 子进程冷启动握手的等待上限（spawn 后等 host.ready，控制连接建立后等 host.connected）。
+ * utilityProcess 启动要解包 asar 并初始化工作区，Windows 全新安装首启还要过 Defender 对整套新装
+ * 文件的实时扫描，5 秒会稳定误杀健康启动；这里与 renderer 侧的就绪兜底取同一量级，避免出现
+ * 「主进程先超时、renderer 还在等」的静默挂起。
+ */
+const HOST_HANDSHAKE_TIMEOUT_MS = 60_000;
 /** Main 只监督 Host 和转发安全 DTO；不读取模型配置、Provider 或原始会话历史。 */
 export class HostSupervisor {
   private child?: UtilityProcess;
@@ -37,7 +44,7 @@ export class HostSupervisor {
   /** guard 成功建立后才 fork；生产和开发都忽略原始 stdout/stderr，防止旁路泄漏。 */
   async start(): Promise<void> {
     this.guard.begin(this.hostInstanceId);
-    const ready = this.wait('host.ready', 5000);
+    const ready = this.wait('host.ready', HOST_HANDSHAKE_TIMEOUT_MS);
     this.child = utilityProcess.fork(this.entry, [], {
       stdio: 'ignore',
       serviceName: 'Kapibala Agent Host',
@@ -117,7 +124,7 @@ export class HostSupervisor {
     });
     port1.on('close', () => rpc.peer.close());
     port1.start();
-    const connected = this.wait(`host.connected:${controlEpoch}`, 5000);
+    const connected = this.wait(`host.connected:${controlEpoch}`, HOST_HANDSHAKE_TIMEOUT_MS);
     this.child.postMessage({ kind: 'attach', ...this.control, homeDirectory: this.homeDirectory }, [
       port2,
     ]);

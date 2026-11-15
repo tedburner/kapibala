@@ -364,6 +364,15 @@ async function connect(): Promise<void> {
       notices.observe(notification);
       return rpc.sendEvent(notification, notificationLane(notification.type));
     });
+  else if (blocked)
+    // 启动失败通常发生在 renderer 建链之前，当时的 unavailable 通知没有投递对象；
+    // 这里补发给新附加的控制连接，让 renderer 立即失败并显示原因，而不是干等到自身兜底超时。
+    void rpc
+      .sendEvent(
+        { type: 'host.unavailable', error: safeError(new Error('HOST_UNAVAILABLE')) },
+        'control',
+      )
+      .catch(() => {});
   port1.on('message', (event) => {
     if (renderer === rpc && window === targetWindow && !targetWindow.isDestroyed())
       void rpc.peer.receive(event.data);
