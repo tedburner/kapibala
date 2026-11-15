@@ -12,7 +12,7 @@
   <p>
     <a href="#-快速开始">快速开始</a> •
     <a href="#-cli-kpbl">CLI</a> •
-    <a href="#-桌面客户端-v010-未签名自用版">桌面客户端</a> •
+    <a href="#-桌面客户端-未签名自用版">桌面客户端</a> •
     <a href="#-sdk-一分钟接入">SDK</a> •
     <a href="#-了解更多">文档</a>
   </p>
@@ -76,7 +76,7 @@ kpbl --permission plan           # 本次会话权限: approval|plan|auto|full-a
 
 生成中 `Ctrl+C` 优雅中断并修补历史；密钥按厂商族共用（一个厂商只需配置一次），自定义端点按 host 隔离。完整命令行选项、冷启动向导示例与快捷键规范见 **[docs/cli.md](docs/cli.md)**。
 
-## 🎨 桌面客户端 (v0.1.0，未签名自用版)
+## 🎨 桌面客户端 (未签名自用版)
 
 基于同一 Agent Harness 的 Electron 桌面应用：单个 utilityProcess Agent Host 复用 Core 与 MCP，React 沙箱渲染层只接收脱敏展示数据，主进程不直连引擎。
 
@@ -84,7 +84,7 @@ kpbl --permission plan           # 本次会话权限: approval|plan|auto|full-a
 - **控制与安全**：工具调用审批与取消清理、崩溃后保留人工恢复栅栏（不自动重发未确认任务）、模型与凭证设置与 CLI 共用同一份配置；
 - **系统集成**：原生窗口、系统托盘、原生通知、三态主题（浅色 / 深色 / 跟随系统）。
 
-> **已发布（未签名个人自用版）**：签名与公证、跨平台安装包不随本版验收，随 Release 附带的只有维护者本机打出的 macOS arm64 测试包（首次打开需右键或 `xattr -dr com.apple.quarantine`）。口径见 [桌面发布流程](docs/desktop-release.md)，交付与已知限制见 [发布说明](docs/releases/v0.1.0.md)。也可从源码体验：
+> **已发布（未签名个人自用版）**：签名与公证不随验收；v0.1.1 起测试包由 CI 在四个原生 runner 自动构建并随 Release 附带（v0.1.1 实际交付 macOS arm64/x64 与 Linux x86_64，Windows 安装副本连接挂死已在 v0.1.2 修复、待发布）。macOS 首次打开需右键或 `xattr -dr com.apple.quarantine`，Windows 会触发 SmartScreen。口径见 [桌面发布流程](docs/desktop-release.md)，交付与已知限制见发布说明（[v0.1.0](docs/releases/v0.1.0.md) / [v0.1.1](docs/releases/v0.1.1.md) / [v0.1.2](docs/releases/v0.1.2.md)）。也可从源码体验：
 
 ```bash
 pnpm dev:desktop     # 开发模式（热重建，使用本机 ~/.kapibala 配置）

@@ -51,13 +51,13 @@ pnpm pack:desktop --dir        # 仅应用目录，不作为系统安装器验�
 
 默认先运行 `verify:desktop`。`--no-verify` 仍构建，但记录 `verification=skipped`，仅用于调试。每次输出到独立的 `.workbuddy/desktop-pack/<version>-<os>-<arch>-<uuid>/`；不要把脏工作区的测试包当作某个提交的正式候选。`--candidate` 仅接受固定仓库的签名 CI、干净提交和完整签名身份；缺证书返回 `SIGNING_REQUIRED`，普通本机环境返回 `CANDIDATE_CI_REQUIRED`。入口与证据格式见[桌面发布流程](desktop-release.md)。
 
-打包使用锁定的 electron-builder 26.18.0 和已安装的 Electron 45.0.0，不另下载 Node 或调用系统 kpbl。`pnpm deploy --legacy --prod --offline --ignore-scripts` 生成独立生产树；离线失败时先正常完成冻结锁文件安装，不关闭供应链检查。只清理确实指向本次源桌面包的 legacy 辅助自链接，将同版本内部 `workspace:` 改成精确版本；改写清单用临时文件加 rename，避免硬链接污染源码。所有其它外部链接、缺失依赖或遗留工作区协议均阻断。
+打包使用锁定的 electron-builder 26.18.0 和已安装的 Electron 45.0.0，不另下载 Node 或调用系统 kpbl。`pnpm deploy --legacy --prod --prefer-offline --frozen-lockfile --ignore-scripts` 生成独立生产树：缓存优先、缺失联网补齐，解析钉死在共享 lockfile 防版本漂移（`--offline` 在元数据缓存不全的干净机器上必然解析失败，v0.1.1 起弃用），不关闭供应链检查。只清理确实指向本次源桌面包的 legacy 辅助自链接，将同版本内部 `workspace:` 改成精确版本；改写清单用临时文件加 rename，避免硬链接污染源码。所有其它外部链接、缺失依赖或遗留工作区协议均阻断。
 
 Renderer 和 Preload 构建按实际模块生成许可附件，上游预打包代码同时解析来源版本，通过精确版本的许可补充文件匹配；无法确认则保留 UNKNOWN/缺失，不借用当前安装版本。补充文件保留 npm tarball 地址与完整性值，Kumo 升级后须重新生成并审核，版本不匹配阻断构建。附件合并到生产依赖许可清单，并附 Electron 的 LICENSE 与 Chromium notices；附件保留原文与缺失标记，`licenseReviewPending=true` 始终表示仍需人工审阅，不能据自动生成宣称许可审核完成。测试包工具只继承必要环境，不继承模型、签名、发布凭证或 NODE_OPTIONS。
 
-产品名、文件名和 About 均标明测试构建。`test-build.json` 记录完整源码 SHA、dirty、平台/架构、版本、验证状态、容器后端和逐文件 SHA256。当前版本沿用工作区 0.0.10，不提前升版。macOS 仅 ad hoc 签名，无 Developer ID、公证或 Gatekeeper 验收；`--native-dmg` 先由 builder 生成应用，再由系统封装 DMG，清单明确记录 `containerBackend=hdiutil`，不是默认 builder DMG 后端通过的证据。
+产品名、文件名和 About 均标明测试构建。`test-build.json` 记录完整源码 SHA、dirty、平台/架构、版本、验证状态、容器后端和逐文件 SHA256。版本沿用工作区版本，不提前升版。macOS 仅 ad hoc 签名，无 Developer ID、公证或 Gatekeeper 验收；`--native-dmg` 先由 builder 生成应用，再由系统封装 DMG，清单明确记录 `containerBackend=hdiutil`，不是默认 builder DMG 后端通过的证据。
 
-macOS 打包后只读挂载 DMG，复制应用到临时安装目录，保留 framework 相对链接并拒绝副本外链；启动副本的实际二进制，使用隔离 home/userData 和受限 GUI PATH，执行审批后的真实文件工具，退出后移除应用副本并确认配置/历史仍在。Windows/Linux 当前只定义原生目标与副本 smoke，NSIS 安装/升级/卸载、AppImage 环境和其它架构均需对应平台实测；副本移除不等于系统卸载通过。命令不会安装到系统 Applications、上传或发布。
+macOS 打包后只读挂载 DMG，复制应用到临时安装目录，保留 framework 相对链接并拒绝副本外链；启动副本的实际二进制，使用隔离 home/userData 和受限 GUI PATH，执行审批后的真实文件工具，退出后移除应用副本并确认配置/历史仍在。安装目录名刻意带 `~`（`installed~copy`）：Windows 8.3 短名天然含 `~`，`pathToFileURL` 把它编码成 `%7E` 而 Chromium 帧 URL 保留字面 `~`，曾使主进程 URL 守卫静默拒绝、安装副本挂死（v0.1.2 以 `normalizeUrl` 修复）；该路径形态在所有平台确定性复现，作为回归门禁。Windows/Linux 当前只定义原生目标与副本 smoke，NSIS 安装/升级/卸载、AppImage 环境和其它架构均需对应平台实测；副本移除不等于系统卸载通过。命令不会安装到系统 Applications、上传或发布。
 
 ## 2. 先抽取哪些现有代码
 

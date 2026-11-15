@@ -82,6 +82,6 @@ v0.0.10 已使用维护者审核的完整清单发布，原始报告见[最终�
 - 默认路径只要求**自动门禁**：`verify` 工作流的 ubuntu/macos/windows 矩阵、Node 20 安装、compat、release 长跑、`verify:desktop` 的 mac/win e2e、三包 registry 安装 smoke，以及 `node scripts/release.ts check` 的版本与说明一致性；
 - 手动门禁不静默消失：工作流会打印 `::warning::`，说明本次发布未完成人工审核，不能在文档或 Release 里宣称 Node 20 / Windows ACL·ConPTY / POSIX PTY / 跨解释器进程树 / MCP / release 长跑的人工验收；
 - 恢复严格流程只需 `gh variable set KPBL_RELEASE_STRICT true`，此时六类专项回到强制、字段与阈值不变、仍需同 SHA；
-- `desktop-candidate.yml` 自身仍要求真实证书与四平台签名，不会产出未签名候选；Release 只在 `KPBL_DESKTOP_RELEASE=true` 时下载并附带经审核的桌面附件，默认只发三份 npm 包，未签名测试包由维护者手工上传。
+- `desktop-candidate.yml` 自身仍要求真实证书与四平台签名，不会产出未签名候选；Release 只在 `KPBL_DESKTOP_RELEASE=true` 时下载并附带经审核的桌面附件，默认路径的未签名测试包由 `desktop-unsigned` 作业在四个原生 runner 上自动生成并上传（v0.1.1 起，不再手工上传）。
 
 这一决定意味着 v0.1.0 没有签名、公证与跨平台安装验收证据，仓库不得据此宣称桌面正式发布完成；发布说明必须逐条写明未完成项。
