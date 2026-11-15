@@ -6,6 +6,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionRegistry } from '../src/local-host/registry.js';
 import type { SessionResources } from '../src/local-host/types.js';
 
+/**
+ * 建立指向 target 的目录链接：优先真符号链接，Windows 无 SeCreateSymbolicLinkPrivilege
+ * （未开开发者模式）时退化为 junction。realpathSync.native 对两者的解析一致，
+ * 工作区身份归一语义不变；直接 symlinkSync 会在无权限机器上 EPERM 硬失败，
+ * 把环境问题误报成产品缺陷。
+ */
+function linkDirectory(target: string, linkPath: string): void {
+  try {
+    fs.symlinkSync(target, linkPath);
+    if (fs.lstatSync(linkPath).isSymbolicLink()) return;
+    fs.rmSync(linkPath, { recursive: true, force: true });
+  } catch {
+    // 继续尝试 junction
+  }
+  fs.symlinkSync(target, linkPath, 'junction');
+}
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
@@ -147,7 +164,7 @@ describe('local host session ownership', () => {
   it('normalizes symlink identity and reserves capacity while opening', async () => {
     const root = workspace();
     const alias = path.join(root, 'alias');
-    fs.symlinkSync(root, alias);
+    linkDirectory(root, alias);
     const create = vi.fn(async () => resource());
     const registry = new SessionRegistry({ create });
     const a = await registry.open(root, 'conversation');

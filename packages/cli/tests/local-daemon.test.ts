@@ -13,6 +13,23 @@ import {
   stopDaemon,
 } from '../src/local-host/daemon.js';
 
+/**
+ * 建立指向 target 的目录链接：优先真符号链接，Windows 无 SeCreateSymbolicLinkPrivilege
+ * （未开开发者模式）时退化为 junction。junction 同样是目录重解析点，lstat 也报
+ * isSymbolicLink，getLocalRuntimeDirectory 的拒绝语义不变；直接 symlinkSync 会在
+ * 无权限机器上 EPERM 硬失败，把环境问题误报成产品缺陷。
+ */
+function linkDirectory(target: string, linkPath: string): void {
+  try {
+    fs.symlinkSync(target, linkPath);
+    if (fs.lstatSync(linkPath).isSymbolicLink()) return;
+    fs.rmSync(linkPath, { recursive: true, force: true });
+  } catch {
+    // 继续尝试 junction
+  }
+  fs.symlinkSync(target, linkPath, 'junction');
+}
+
 const roots: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
@@ -74,7 +91,7 @@ describe('daemon metadata boundary', () => {
     expect(getLocalRuntimeDirectory(root)).toBe(fs.realpathSync.native(root));
     if (process.platform !== 'win32') expect(fs.statSync(root).mode & 0o777).toBe(0o700);
     const alias = `${root}-alias`;
-    fs.symlinkSync(root, alias);
+    linkDirectory(root, alias);
     try {
       expect(() => getLocalRuntimeDirectory(alias)).toThrow();
     } finally {
