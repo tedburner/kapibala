@@ -40,7 +40,7 @@
 | **v0.1.0** | **桌面 Harness（Electron；2026-11-14 以未签名个人自用版发布，[发布说明](releases/v0.1.0.md)）** | 基于现有 Core、MCP 与共享 ViewModel，采用单个 utilityProcess Agent Host、受控 IPC 与 React 界面；交付项目/模型配置、历史对话、工具展示、审批取消、多会话（重命名/置顶/归档/删除）及 macOS arm64 测试包；签名与公证**不是 v0.1.0 发布前置**（见下节），详见[功能与开发方案](design/004-v0.1.0-desktop-harness.md)与[视觉精修](design/006-desktop-visual-refinement.md) | 私有桌面应用包 `packages/desktop`，不新增 npm 发布包 |
 | **v0.1.1** | **桌面四平台自动打包修复**（已于 2026-11-15 发布；[发布说明](releases/v0.1.1.md)） | 未签名测试包改由 `release.yml` 的 `desktop-unsigned` 作业在四个原生 runner 上自动生成并上传同一 Release，另有 `desktop_only` 手动补跑入口；修复三处干净机器才暴露的打包缺陷（`--offline` 解析不了 registry 元数据、工作区成员名单硬编码、Windows e2e 路径断言）。实际交付 mac arm64 / mac x64 / Linux x86_64 三平台，Windows 安装副本 smoke 在全新安装首启时超 30 秒被判死连接（v0.1.2 修复） | 桌面发布链路增量，无新功能 |
 | **v0.1.2** | **Windows 安装副本挂死与受限 PATH 阻断修复**（已于 2026-11-15 发布；[发布说明](releases/v0.1.2.md)） | 修复两个确定性失败：① 8.3 短名 `~` 的 URL 编码不一致致控制端口永不投递（`normalizeUrl` 比较前统一规范化）；② 受限 GUI PATH 下 `detectShell` 抛错阻断 `session.create`（宿主 `registerBuiltinTools` 解释器降级为惰性 fallback）。另含冷启动握手兜底 30s→90s、preload 故障投递修正、Release 附件命名简化与 smoke 诊断产物。⚠️ npm 三包在 shell 修复前发布且不可覆盖，Release 四平台安装包已用修复提交重建（tag 前移），修复随 v0.1.3 进 npm | 桌面 + 宿主修复增量 |
-| **v0.1.3** | **跨会话引用与多任务派发（双主题）**（规划中；多任务派发见[设计 005](design/005-v0.1.1-multi-task-delegation.md)） | 跨会话引用：同项目桶内把其它会话（含本会话其它分支）的历史消息作为冻结快照引入当前会话，宿主经 `runPreparedTask` 注入带溯源头的引用块（源会话 + `recordId` + 角色 + 时间戳 + 正文片段）并随 user 消息落盘，Core 新增只读不取锁的会话读取 API，CLI `/quote` 与桌面端 mention 弹层（接入全文检索），补齐 v0.0.7 未交付的 `branchWithSummary`；多任务派发：委派会话升级为用户可见、可续聊的一等会话（`spawn_agent` detached 保留预算、`send_agent` 续聊、requestId 幂等、「子任务名 · 父会话名」命名），CLI `/delegate` `/tasks` 用户级派发与任务面板，桌面委派会话可见可接续；单条/单轮引用预算上限，压缩投影保留溯源头、可降级正文。另携带 v0.1.2 的 shell 兜底修复进 npm（消除 tag/npm 分叉）。跨项目桶引用、活引用、跨 Harness 托管、Worktree 隔离、编排画布明确未交付 | Core + CLI + 桌面增量 |
+| **v0.1.3** | **跨会话引用与多任务派发（双主题）**（规划中；多任务派发见[设计 005](design/005-v0.1.1-multi-task-delegation.md)） | 跨会话引用：同项目桶内把其它会话（含本会话其它分支）的历史消息作为冻结快照引入当前会话，宿主经 `runPreparedTask` 注入带溯源头的引用块（源会话 + `recordId` + 角色 + 时间戳 + 正文片段）并随 user 消息落盘，Core 新增只读不取锁的会话读取 API，CLI `/quote` 与桌面端 mention 弹层（接入全文检索），补齐 v0.0.7 未交付的 `branchWithSummary`；多任务派发：委派会话升级为用户可见、可续聊的一等会话（`spawn_agent` detached 保留预算、`send_agent` 续聊、requestId 幂等、「委派名 · 父会话名」命名），CLI `/delegate` `/delegations` 用户级派发与委派会话面板，桌面委派会话可见可接续；单条/单轮引用预算上限，压缩投影保留溯源头、可降级正文。另携带 v0.1.2 的 shell 兜底修复进 npm（消除 tag/npm 分叉）。跨项目桶引用、活引用、跨 Harness 托管、Worktree 隔离、编排画布明确未交付 | Core + CLI + 桌面增量 |
 
 ### v0.1.0 桌面发布口径调整（2026-11-14）
 
@@ -70,7 +70,9 @@
 - **收编遗留项**：v0.0.7 明确未交付的 `branchWithSummary` 跨分支摘要注入并入本版（`branch_summary` 记录类型与投影注入位已预留，本版补齐写入方）。
 - **主题一明确未交付**：跨项目桶（跨工作区）引用——需先与 v0.0.5 项目信任模型对齐后另行设计；活引用（引用随源会话演进联动）；引用内容自动记忆化提炼；对被引用会话的任何写操作。技术方案另行编写。
 
-**主题二 · 多任务派发**：交付范围以 [设计 005](design/005-v0.1.1-multi-task-delegation.md) 为准（提案草稿已入库），分三段交付（D1 Core 委派会话生命周期 → D2 CLI 用户级派发 → D3 桌面可见化，任一段独立可用）：`spawn_agent` 新增 detached 保留型委派会话与保留预算（数量 + 闲置天数，LIFO 清理）、`send_agent` 对空闲 detached 会话续聊（busy 即拒绝不排队）、工具层 requestId 幂等（显式去重，不做隐式摘要窗）、「子任务名 · 父会话名」命名；CLI `/delegate` `/tasks` 用户级派发与任务面板；桌面侧栏委派会话可见、流式看进度、终态后接续聊天。跨 Harness 托管（把外部 CLI agent 接入为派发目标）与被 ACP 客户端托管维持 005 §3.3 非目标，列为后续探索项；本版不捆绑 Worktree 隔离（005 开放问题 4）。
+**主题二 · 多任务派发**：交付范围以 [设计 005](design/005-v0.1.1-multi-task-delegation.md) 为准（提案草稿已入库），分三段交付（D1 Core 委派会话生命周期 → D2 CLI 用户级派发 → D3 桌面可见化，任一段独立可用）：`spawn_agent` 新增 detached 保留型委派会话与保留预算（数量 + 闲置天数，LIFO 清理）、`send_agent` 对空闲 detached 会话续聊（busy 即拒绝不排队）、工具层 requestId 幂等（显式去重，不做隐式摘要窗）、「委派名 · 父会话名」命名；CLI `/delegate` `/delegations` 用户级派发与委派会话面板；桌面侧栏委派会话可见、流式看进度、终态后接续聊天。跨 Harness 托管（把外部 CLI agent 接入为派发目标）与被 ACP 客户端托管维持 005 §3.3 非目标，列为后续探索项；本版不捆绑 Worktree 隔离（005 开放问题 4）。
+
+> **多 Agent Harness 编排后置（2026-11-15 决策）**：把外部 Harness（Claude Code / Codex 等 CLI）作为委派目标的「多 Agent Harness 编排」不进入本版，后置为**未来版本的独立探索项，不承诺版本号**。它与本版「同 Harness 内子 agent」是两条不同技术路线（分界点为执行体是否来自同一 Harness）；两条路线的对比、codex-host 三个正交维度的拆解，以及纳入前必须具备的六项前置条件见 [设计 007 §10 附录 A](design/007-v0.1.3-cross-session-reference-and-delegation.md)。
 
 ### v0.0.10 稳定整合与发布边界（2026-10-21）
 
