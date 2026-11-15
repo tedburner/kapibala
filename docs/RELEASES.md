@@ -38,7 +38,9 @@
 | **v0.0.9** | **本地客户端契约与发布前加固**（已于 2026-10-21 发布；[发布说明](releases/v0.0.9.md)，[验收记录](verification/v0.0.9.md)，[迁移说明](migration/v0.0.9.md)） | 版本化 wire DTO、双向审批与控制信令、本地守护进程和受控本地传输（面向 CLI / Daemon / 桌面 IPC 通用通信契约）；已实现有界快照、审批与宿主隔离；Linux 与 Windows CI 全量门禁已通过，Windows ACL/进程树与 Node 20 等平台验收仍待补齐。桌面/Web/移动多端及远程传输待契约稳定后逐步交付 | Core + 本地宿主适配 |
 | **v0.0.10** | **阶段性整合版本**（已于 2026-10-23 发布；[发布说明](releases/v0.0.10.md)，[技术方案](design/003-v0.0.10-stable-integration.md)，[验收记录](verification/v0.0.10.md)，[迁移说明](migration/v0.0.10.md)，[SDK 兼容性说明](sdk-compatibility.md)） | 稳定已交付的 Core 公共 API、事件协议和本地客户端契约：显式工作区身份、宿主级写租约与父子协调器传递、类型化错误与取消语义、按方法具体化的客户端结果与整个连接的恢复单位；新增 `verify:compat` / `verify:platform` / `verify:soak` 三类门禁。不新增客户端类型或运行时子系统；Node 20、Windows 跨用户 ACL/ConPTY、POSIX PTY、双解释器进程树及 release 长跑已在同一发布 SHA 上通过并获维护者审核 | CLI + Core SDK + 扩展包 |
 | **v0.1.0** | **桌面 Harness（Electron；2026-11-14 以未签名个人自用版发布，[发布说明](releases/v0.1.0.md)）** | 基于现有 Core、MCP 与共享 ViewModel，采用单个 utilityProcess Agent Host、受控 IPC 与 React 界面；交付项目/模型配置、历史对话、工具展示、审批取消、多会话（重命名/置顶/归档/删除）及 macOS arm64 测试包；签名与公证**不是 v0.1.0 发布前置**（见下节），详见[功能与开发方案](design/004-v0.1.0-desktop-harness.md)与[视觉精修](design/006-desktop-visual-refinement.md) | 私有桌面应用包 `packages/desktop`，不新增 npm 发布包 |
-| **v0.1.1** | **跨会话引用与多任务派发（双主题）**（规划中；多任务派发见[设计 005](design/005-v0.1.1-multi-task-delegation.md)） | 跨会话引用：同项目桶内把其它会话（含本会话其它分支）的历史消息作为冻结快照引入当前会话，宿主经 `runPreparedTask` 注入带溯源头的引用块（源会话 + `recordId` + 角色 + 时间戳 + 正文片段）并随 user 消息落盘，Core 新增只读不取锁的会话读取 API，CLI `/quote` 与桌面端 mention 弹层（接入全文检索），补齐 v0.0.7 未交付的 `branchWithSummary`；多任务派发：委派会话升级为用户可见、可续聊的一等会话（`spawn_agent` detached 保留预算、`send_agent` 续聊、requestId 幂等、「子任务名 · 父会话名」命名），CLI `/delegate` `/tasks` 用户级派发与任务面板，桌面委派会话可见可接续；单条/单轮引用预算上限，压缩投影保留溯源头、可降级正文。跨项目桶引用、活引用、跨 Harness 托管、Worktree 隔离、编排画布明确未交付 | Core + CLI + 桌面增量 |
+| **v0.1.1** | **桌面四平台自动打包修复**（已于 2026-11-15 发布；[发布说明](releases/v0.1.1.md)） | 未签名测试包改由 `release.yml` 的 `desktop-unsigned` 作业在四个原生 runner 上自动生成并上传同一 Release，另有 `desktop_only` 手动补跑入口；修复三处干净机器才暴露的打包缺陷（`--offline` 解析不了 registry 元数据、工作区成员名单硬编码、Windows e2e 路径断言）。实际交付 mac arm64 / mac x64 / Linux x86_64 三平台，Windows 安装副本 smoke 在全新安装首启时超 30 秒被判死连接（v0.1.2 修复） | 桌面发布链路增量，无新功能 |
+| **v0.1.2** | **Windows 安装副本挂死与受限 PATH 阻断修复**（已于 2026-11-15 发布；[发布说明](releases/v0.1.2.md)） | 修复两个确定性失败：① 8.3 短名 `~` 的 URL 编码不一致致控制端口永不投递（`normalizeUrl` 比较前统一规范化）；② 受限 GUI PATH 下 `detectShell` 抛错阻断 `session.create`（宿主 `registerBuiltinTools` 解释器降级为惰性 fallback）。另含冷启动握手兜底 30s→90s、preload 故障投递修正、Release 附件命名简化与 smoke 诊断产物。⚠️ npm 三包在 shell 修复前发布且不可覆盖，Release 四平台安装包已用修复提交重建（tag 前移），修复随 v0.1.3 进 npm | 桌面 + 宿主修复增量 |
+| **v0.1.3** | **跨会话引用与多任务派发（双主题）**（规划中；多任务派发见[设计 005](design/005-v0.1.1-multi-task-delegation.md)） | 跨会话引用：同项目桶内把其它会话（含本会话其它分支）的历史消息作为冻结快照引入当前会话，宿主经 `runPreparedTask` 注入带溯源头的引用块（源会话 + `recordId` + 角色 + 时间戳 + 正文片段）并随 user 消息落盘，Core 新增只读不取锁的会话读取 API，CLI `/quote` 与桌面端 mention 弹层（接入全文检索），补齐 v0.0.7 未交付的 `branchWithSummary`；多任务派发：委派会话升级为用户可见、可续聊的一等会话（`spawn_agent` detached 保留预算、`send_agent` 续聊、requestId 幂等、「子任务名 · 父会话名」命名），CLI `/delegate` `/tasks` 用户级派发与任务面板，桌面委派会话可见可接续；单条/单轮引用预算上限，压缩投影保留溯源头、可降级正文。另携带 v0.1.2 的 shell 兜底修复进 npm（消除 tag/npm 分叉）。跨项目桶引用、活引用、跨 Harness 托管、Worktree 隔离、编排画布明确未交付 | Core + CLI + 桌面增量 |
 
 ### v0.1.0 桌面发布口径调整（2026-11-14）
 
@@ -54,6 +56,8 @@
 ### v0.1.3 跨会话引用与多任务派发（原 v0.1.1 规划，2026-11-15 顺延）
 
 > 双主题补丁位版本（2026-11-01 确认，2026-11-15 由 v0.1.1 顺延为 v0.1.3，[设计 005](design/005-v0.1.1-multi-task-delegation.md) 文件名沿用不改）：两个主题共用既有会话、任务树与权限基础设施，互不依赖、可独立交付。
+>
+> **附带发布修复**：本版把 v0.1.2 的受限 PATH shell 兜底修复带入 npm——npm 三包 `0.1.2` 在该修复前发布且版本不可覆盖，GitHub Release 桌面安装包已用修复提交重建（详见 [v0.1.2 发布说明](releases/v0.1.2.md)）。CLI 使用环境总有可用 shell，分叉影响可忽略，因此不单独发补丁版，随本版一并消除 tag/npm 内容分叉。
 >
 > **主题一 · 跨会话消息引用与上下文复用**：把其它会话（含本会话其它分支）的历史消息作为**确定性上下文**引入当前会话，走显式、可追溯、可复现的冻结快照回放，与自动提炼的长期记忆互补。v0.0.7 已交付的跨项目全文检索（`CrossProjectSessionCatalog.search` 返回命中 `recordId`）是定位基础，本版补齐其消费端。开源对标：Zed Agent Panel 的 `@` mention previous threads 与 Cursor `@ Past Chats` 已验证该交互形态；Claude Code 无原生支持。
 

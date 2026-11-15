@@ -14,6 +14,12 @@
 
 未签名包在 macOS 需右键打开或 `xattr -dr com.apple.quarantine`，Windows 会触发 SmartScreen。仓库不得据此宣称桌面正式发布、签名或跨平台安装验收完成。
 
+### 本地验收与 tag 重试的坑（2026-11-15 补充）
+
+- **本地分数缩放下 dev e2e 像素断言必红，不是回归**：Windows 显示缩放非 100%（如 124%，注册表 `AppliedDPI=119`）时，Chromium 计算样式出现分数像素——2px outline 实算 1.61345px、275px 宽度实算 274.99px，`verify:desktop` 的 dev e2e 像素/布局断言与部分点击用例会失败。CI runner 为 100% 缩放，同 SHA 全绿。本地验收请用 `pnpm pack:desktop --no-verify`（与 `desktop-unsigned` 作业同模式：只跑安装副本 smoke，不跑 dev e2e），不要为本地环境噪声放宽断言。
+- **tag 前移重试只救得了桌面附件，救不了 npm**：npm 版本不可覆盖，`planPublication` 只在「已存版本 integrity 与候选 tarball 完全一致」时跳过；修复提交后前移 tag 重跑 Release，publish 会因 integrity mismatch 拒绝（或被上游 verify 挡住 skipped）。`desktop-unsigned` 作业只依赖 prepare（`if: always()`），可独立重建并覆盖上传安装包。因此「修桌面打包问题」可以 tag 前移 + 重建附件；**要让修复进 npm 必须升版本号发布**（v0.1.2 的 shell 兜底修复即按此随 v0.1.3 进 npm）。
+- **verify 红灯先拉日志再定性**：windows runner 负载抖动会让 PowerShell 探针撞 15s 超时（vitest 单测 5s 超时先红），表现为与代码无关的偶发失败。下结论前取 job 日志核对失败用例耗时与报错，同 SHA 此前全绿时优先重跑，不要直接当回归修。
+
 ## 1. 受控候选
 
 `.github/workflows/desktop-candidate.yml` 仅手动触发，不发布 npm 或 GitHub Release。首次需维护者审核并手动提交、推送到 main，使工作流可见。版本发布流程会同步根、Core、MCP、CLI、desktop 五份清单和 CLI_VERSION，版本计算仍只在 `scripts/release.ts`。
