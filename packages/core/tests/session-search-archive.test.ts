@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrossProjectSessionCatalog } from '../src/context/catalog.js';
 import { SessionManager } from '../src/context/session-manager.js';
 import { MAIN_BRANCH_ID } from '../src/context/session-store.js';
@@ -22,6 +22,7 @@ describe('CrossProjectSessionCatalog & Archive - 跨项目全文检索与逻辑�
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
@@ -207,6 +208,10 @@ describe('CrossProjectSessionCatalog & Archive - 跨项目全文检索与逻辑�
       homeDirectory: tmpHome,
     });
 
+    // 活动时间来自记录写入时钟，而非消息 payload 的 timestamp。
+    const baseTime = Date.now();
+    const clock = vi.spyOn(Date, 'now');
+    clock.mockReturnValue(baseTime);
     const older = await manager.create();
     await older.store.append({
       id: 'msg-old',
@@ -215,6 +220,7 @@ describe('CrossProjectSessionCatalog & Archive - 跨项目全文检索与逻辑�
       content: [{ type: 'text', text: '较早的会话' }],
     });
     await older.release();
+    clock.mockReturnValue(baseTime + 1_000);
     const newer = await manager.create();
     await newer.store.append({
       id: 'msg-new',
@@ -223,6 +229,7 @@ describe('CrossProjectSessionCatalog & Archive - 跨项目全文检索与逻辑�
       content: [{ type: 'text', text: '较新的会话' }],
     });
     await newer.release();
+    clock.mockRestore();
 
     // 默认只按活动时间倒序
     expect((await manager.list()).items.map((item) => item.conversationId)).toEqual([

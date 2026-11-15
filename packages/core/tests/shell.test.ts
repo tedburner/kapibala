@@ -75,6 +75,9 @@ describe('cross-platform shell discovery and execution', () => {
     expect(() => detectShell({ ...options, preference: 'bash' })).toThrow(/unavailable/);
     // auto：System32 的 bash.exe 是 WSL launcher 时选 wsl，否则退到 PowerShell
     expect(['wsl', 'powershell']).toContain(detectShell(options).kind);
+    const powershell = detectShell({ ...options, preference: 'powershell' });
+    expect(powershell.kind).toBe('powershell');
+    expect(path.basename(powershell.executable).toLowerCase()).toBe('powershell.exe');
   }, 30_000);
 
   it('selects and probes a native bash explicitly when the environment provides one', () => {

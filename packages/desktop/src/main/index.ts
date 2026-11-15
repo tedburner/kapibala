@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -344,39 +343,7 @@ async function connect(): Promise<void> {
     () => {},
     (method, params) => {
       if (renderer !== rpc) throw new Error('HOST_UNAVAILABLE');
-      // TEMP-DIAG: 记录被 safeError 折叠前的真实错误；定位后删除。
-      const diag = (error: unknown) => {
-        if (!process.env.KPBL_DESKTOP_E2E) return;
-        try {
-          const e = error as { name?: string; code?: string; message?: string; stack?: string };
-          const file = process.env.KPBL_DIAG_FILE ?? path.join(os.tmpdir(), 'kpbl-rpc-diag.log');
-          fs.mkdirSync(path.dirname(file), { recursive: true });
-          fs.appendFileSync(
-            file,
-            `${JSON.stringify({
-              t: Date.now(),
-              layer: 'main',
-              method,
-              name: e?.name,
-              code: e?.code,
-              message: String(e?.message),
-              stack: String(e?.stack).slice(0, 3000),
-            })}\n`,
-          );
-        } catch {
-          /* 诊断失败不影响业务错误回传。 */
-        }
-      };
-      try {
-        const result = handle(method, params, rpc, lifetime);
-        return result.catch((error: unknown) => {
-          diag(error);
-          throw error;
-        });
-      } catch (error) {
-        diag(error);
-        throw error;
-      }
+      return handle(method, params, rpc, lifetime);
     },
     () => {
       port1.close();
