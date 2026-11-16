@@ -351,7 +351,7 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await page.getByRole('combobox', { name: '主题', exact: true }).click();
     await page.getByRole('option', { name: '深色', exact: true }).click();
     await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
-    await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+    await page.getByRole('button', { name: '返回应用', exact: true }).click();
     await expect(page.getByRole('dialog')).toBeHidden();
     await page.screenshot({ path: path.join(artifacts, 'chat-dark.png') });
     await page.reload();
@@ -361,7 +361,7 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await page.getByRole('tab', { name: '外观与应用' }).click();
     await page.getByRole('combobox', { name: '主题', exact: true }).click();
     await page.getByRole('option', { name: '浅色', exact: true }).click();
-    await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+    await page.getByRole('button', { name: '返回应用', exact: true }).click();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(800, 600));
     await expect(page.locator('[data-sidebar-wrapper]')).toHaveAttribute('data-state', 'collapsed');
     await page.screenshot({ path: path.join(artifacts, 'chat-800.png') });

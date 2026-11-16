@@ -84,8 +84,9 @@ test.describe
     });
 
     test('home 态技能预览与无匹配提示', async () => {
-      // 未打开会话：技能组来自配置层快照预览（新会话将可用），`/` 搜索照常工作
-      await page.getByLabel('发送消息').fill('/de');
+      // 未打开会话：技能组来自配置层快照预览（新会话将可用），`/` 搜索照常工作。
+      // 前缀避开 /delegate、/delegations：命令组排在技能组之前，/de 会先命中命令。
+      await page.getByLabel('发送消息').fill('/demo');
       const skillItem = page.getByRole('button', { name: /\/skill demo-skill/ });
       await expect(skillItem).toBeVisible();
       await page.getByLabel('发送消息').press('Tab');
@@ -104,7 +105,7 @@ test.describe
       await expect(page.getByLabel('发送消息')).toBeEnabled();
       // `/` 分组面板：技能组出现 demo-skill（可访问名含描述文本，用正则匹配），
       // Tab 接受后草稿进入 /skill 名字段
-      await page.getByLabel('发送消息').fill('/de');
+      await page.getByLabel('发送消息').fill('/demo');
       const skillItem = page.getByRole('button', { name: /\/skill demo-skill/ });
       await expect(skillItem).toBeVisible();
       await page.getByLabel('发送消息').press('Tab');

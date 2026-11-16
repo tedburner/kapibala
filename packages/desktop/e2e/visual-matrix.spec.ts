@@ -154,7 +154,7 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
         path: path.join(artifacts, `settings-${width}-${height}.png`),
         animations: 'disabled',
       });
-      await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+      await page.getByRole('button', { name: '返回应用', exact: true }).click();
     }
     await page.getByRole('button', { name: '新建对话', exact: true }).last().click();
     await page.getByRole('button', { name: /会话模式/ }).click();
