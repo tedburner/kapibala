@@ -46,3 +46,4 @@ export {
 } from './providers.js';
 
 export type { ManagedInspection } from './inspection.js';
+export type { ReferenceSelection } from './reference-blocks.js';

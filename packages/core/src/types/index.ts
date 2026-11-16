@@ -62,6 +62,33 @@ export interface PromptContentSource {
   configIdentity?: string;
 }
 
+/**
+ * 跨会话引用的来源元数据（v1）。
+ *
+ * 保证：只追踪来源身份与内容摘要，用于审计与复现；不代表授权，不恢复源会话的
+ * 工具许可、审批或信任状态；不随 Provider wire 发送（与 promptSource 同口径）。
+ * 引用是注入时刻的冻结快照：源会话后续压缩、归档或删除不改变已落盘内容。
+ */
+export interface ReferenceContentSource {
+  version: 1;
+  /** 源会话 ID（同项目桶内）。 */
+  sessionId: string;
+  /** 源记录 ID；会话级引用时为被选中消息的 recordId。 */
+  recordId: string;
+  /** 源分支 ID。 */
+  branchId: string;
+  /** 源角色；tool / thinking 等不可见内容不会被引用。 */
+  role: 'user' | 'assistant' | 'branch_summary';
+  /** 源消息时间戳（毫秒）。 */
+  timestamp: number;
+  /** 源会话标题快照（已脱敏、已截断）。 */
+  title?: string;
+  /** 正文摘要（sha256 前 16 位十六进制），用于复现与去重。 */
+  contentDigest: string;
+  /** 正文是否被裁剪。 */
+  truncated?: boolean;
+}
+
 export interface TextBlock {
   type: 'text';
   text: string;
@@ -69,6 +96,8 @@ export interface TextBlock {
   skillSource?: SkillContentSource;
   /** 宿主注入受控 Prompt 的可选来源；只追踪正文与审计摘要，缺失或恢复不授予权限。 */
   promptSource?: PromptContentSource;
+  /** 宿主注入跨会话引用块的可选来源；只追踪来源身份与摘要，缺失或恢复不授予权限。 */
+  referenceSource?: ReferenceContentSource;
   /** 源 wire Item 元数据；正文被改写后由调用方清除，不作为业务身份。 */
   protocolMeta?: ProtocolItemMetadata;
 }

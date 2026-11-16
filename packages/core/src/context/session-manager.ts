@@ -14,6 +14,7 @@ import {
 } from './jsonl-lines.js';
 import { SessionLock } from './session-lock.js';
 import {
+  type DelegationHeader,
   MAIN_BRANCH_ID,
   SESSION_SCHEMA_VERSION_V1,
   SESSION_SCHEMA_VERSION_V2,
@@ -120,6 +121,11 @@ export interface SessionMetadata {
   archived?: boolean;
   /** 会话是否置顶；只在列表排序时前置，不改变活动时间与继续最近会话的判定。 */
   pinned?: boolean;
+  /**
+   * 保留型委派标记；只在 detached 子会话创建时出现，普通会话缺省。
+   * 与 header.delegation 同源，供委派面板与保留预算在不读正文的情况下筛选。
+   */
+  delegation?: SessionHeader['delegation'];
   /** 预算不足时仅提供定位与提示，不把超限文件误判为损坏或写入不完整缓存。 */
   unavailableReason?: 'HISTORY_READ_LIMIT';
 }
@@ -173,6 +179,20 @@ export function sanitizeSessionTitle(title: string, maximum = 200): string {
     .join('');
 }
 
+/**
+ * 委派会话的展示名（自定规则，非对标结论）。
+ *
+ * 规则：`委派名 · 父会话名`，两段各截断到 60 字符，总长不超过 120；
+ * 父标题缺失时退化为仅委派名。创建时写一次，之后父会话改名、续聊与幂等重试都不联动改名。
+ * 与 codex-host「只取子任务名」的口径有意偏离：桌面侧栏把委派会话与普通会话混排，
+ * 父会话名是用户判断归属的唯一线索。
+ */
+export function formatDelegationTitle(taskName: string, parentTitle?: string): string {
+  const task = sanitizeSessionTitle(taskName, 60);
+  const parent = parentTitle ? sanitizeSessionTitle(parentTitle, 60) : '';
+  return (parent ? `${task} · ${parent}` : task).slice(0, 120);
+}
+
 /** 按项目发现、创建和打开独立会话；缓存可丢弃，JSONL 是唯一恢复依据。 */
 export class SessionManager {
   readonly project: ProjectIdentity;
@@ -203,7 +223,7 @@ export class SessionManager {
   }
 
   /** 默认新建独立空会话，写入头部并持有单写者锁；不读取其它正文。 */
-  async create(): Promise<ManagedSession> {
+  async create(options: { delegation?: DelegationHeader } = {}): Promise<ManagedSession> {
     const conversationId = createMessageId();
     const file = path.join(this.directory, `${Date.now()}_${conversationId}.jsonl`);
     const lock = await SessionLock.acquire(this.lockPath(conversationId));
@@ -215,6 +235,7 @@ export class SessionManager {
           projectRoot: this.project.projectRoot,
           initialCwd: this.project.cwd,
           gitBranch: this.project.gitBranch,
+          ...(options.delegation ? { delegation: options.delegation } : {}),
         },
         this.readOptions,
       );
@@ -1153,6 +1174,7 @@ export class SessionManager {
         lastActivityGitBranch: header.gitBranch,
         importIdentity: header.importIdentity,
         upgradeIdentity: header.upgradeIdentity,
+        ...(header.delegation ? { delegation: header.delegation } : {}),
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         revision: first.value.recordId,

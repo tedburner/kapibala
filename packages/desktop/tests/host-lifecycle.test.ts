@@ -42,6 +42,7 @@ function handle() {
     conversationId: 'conversation',
     session: {} as AgentSession,
     runSkill: vi.fn(async () => {}),
+    runWithReferences: vi.fn(async () => {}),
     run: vi.fn(async () => {}),
     cancel: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),

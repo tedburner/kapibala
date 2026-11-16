@@ -20,7 +20,11 @@ import {
   resolveApiKey,
 } from '@kiturone/kapibala-host/internal';
 import { getCliSkillOptions } from '@kiturone/kapibala-host/internal';
-import { createCliSubagentRunner } from '@kiturone/kapibala-host/internal';
+import {
+  createCliSubagentResumer,
+  createCliSubagentRunner,
+} from '@kiturone/kapibala-host/internal';
+import { readDelegationRequestEntries } from '@kiturone/kapibala-host/internal';
 import { registerBuiltinTools } from '@kiturone/kapibala-host/internal';
 import minimist from 'minimist';
 import { ActiveSessionController } from './active-session.js';
@@ -255,6 +259,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         isTrusted,
         leaseCoordinator,
       }),
+      // 续聊执行器与首次派发共享同一套装配；缺失时 send_agent 会明确拒绝而非静默失败。
+      resumer: createCliSubagentResumer({
+        manager,
+        models,
+        settings,
+        preference,
+        isTrusted,
+        leaseCoordinator,
+      }),
+      // 重启后从委派头重建幂等索引：同一 requestId 不会重复派发第二个委派会话。
+      restoredRequests: readDelegationRequestEntries(manager),
       validateModelOverride: (modelId: string) => settings.profiles.some((p) => p.id === modelId),
       outboxPath: path.join(manager.project.projectRoot, '.kapibala', 'outbox.jsonl'),
     });

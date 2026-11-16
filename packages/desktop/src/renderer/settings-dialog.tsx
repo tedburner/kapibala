@@ -3,12 +3,12 @@ import { Dialog } from '@cloudflare/kumo/primitives/dialog';
 import { Tabs } from '@cloudflare/kumo/primitives/tabs';
 import {
   ArchiveIcon,
+  ArrowLeftIcon,
   PackageIcon,
   PaletteIcon,
   PlugsConnectedIcon,
   PulseIcon,
   ShuffleIcon,
-  XIcon,
 } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Output, ProfileDraft, Workspace } from '../shared/contracts.js';
@@ -442,19 +442,20 @@ export function SettingsDialog({
             >
               <aside className="kapibala-settings-rail">
                 <div className="kapibala-settings-rail-top">
-                  <Dialog.Title className="kapibala-settings-rail-title">设置</Dialog.Title>
+                  {/* 返回式入口取代右上角 X：语义是「回到应用」，与系统设置类面板一致；
+                      可访问标题以 sr-only 保留，Escape 与点击遮罩关闭行为不变。 */}
+                  <Dialog.Title className="sr-only">设置</Dialog.Title>
                   <Dialog.Close
                     render={
                       <Button
-                        className="kapibala-action"
+                        className="kapibala-action h-auto w-full justify-start gap-2 rounded-lg px-2 py-1.5 font-normal"
                         variant="ghost"
-                        shape="square"
-                        size="base"
-                        aria-label="关闭设置"
+                        aria-label="返回应用"
                       />
                     }
                   >
-                    <XIcon size={18} />
+                    <ArrowLeftIcon size={16} className="shrink-0 text-kumo-subtle" />
+                    <span className="text-sm font-medium">返回应用</span>
                   </Dialog.Close>
                 </div>
                 <Tabs.List className="kapibala-settings-nav" aria-label="设置分类">

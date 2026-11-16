@@ -1,6 +1,6 @@
 import path from 'node:path';
 /**
- * @fileoverview CLI 生产环境真实子代理会话执行器（SubagentSessionRunner）工厂。
+ * @fileoverview CLI 生产环境真实子代理会话执行器（runner 与续聊 resumer）工厂。
  *
  * 约束、边界与为什么：
  * 1. 独立 Store 与生命周期隔离：
@@ -12,9 +12,9 @@ import path from 'node:path';
  * 3. 角色预设与工具白名单强制收紧：
  *    根据 task.role（explore / planner / implement / advisor / custom）和 task.allowedTools
  *    构建受限工具注册表，不可越权调用父级未授权或角色禁止的工具。
- * 4. 结果与模型追溯：
- *    完整驱动 AgentSession.run 消费所有事件，提取真实的 Assistant 文本作为终态 summary，
- *    记录实际响应的 modelId，用于可靠发件箱通知与父会话对账。
+ * 4. 生命周期分流：
+ *    ephemeral 终态销毁会话；detached 终态保留会话文件供 send_agent 续聊，
+ *    但每次都释放单写者句柄，下次续聊走正常的 SessionManager.open 重新取锁。
  */
 
 import {
@@ -22,15 +22,20 @@ import {
   type AgentTaskRecord,
   type ApprovalChannel,
   KapibalaError,
+  type ManagedSession,
   PathSandbox,
   type PrimaryModelRole,
   type SessionManager,
   type SessionMode,
   type SubagentRunnerContext,
+  type SubagentSessionResumer,
   type SubagentSessionRunner,
   ToolRegistry,
   type WorkspaceLeaseCoordinator,
+  createDelegationError,
+  formatDelegationTitle,
 } from '@kiturone/kapibala';
+import { MAX_RETAINED_DELEGATIONS, countRetainedDelegations } from './delegations.js';
 import { type CliModelBindings, createModelBinding } from './model-bindings.js';
 import type { UserSettings } from './settings.js';
 import { registerBuiltinTools } from './tool-registration.js';
@@ -57,8 +62,130 @@ export interface CliSubagentRunnerOptions {
   leaseCoordinator: WorkspaceLeaseCoordinator;
 }
 
+/** 单轮委派执行的公共入参；runner 与 resumer 只在会话获取方式上不同。 */
+interface DelegationTurnRequest {
+  /** 已持有单写者句柄的子会话。 */
+  handle: ManagedSession;
+  /** 任务快照；提供角色、策略、执行目录与限额。 */
+  task: AgentTaskRecord;
+  /** 本轮用户输入。 */
+  prompt: string;
+  /** 取消/超时信号。 */
+  signal: AbortSignal;
+  /** 宿主装配选项。 */
+  options: CliSubagentRunnerOptions;
+}
+
 /**
- * 创建用于生产环境的真实子代理会话执行器。
+ * 执行一轮子代理对话并返回终端摘要。
+ *
+ * 保证：
+ * - AgentSession 在返回前必定 destroy，避免工具事务与摘要清理泄漏；
+ * - 工具注册只取 effectivePolicy.allowedTools 的交集，advisor 不注册任何工具；
+ * - 模型选择沿用 modelOverride → 默认绑定，角色路由不得扩大父级权限。
+ */
+async function runDelegationTurn(request: DelegationTurnRequest): Promise<{
+  summary: string;
+  modelId?: string;
+}> {
+  const { handle, task, prompt, signal, options } = request;
+  const sandbox = new PathSandbox({ workspaceRoot: task.workspaceRoot });
+
+  const defaultBinding = options.models.defaultBinding;
+  let selectedProfile = defaultBinding.profile;
+  let selectedProvider = defaultBinding.provider;
+
+  if (task.modelOverride) {
+    const found = options.settings.profiles.find((p) => p.id === task.modelOverride);
+    if (!found) {
+      throw new Error(`未找到指定的覆盖模型配置: '${task.modelOverride}'`);
+    }
+    const overrideBinding = createModelBinding(found, options.settings);
+    selectedProfile = overrideBinding.profile;
+    selectedProvider = overrideBinding.provider;
+  }
+
+  const effectiveMode: SessionMode =
+    (task.effectivePolicy as { mode?: SessionMode } | undefined)?.mode ?? 'Approval';
+
+  const subSession = new AgentSession({
+    userInstructionsPath: options.homeDirectory
+      ? path.join(options.homeDirectory, '.kapibala/AGENTS.md')
+      : undefined,
+    loggingDirectory: options.homeDirectory
+      ? path.join(options.homeDirectory, '.kapibala')
+      : undefined,
+    auditRecoveryDirectory: options.homeDirectory
+      ? path.join(options.homeDirectory, '.kapibala/audit')
+      : undefined,
+    approvalChannel: options.approvalChannel,
+    leaseCoordinator: options.leaseCoordinator,
+    workspaceRoot: task.workspaceRoot,
+    executionCwd: task.executionCwd,
+    rootDir: task.workspaceRoot,
+    sandbox,
+    store: handle.store,
+    conversationId: handle.conversationId,
+    defaultProfile: selectedProfile,
+    defaultProvider: selectedProvider,
+    rootTaskId: task.origin.rootTaskId,
+    depth: task.origin.depth,
+    agentId: task.agentId,
+    maxSteps: task.limits.maxSteps,
+    mode: effectiveMode,
+  });
+
+  try {
+    const effectiveAllowed = (
+      task.effectivePolicy as { allowedTools?: readonly string[] } | undefined
+    )?.allowedTools;
+    const allowedToolSet = new Set(effectiveAllowed ?? task.allowedTools ?? []);
+
+    if (task.role !== 'advisor') {
+      const tempRegistry = new ToolRegistry();
+      registerBuiltinTools(tempRegistry, {
+        cwd: task.executionCwd,
+        shell: options.preference ?? 'auto',
+        disableShell: task.role === 'explore' || task.role === 'planner',
+      });
+
+      // 仅注册 effectivePolicy.allowedTools 允许的工具，绝不上溢写/执行工具
+      for (const tool of tempRegistry.list()) {
+        if (allowedToolSet.has(tool.name)) {
+          subSession.tools.register(tool);
+        }
+      }
+    }
+
+    const preferredRole: PrimaryModelRole =
+      (task.effectivePolicy as { preferredRole?: PrimaryModelRole } | undefined)?.preferredRole ??
+      'default';
+    const targetRole: PrimaryModelRole =
+      preferredRole !== 'default' && options.models.hasRole(preferredRole)
+        ? preferredRole
+        : 'default';
+    options.models.attach(subSession, targetRole);
+    await subSession.init();
+
+    let summary = 'Task completed without text output';
+    for await (const event of subSession.run(prompt, { signal })) {
+      if (event.type === 'message_stop' && event.message.role === 'assistant') {
+        for (const block of event.message.content) {
+          if (block.type === 'text') {
+            summary = block.text;
+          }
+        }
+      }
+    }
+
+    return { summary, modelId: selectedProfile.id };
+  } finally {
+    await subSession.destroy();
+  }
+}
+
+/**
+ * 创建用于生产环境的真实子代理会话执行器（首次派发）。
  *
  * @param options 工厂配置选项
  * @returns 标准的 SubagentSessionRunner 异步执行函数
@@ -73,138 +200,139 @@ export function createCliSubagentRunner(options: CliSubagentRunnerOptions): Suba
     task: AgentTaskRecord,
     signal: AbortSignal,
     context: SubagentRunnerContext,
+  ): Promise<{ summary: string; modelId?: string; sessionId?: string; title?: string }> => {
+    if (context?.leaseCoordinator !== options.leaseCoordinator)
+      throw new KapibalaError('Parent and host coordinators differ', {
+        code: 'CONFIG_INVALID',
+        safeMessage: '父会话与子代理宿主写租约身份不一致',
+      });
+    // 1. 分配独立子会话存储文件与单写者句柄；detached 在创建时写入委派头部身份。
+    const detached = task.mode === 'detached';
+    // 保留预算在创建前检查：达上限直接拒绝，不先建文件再失败（设计 007 §5.1 最小保留）。
+    if (detached) {
+      const retained = await countRetainedDelegations(options.manager);
+      if (retained >= MAX_RETAINED_DELEGATIONS) {
+        throw createDelegationError(
+          'DELEGATION_LIMIT_EXCEEDED',
+          `Retained delegation limit reached (${MAX_RETAINED_DELEGATIONS}); delete one via /delegations delete`,
+        );
+      }
+    }
+    const handle = await options.manager.create(
+      detached
+        ? {
+            delegation: {
+              kind: 'delegation',
+              parentSessionId: task.origin.parentSessionId,
+              ...(context.parentTitle ? { parentTitle: context.parentTitle } : {}),
+              taskName: task.description,
+              createdAt: Date.now(),
+              ...(task.requestId ? { requestId: task.requestId } : {}),
+              ...(task.requestSignature ? { requestSignature: task.requestSignature } : {}),
+              // 回执快照里的 sessionId 由 header.conversationId 唯一确定，这里不重复写入。
+              ...(task.requestReceipt ? { requestReceipt: { ...task.requestReceipt } } : {}),
+            },
+          }
+        : undefined,
+    );
+    if (detached) context.onSessionCreated?.(handle.conversationId);
+
+    let result:
+      | { summary: string; modelId?: string; sessionId?: string; title?: string }
+      | undefined;
+    let failure: unknown;
+    let succeeded = false;
+    try {
+      const turn = await runDelegationTurn({ handle, task, prompt: task.prompt, signal, options });
+      result = {
+        summary: turn.summary,
+        modelId: turn.modelId,
+        ...(detached
+          ? {
+              sessionId: handle.conversationId,
+              title: formatDelegationTitle(task.description, context.parentTitle),
+            }
+          : {}),
+      };
+      succeeded = true;
+    } catch (error) {
+      failure = error;
+    }
+    // 终态命名：detached 会话在销毁前写一次 title 记录；失败也写，保证续聊入口可辨认。
+    // 名称只取创建时快照，后续父会话改名不联动。
+    const failures: unknown[] = [];
+    if (detached) {
+      try {
+        await handle.store.appendRecord('title', {
+          title: formatDelegationTitle(task.description, context.parentTitle),
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    // 存储句柄必须无论成功或标题追加失败都尝试释放；
+    // 清理错误不覆盖主流程异常：主流程失败时抛出原错误，否则抛出首个清理错误。
+    try {
+      await handle.release();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (!succeeded) throw failure;
+    if (failures.length) throw failures[0];
+    return result!;
+  };
+}
+
+/**
+ * 创建委派会话续聊执行器（send_agent）。
+ *
+ * 约束：
+ * - 目标必须是 detached 且已有 sessionId；ephemeral 或已清理的会话明确失败；
+ * - 每次续聊重新 open 取单写者锁，与用户同时打开同一会话时按 SESSION_LOCKED 拒绝，不抢锁；
+ * - 失败不删除会话文件：失败轮次仍可再次续聊，只有用户显式 cancel/delete 才清理。
+ *
+ * @param options 与首次派发共享的宿主装配选项
+ * @returns 标准的 SubagentSessionResumer 异步执行函数
+ */
+export function createCliSubagentResumer(
+  options: CliSubagentRunnerOptions,
+): SubagentSessionResumer {
+  if (!options.leaseCoordinator)
+    throw new KapibalaError('Missing host lease coordinator', {
+      code: 'CONFIG_INVALID',
+      safeMessage: '缺少宿主写租约协调器',
+    });
+  return async (
+    task: AgentTaskRecord,
+    prompt: string,
+    signal: AbortSignal,
+    context: SubagentRunnerContext,
   ): Promise<{ summary: string; modelId?: string }> => {
     if (context?.leaseCoordinator !== options.leaseCoordinator)
       throw new KapibalaError('Parent and host coordinators differ', {
         code: 'CONFIG_INVALID',
         safeMessage: '父会话与子代理宿主写租约身份不一致',
       });
-    // 1. 分配独立子会话存储文件与单写者句柄
-    const handle = await options.manager.create();
+    if (!task.sessionId) {
+      throw createDelegationError(
+        'DELEGATION_NOT_RETAINED',
+        `Task ${task.agentId} has no retained session to resume`,
+      );
+    }
 
-    let subSession: AgentSession | undefined;
+    const handle = await options.manager.open(task.sessionId);
     let result: { summary: string; modelId?: string } | undefined;
     let failure: unknown;
     let succeeded = false;
     try {
-      // 2. 构建独立沙箱
-      const sandbox = new PathSandbox({ workspaceRoot: task.workspaceRoot });
-
-      // 3. 解析目标模型与 Provider 绑定
-      const defaultBinding = options.models.defaultBinding;
-      let selectedProfile = defaultBinding.profile;
-      let selectedProvider = defaultBinding.provider;
-
-      if (task.modelOverride) {
-        const found = options.settings.profiles.find((p) => p.id === task.modelOverride);
-        if (!found) {
-          throw new Error(`未找到指定的覆盖模型配置: '${task.modelOverride}'`);
-        }
-        const overrideBinding = createModelBinding(found, options.settings);
-        selectedProfile = overrideBinding.profile;
-        selectedProvider = overrideBinding.provider;
-      }
-
-      // 4. 构建并启动子 AgentSession（严格绑定 effectivePolicy 派生的安全模式）
-      const effectiveMode: SessionMode =
-        (task.effectivePolicy as { mode?: SessionMode } | undefined)?.mode ?? 'Approval';
-
-      subSession = new AgentSession({
-        userInstructionsPath: options.homeDirectory
-          ? path.join(options.homeDirectory, '.kapibala/AGENTS.md')
-          : undefined,
-        loggingDirectory: options.homeDirectory
-          ? path.join(options.homeDirectory, '.kapibala')
-          : undefined,
-        auditRecoveryDirectory: options.homeDirectory
-          ? path.join(options.homeDirectory, '.kapibala/audit')
-          : undefined,
-        approvalChannel: options.approvalChannel,
-        leaseCoordinator: options.leaseCoordinator,
-        workspaceRoot: task.workspaceRoot,
-        executionCwd: task.executionCwd,
-        rootDir: task.workspaceRoot,
-        sandbox,
-        store: handle.store,
-        conversationId: handle.conversationId,
-        defaultProfile: selectedProfile,
-        defaultProvider: selectedProvider,
-        rootTaskId: task.origin.rootTaskId,
-        depth: task.origin.depth,
-        agentId: task.agentId,
-        maxSteps: task.limits.maxSteps,
-        mode: effectiveMode,
-      });
-
-      // 5. 构建子代理受限工具注册表并直接挂载至 subSession.tools
-      const effectiveAllowed = (
-        task.effectivePolicy as { allowedTools?: readonly string[] } | undefined
-      )?.allowedTools;
-      const allowedToolSet = new Set(effectiveAllowed ?? task.allowedTools ?? []);
-
-      if (task.role !== 'advisor') {
-        const tempRegistry = new ToolRegistry();
-        registerBuiltinTools(tempRegistry, {
-          cwd: task.executionCwd,
-          shell: options.preference ?? 'auto',
-          disableShell: task.role === 'explore' || task.role === 'planner',
-        });
-
-        // 仅注册 effectivePolicy.allowedTools 允许的工具，绝不上溢写/执行工具
-        for (const tool of tempRegistry.list()) {
-          if (allowedToolSet.has(tool.name)) {
-            subSession.tools.register(tool);
-          }
-        }
-      }
-
-      // 6. 注册多角色路由并激活场景模型角色
-      const preferredRole: PrimaryModelRole =
-        (task.effectivePolicy as { preferredRole?: PrimaryModelRole } | undefined)?.preferredRole ??
-        'default';
-      const targetRole: PrimaryModelRole =
-        preferredRole !== 'default' && options.models.hasRole(preferredRole)
-          ? preferredRole
-          : 'default';
-      options.models.attach(subSession, targetRole);
-      await subSession.init();
-
-      let summary = 'Task completed without text output';
-      const modelId: string | undefined = selectedProfile.id;
-
-      // 6. 执行 prompt 驱动智能体循环
-      for await (const event of subSession.run(task.prompt, { signal })) {
-        if (event.type === 'message_stop' && event.message.role === 'assistant') {
-          for (const block of event.message.content) {
-            if (block.type === 'text') {
-              summary = block.text;
-            }
-          }
-        }
-      }
-
-      result = { summary, modelId };
+      result = await runDelegationTurn({ handle, task, prompt, signal, options });
       succeeded = true;
     } catch (error) {
       failure = error;
     }
-    // 子会话销毁成功后才能释放存储句柄；失败时保留单写者锁，防止重叠写入。
-    // 清理错误不覆盖主流程异常：主流程失败时抛出原错误，否则抛出首个清理错误。
-    const failures: unknown[] = [];
-    try {
-      await subSession?.destroy();
-    } catch (error) {
-      failures.push(error);
-    }
-    if (!failures.length) {
-      try {
-        await handle.release();
-      } catch (error) {
-        failures.push(error);
-      }
-    }
+    const releaseError = await handle.release().catch((error: unknown) => error);
     if (!succeeded) throw failure;
-    if (failures.length) throw failures[0];
+    if (releaseError) throw releaseError;
     return result!;
   };
 }

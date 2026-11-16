@@ -52,6 +52,11 @@ export interface CommandContext {
       context: import('@kiturone/kapibala').PreparedTaskContext,
     ) => Promise<import('@kiturone/kapibala').PreparedTaskResult>,
   ) => Promise<void>;
+  /**
+   * 待发送引用草稿；`/quote` 挂载身份，下一条用户输入发送时注入并清空。
+   * 宿主不提供时 `/quote` 明确报告「当前宿主不支持」，不静默降级。
+   */
+  references?: import('../quote-draft.js').QuoteDraft;
 }
 
 /** 命令处理器：args 已按定义切分（rawTail 命令为单元素）；抛错由 dispatcher 统一捕获输出。 */

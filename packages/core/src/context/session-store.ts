@@ -77,6 +77,41 @@ export interface SessionHeader {
   /** 派生或 Fork 来源会话与切点记录 ID。 */
   parentSessionId?: string;
   forkPointRecordId?: string;
+  /**
+   * 保留型委派标记：只在 detached 子代理会话的创建时写入。
+   * 用途是让列表与引用候选在不扫描正文的前提下识别委派归属；
+   * 可选字段，旧会话缺省即普通会话，无需迁移。
+   */
+  delegation?: DelegationHeader;
+}
+
+/**
+ * 委派会话的头部身份；`requestId` 供未来的幂等索引在重启后重建。
+ *
+ * 约束：创建后不再改写；父会话改名不联动，名称只取创建时的快照。
+ */
+export interface DelegationHeader {
+  kind: 'delegation';
+  /** 发起派发的父会话 ID。 */
+  parentSessionId: string;
+  /** 父会话标题快照；缺失时展示名退化为仅委派名。 */
+  parentTitle?: string;
+  /** 委派任务名（spawn 的 description）。 */
+  taskName: string;
+  /** 调用方幂等键；同一 requestId 的重试应复用同一委派。 */
+  requestId?: string;
+  /**
+   * 首次派发参数的规范化签名；重启后与重放请求对比，判定「同 ID 是否同参」。
+   * 只随 requestId 出现，缺失时不参与任何幂等判定。
+   */
+  requestSignature?: string;
+  /**
+   * 首次派发回执的结构化快照；结构归 runtime 所有，宿主只转写不解释。
+   * 重启后据此重建幂等索引，确保同一 requestId 不会重复派发第二个委派会话。
+   */
+  requestReceipt?: Record<string, unknown>;
+  /** 创建时间（毫秒）。 */
+  createdAt: number;
 }
 
 /** 单条 JSONL 记录封装；v2 引入连续物理 seq 与 prevRecordId，因果 parentId 与 branchId 独立。 */

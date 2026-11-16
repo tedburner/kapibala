@@ -838,6 +838,8 @@ export class CrossProjectSessionCatalog {
         activeBranchId,
         archived,
         pinned,
+        // 委派标记只在 header 里；漏转写会让跨项目重建的 sidecar 永久丢失委派归属。
+        ...(header.delegation ? { delegation: header.delegation } : {}),
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         revision: lastRecordId,

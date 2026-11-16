@@ -20,6 +20,7 @@
   --text-color-kumo-default: #1a1c1f;
   --text-color-kumo-strong: #0d0d0d;
   --text-color-kumo-subtle: #5d5d5d;
+  --text-color-kumo-faint: #9a9a9a;
   --text-color-kumo-placeholder: #737373;
   --text-color-kumo-inverse: #ffffff;
   --text-color-kumo-brand: #303030;
@@ -64,6 +65,7 @@
   --text-color-kumo-default: #ededed;
   --text-color-kumo-strong: #ffffff;
   --text-color-kumo-subtle: color-mix(in oklab, #ffffff 55%, transparent);
+  --text-color-kumo-faint: color-mix(in oklab, #ffffff 32%, transparent);
   --text-color-kumo-placeholder: color-mix(in oklab, #ffffff 40%, transparent);
   --text-color-kumo-inverse: #111111;
   --text-color-kumo-brand: #d4d4d4;
@@ -87,6 +89,8 @@
   --text-sm: 0.8125rem;
   --text-lg: 1rem;
   --text-xl: 1.125rem;
+  /* 11px 第三层级专用档（工具行参数、原始 id 等元数据脚注），替代散落的 text-[11px]。 */
+  --text-2xs: 0.6875rem;
 }
 @theme inline {
   --color-kumo-success: light-dark(#128a45, #5fd38d);
@@ -403,15 +407,7 @@ body {
 .kapibala-settings-rail-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 16px 8px 14px;
-}
-.kapibala-settings-rail-title {
-  margin: 0;
-  color: var(--text-color-kumo-strong);
-  font-size: 13px;
-  font-weight: 600;
+  padding: 12px 8px 10px;
 }
 .kapibala-settings-nav {
   display: flex;

@@ -15,6 +15,12 @@ export type OperationResult = 'completed' | 'failed' | 'aborted';
 export interface ViewTool {
   readonly callId: string;
   readonly name: string;
+  /**
+   * 显示名（host 层 resolveToolDisplay 解析的中文短名 / MCP 归一名）；只影响 UI，
+   * 不参与权限判定、不落盘、不进 Provider wire。CLI 与桌面端都渲染本字段，
+   * 不再各自从原始 id 拼显示名。
+   */
+  readonly displayName: string;
   readonly invocation: string;
   readonly input: string;
   readonly status: 'running' | 'succeeded' | 'failed' | 'interrupted';

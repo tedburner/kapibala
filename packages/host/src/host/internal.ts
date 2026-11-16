@@ -32,6 +32,11 @@ export { PresentationStore } from './presentation-store.js';
 export { detectProjectRoot } from './project-root.js';
 export { PROVIDER_METAS, listBuiltinProviders, providerCategory } from './providers.js';
 export type { ProviderMeta } from './providers.js';
+export {
+  assembleReferenceBlocks,
+  readReferenceBlocks,
+} from './reference-blocks.js';
+export type { ReferenceAssemblyOptions, ReferenceSelection } from './reference-blocks.js';
 // local-host/redaction.ts 兼容 shim 经 `export *` 间接消费本模块全量脱敏面，必须整体登记。
 export {
   StreamingRedactor,
@@ -71,18 +76,28 @@ export {
 export type { LoadSettingsOptions, LoadedSettings, UserSettings } from './settings.js';
 export { getCliSkillOptions, hasProjectSkills } from './skills.js';
 export { GitStatusCache, projectStatusFacts } from './status-facts.js';
-export { createCliSubagentRunner } from './subagent-runner.js';
+export {
+  MAX_RETAINED_DELEGATIONS,
+  countRetainedDelegations,
+  listDelegationSessions,
+  readDelegationRequestEntries,
+} from './delegations.js';
+export type { DelegationSessionSummary } from './delegations.js';
+export { createCliSubagentResumer, createCliSubagentRunner } from './subagent-runner.js';
 export { TaskObservation } from './task-observation.js';
 export { registerBuiltinTools } from './tool-registration.js';
 export { formatModelError, formatModelFailureSummary } from './ui/model-errors.js';
 export { describeRuntimeError } from './ui/runtime-errors.js';
 export { sanitizeUntrustedOutput } from './ui/text-safety.js';
 export {
+  formatMcpToolLabel,
   formatToolDetail,
   formatToolInvocation,
   formatToolResultSummary,
+  resolveToolDisplay,
   sanitizeToolName,
 } from './ui/tool-presentation.js';
+export type { ToolDisplay } from './ui/tool-presentation.js';
 export {
   getGlobalMcpConfigPath,
   getProjectMcpConfigPath,

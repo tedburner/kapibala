@@ -13,7 +13,7 @@ import { resolveCommandOutput } from '../command-output.js';
  *    严禁写回磁盘 `mcp.json` 配置文件，保证磁盘配置的声明性与只读完整性。
  */
 
-import { getSessionMcpPlugin } from '@kiturone/kapibala-host/internal';
+import { formatMcpToolLabel, getSessionMcpPlugin } from '@kiturone/kapibala-host/internal';
 import { color, sanitizeUntrustedOutput } from '../ui/events.js';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
 
@@ -110,8 +110,12 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
     );
     for (const tool of tools) {
       const readOnly = tool.metadata?.readOnlyHint ? color(' [只读]', 36, isTTY) : '';
+      // 显示名与工具行同口径：`服务 · 工具` 归一格式（resolveToolDisplay 的 MCP 分支共用本函数）。
+      // 工具名自身可能含 `__`，必须保留第 3 段之后的全部片段，不能只取 split 的第三个元素。
+      const parts = tool.name.split('__');
+      const toolPart = parts.length >= 3 ? parts.slice(2).join('__') : tool.name;
       resolveCommandOutput(ctx).log(
-        `  · ${color(sanitizeUntrustedOutput(tool.name), 1, isTTY)}${readOnly}`,
+        `  · ${color(sanitizeUntrustedOutput(formatMcpToolLabel(serverName, toolPart)), 1, isTTY)}${readOnly}`,
       );
       if (tool.description) {
         resolveCommandOutput(ctx).log(`    ${sanitizeUntrustedOutput(tool.description)}`);

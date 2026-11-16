@@ -21,6 +21,7 @@ import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 import {
   formatToolDetail,
   formatToolInvocation,
+  resolveToolDisplay,
   sanitizeToolName,
 } from './ui/tool-presentation.js';
 
@@ -123,6 +124,7 @@ export class SessionPresentation {
         const tool: ViewTool = {
           callId: event.id,
           name: sanitizeToolName(event.name),
+          displayName: resolveToolDisplay(event.name).label,
           invocation: sanitizeUntrustedOutput(formatToolInvocation(event.name, event.input)),
           input: sanitizeUntrustedOutput(formatToolDetail(event.input)),
           status: 'running',

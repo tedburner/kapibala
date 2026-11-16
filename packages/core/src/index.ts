@@ -10,6 +10,7 @@ export type { HistoryReadOptions } from './context/jsonl-lines.js';
 export * from './context/session-lock.js';
 export * from './context/session-manager.js';
 export * from './context/catalog.js';
+export * from './context/reference.js';
 export * from './context/budget.js';
 export * from './context/workspace.js';
 export * from './context/lease.js';

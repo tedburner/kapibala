@@ -1,3 +1,4 @@
+import { resolveToolDisplay } from '@kiturone/kapibala-host/internal';
 import type { JsonValue, WireEvent } from '@kiturone/kapibala-host/protocol';
 import {
   type PresentationChange,
@@ -61,6 +62,7 @@ export class ConnectedPresentation {
     const tool = existing?.tool ?? {
       callId: event.payload.toolId,
       name: fallbackName,
+      displayName: resolveToolDisplay(fallbackName).label,
       invocation: event.type === 'tool_start' ? event.payload.target : fallbackName,
       input: '',
       status: 'running' as const,

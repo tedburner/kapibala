@@ -335,6 +335,16 @@ export class AgentSession {
   }
 
   /**
+   * 获取当前会话持有的工作区写租约协调器。
+   *
+   * 约束：宿主在会话外发起子代理派发（如 CLI `/delegate`）时必须传入同一实例，
+   * 子会话据此与父会话共享写互斥；另建协调器会绕过互斥，导致并发写同一工作区。
+   */
+  getLeaseCoordinator(): WorkspaceLeaseCoordinator {
+    return this.leaseCoordinator;
+  }
+
+  /**
    * 空闲时原子替换角色的模型绑定；本方法不改变当前角色或工具权限。
    * @param profile 模型协议、请求目标和输出预算。
    * @param role 被配置的主任务或摘要角色。

@@ -110,10 +110,21 @@ export interface SpawnAgentParams {
   cwd?: string;
   /** 物理隔离模式。 */
   isolation?: 'inherit' | 'worktree';
+  /**
+   * 会话生命周期模式；缺省 'ephemeral' 保持既有行为（终态后销毁子会话并释放资源）。
+   * 'detached' 在终态后保留子会话文件供续聊，保留策略（上限、删除入口）由宿主层实现。
+   * 与 isolation 正交：isolation 是物理路径隔离，mode 是生命周期，不得互相替代。
+   */
+  mode?: 'ephemeral' | 'detached';
   /** 模型覆盖参数。 */
   modelOverride?: string;
   /** 限额配置。 */
   limits?: AgentTaskLimits;
+  /**
+   * 调用方幂等键；同一 requestId 且派发参数一致时返回原回执，不重复派发。
+   * 参数不一致按冲突失败，不做「最后一次覆盖」或隐式去重。
+   */
+  requestId?: string;
 }
 
 /** spawn_agent 启动回执。 */
@@ -136,6 +147,46 @@ export interface SpawnAgentReceipt {
   workspaceRoot: string;
   /** 实际执行目录。 */
   executionCwd: string;
+  /**
+   * 子会话 ID；仅 detached 任务在子会话创建后回填。
+   * 幂等重放时用它把「原任务」直接指向可续聊的会话，无需再扫描历史。
+   */
+  sessionId?: string;
+}
+
+/**
+ * send_agent 续聊输入参数。
+ *
+ * 约束：目标必须是 detached 且处于终态；活动态直接拒绝（DELEGATION_BUSY），不排队。
+ */
+export interface SendAgentParams {
+  [key: string]: unknown;
+  /** 要续聊的委派任务标识（spawn_agent 回执里的 agentId）。 */
+  agentId: string;
+  /** 追加给该委派会话的新一轮用户输入。 */
+  prompt: string;
+  /** 可选幂等键；同一 requestId 且目标与输入一致时返回原回执，不重复执行。 */
+  requestId?: string;
+}
+
+/** send_agent 受理回执；与 spawn 一致，返回即闭合，结果经 outbox 通知回传。 */
+export interface SendAgentReceipt {
+  /** 被续聊的委派任务标识。 */
+  agentId: string;
+  /** 受理状态（固定为 'accepted'）。 */
+  status: 'accepted';
+  /** 角色预设（沿用首次派发时的快照）。 */
+  role: SubagentRole;
+  /** 任务描述（沿用首次派发时的快照）。 */
+  description: string;
+  /** 任务树深度。 */
+  depth: number;
+  /** 归属的根任务标识。 */
+  rootTaskId: string;
+  /** 保留型子会话 ID；续聊必须依赖它打开会话。 */
+  sessionId?: string;
+  /** 本次续聊对应的运行代次（首次派发为 1，每次续聊 +1）。 */
+  runGeneration: number;
 }
 
 /**
@@ -178,6 +229,26 @@ export interface AgentTaskRecord {
   allowedTools?: readonly string[];
   /** 物理隔离模式。 */
   isolation?: 'inherit' | 'worktree';
+  /** 会话生命周期模式；ephemeral 为默认且行为与历史版本一致，detached 在终态后保留会话。 */
+  readonly mode: 'ephemeral' | 'detached';
+  /** 子会话 conversationId；仅 detached 终态由 runner 回填，是用户可见的唯一凭据。 */
+  sessionId?: string;
+  /** 委派会话展示名；仅 detached 任务回填，命名规则见 `formatDelegationTitle`。 */
+  title?: string;
+  /**
+   * 运行代次：首次派发为 1，每次 send_agent 续聊 +1；缺省按 1 处理。
+   * 续聊不新增任务记录，也不消耗「累计受理」配额，只重新占用活动槽位；
+   * outbox 的 terminalRevision 用它区分不同轮次的终态通知。
+   */
+  runGeneration?: number;
+  /** 本次运行由哪一轮续聊而来（`run-<代次>`）；首次派发缺省，仅用于观测对账。 */
+  continuationOf?: string;
+  /** 首次派发时的幂等键；随 detached 子会话头落盘，供重启后重建幂等索引。 */
+  requestId?: string;
+  /** 首次派发参数的规范化签名；与 requestId 成对出现，用于「同 ID 异参」判定。 */
+  requestSignature?: string;
+  /** 首次派发回执快照；宿主写委派头时原样转写，重启后据此重建可重放的幂等索引。 */
+  requestReceipt?: SpawnAgentReceipt;
   /** 模型覆盖参数。 */
   modelOverride?: string;
   /** 派生并锁定的不可扩大策略快照。 */

@@ -2,6 +2,7 @@ import { AbortError, type AgentSession, type SessionEvent } from '@kiturone/kapi
 import type { ActiveSessionController } from './active-session.js';
 import type { CommandContext, CommandDispatcher } from './commands/dispatcher.js';
 import { CliInputCoordinator } from './input-coordinator.js';
+import { QuoteDraft, prepareReferenceTask } from './quote-draft.js';
 import type { CliApprovalChannel } from './ui/approval.js';
 import { type EventRenderer, type OutputDetail, createEventRenderer } from './ui/events.js';
 import { CLI_VERSION } from './version.js';
@@ -47,6 +48,9 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   });
   context.dispatcher = dispatcher;
   context.isInputBusy = () => input.isBusy();
+  // 引用草稿随 REPL 生命周期存活；/quote 挂载，下一条输入发送时注入并清空。
+  const quoteDraft = new QuoteDraft();
+  context.references = quoteDraft;
   context.question = (prompt) => input.question(prompt);
   context.readSecret = (prompt) => input.readSecret(prompt);
   context.confirm = (prompt) => input.confirm(prompt);
@@ -144,6 +148,25 @@ export async function startREPL(options: REPLOptions): Promise<void> {
       if (handled) return;
       if (busy()) {
         console.log('会话忙，请等待执行与清理完成；只读命令仍可查询。');
+        return;
+      }
+      const references = quoteDraft.take();
+      if (references.length) {
+        // 引用在运行锁内读取与校验；失败由 runTask 统一报告，草稿按「已发送」清空。
+        const projectRoot = session().workspaceRoot;
+        const home = context.homeDir;
+        const host = { projectRoot, ...(home ? { homeDirectory: home } : {}) };
+        await runTask((signal) =>
+          options.controller
+            ? options.controller.runPreparedTask(
+                raw.trim(),
+                () => prepareReferenceTask(references, host),
+                { signal },
+              )
+            : session().runPreparedTask(raw.trim(), () => prepareReferenceTask(references, host), {
+                signal,
+              }),
+        );
         return;
       }
       await runTask((signal) =>

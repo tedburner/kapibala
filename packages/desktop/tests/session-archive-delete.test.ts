@@ -39,6 +39,7 @@ function fakeHandle(conversationId: string, run: () => Promise<void> = async () 
     conversationId,
     session: {} as AgentSession,
     runSkill: vi.fn(async () => {}),
+    runWithReferences: vi.fn(async () => {}),
     run: vi.fn(run),
     cancel: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),

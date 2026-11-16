@@ -1,28 +1,51 @@
-import { formatToolInvocation, formatToolResultSummary } from '@kiturone/kapibala-host/internal';
+import {
+  formatToolInvocation,
+  formatToolResultSummary,
+  resolveToolDisplay,
+} from '@kiturone/kapibala-host/internal';
 import { describe, expect, it } from 'vitest';
 
 describe('tool presentation', () => {
   it('formats built-in file tools as concise commands', () => {
-    expect(formatToolInvocation('read_file', { path: '需求点.txt' })).toBe('Read 需求点.txt');
+    expect(formatToolInvocation('read_file', { path: '需求点.txt' })).toBe('读取 需求点.txt');
     expect(formatToolInvocation('glob', { pattern: '*.ts', subDirectory: 'packages/cli' })).toBe(
-      'Search *.ts in packages/cli',
+      '搜索 *.ts in packages/cli',
     );
     expect(formatToolInvocation('grep', { pattern: '关键字', path: '需求点.txt' })).toBe(
-      'Search "关键字" in 需求点.txt',
+      '搜索 "关键字" in 需求点.txt',
     );
     expect(
       formatToolInvocation('write_file', {
         path: 'packages/cli/src/foo.ts',
         content: 'x'.repeat(1_229),
       }),
-    ).toBe('Write packages/cli/src/foo.ts · 1.2KB');
+    ).toBe('写入 packages/cli/src/foo.ts · 1.2KB');
     expect(
       formatToolInvocation('edit_file', {
         path: 'packages/cli/src/foo.ts',
         targetContent: 'x'.repeat(42),
         replacementContent: 'updated',
       }),
-    ).toBe('Edit packages/cli/src/foo.ts · 替换 42 字符');
+    ).toBe('编辑 packages/cli/src/foo.ts · 替换 42 字符');
+  });
+
+  it('resolves display names for built-in, mcp, and unknown tools', () => {
+    expect(resolveToolDisplay('read_file').label).toBe('读文件');
+    expect(resolveToolDisplay('spawn_agent').label).toBe('派发子代理');
+    expect(resolveToolDisplay('spawn_agent').verb).toBe('派发');
+    expect(resolveToolDisplay('send_agent').label).toBe('续聊子代理');
+    expect(resolveToolDisplay('mcp__doc-server__read_file').label).toBe('doc-server · read_file');
+    expect(resolveToolDisplay('totally_new_tool').label).toBe('Totally new tool');
+  });
+
+  it('renders registered built-ins as verb + chip instead of bare ids', () => {
+    expect(formatToolInvocation('send_agent', { agentId: 'agent-1', prompt: 'next' })).toBe(
+      '续聊 · agent-1',
+    );
+    expect(formatToolInvocation('spawn_agent', { description: '梳理模块' })).toBe(
+      '派发 · 梳理模块',
+    );
+    expect(formatToolInvocation('list_agents', {})).toBe('查询子代理');
   });
 
   it('redacts sensitive values and removes terminal control characters in generic tools', () => {

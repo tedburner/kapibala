@@ -87,6 +87,7 @@ it('子会话从显式 home 加载指令并恢复审计，独立历史清理后�
     childAgentIds: new Set(),
     workspaceRoot: root,
     executionCwd: root,
+    mode: 'ephemeral',
     limits: { maxSteps: 1, timeoutMs: 1000 },
   };
   await runner(task, new AbortController().signal, { leaseCoordinator: leases });
@@ -100,4 +101,80 @@ it('子会话从显式 home 加载指令并恢复审计，独立历史清理后�
   expect(sessions.total).toBe(1);
   const reopened = await manager.open(sessions.items[0].conversationId);
   await reopened.release();
+});
+
+it('detached 委派在创建时写头部身份，终态写命名并回传会话 ID', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-child-detached-'));
+  directories.push(home);
+  const root = path.join(home, 'workspace');
+  fs.mkdirSync(root);
+  const profile = {
+    id: 'fixture',
+    name: 'fixture',
+    provider: 'openai-compatible' as const,
+    modelName: 'fixture',
+    baseURL: 'http://127.0.0.1:1/v1',
+    apiKey: 'fixture-key',
+    apiKeyEnv: 'KPBL_FIXTURE_KEY',
+    contextWindow: 32000,
+  };
+  const settings: UserSettings = { defaultModel: profile.id, profiles: [profile] };
+  const manager = new SessionManager({
+    workspaceRoot: root,
+    homeDirectory: home,
+    projectRootMode: 'exact',
+  });
+  const leases = new WorkspaceLeaseCoordinator();
+  vi.spyOn(AgentSession.prototype, 'run').mockImplementation(async function* () {
+    yield { type: 'turn_start', turn: 1 };
+  });
+  const runner = createCliSubagentRunner({
+    manager,
+    models: new CliModelBindings(settings, profile),
+    settings,
+    homeDirectory: home,
+    leaseCoordinator: leases,
+  });
+  const task: AgentTaskRecord = {
+    agentId: 'child',
+    origin: {
+      rootTaskId: 'tree',
+      parentSessionId: 'parent-session',
+      originBranchId: 'main',
+      originRunId: 'run',
+      spawnToolCallId: 'spawn',
+      generation: 1,
+      depth: 1,
+    },
+    role: 'advisor',
+    description: '核对迁移脚本',
+    prompt: 'fixture',
+    status: 'running',
+    createdAt: Date.now(),
+    childAgentIds: new Set(),
+    workspaceRoot: root,
+    executionCwd: root,
+    mode: 'detached',
+    limits: { maxSteps: 1, timeoutMs: 1000 },
+  };
+  const result = await runner(task, new AbortController().signal, {
+    leaseCoordinator: leases,
+    parentTitle: '数据库迁移',
+  });
+  expect(result.sessionId).toBeDefined();
+  const handle = await manager.open(result.sessionId!);
+  try {
+    const records = await handle.store.readRecords();
+    const header = records.find((record) => record.type === 'header');
+    expect(header?.payload.delegation).toMatchObject({
+      kind: 'delegation',
+      parentSessionId: 'parent-session',
+      parentTitle: '数据库迁移',
+      taskName: '核对迁移脚本',
+    });
+    const title = records.find((record) => record.type === 'title');
+    expect(title?.payload.title).toBe('核对迁移脚本 · 数据库迁移');
+  } finally {
+    await handle.release();
+  }
 });

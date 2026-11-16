@@ -109,6 +109,8 @@ const tool = z
   .object({
     callId: id,
     name: text,
+    /** 显示名（host 层解析的中文短名 / MCP 归一名）；只影响 UI，不参与权限判定。 */
+    displayName: text,
     invocation: text,
     input: text,
     status: z.enum(['running', 'succeeded', 'failed', 'interrupted']),

@@ -7,16 +7,19 @@ import {
   type ApprovalChannel,
   type CanonicalMessage,
   type ManagedSession,
+  type PreparedTaskResult,
   type PrimaryModelRole,
   type SessionEvent,
   SessionManager,
   type SessionMode,
+  SessionReferenceReader,
   type WorkspaceLeaseCoordinator,
   sanitizeSessionTitle,
 } from '@kiturone/kapibala';
 import { type McpPluginInstance, createMcpPlugin } from '@kiturone/kapibala-mcp';
 import { toWireErrorCode } from '../protocol/index.js';
 import type { JsonValue } from '../protocol/index.js';
+import { readDelegationRequestEntries } from './delegations.js';
 import { resolveCliMcpOptions } from './mcp.js';
 import { CliModelBindings, ROUTABLE_MODEL_ROLES } from './model-bindings.js';
 import { StreamingRedactor, redactText } from './redaction.js';
@@ -28,7 +31,7 @@ import {
   resolveApiKeyDetailed,
 } from './settings.js';
 import { getCliSkillOptions, hasProjectSkills } from './skills.js';
-import { createCliSubagentRunner } from './subagent-runner.js';
+import { createCliSubagentResumer, createCliSubagentRunner } from './subagent-runner.js';
 import { registerBuiltinTools } from './tool-registration.js';
 import { formatToolDetail } from './ui/tool-presentation.js';
 
@@ -38,6 +41,7 @@ import { projectHistory } from './history-projection.js';
 import { type ManagedInspection, projectInspection } from './inspection.js';
 import { PresentationStore } from './presentation-store.js';
 import { redactPresentationState } from './public-projection.js';
+import { type ReferenceSelection, readReferenceBlocks } from './reference-blocks.js';
 import { SessionPresentation, presentationScope } from './session-presentation.js';
 import { projectStatusFacts } from './status-facts.js';
 import { TaskObservation } from './task-observation.js';
@@ -113,6 +117,19 @@ export interface ManagedHostSession {
    * task 为空或技能名非法时由底层 Session 以 SKILL_INVALID_INPUT 拒绝。
    */
   runSkill(skillName: string, task: string, signal?: AbortSignal): Promise<void>;
+  /**
+   * 带跨会话引用的运行：在运行锁内读取并冻结引用快照，装配成消息级溯源块。
+   *
+   * 边界：
+   * - 调用方只传身份（`ReferenceSelection`），正文一律由宿主读取，不接受外部上传正文；
+   * - 任一条引用读取失败、跨桶、已归档或合计超预算时抛稳定错误码并零追加；
+   * - 引用块与普通正文共享同一条任务预算预检，不额外熔断。
+   */
+  runWithReferences(
+    input: string,
+    references: readonly ReferenceSelection[],
+    signal?: AbortSignal,
+  ): Promise<void>;
   /** 中止当前父子任务并等待清理；不因退订展示而自动触发。 */
   cancel(): Promise<void>;
   /** 清理失败保留写锁，可重试；成功后禁止再运行或配置。 */
@@ -222,6 +239,19 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           approvalChannel: approval,
           leaseCoordinator: leases,
         })(...args),
+      // 续聊与首次派发共享同一租约、审批与模型装配，避免独立入口绕过父宿主权限。
+      resumer: createCliSubagentResumer({
+        homeDirectory,
+        manager,
+        models,
+        settings,
+        preference,
+        isTrusted: trusted,
+        approvalChannel: approval,
+        leaseCoordinator: leases,
+      }),
+      // 进程重启后从委派头重建幂等索引，同一 requestId 不重复派发。
+      restoredRequests: readDelegationRequestEntries(manager),
       validateModelOverride: (id) => settings.profiles.some((item) => item.id === id),
       outboxPath: path.join(root, '.kapibala/outbox.jsonl'),
     });
@@ -315,6 +345,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     const ownedRuntime = runtime;
     const credentials = credentialsFromSettings(settings);
     const redact = (text: string) => redactText(text, credentials);
+    // 引用读取器与会话同源（同一 home 下的 sessions 目录）；无状态、可跨运行复用。
+    const referenceReader = new SessionReferenceReader({ homeDirectory });
     const identity = {
       conversationId: handle.conversationId,
       branchId: handle.store.getActiveBranchId(),
@@ -472,6 +504,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       input: string,
       signal?: AbortSignal,
       skillName?: string,
+      prepare?: () => Promise<PreparedTaskResult>,
     ): AsyncGenerator<SessionEvent> {
       refresh();
       const controller = new AbortController();
@@ -504,9 +537,13 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           }
           const textRedactor = new StreamingRedactor(credentials);
           const thinkingRedactor = new StreamingRedactor(credentials);
-          for await (const event of skillName
-            ? current.runSkill(skillName, input, { signal: combinedSignal })
-            : current.run(input, { signal: combinedSignal })) {
+          // 引用经 runPreparedTask 在运行锁内读取与校验，准备失败时 Core 零 append。
+          const source: AsyncIterable<SessionEvent> = prepare
+            ? current.runPreparedTask(input, prepare, { signal: combinedSignal })
+            : skillName
+              ? current.runSkill(skillName, input, { signal: combinedSignal })
+              : current.run(input, { signal: combinedSignal });
+          for await (const event of source) {
             if (event.type === 'text_delta')
               yield { ...event, text: textRedactor.push(event.text) };
             else if (event.type === 'thinking_delta')
@@ -568,6 +605,21 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       },
       async runSkill(skillName, task, signal) {
         for await (const _ of run(task, signal, skillName)) {
+          /* 投影已在内部完成。 */
+        }
+      },
+      async runWithReferences(input, references, signal) {
+        if (references.length === 0) {
+          for await (const _ of run(input, signal)) {
+            /* 无引用时与 run 完全同路径。 */
+          }
+          return;
+        }
+        // 冻结发生在这里：prepare 在运行锁内读取，失败或超预算时 Core 零 append。
+        const prepare = async (): Promise<PreparedTaskResult> => ({
+          content: await readReferenceBlocks(referenceReader, root, references, { redact }),
+        });
+        for await (const _ of run(input, signal, undefined, prepare)) {
           /* 投影已在内部完成。 */
         }
       },

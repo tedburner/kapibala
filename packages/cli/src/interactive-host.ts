@@ -8,6 +8,7 @@ import {
 import type { ActiveSessionController } from './active-session.js';
 import { resolveCommandOutput } from './command-output.js';
 import type { CommandContext, CommandDispatcher } from './commands/dispatcher.js';
+import { QuoteDraft, prepareReferenceTask } from './quote-draft.js';
 import type { CliApprovalChannel } from './ui/approval.js';
 import type { EventRenderer } from './ui/events.js';
 import type { SelectConfig } from './ui/select.js';
@@ -161,6 +162,9 @@ export async function runInteractiveHost(options: InteractiveHostOptions): Promi
   });
   context.dispatcher = dispatcher;
   context.isInputBusy = () => input.isBusy();
+  // 引用草稿随交互宿主生命周期存活；/quote 挂载，下一条输入发送时注入并清空。
+  const quoteDraft = new QuoteDraft();
+  context.references = quoteDraft;
   context.question = (value) => input.question(value);
   context.readSecret = (value) => input.readSecret(value);
   context.confirm = (value) => input.confirm(value);
@@ -279,6 +283,25 @@ export async function runInteractiveHost(options: InteractiveHostOptions): Promi
       if (handled || exiting) return;
       if (busy()) {
         output().log('会话忙，请等待执行与清理完成；只读命令仍可查询。');
+        return;
+      }
+      const references = quoteDraft.take();
+      if (references.length) {
+        // 引用在运行锁内读取与校验；失败由 runTask 统一报告，草稿按「已发送」清空。
+        const projectRoot = session().workspaceRoot;
+        const home = context.homeDir;
+        const host = { projectRoot, ...(home ? { homeDirectory: home } : {}) };
+        await runTask('prepared', (signal) =>
+          options.controller
+            ? options.controller.runPreparedTask(
+                raw.trim(),
+                () => prepareReferenceTask(references, host),
+                { signal },
+              )
+            : session().runPreparedTask(raw.trim(), () => prepareReferenceTask(references, host), {
+                signal,
+              }),
+        );
         return;
       }
       await runTask('message', (signal) =>
