@@ -61,6 +61,10 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - `/model` 的厂商族推断统一走 `packages/host/src/host/settings.ts` 的 `detectProviderFamily`，不要在命令层另写启发式；密钥解析走同族回退（`FAMILY_KEY_ENV`），不做跨厂商兜底。
 - **密钥按厂商族共用（一个厂商只需配一次）**：分组键统一走 `credentialGroup()` —— 可识别厂商按 family 归组，`unknown` 退化到按端点 host 隔离（否则多个自建网关会串用同一把 key）；分组展示名走 `describeCredentialGroup()`。
 - 同一分组内**只保留一份密钥**：读取走 `resolveApiKeyDetailed(profile, settings)`（第 2 级即"同厂商族已存密钥"），写入走 `updateProfileApiKey()`（自动清理同组冗余副本）。新增任何密钥读取/写入入口都不要绕过这两个函数，否则会出现「更新了 A 的密钥、B 仍在用旧密钥」的静默不一致。
+- **UI 可访问名与文案是桌面 e2e 的选择器契约**：改 `aria-label` / 按钮文案必须同步
+  `packages/desktop/e2e`（`getByRole(name)` 精确匹配），否则 CI 在 click/断言处 30s 超时。
+  v0.1.3 设置页「关闭设置」→「返回应用」踩中过一次；新增命令（如 `/delegate`）也要检查
+  命令补全用例的输入前缀是否产生歧义。
 - **不自动 git add / commit**，改动保留在工作区由用户审核后手动提交。
 - **进程启动环境必须显式构造，禁止全量继承 `process.env`**：宿主（IDE / 沙箱包装器）会注入
   `NODE_OPTIONS=--require=<vendor shim>` 与 `ELECTRON_RUN_AS_NODE=1`，前者把宿主的原生模块塞进
@@ -101,6 +105,7 @@ pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ 
 - **v0.1.0 已发布（未签名个人自用版，2026-11-14）**：桌面 Harness 已合并 main 并以 `v0.1.0` 标签发布，main 从 `v0.0.10` 前进一版。能力范围：Core 历史读取预算与 `projectRootMode: 'exact'`、CLI host 公共投影层与 `mutateGlobalSettings` 配置事务、Electron 桌面客户端（`packages/desktop`，不新增 npm 发布包）、桌面候选构建与发布证据链路。新增门禁：`pnpm check-desktop`（已并入 lint）、`pnpm verify:desktop`（构建+类型+check-desktop --artifacts+单测+e2e）与 desktop-candidate workflow；人工验收证据（六类专项与桌面专项）自 2026-11-14 起默认跳过，`KPBL_RELEASE_STRICT=true` 恢复，口径见 `docs/release-evidence.md`。协议会话注入 `~/.kapibala/AGENTS.md` 的迁移边界见 `docs/migration/v0.1.0.md`。
 - **v0.1.1 已发布（2026-11-15）**：桌面包改为随 Release 自动发布——`release.yml` 的 `desktop-unsigned` 作业在四个原生 runner 上产出未签名测试包并上传，另有 `desktop_only` 手动补跑入口；打包链路修掉三处在干净机器才暴露的缺陷（`--offline` 解析不了 registry 元数据、工作区成员名单硬编码、Windows e2e 路径断言）。实际交付 mac arm64 / mac x64 / Linux x86_64 三平台，Windows 安装副本 smoke 在全新安装首启时超 30 秒被判死连接，补丁见 v0.1.2。
 - **v0.1.2 已发布（2026-11-15）**：修复 Windows 安装副本两个确定性失败——① 8.3 短名 `~` 的 URL 编码不一致致控制端口永不投递（`normalizeUrl`）；② 受限 GUI PATH 下 `detectShell` 抛错阻断 `session.create`（宿主 `registerBuiltinTools` 解释器降级为惰性 fallback，smoke PATH 补 PowerShell 目录）。另含冷启动握手兜底 30s → 90s、`GITHUB_OUTPUT` 提前写入、Release 附件去 `desktop-<target>__` 前缀、smoke 失败上传 `test-results/` 诊断产物。⚠️ **npm 与桌面附件内容分叉**：npm 三包 0.1.2 在 shell 兜底修复前发布且不可覆盖，Release 四平台安装包已用修复提交 `1c1d106` 重建上架（tag 已前移）；CLI 环境总有 shell，分叉影响可忽略，修复随 v0.1.3 进 npm，不单独发补丁版。验收与抖动记录见 `docs/releases/v0.1.2.md`。
+- **v0.1.3 开发中（分支 `v0.1.3`，2026-11-17）**：跨会话引用（`/quote`）、可续聊委派会话（`/delegate` / `/delegations`）、工具显示名与工具行层级（U1.1 / U1.2 / U1.4）已落地，分支 Verify 全绿（run 43900502504），待发布；U1.3 / U1.5 / U1.6 整组未完成，按计划顺延 v0.1.4。
 - 版本编号约定于 2026-10-21 更新：采用三段稳定版本，minor/patch 均允许多位整数；默认 `v0.0.9 → v0.0.10`，不逢十进位。稳定整合版为 **v0.0.10**，Electron 桌面客户端为 **v0.1.0**，其打包修复补丁为 **v0.1.1**（四平台自动打包）、**v0.1.2**（Windows 安装副本 URL 挂死 + 受限 PATH shell 探测阻断）均为 2026-11-15；原 v0.1.1 双主题规划（跨会话引用 + 多任务派发，设计 005）顺延为 **v0.1.3**，并携带 v0.1.2 的 shell 兜底修复进 npm（消除 tag/npm 分叉）；历史文档中的旧编号不作为现役发布规则。
 - v0.0.1 既有能力与后续路线图见 `docs/RELEASES.md`，不在规则文件重复维护能力清单。
 - **v0.0.10 稳定整合版已于 2026-10-23 发布到 npm 与 GitHub Release**（实际版本号以包清单与 `CLI_VERSION` 为准，升版只由 `pnpm release` 完成）。公开差异的唯一真源是 `docs/sdk-compatibility.md` + `scripts/fixtures/public-api/migration.json`；协议细节 `docs/local-protocol.md`、迁移动作 `docs/migration/v0.0.10.md`、证据与 pending 阻断 `docs/verification/v0.0.10.md`、发布说明 `docs/releases/v0.0.10.md`。三类专项门禁：`pnpm verify:compat`（v0.0.9 tarball × 候选构建四组合）、`pnpm verify:platform`（当前 OS 真实进程 + 三包隔离安装）、`pnpm verify:soak`（PR/nightly/release 分档）；新增宿主或传输能力时必须同步其断言，不允许用短档或模拟测试替代 Node 20、Windows ACL/ConPTY、POSIX PTY 与 release 长时证据。

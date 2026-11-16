@@ -124,6 +124,9 @@ pnpm build && node packages/cli/dist/bin.js
 | `/fork [title]` | 把当前活动分支导出为独立新会话并切换，导入历史不计入新会话费用 | `/fork 性能实验` |
 | `/archive <id>`、`/archive list [page]`、`/archive restore <id>` | 逻辑归档、浏览归档清单与恢复；运行中会话禁止归档 | `/archive list` |
 | `/agents`、`/agents show <id>`、`/agents cancel <id>`、`/agents collect <id>` | 观测任务树、查看明细、取消任务、把终态通知注入来源分支（异分支拒绝） | `/agents collect a1b2` |
+| `/quote`、`/quote <id\|id#record>`、`/quote --search <query>`、`/quote --list [--remove n]` | 引用其它会话历史：菜单选择、`会话ID#记录ID` 精确引用、项目桶内检索、查看并删除本轮已挂载引用；草稿在下一条输入发送时冻结注入 | `/quote --search 并发调度` |
+| `/delegate <任务> [--role\|--model\|--name]` | 用户级派发 detached 委派会话（复用当前会话写租约），终态保留可续聊 | `/delegate 整理 docs/ 链接 --name 文档巡检` |
+| `/delegations [list\|show\|open\|cancel\|delete] <id>` | 委派会话面板：元数据跨进程可见，按 ID 或唯一前缀操作；delete 物理删除释放保留名额 | `/delegations open a1b2` |
 | `/rename <title>` | 修改当前会话标题 | `/rename 上下文设计` |
 | `/context` | 查看保护范围、预算、剪裁与有效检查点 | `/context` |
 | `/compact` | 空闲时手动摘要旧完整交互 | `/compact` |
