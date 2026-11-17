@@ -243,8 +243,10 @@ describe('no-key CLI and local-host matrix', () => {
         input: 'write through host',
       })) as { runId: string };
 
-      await vi.waitFor(() =>
-        expect(events.some((event) => event.type === 'run_settled')).toBe(true),
+      // 工具审批 + 写盘 + 收口要走完整事务；Windows runner 上常超过默认 1 秒轮询窗口。
+      await vi.waitFor(
+        () => expect(events.some((event) => event.type === 'run_settled')).toBe(true),
+        { timeout: 10_000 },
       );
       const settled = events.find((event) => event.type === 'run_settled')!;
       expect(settled.payload).toEqual({ outcome: 'completed' });

@@ -333,8 +333,10 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await page.screenshot({ path: path.join(artifacts, 'chat-1280.png') });
     await page.getByRole('button', { name: '打开设置' }).click();
     // 设置页首屏选中当前默认模型（本地验收模型，自定义端点分组）；自定义端点走 custom 表单，
-    // 密钥字段名是「API Key」，且不会回显已存凭证。
-    await expect(page.getByRole('textbox', { name: 'API Key', exact: true })).toHaveValue('');
+    // 自定义端点分组的密钥字段名是「API Key（必填）」，且不会回显已存凭证。
+    await expect(page.getByRole('textbox', { name: 'API Key（必填）', exact: true })).toHaveValue(
+      '',
+    );
     const beforeCalls = requests.length;
     // 输出预算在默认折叠的高级设置里；保存即落盘，不再有预览令牌与二次确认。
     await page.getByText('高级设置', { exact: true }).click();

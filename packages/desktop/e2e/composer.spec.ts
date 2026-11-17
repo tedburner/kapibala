@@ -44,6 +44,27 @@ test.describe
       fs.mkdirSync(path.join(workspaceRoot, 'src'), { recursive: true });
       fs.writeFileSync(path.join(workspaceRoot, 'src/demo.ts'), 'demo');
       fs.writeFileSync(path.join(workspaceRoot, 'README.md'), 'demo readme');
+      // 发送口要求至少有一个「已配置且启用」的模型：Ollama 已改为默认停用，
+      // 不能再用它的内置内联密钥兜底。这里显式登记一个指向关闭端口的本地模型，
+      // 让首轮运行快速失败但会话照常打开，技能目录数据源随之可用。
+      fs.writeFileSync(
+        path.join(home, '.kapibala/settings.json'),
+        JSON.stringify({
+          profiles: [
+            {
+              id: 'offline-fixture',
+              name: '离线验收模型',
+              provider: 'openai-compatible',
+              modelName: 'offline',
+              baseURL: 'http://127.0.0.1:1/v1',
+              apiKeyEnv: 'KPBL_COMPOSER_FIXTURE_KEY',
+              apiKey: 'test-only-local-credential',
+              contextWindow: 32000,
+            },
+          ],
+          defaultModel: 'offline-fixture',
+        }),
+      );
       // 全局技能目录（~/.kapibala/skills）：会话打开时由运行时 registry 扫描装载
       const skillDir = path.join(home, '.kapibala/skills/demo-skill');
       fs.mkdirSync(skillDir, { recursive: true });
