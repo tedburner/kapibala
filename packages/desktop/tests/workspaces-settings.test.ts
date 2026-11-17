@@ -4,7 +4,11 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { mutateGlobalSettings } from '@kiturone/kapibala-host/host';
+import {
+  API_KEY_ENV_NONE,
+  BUILTIN_PROFILES,
+  mutateGlobalSettings,
+} from '@kiturone/kapibala-host/host';
 import { afterEach, expect, it, vi } from 'vitest';
 import { SettingsService } from '../src/agent-host/settings-service.js';
 import { Workspaces } from '../src/agent-host/workspaces.js';
@@ -195,6 +199,28 @@ it('目标 ID 独立校验防止 editId 转移旧密钥，新端点不会继承�
   );
   expect(copy.profile.credential.source).toBe('inline');
 });
+it('免密钥自建端点可直接保存，并按厂商名独立分组', () => {
+  const { root, workspaces } = fixture();
+  const service = new SettingsService(workspaces);
+  const saved = service.saveProfile({
+    id: 'custom-magpie',
+    name: 'deepseek-flash',
+    provider: 'openai-compatible',
+    modelName: 'deepseek-flash',
+    baseURL: 'http://127.0.0.1:3425',
+    apiKeyEnv: API_KEY_ENV_NONE,
+    vendorName: 'magpie',
+    contextWindow: 32000,
+  });
+  expect(saved.profile.credential.source).toBe('none');
+  expect(saved.profile.providerKey).toBe('custom:magpie');
+  expect(service.read().providers).toContainEqual(
+    expect.objectContaining({ key: 'custom:magpie', name: 'magpie', custom: true }),
+  );
+  const stored = JSON.parse(fs.readFileSync(path.join(root, '.kapibala/settings.json'), 'utf8'));
+  expect(stored.profiles[0]).toMatchObject({ apiKeyEnv: API_KEY_ENV_NONE, vendorName: 'magpie' });
+  expect(stored.profiles[0].apiKey).toBeUndefined();
+});
 it('保存回读反映环境变量实际端点，覆盖值不写进配置', () => {
   const { root, workspaces } = fixture();
   const service = new SettingsService(workspaces);
@@ -250,4 +276,127 @@ it('创建项目显式确认信任，显示名绑定物理根且不改目录；�
     workspaces.addProject(selected.id, '重命名显示', selected.trustToken, false),
   ).toThrow('TRUST_REQUIRED');
   expect(workspaces.get(selected.id).trusted).toBe(false);
+});
+it('停用模型保留密钥，并把默认与路由引用迁到首个启用模型', () => {
+  const { root, workspaces } = fixture();
+  const service = new SettingsService(workspaces);
+  service.saveProfile(
+    {
+      id: 'custom-toggle',
+      name: 'Toggle',
+      provider: 'openai-compatible',
+      modelName: 'toggle',
+      baseURL: 'http://127.0.0.1:1/v1',
+      apiKeyEnv: 'CUSTOM_API_KEY',
+      contextWindow: 32000,
+    },
+    'toggle-private-key',
+  );
+  service.setDefault('custom-toggle');
+  service.setRouting('planning', 'custom-toggle');
+
+  service.setEnabled('custom-toggle', false);
+
+  const after = service.read();
+  expect(after.profiles.find((item) => item.id === 'custom-toggle')?.disabled).toBe(true);
+  expect(after.defaultModel).not.toBe('custom-toggle');
+  expect(after.routing.planning).not.toBe('custom-toggle');
+  // 停用只切换开关，已存密钥必须原样留在配置文件里。
+  const stored = JSON.parse(fs.readFileSync(path.join(root, '.kapibala/settings.json'), 'utf8'));
+  expect(stored.profiles[0]).toMatchObject({ id: 'custom-toggle', apiKey: 'toggle-private-key' });
+
+  service.setEnabled('custom-toggle', true);
+  expect(service.read().profiles.find((item) => item.id === 'custom-toggle')?.disabled).toBe(false);
+});
+it('删除自定义模型移除条目并清理默认引用，内置模型只写停用态', () => {
+  const { root, workspaces } = fixture();
+  const service = new SettingsService(workspaces);
+  service.saveProfile(
+    {
+      id: 'custom-remove',
+      name: 'Remove',
+      provider: 'openai-compatible',
+      modelName: 'remove',
+      baseURL: 'http://127.0.0.1:1/v1',
+      apiKeyEnv: 'CUSTOM_API_KEY',
+      contextWindow: 32000,
+    },
+    'remove-private-key',
+  );
+  service.setDefault('custom-remove');
+  service.deleteProfile('custom-remove');
+  const afterDelete = service.read();
+  expect(afterDelete.profiles.some((item) => item.id === 'custom-remove')).toBe(false);
+  expect(afterDelete.defaultModel).not.toBe('custom-remove');
+
+  // 内置模型无法物理删除：写入停用墓碑，已存密钥保留，重新启用即可恢复。
+  const builtin = BUILTIN_PROFILES.find((item) => item.id === 'deepseek-flash')!;
+  service.saveProfile(
+    {
+      id: builtin.id,
+      name: builtin.name,
+      provider: builtin.provider,
+      modelName: builtin.modelName,
+      baseURL: builtin.baseURL,
+      apiKeyEnv: builtin.apiKeyEnv,
+    },
+    'builtin-private-key',
+  );
+  service.deleteProfile(builtin.id);
+  expect(service.read().profiles.find((item) => item.id === builtin.id)?.disabled).toBe(true);
+  const stored = JSON.parse(fs.readFileSync(path.join(root, '.kapibala/settings.json'), 'utf8'));
+  expect(stored.profiles.find((item: { id: string }) => item.id === builtin.id)).toMatchObject({
+    disabled: true,
+    apiKey: 'builtin-private-key',
+  });
+});
+it('测试连接复用已存凭证，失败返回可展示的中文结论', async () => {
+  const { workspaces } = fixture();
+  const service = new SettingsService(workspaces);
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/models') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ data: [{ id: 'probe-model' }] }));
+      return;
+    }
+    response.writeHead(404).end('{}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    service.saveProfile(
+      {
+        id: 'custom-probe',
+        name: 'Probe',
+        provider: 'openai-compatible',
+        modelName: 'probe-model',
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        apiKeyEnv: 'CUSTOM_API_KEY',
+        contextWindow: 32000,
+      },
+      'probe-private-key',
+    );
+    await expect(service.testProfile('custom-probe')).resolves.toEqual({
+      ok: true,
+      message: expect.stringContaining('1 个'),
+    });
+  } finally {
+    server.close();
+  }
+
+  service.saveProfile(
+    {
+      id: 'custom-down',
+      name: 'Down',
+      provider: 'openai-compatible',
+      modelName: 'down',
+      baseURL: 'http://127.0.0.1:1/v1',
+      apiKeyEnv: 'CUSTOM_API_KEY',
+      contextWindow: 32000,
+    },
+    'down-private-key',
+  );
+  const failed = await service.testProfile('custom-down');
+  expect(failed.ok).toBe(false);
+  expect(failed.message).toContain('连接失败');
 });

@@ -97,6 +97,11 @@
           "declarations": ["CUSTOM_PROVIDER_KEY = \"custom\""]
         },
         {
+          "name": "CUSTOM_VENDOR_KEY_PREFIX",
+          "kind": "const",
+          "declarations": ["CUSTOM_VENDOR_KEY_PREFIX = \"custom:\""]
+        },
+        {
           "name": "DEFAULT_MODEL_ID",
           "kind": "const",
           "declarations": ["DEFAULT_MODEL_ID = \"deepseek-flash\""]
@@ -155,6 +160,13 @@
           "kind": "function",
           "declarations": [
             "export declare function isProjectTrusted(settings: UserSettings, projectPath: string): boolean;"
+          ]
+        },
+        {
+          "name": "listProviderMetas",
+          "kind": "function",
+          "declarations": [
+            "export declare function listProviderMetas(profiles: readonly ModelProfile[]): ProviderMeta[];"
           ]
         },
         {
@@ -264,7 +276,7 @@
           "name": "ProviderMeta",
           "kind": "interface",
           "declarations": [
-            "export interface ProviderMeta {\n    key: string;\n    name: string;\n    desc: string;\n    /** 冷启动向导索要密钥时的提示语；免密钥厂商为空串 */\n    keyPrompt: string;\n}"
+            "export interface ProviderMeta {\n    key: string;\n    name: string;\n    desc: string;\n    /** 冷启动向导索要密钥时的提示语；免密钥厂商为空串 */\n    keyPrompt: string;\n    /**\n     * 是否为用户自建端点分组（自定义厂商或通用兜底桶）。\n     * 桌面设置页据此渲染「自定义」标签并放开端点/厂商名编辑；内置厂商恒为 false/缺省。\n     */\n    custom?: boolean;\n}"
           ]
         },
         {
@@ -1905,7 +1917,7 @@
           "name": "ModelProfile",
           "kind": "interface",
           "declarations": [
-            "export interface ModelProfile {\n    id: string;\n    name: string;\n    provider: ModelProtocol;\n    baseURL: string;\n    /** 承载密钥的环境变量名；core 不直接读取，由宿主解析后注入 Provider。 */\n    apiKeyEnv: string;\n    apiKey?: string;\n    modelName: string;\n    /** 未声明时按 DEFAULT_CONTEXT_WINDOW_TOKENS 估算；解析规则见 resolveContextWindow。 */\n    contextWindow?: ContextWindowValue;\n    supportsThinking?: boolean;\n    /** 单次输出上限；参与上下文预算推导，缺省按 4096 预留。 */\n    maxOutputTokens?: number;\n    chatCapabilities?: ChatCapabilities;\n    /** Anthropic 请求携带的 workspace；参与绑定一致性校验。 */\n    anthropicWorkspaceId?: string;\n}"
+            "export interface ModelProfile {\n    id: string;\n    name: string;\n    provider: ModelProtocol;\n    baseURL: string;\n    /** 承载密钥的环境变量名；core 不直接读取，由宿主解析后注入 Provider。 */\n    apiKeyEnv: string;\n    apiKey?: string;\n    modelName: string;\n    /** 未声明时按 DEFAULT_CONTEXT_WINDOW_TOKENS 估算；解析规则见 resolveContextWindow。 */\n    contextWindow?: ContextWindowValue;\n    supportsThinking?: boolean;\n    /**\n     * 自定义厂商的展示名（如 'magpie'）。\n     *\n     * 只有用户自建端点使用；内置模型始终为空。宿主据此把同一厂商的多个自建模型归入\n     * 独立分组（桌面左栏与 CLI /model 菜单同源），缺省时归入「自定义端点 / 其它」兜底桶。\n     * 纯展示字段：不参与协议、端点与绑定校验（validateModelBinding 不比较它）。\n     */\n    vendorName?: string;\n    /**\n     * 是否停用（纯可用性开关，缺省视为启用）。\n     *\n     * 停用只影响选择入口（CLI /model 菜单、桌面设置与新建会话默认模型），不参与协议、\n     * 端点与绑定校验（validateModelBinding 不比较它）。内置清单可把依赖本机服务的条目\n     * （如 Ollama）默认置为停用，用户启用后由全局配置覆盖。\n     */\n    disabled?: boolean;\n    /** 单次输出上限；参与上下文预算推导，缺省按 4096 预留。 */\n    maxOutputTokens?: number;\n    chatCapabilities?: ChatCapabilities;\n    /** Anthropic 请求携带的 workspace；参与绑定一致性校验。 */\n    anthropicWorkspaceId?: string;\n}"
           ]
         },
         {

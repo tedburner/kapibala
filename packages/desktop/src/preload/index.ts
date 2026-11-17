@@ -119,6 +119,9 @@ const api: DesktopAPI = {
     saveProfile: (params) => call('settings.saveProfile', params),
     listModels: (params) => call('settings.listModels', params),
     setDefault: (profileId) => done('settings.setDefault', { profileId }),
+    setEnabled: (params) => done('settings.setEnabled', params),
+    deleteProfile: (profileId) => done('settings.deleteProfile', { profileId }),
+    testProfile: (profileId) => call('settings.testProfile', { profileId }),
     setRouting: (params) => done('settings.setRouting', params),
   },
   resources: {

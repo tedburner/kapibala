@@ -79,6 +79,22 @@ export interface ModelProfile {
   /** 未声明时按 DEFAULT_CONTEXT_WINDOW_TOKENS 估算；解析规则见 resolveContextWindow。 */
   contextWindow?: ContextWindowValue;
   supportsThinking?: boolean;
+  /**
+   * 自定义厂商的展示名（如 'magpie'）。
+   *
+   * 只有用户自建端点使用；内置模型始终为空。宿主据此把同一厂商的多个自建模型归入
+   * 独立分组（桌面左栏与 CLI /model 菜单同源），缺省时归入「自定义端点 / 其它」兜底桶。
+   * 纯展示字段：不参与协议、端点与绑定校验（validateModelBinding 不比较它）。
+   */
+  vendorName?: string;
+  /**
+   * 是否停用（纯可用性开关，缺省视为启用）。
+   *
+   * 停用只影响选择入口（CLI /model 菜单、桌面设置与新建会话默认模型），不参与协议、
+   * 端点与绑定校验（validateModelBinding 不比较它）。内置清单可把依赖本机服务的条目
+   * （如 Ollama）默认置为停用，用户启用后由全局配置覆盖。
+   */
+  disabled?: boolean;
   /** 单次输出上限；参与上下文预算推导，缺省按 4096 预留。 */
   maxOutputTokens?: number;
   chatCapabilities?: ChatCapabilities;

@@ -9,11 +9,13 @@ import {
   credentialGroup,
   detectProviderFamily,
   ensureProfile,
+  listProviderMetas,
   loadGlobalSettingsForWrite,
   loadSettings,
   migrateBuiltinCatalog,
   migrateGlobalSettingsCatalog,
   normalizeGroupApiKeys,
+  providerCategory,
   readRawGlobalSettings,
   resolveApiKey,
   resolveApiKeyDetailed,
@@ -668,10 +670,43 @@ describe('detectProviderFamily', () => {
   });
 });
 
+describe('providerCategory 自定义厂商分组', () => {
+  it('填写厂商名后自建端点独立成组，大小写与空白归一为同一分组', () => {
+    const magpie = { ...OPENAI_PROFILE, id: 'custom-magpie', baseURL: 'http://127.0.0.1:3425' };
+    expect(providerCategory(magpie)).toBe('custom');
+    expect(providerCategory({ ...magpie, vendorName: 'magpie' })).toBe('custom:magpie');
+    expect(providerCategory({ ...magpie, vendorName: '  Magpie  ' })).toBe('custom:magpie');
+  });
+
+  it('目录清单把自定义厂商排在通用兜底桶之前，且只出现一次', () => {
+    const magpie = {
+      ...OPENAI_PROFILE,
+      id: 'custom-magpie',
+      baseURL: 'http://127.0.0.1:3425',
+      vendorName: 'magpie',
+    };
+    const second = { ...magpie, id: 'custom-magpie-2', modelName: 'second-model' };
+    const metas = listProviderMetas([magpie, second]);
+    const keys = metas.map((meta) => meta.key);
+    expect(keys.filter((key) => key === 'custom:magpie')).toHaveLength(1);
+    expect(keys.indexOf('custom:magpie')).toBeLessThan(keys.indexOf('custom'));
+    expect(metas.find((meta) => meta.key === 'custom:magpie')).toMatchObject({
+      name: 'magpie',
+      custom: true,
+    });
+  });
+});
+
 describe('makeCustomProfileId', () => {
   it('为不同端点生成不同 id —— 第二个自定义端点不会覆盖第一个', () => {
     const first = makeCustomProfileId('My Gateway', 'https://a.example.com/v1');
     const second = makeCustomProfileId('My Gateway', 'https://b.example.com/v1');
+    expect(first).not.toBe(second);
+  });
+
+  it('同一网关下的不同模型各自得到独立 id', () => {
+    const first = makeCustomProfileId('magpie', 'http://127.0.0.1:3425', 'deepseek-flash');
+    const second = makeCustomProfileId('magpie', 'http://127.0.0.1:3425', 'glm-5.3-flash');
     expect(first).not.toBe(second);
   });
 
@@ -869,5 +904,56 @@ describe('migrateGlobalSettingsCatalog 落盘', () => {
 
     expect(migrateGlobalSettingsCatalog({ homeDir }).length).toBeGreaterThan(0);
     expect(migrateGlobalSettingsCatalog({ homeDir })).toEqual([]);
+  });
+});
+
+describe('model availability', () => {
+  it('本地 Ollama 默认停用，用户配置可覆盖为启用', () => {
+    const { homeDir } = createSettingsWorkspace();
+    const defaults = loadSettings({ homeDir, includeProject: false });
+    expect(defaults.settings.profiles.find((item) => item.id === 'ollama')?.disabled).toBe(true);
+
+    fs.writeFileSync(
+      path.join(homeDir, '.kapibala', 'settings.json'),
+      JSON.stringify({
+        defaultModel: 'deepseek-flash',
+        profiles: [
+          {
+            id: 'ollama',
+            name: 'Local Ollama',
+            provider: 'openai-compatible',
+            baseURL: 'http://localhost:11434/v1',
+            apiKeyEnv: 'NONE',
+            modelName: 'gpt-oss:20b',
+            contextWindow: 131072,
+            disabled: false,
+          },
+        ],
+      }),
+    );
+    const enabled = loadSettings({ homeDir, includeProject: false });
+    expect(enabled.settings.profiles.find((item) => item.id === 'ollama')?.disabled).toBe(false);
+  });
+
+  it('disabled 非布尔值中止加载而不是按真值处理', () => {
+    const { homeDir } = createSettingsWorkspace();
+    fs.writeFileSync(
+      path.join(homeDir, '.kapibala', 'settings.json'),
+      JSON.stringify({
+        defaultModel: 'deepseek-flash',
+        profiles: [
+          {
+            id: 'custom-bad',
+            name: 'Bad',
+            provider: 'openai-compatible',
+            baseURL: 'https://example.invalid/v1',
+            apiKeyEnv: 'CUSTOM_API_KEY',
+            modelName: 'bad',
+            disabled: 'false',
+          },
+        ],
+      }),
+    );
+    expect(() => loadSettings({ homeDir, includeProject: false })).toThrow(/disabled/);
   });
 });

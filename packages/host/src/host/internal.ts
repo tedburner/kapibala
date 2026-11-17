@@ -30,7 +30,14 @@ export {
 } from './model-bindings.js';
 export { PresentationStore } from './presentation-store.js';
 export { detectProjectRoot } from './project-root.js';
-export { PROVIDER_METAS, listBuiltinProviders, providerCategory } from './providers.js';
+export {
+  CUSTOM_PROVIDER_KEY,
+  CUSTOM_VENDOR_KEY_PREFIX,
+  PROVIDER_METAS,
+  listBuiltinProviders,
+  listProviderMetas,
+  providerCategory,
+} from './providers.js';
 export type { ProviderMeta } from './providers.js';
 export {
   assembleReferenceBlocks,

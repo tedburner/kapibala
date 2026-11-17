@@ -72,7 +72,7 @@ export interface LoadedSettings {
  * 内置模型清单版本。**改动 BUILTIN_PROFILES 就必须 +1**，否则老用户不会触发目录升级
  * （migrateBuiltinCatalog 只在版本落后时执行），菜单里会一直挂着已退役的模型。
  */
-export const BUILTIN_CATALOG_VERSION = 4;
+export const BUILTIN_CATALOG_VERSION = 5;
 
 /**
  * 内置模型清单。
@@ -291,6 +291,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
     supportsThinking: true,
   },
   // ── 本地 Ollama ─────────────────────────────────────────────────────────
+  // 本机是否装了 Ollama 无法在配置层判定，默认停用：不占选择列表，用户装了再打开。
   {
     id: 'ollama',
     name: 'Local Ollama (gpt-oss:20b)',
@@ -300,6 +301,7 @@ export const BUILTIN_PROFILES: ModelProfile[] = [
     apiKey: 'ollama',
     modelName: 'gpt-oss:20b',
     contextWindow: 131072,
+    disabled: true,
   },
 ];
 
@@ -1201,6 +1203,14 @@ function validateProfileExtensions(profile: ModelProfile): void {
     invalid('maxOutputTokens');
   if (!['openai-compatible', 'anthropic', 'openai-responses'].includes(profile.provider))
     invalid('provider');
+  // 自定义厂商名只做展示与分组，长度上限避免把整段文本塞进侧栏；空串按未填写处理。
+  if (
+    profile.vendorName !== undefined &&
+    (typeof profile.vendorName !== 'string' || profile.vendorName.length > 64)
+  )
+    invalid('vendorName');
+  // 停用态是用户可覆盖的可用性开关：只允许布尔，避免 "false" 这类字符串被当成真值。
+  if (profile.disabled !== undefined && typeof profile.disabled !== 'boolean') invalid('disabled');
   if (profile.chatCapabilities !== undefined) {
     const capabilities = profile.chatCapabilities;
     if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities))

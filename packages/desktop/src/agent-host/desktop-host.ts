@@ -170,6 +170,16 @@ export class DesktopHost {
       case 'settings.setDefault':
         this.settings.setDefault(PARAMS[method].parse(params).profileId);
         return {};
+      case 'settings.setEnabled': {
+        const p = PARAMS[method].parse(params);
+        this.settings.setEnabled(p.profileId, p.enabled);
+        return {};
+      }
+      case 'settings.deleteProfile':
+        this.settings.deleteProfile(PARAMS[method].parse(params).profileId);
+        return {};
+      case 'settings.testProfile':
+        return this.settings.testProfile(PARAMS[method].parse(params).profileId);
       case 'settings.setRouting': {
         const p = PARAMS[method].parse(params);
         this.settings.setRouting(p.role, p.profileId);

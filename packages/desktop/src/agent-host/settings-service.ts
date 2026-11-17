@@ -2,10 +2,10 @@ import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
 import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
-  PROVIDER_METAS,
   type UserSettings,
   describeCredentialGroup,
   ensureProfile,
+  listProviderMetas,
   loadGlobalSettingsForWrite,
   loadSettings,
   mutateGlobalSettings,
@@ -35,10 +35,11 @@ export class SettingsService {
       profiles: loaded.settings.profiles.map((item) => this.publicProfile(item, loaded.settings)),
       defaultModel: loaded.settings.defaultModel,
       routing: { ...loaded.settings.modelRouting },
-      providers: PROVIDER_METAS.map((item) => ({
+      providers: listProviderMetas(loaded.settings.profiles).map((item) => ({
         key: item.key,
         name: item.name,
         description: item.desc,
+        custom: Boolean(item.custom),
       })),
       projectOverride: Boolean(
         workspace?.trusted &&
@@ -118,24 +119,37 @@ export class SettingsService {
     const profile = profileId ? settings.profiles.find((item) => item.id === profileId) : undefined;
     const stored = profile ? resolveApiKeyDetailed(profile, settings) : undefined;
     const credential = apiKey ?? (stored && stored.source !== 'none' ? stored.key : undefined);
-    let response: Response;
+    // 用显式 AbortController 而不是 AbortSignal.timeout：超时必须同时覆盖建连与响应体读取，
+    // 否则网关先回响应头再拖住正文时，探测会一直挂在 response.text() 上。
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    let body: string;
     try {
-      response = await fetch(url, {
-        headers: {
-          accept: 'application/json',
-          ...(credential ? { authorization: `Bearer ${credential}` } : {}),
-        },
-        signal: AbortSignal.timeout(8_000),
-      });
-    } catch (error) {
-      throw new Error(
-        (error as { name?: string }).name === 'TimeoutError'
-          ? 'MODEL_LIST_TIMEOUT'
-          : 'MODEL_LIST_UNAVAILABLE',
-      );
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          headers: {
+            accept: 'application/json',
+            ...(credential ? { authorization: `Bearer ${credential}` } : {}),
+          },
+          signal: controller.signal,
+        });
+      } catch {
+        throw new Error(
+          controller.signal.aborted ? 'MODEL_LIST_TIMEOUT' : 'MODEL_LIST_UNAVAILABLE',
+        );
+      }
+      if (!response.ok) throw new Error('MODEL_LIST_UNAVAILABLE');
+      try {
+        body = await response.text();
+      } catch {
+        throw new Error(
+          controller.signal.aborted ? 'MODEL_LIST_TIMEOUT' : 'MODEL_LIST_UNAVAILABLE',
+        );
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    if (!response.ok) throw new Error('MODEL_LIST_UNAVAILABLE');
-    const body = await response.text();
     if (body.length > 1_000_000) throw new Error('MODEL_LIST_INVALID');
     let parsed: unknown;
     try {
@@ -200,6 +214,98 @@ export class SettingsService {
       { homeDir: this.workspaces.home },
     );
   }
+  /**
+   * 启用/停用模型：只写 disabled 开关，协议、端点与已存密钥原样保留。
+   *
+   * 停用当前默认模型或路由引用时，把引用迁到第一个仍启用的模型；
+   * 否则新会话会默认装配一个已从选择入口消失的模型。全部停用时保留原引用。
+   */
+  setEnabled(profileId: string, enabled: boolean): void {
+    mutateGlobalSettings(
+      (raw) => {
+        const profile = this.merge(raw).profiles.find((item) => item.id === profileId);
+        if (!profile) throw new Error('PROFILE_UNAVAILABLE');
+        const index = raw.profiles.findIndex((item) => item.id === profileId);
+        if (index >= 0) raw.profiles[index] = { ...raw.profiles[index], disabled: !enabled };
+        else raw.profiles.push({ ...profile, disabled: !enabled });
+        if (!enabled) this.reassignReferences(raw, profileId);
+      },
+      { homeDir: this.workspaces.home },
+    );
+  }
+  /**
+   * 删除模型：自定义模型移除条目，内置模型只写停用态。
+   *
+   * 内置模型由代码清单提供，物理删除无法持久；而清空用户覆盖会连带丢掉已存密钥，
+   * 所以统一按「停用并保留密钥」处理，重新启用即可恢复。
+   */
+  deleteProfile(profileId: string): void {
+    mutateGlobalSettings(
+      (raw) => {
+        const profile = this.merge(raw).profiles.find((item) => item.id === profileId);
+        if (!profile) throw new Error('PROFILE_UNAVAILABLE');
+        if (BUILTIN_PROFILES.some((item) => item.id === profileId)) {
+          const index = raw.profiles.findIndex((item) => item.id === profileId);
+          if (index >= 0) raw.profiles[index] = { ...raw.profiles[index], disabled: true };
+          // 无用户覆盖时补一条停用墓碑，避免内置默认值再次把条目带回可选列表。
+          else raw.profiles.push({ ...profile, apiKey: undefined, disabled: true });
+        } else {
+          const next = raw.profiles.filter((item) => item.id !== profileId);
+          if (next.length === raw.profiles.length) throw new Error('PROFILE_UNAVAILABLE');
+          raw.profiles = next;
+        }
+        this.reassignReferences(raw, profileId);
+      },
+      { homeDir: this.workspaces.home },
+    );
+  }
+  /**
+   * 探测一次连接：复用 {@link listModels} 的已存凭证、超时与响应上限。
+   *
+   * 失败不抛 RPC 错误，而是翻译成可展示的中文短句交给页面，
+   * 让「测试连接」按钮始终能给出结论。
+   */
+  async testProfile(profileId: string): Promise<Output<'settings.testProfile'>> {
+    const profile = this.global().profiles.find((item) => item.id === profileId);
+    if (!profile) throw new Error('PROFILE_UNAVAILABLE');
+    try {
+      const models = await this.listModels(profile.baseURL, undefined, profileId);
+      return {
+        ok: true,
+        message:
+          models.length > 0
+            ? `连接成功，可用模型 ${models.length} 个。`
+            : '连接成功，但端点未返回模型列表。',
+      };
+    } catch (error) {
+      return { ok: false, message: this.probeMessage(error) };
+    }
+  }
+  /** 把探测错误码翻成页面可直接展示的中文；未知错误保留原文便于排障。 */
+  private probeMessage(error: unknown): string {
+    const code = error instanceof Error ? error.message : '';
+    if (code === 'MODEL_LIST_TIMEOUT') return '连接超时：请检查 Base URL 与网络后重试。';
+    if (code === 'MODEL_LIST_UNAVAILABLE') return '连接失败：请检查 Base URL 与 API Key。';
+    if (code === 'MODEL_LIST_INVALID') return '端点返回的不是模型目录，请检查 Base URL。';
+    return code || '连接失败，请检查配置后重试。';
+  }
+  /**
+   * 把指向被停用/删除模型的默认与路由引用迁到第一个启用模型。
+   *
+   * 没有任何启用模型时保留原引用：此时无替代项可指，静默清空只会让配置更难恢复。
+   */
+  private reassignReferences(raw: UserSettings, removedId: string): void {
+    const merged = this.merge(raw).profiles;
+    const fallback = merged.find((item) => item.id !== removedId && !item.disabled)?.id;
+    if (!fallback) return;
+    if (raw.defaultModel === removedId) raw.defaultModel = fallback;
+    if (raw.modelRouting) {
+      const routing = { ...raw.modelRouting };
+      for (const [role, id] of Object.entries(routing))
+        if (id === removedId) routing[role as keyof typeof routing] = fallback;
+      raw.modelRouting = routing;
+    }
+  }
   /** 公共文字出口保留当前所有已知凭证；不把集合或配置对象交给 Main/Renderer。 */
   redact(value: string, workspaceId?: string): string {
     if (workspaceId) return this.captureRedactor(workspaceId)(value);
@@ -256,6 +362,7 @@ export class SettingsService {
       modelName: clean(profile.modelName),
       baseURL: clean(publicEndpoint),
       apiKeyEnv: profile.apiKeyEnv,
+      vendorName: profile.vendorName ? clean(profile.vendorName) : undefined,
       contextWindow: resolveContextWindow(profile.contextWindow).tokens,
       maxOutputTokens: profile.maxOutputTokens,
       supportsThinking: profile.supportsThinking,
@@ -268,6 +375,8 @@ export class SettingsService {
         return clean(actual.href);
       })(),
       builtin: BUILTIN_PROFILES.some((item) => item.id === profile.id),
+      /** 停用态只影响选择入口，读投影统一给出布尔值。 */
+      disabled: Boolean(profile.disabled),
       // 厂商分组复用 CLI /model 菜单的同一套推断，页面分组与菜单分组永不漂移。
       providerKey: providerCategory(profile),
       credential: {

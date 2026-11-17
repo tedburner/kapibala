@@ -22,11 +22,12 @@ export interface ProbeResult {
 }
 
 /**
- * 从名称 + 端点派生稳定的 profile id。
- * 固定用 'custom' 会让第二个自定义端点直接覆盖第一个 —— 用户以为加了新模型，实际丢了旧的。
+ * 从厂商名 + 端点 + 模型名派生稳定的 profile id。
+ * 固定用 'custom' 会让第二个自定义端点直接覆盖第一个 —— 用户以为加了新模型，实际丢了旧的；
+ * 同一个网关挂多个模型时，仅凭厂商名与端点仍会互相覆盖，所以模型名也参与派生。
  */
-export function makeCustomProfileId(name: string, baseURL: string): string {
-  const slug = `${name}-${baseURL}`
+export function makeCustomProfileId(name: string, baseURL: string, modelName = ''): string {
+  const slug = `${name}-${baseURL}-${modelName}`
     .toLowerCase()
     .replace(/^https?:\/\//, '')
     .replace(/[^a-z0-9]+/g, '-')
@@ -168,18 +169,22 @@ async function executeSetupWizard(
       keyPrompt = entry.meta.keyPrompt;
     }
   } else {
-    const name = (await rl.question('请输入服务名称 (如 Custom API): ')).trim() || 'Custom';
+    // 厂商名决定该端点在 /model 菜单里的分组；留空则归入通用「自定义端点 / 其它」。
+    const vendorName = (
+      await rl.question('请输入厂商名称 (如 magpie；留空归入「自定义端点 / 其它」): ')
+    ).trim();
     const baseURL = (await rl.question('请输入 BaseURL (如 https://api.example.com/v1): ')).trim();
     const modelName = (await rl.question('请输入 ModelName (如 gpt-5.6-terra): ')).trim();
     keyPrompt = '请输入 API Key: ';
 
     selectedProfile = {
-      id: makeCustomProfileId(name, baseURL),
-      name,
+      id: makeCustomProfileId(vendorName || 'custom', baseURL, modelName),
+      name: modelName || vendorName || 'Custom',
       provider: 'openai-compatible',
       baseURL,
       apiKeyEnv: 'CUSTOM_API_KEY',
       modelName,
+      ...(vendorName ? { vendorName } : {}),
     };
   }
 

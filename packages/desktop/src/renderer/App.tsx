@@ -202,9 +202,11 @@ export function App() {
   const selectedModel = catalog?.profiles.find(
     (model) => model.id === opened?.configuration.profileId,
   );
-  // 没有密钥的模型列在菜单里只会让用户点了才失败；选择入口只提供当前真能调用的模型。
-  // 设置页仍展示全量清单，否则用户没有地方为新模型补密钥。
-  const usableModels = (catalog?.profiles ?? []).filter((model) => model.credential.configured);
+  // 没有密钥或已停用的模型列在菜单里只会让用户点了才失败；选择入口只提供当前真能调用的模型。
+  // 设置页仍展示全量清单，否则用户没有地方为新模型补密钥或重新启用。
+  const usableModels = (catalog?.profiles ?? []).filter(
+    (model) => model.credential.configured && !model.disabled,
+  );
   // 新对话展示的模型必须是「发送时真会用的那个」：优先取用户临时选择，其次取当前空间生效的默认模型。
   const defaultModel =
     usableModels.find((model) => model.id === catalog?.defaultModel) ?? usableModels[0];
@@ -283,6 +285,32 @@ export function App() {
     },
     [report],
   );
+  /**
+   * 项目切换器只有一个扁平清单：已登记空间与尚未登记的最近项目合并去重。
+   *
+   * 早前把「最近项目」单独成组，但启动时会把所有最近项目重新登记进 spaces，
+   * 该组几乎总是空的，只剩一个突兀的分组标题；合并后既能少一层层级，
+   * 又保留「登记失败的历史项目仍可点击重试」的能力。
+   */
+  const projectOptions = (() => {
+    const query = projectSearch.trim().toLowerCase();
+    return [
+      ...spaces.map((space) => ({
+        key: space.id,
+        name: space.name,
+        current: space.id === workspace?.id,
+        open: async () => selectSpace(space),
+      })),
+      ...recent
+        .filter((item) => !spaces.some((space) => space.recentId === item.id))
+        .map((item) => ({
+          key: item.id,
+          name: item.name,
+          current: false,
+          open: async () => selectSpace(await api.workspace.openRecent(item.id)),
+        })),
+    ].filter((item) => item.name.toLowerCase().includes(query));
+  })();
   useEffect(() => {
     void act(async () => {
       await api.ready();
@@ -916,48 +944,30 @@ export function App() {
                   />
                 </div>
                 <DropdownMenu.Group>
-                  <DropdownMenu.Label>空间</DropdownMenu.Label>
-                  {spaces
-                    .filter((space) =>
-                      space.name.toLowerCase().includes(projectSearch.trim().toLowerCase()),
-                    )
-                    .map((space) => (
-                      <DropdownMenu.Item
-                        key={space.id}
-                        onClick={() => void act(() => selectSpace(space))}
-                      >
-                        <FolderSimpleIcon size={16} className="text-kumo-subtle" />
-                        <span className="min-w-0 flex-1 truncate">{space.name}</span>
-                        {space.id === workspace?.id && <CheckIcon size={14} />}
-                      </DropdownMenu.Item>
-                    ))}
+                  {projectOptions.map((item) => (
+                    <DropdownMenu.Item
+                      key={item.key}
+                      onClick={() => {
+                        setProjectSearch('');
+                        void act(item.open);
+                      }}
+                    >
+                      <FolderSimpleIcon size={16} className="text-kumo-subtle" />
+                      <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                      {item.current && <CheckIcon size={14} />}
+                    </DropdownMenu.Item>
+                  ))}
+                  {projectOptions.length === 0 && (
+                    <p className="px-3 py-2 text-sm text-kumo-subtle">没有匹配的项目。</p>
+                  )}
                 </DropdownMenu.Group>
-                {recent.length > 0 && (
-                  <DropdownMenu.Group>
-                    <DropdownMenu.Label>最近项目</DropdownMenu.Label>
-                    {recent
-                      .filter(
-                        (item) =>
-                          !spaces.some((space) => space.recentId === item.id) &&
-                          item.name.toLowerCase().includes(projectSearch.trim().toLowerCase()),
-                      )
-                      .map((item) => (
-                        <DropdownMenu.Item
-                          key={item.id}
-                          onClick={() =>
-                            void act(async () =>
-                              selectSpace(await api.workspace.openRecent(item.id)),
-                            )
-                          }
-                        >
-                          <FolderSimpleIcon size={16} className="text-kumo-subtle" />
-                          <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                        </DropdownMenu.Item>
-                      ))}
-                  </DropdownMenu.Group>
-                )}
                 <DropdownMenu.Separator />
-                <DropdownMenu.Item onClick={() => setProjectOpen(true)}>
+                <DropdownMenu.Item
+                  onClick={() => {
+                    setProjectSearch('');
+                    setProjectOpen(true);
+                  }}
+                >
                   <FolderPlusIcon size={16} className="text-kumo-subtle" />
                   新建项目
                 </DropdownMenu.Item>
