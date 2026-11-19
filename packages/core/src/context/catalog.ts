@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
+import type { SessionMode } from '../capabilities/security/permissions.js';
 import { KapibalaError } from '../errors/index.js';
 import type { CanonicalMessage, ContentBlock } from '../types/index.js';
 import { readJsonlLines } from './jsonl-lines.js';
@@ -31,6 +32,7 @@ import {
   type SessionHeader,
   type SessionRecord,
   isGlobalControlRecordType,
+  isSessionMode,
 } from './session-store.js';
 import { isSamePath } from './workspace.js';
 
@@ -790,6 +792,8 @@ export class CrossProjectSessionCatalog {
       let archived = false;
       // 置顶标记必须一并回写：重建的 sidecar 会覆盖原缓存，漏字段会让置顶静默丢失。
       let pinned = false;
+      // 审批模式同理：sidecar 重建必须带回 mode_state，否则会话记忆的档位会丢。
+      let mode: SessionMode | undefined;
       let lastRecordId = headerRecord.recordId;
 
       for (const line of iterator) {
@@ -817,6 +821,8 @@ export class CrossProjectSessionCatalog {
             archived = Boolean(rec.payload.archived);
           } else if (rec.type === 'pin_state') {
             pinned = Boolean(rec.payload.pinned);
+          } else if (rec.type === 'mode_state') {
+            if (isSessionMode(rec.payload.mode)) mode = rec.payload.mode;
           } else if (rec.type === 'branch_selected') {
             activeBranchId = String(rec.payload.branchId);
           }
@@ -838,6 +844,7 @@ export class CrossProjectSessionCatalog {
         activeBranchId,
         archived,
         pinned,
+        ...(mode ? { mode } : {}),
         // 委派标记只在 header 里；漏转写会让跨项目重建的 sidecar 永久丢失委派归属。
         ...(header.delegation ? { delegation: header.delegation } : {}),
         size: stat.size,

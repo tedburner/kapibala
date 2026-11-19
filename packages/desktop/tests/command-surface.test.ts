@@ -43,7 +43,7 @@ function handle() {
     cancel: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),
     isBusy: (): boolean => false,
-    configure: () => {},
+    configure: async () => {},
     rename: vi.fn(async () => {}),
     setPinned: vi.fn(async () => {}),
     snapshot: () => state,

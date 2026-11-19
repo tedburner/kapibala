@@ -103,7 +103,7 @@ it('配置目录被重定向时拒绝创建默认空间或写入信任', () => {
   expect(() => workspaces.openDefault()).toThrow('DEFAULT_WORKSPACE_UNAVAILABLE');
   expect(fs.readdirSync(outside)).toEqual([]);
 });
-it('保存直接落盘，公共设置不含已存凭证，无关字段更新不被覆盖', () => {
+it('保存直接落盘，公共设置不含已存凭证，无关字段更新不被覆盖', async () => {
   const { root, workspaces } = fixture();
   const service = new SettingsService(workspaces);
   const profile = {
@@ -115,13 +115,13 @@ it('保存直接落盘，公共设置不含已存凭证，无关字段更新不�
     modelName: 'fixture',
     contextWindow: 32000,
   };
-  service.saveProfile(profile, 'first-private-key');
+  await service.saveProfile(profile, 'first-private-key');
   // 保存即写盘：不需要预览令牌或第二次提交。
   const first = JSON.parse(fs.readFileSync(path.join(root, '.kapibala/settings.json'), 'utf8'));
   expect(first.profiles).toHaveLength(1);
   expect(first.profiles[0].apiKey).toBe('first-private-key');
   // 不带新密钥再次保存：沿用同组已存凭证，只更新其它字段。
-  const renamed = service.saveProfile({ ...profile, name: 'Fixture 2' });
+  const renamed = await service.saveProfile({ ...profile, name: 'Fixture 2' });
   expect(renamed.profile.name).toBe('Fixture 2');
   expect(renamed.profile.credential.configured).toBe(true);
   mutateGlobalSettings(
@@ -130,7 +130,7 @@ it('保存直接落盘，公共设置不含已存凭证，无关字段更新不�
     },
     { homeDir: root },
   );
-  service.saveProfile({ ...profile, modelName: 'fixture-2' }, 'third-private-key');
+  await service.saveProfile({ ...profile, modelName: 'fixture-2' }, 'third-private-key');
   const publicSettings = service.read();
   expect(JSON.stringify(publicSettings)).not.toMatch(/first-private-key|third-private-key/);
   const stored = JSON.parse(fs.readFileSync(path.join(root, '.kapibala/settings.json'), 'utf8'));
@@ -164,7 +164,7 @@ it('项目专有凭证也必须从侧栏标题脱敏', () => {
     'project-only-private-value',
   );
 });
-it('目标 ID 独立校验防止 editId 转移旧密钥，新端点不会继承旧内联凭证', () => {
+it('目标 ID 独立校验防止 editId 转移旧密钥，新端点不会继承旧内联凭证', async () => {
   const { workspaces } = fixture();
   const service = new SettingsService(workspaces);
   const source = {
@@ -183,26 +183,26 @@ it('目标 ID 独立校验防止 editId 转移旧密钥，新端点不会继承�
     baseURL: 'http://target.example/v1',
     apiKeyEnv: 'TARGET',
   };
-  service.saveProfile(source, 'source-private-key');
-  service.saveProfile(target, 'target-private-key');
+  await service.saveProfile(source, 'source-private-key');
+  await service.saveProfile(target, 'target-private-key');
   // editId 指向别的 Profile 时拒绝，避免把 source 的密钥写进 target。
-  expect(() =>
+  await expect(
     service.saveProfile({ ...target, baseURL: 'http://new.example/v1' }, undefined, source.id),
-  ).toThrow('SETTINGS_CONFLICT');
+  ).rejects.toThrow('SETTINGS_CONFLICT');
   // 换端点且不带密钥：不静默复用旧端点的内联凭证。
-  expect(() =>
+  await expect(
     service.saveProfile({ ...source, id: 'new-id', baseURL: 'http://new.example/v1' }),
-  ).toThrow('CONFIG_REQUIRED');
-  const copy = service.saveProfile(
+  ).rejects.toThrow('CONFIG_REQUIRED');
+  const copy = await service.saveProfile(
     { ...source, id: 'new-id', baseURL: 'http://new.example/v1' },
     'fresh-key',
   );
   expect(copy.profile.credential.source).toBe('inline');
 });
-it('免密钥自建端点可直接保存，并按厂商名独立分组', () => {
+it('免密钥自建端点可直接保存，并按厂商名独立分组', async () => {
   const { root, workspaces } = fixture();
   const service = new SettingsService(workspaces);
-  const saved = service.saveProfile({
+  const saved = await service.saveProfile({
     id: 'custom-magpie',
     name: 'deepseek-flash',
     provider: 'openai-compatible',
@@ -221,7 +221,7 @@ it('免密钥自建端点可直接保存，并按厂商名独立分组', () => {
   expect(stored.profiles[0]).toMatchObject({ apiKeyEnv: API_KEY_ENV_NONE, vendorName: 'magpie' });
   expect(stored.profiles[0].apiKey).toBeUndefined();
 });
-it('保存回读反映环境变量实际端点，覆盖值不写进配置', () => {
+it('保存回读反映环境变量实际端点，覆盖值不写进配置', async () => {
   const { root, workspaces } = fixture();
   const service = new SettingsService(workspaces);
   const draft = {
@@ -235,7 +235,7 @@ it('保存回读反映环境变量实际端点，覆盖值不写进配置', () =
   };
   try {
     vi.stubEnv('OPENAI_BASE_URL', 'http://127.0.0.1:9999/override');
-    const saved = service.saveProfile(draft, 'new-private-key');
+    const saved = await service.saveProfile(draft, 'new-private-key');
     expect(saved.profile.effectiveBaseURL).toBe('http://127.0.0.1:9999/override');
   } finally {
     vi.unstubAllEnvs();
@@ -277,10 +277,10 @@ it('创建项目显式确认信任，显示名绑定物理根且不改目录；�
   ).toThrow('TRUST_REQUIRED');
   expect(workspaces.get(selected.id).trusted).toBe(false);
 });
-it('停用模型保留密钥，并把默认与路由引用迁到首个启用模型', () => {
+it('停用模型保留密钥，并把默认与路由引用迁到首个启用模型', async () => {
   const { root, workspaces } = fixture();
   const service = new SettingsService(workspaces);
-  service.saveProfile(
+  await service.saveProfile(
     {
       id: 'custom-toggle',
       name: 'Toggle',
@@ -308,10 +308,10 @@ it('停用模型保留密钥，并把默认与路由引用迁到首个启用模�
   service.setEnabled('custom-toggle', true);
   expect(service.read().profiles.find((item) => item.id === 'custom-toggle')?.disabled).toBe(false);
 });
-it('删除自定义模型移除条目并清理默认引用，内置模型只写停用态', () => {
+it('删除自定义模型移除条目并清理默认引用，内置模型只写停用态', async () => {
   const { root, workspaces } = fixture();
   const service = new SettingsService(workspaces);
-  service.saveProfile(
+  await service.saveProfile(
     {
       id: 'custom-remove',
       name: 'Remove',
@@ -331,7 +331,7 @@ it('删除自定义模型移除条目并清理默认引用，内置模型只写�
 
   // 内置模型无法物理删除：写入停用墓碑，已存密钥保留，重新启用即可恢复。
   const builtin = BUILTIN_PROFILES.find((item) => item.id === 'deepseek-flash')!;
-  service.saveProfile(
+  await service.saveProfile(
     {
       id: builtin.id,
       name: builtin.name,
@@ -364,7 +364,7 @@ it('测试连接复用已存凭证，失败返回可展示的中文结论', asyn
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as AddressInfo).port;
   try {
-    service.saveProfile(
+    await service.saveProfile(
       {
         id: 'custom-probe',
         name: 'Probe',
@@ -384,7 +384,7 @@ it('测试连接复用已存凭证，失败返回可展示的中文结论', asyn
     server.close();
   }
 
-  service.saveProfile(
+  await service.saveProfile(
     {
       id: 'custom-down',
       name: 'Down',
@@ -399,4 +399,81 @@ it('测试连接复用已存凭证，失败返回可展示的中文结论', asyn
   const failed = await service.testProfile('custom-down');
   expect(failed.ok).toBe(false);
   expect(failed.message).toContain('连接失败');
+});
+it('保存留空窗口的自定义模型时探测端点声明并回填，失败静默落默认估算', async () => {
+  const { root, workspaces } = fixture();
+  const service = new SettingsService(workspaces);
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/models' && request.headers.authorization === 'Bearer probe-key') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          data: [
+            { id: 'noise-model', context_length: 8192 },
+            { id: 'probed-model', context_length: 1048576 },
+          ],
+        }),
+      );
+      return;
+    }
+    response.writeHead(404, { 'content-type': 'application/json' }).end('{}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    // 留空窗口 + 端点声明了该模型的窗口：保存即回填端点声明值。
+    const saved = await service.saveProfile(
+      {
+        id: 'custom-backfill',
+        name: 'Backfill',
+        provider: 'openai-compatible',
+        modelName: 'probed-model',
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        apiKeyEnv: 'CUSTOM_API_KEY',
+      },
+      'probe-key',
+    );
+    expect(saved.profile.contextWindow).toBe(1048576);
+    const stored = JSON.parse(fs.readFileSync(path.join(root, '.kapibala/settings.json'), 'utf8'));
+    expect(stored.profiles[0].contextWindow).toBe(1048576);
+
+    // 端点未实现 /models（404）：静默跳过，落盘 JSON 不写窗口，由运行时按统一默认值估算；
+    // 公共投影展示的是解析后的生效窗口（256K 默认），不是落盘原值。
+    const failed = await service.saveProfile(
+      {
+        id: 'custom-silent',
+        name: 'Silent',
+        provider: 'openai-compatible',
+        modelName: 'probed-model',
+        baseURL: `http://127.0.0.1:${port}/absent`,
+        apiKeyEnv: 'CUSTOM_API_KEY',
+      },
+      'probe-key',
+    );
+    expect(failed.profile.contextWindow).toBe(256000);
+    const silentStored = JSON.parse(
+      fs.readFileSync(path.join(root, '.kapibala/settings.json'), 'utf8'),
+    );
+    const silentProfile = silentStored.profiles.find(
+      (item: { id: string }) => item.id === 'custom-silent',
+    );
+    expect(silentProfile.contextWindow).toBeUndefined();
+
+    // 草稿显式填写窗口：探测不触发，用户显式值优先。
+    const explicit = await service.saveProfile(
+      {
+        id: 'custom-explicit',
+        name: 'Explicit',
+        provider: 'openai-compatible',
+        modelName: 'probed-model',
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        apiKeyEnv: 'CUSTOM_API_KEY',
+        contextWindow: 32000,
+      },
+      'probe-key',
+    );
+    expect(explicit.profile.contextWindow).toBe(32000);
+  } finally {
+    server.close();
+  }
 });

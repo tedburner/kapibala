@@ -44,7 +44,7 @@ function fakeHandle(conversationId: string, run: () => Promise<void> = async () 
     cancel: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),
     isBusy: (): boolean => false,
-    configure: () => {},
+    configure: async () => {},
     // 打开中的会话改名/置顶应走句柄；用 mock 记录调用，验证没有重新抢锁。
     rename: vi.fn(async (_title: string) => {}),
     setPinned: vi.fn(async (_pinned: boolean) => {}),

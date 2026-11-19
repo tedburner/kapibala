@@ -83,6 +83,39 @@ describe('共享受管宿主', () => {
       await host.dispose();
     }
   });
+  it('审批档位随会话落盘：重开同一会话沿用上次选择', async () => {
+    const { home } = fixture();
+    const root = directory();
+    const options = {
+      workspaceRoot: root,
+      homeDirectory: home,
+      approvalChannel: approval,
+      leaseCoordinator: new WorkspaceLeaseCoordinator(),
+    };
+    const host = await createManagedSession(options);
+    const conversationId = host.conversationId;
+    try {
+      expect(host.configuration().mode).toBe('Approval');
+      await host.configure({ mode: 'Auto' });
+      expect(host.configuration().mode).toBe('Auto');
+      // 元数据投影同样带回模式：sidecar 重建后列表仍能读到上次档位。
+      const list = await new SessionManager({
+        workspaceRoot: root,
+        homeDirectory: home,
+        projectRootMode: 'exact',
+      }).list();
+      expect(list.items.find((item) => item.conversationId === conversationId)?.mode).toBe('Auto');
+    } finally {
+      await host.dispose();
+    }
+    const reopened = await createManagedSession({ ...options, conversationId });
+    try {
+      // 会话级记忆优先于全局默认；全局默认仍是 Approval。
+      expect(reopened.configuration().mode).toBe('Auto');
+    } finally {
+      await reopened.dispose();
+    }
+  });
   it('运行保留选择，刷新密钥且旧值仍脱敏；完整流和历史 DTO 不暴露秘密', async () => {
     const { home, profile, file } = fixture();
     const root = directory();
@@ -213,7 +246,7 @@ it('观察只返回有界脱敏状态、技能与未启动 MCP，不启动服务
     expect(fs.existsSync(marker)).toBe(false);
     const changes: number[] = [];
     const unsubscribe = host.subscribeInspection(() => changes.push(1));
-    host.configure({ mode: 'Plan' });
+    await host.configure({ mode: 'Plan' });
     expect(changes.length).toBeGreaterThan(0);
     unsubscribe();
     await host.dispose();

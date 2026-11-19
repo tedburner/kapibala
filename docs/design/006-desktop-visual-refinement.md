@@ -235,6 +235,12 @@
 
 工具行可展开有界结果或统一 diff 预览，完整结果仍在详情中。侧栏显示历史活动时间，运行时操作在悬停或键盘聚焦时显示；搜索先对标题脱敏再筛选，匹配结果分页。
 
+### 2026-11-18 — HTML 沙箱预览
+
+html 代码块（` ```html `）与 `write_file` 写出 `.html/.htm` 的工具行各加一个「预览 HTML」开关，点击后在原位展开沙箱 iframe；默认不挂载，历史回看不批量创建预览。预览文档由主进程登记的 `kpbl-preview://` 独立来源提供，页面 CSP 只放行 `frame-src kpbl-preview:`：blob:/srcdoc 会继承主页面 CSP，模型输出里的内联脚本会被应用的 `script-src 'self'` 一并封掉，独立来源才能在保留 `sandbox="allow-scripts"`（无 `allow-same-origin`）的前提下运行。预览响应头与文档 meta 使用同一份策略（`connect-src 'none'`、`img-src data: blob:`、`form-action 'none'`），断掉网络外发；单份上限 1 MiB，主进程按 16 份 / 8 MiB 淘汰，超限不给入口而不是截断预览。
+
+同日补正文渲染：Markdown 解析加 `remark-cjk-friendly`，修复 CJK 字符紧邻 `**`／链接时的解析偏差；图片只渲染远程 http(s) 与 `data:image`（惰加载、限高、点击经 Main 在浏览器打开、失败降级为 alt 文案），本地路径与 `file:` 没有读取通道，退化为文字占位；`urlTransform` 只对 `src` 放行（默认实现会剥掉 `data:image`），`href` 仍走协议白名单。网络侧只放行 `resourceType === 'image'` 的 http(s) 请求，脚本/样式/字体继续由 `onBeforeRequest` 取消；代码块对五行以上内容补行号，长行保持横向滚动。
+
 ### 2026-10-27 — 侧栏布局修订
 
 参考 Codex、Qoder 与 WorkBuddy 的侧栏层级，将顶部动作改为对齐的轻量导航行，搜索框贯穿内容宽度，空间和会话以缩进建立层级；侧栏采用独立的浅灰或深色表面。

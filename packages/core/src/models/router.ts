@@ -27,13 +27,19 @@ export interface ResolvedContextWindow {
   estimated: boolean;
 }
 
-/** 模型未声明 contextWindow 时的默认窗口估算值。 */
-export const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000;
+/**
+ * 模型未声明 contextWindow 时的统一默认窗口估算值。
+ *
+ * 预算推导（createContextBudget）与用量展示（computeContextUsage）必须共用本常量，
+ * 不允许各自再设回退值 —— 否则会出现「展示按一个窗口、压缩按另一个窗口」的静默分叉。
+ * 取 256K 是现代主流窗口的保守下限：留空用户的真实窗口若更小，要到 Provider 侧报错才暴露。
+ */
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000;
 
 /**
  * 将模型上下文窗口统一解析为整数 Token 数。
  *
- * 配置允许直接填写整数，或使用十进制 K/M 简写；未填写时返回默认 1M，并标记为估算值。
+ * 配置允许直接填写整数，或使用十进制 K/M 简写；未填写时返回默认 256K，并标记为估算值。
  */
 export function resolveContextWindow(value?: ContextWindowValue): ResolvedContextWindow {
   if (value === undefined) {

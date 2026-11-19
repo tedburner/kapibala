@@ -10,10 +10,13 @@ import {
   PencilSimpleIcon,
   SparkleIcon,
   SpinnerGapIcon,
+  WarningIcon,
   XCircleIcon,
 } from '@phosphor-icons/react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { toolPreview } from './html-preview-model.js';
+import { HtmlPreview, HtmlPreviewButton } from './html-preview.js';
 import { MessageMarkdown } from './message-markdown.js';
 import { useUI } from './ui-state.js';
 
@@ -82,6 +85,15 @@ function ToolRow({
   tool?: ViewTool;
   onTool(callId: string, trigger: HTMLElement): void;
 }) {
+  // 只对内置 write_file 的目标为 html/htm/svg 时给预览入口；解析失败或超限时该值为空。
+  // 按 name/input 两段文本做记忆，避免流式事件换对象引用时重复解析整份入参。
+  const toolName = tool?.name;
+  const toolInput = tool?.input ?? '';
+  const previewDoc = useMemo(
+    () => (toolName ? toolPreview(toolName, toolInput) : undefined),
+    [toolName, toolInput],
+  );
+  const [showPreview, setShowPreview] = useState(false);
   const state = TOOL_STATES[tool?.status ?? 'running'];
   // 限制单行预览长度与行数，完整的已脱敏内容仍由详情抽屉展示。
   const lines = tool?.result?.slice(0, 1201).split('\n') ?? [];
@@ -105,6 +117,13 @@ function ToolRow({
         <span className="min-w-0 flex-1 truncate text-xs text-kumo-subtle">
           {resultSummary ?? tool?.invocation}
         </span>
+        {previewDoc && (
+          <HtmlPreviewButton
+            open={showPreview}
+            onClick={() => setShowPreview(!showPreview)}
+            kind={previewDoc.label === 'SVG 文件预览' ? 'SVG' : 'HTML'}
+          />
+        )}
         <Button
           className="kapibala-action shrink-0 text-kumo-subtle"
           variant="ghost"
@@ -157,6 +176,11 @@ function ToolRow({
             )}
           </Collapsible.Panel>
         </Collapsible.Root>
+      )}
+      {showPreview && previewDoc && (
+        <div className="px-2 pt-1 pb-2">
+          <HtmlPreview html={previewDoc.html} label={previewDoc.label} />
+        </div>
       )}
     </div>
   );
@@ -213,6 +237,7 @@ function ToolGroup({
 export function MessageList({
   messages,
   memoryKey,
+  root,
   scrollRef,
   onTool,
   onEdit,
@@ -220,6 +245,8 @@ export function MessageList({
 }: {
   messages: readonly ViewMessage[];
   memoryKey: string;
+  /** 当前工作区根路径；正文里相对路径的本地图片以它为基准解析。 */
+  root?: string;
   scrollRef: RefObject<HTMLDivElement | null>;
   onTool(callId: string, trigger: HTMLElement): void;
   /** 将用户消息原文回填到输入框供修改重发；只填草稿，不改写已落盘历史。 */
@@ -307,6 +334,12 @@ export function MessageList({
               .filter((block) => block.kind === 'text' && !block.skillName)
               .map((block) => block.text)
               .join('\n');
+            // 失败与中断在 ViewMessage 里统一为 interrupted：没有正文时界面原本只剩一段
+            // 折叠的思考过程，看起来像「什么都没渲染」，必须显式说明这一轮没有产出。
+            const interrupted = !isUser && message.state === 'interrupted';
+            const hasBody = message.blocks.some(
+              (block) => block.kind === 'text' || block.kind === 'tool',
+            );
             return (
               <div
                 key={row.key}
@@ -368,11 +401,23 @@ export function MessageList({
                         <MessageMarkdown
                           key={group.block.id}
                           text={group.block.text}
+                          root={root}
                           report={report}
                         />
                       ),
                     )}
                   </div>
+                  {/* output 的隐式 role 就是 status：原生元素替代 ARIA 角色，a11y 门禁要求。 */}
+                  {interrupted && (
+                    <output className="mt-1 flex items-start gap-1.5 text-xs text-kumo-warning">
+                      <WarningIcon size={14} className="mt-0.5 shrink-0" />
+                      <span>
+                        {hasBody
+                          ? '本轮生成中断，输出可能不完整。'
+                          : '本轮没有收到可展示的正文，常见原因是输出达到上限。可在「设置 → 高级设置」调大该模型的「最大输出 Token」后重试。'}
+                      </span>
+                    </output>
+                  )}
                   {message.role === 'assistant' && copyText && (
                     <InlineCopyText
                       className="kapibala-action mt-2 text-xs text-kumo-subtle opacity-0 transition-opacity [@media(hover:none)]:opacity-100 group-hover:opacity-100 focus-within:opacity-100 focus-visible:opacity-100"

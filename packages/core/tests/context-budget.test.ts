@@ -6,13 +6,13 @@ import {
 } from '../src/context/budget.js';
 
 describe('context budget', () => {
-  it('uses conservative unknown windows and exact output/safety reserves', () => {
+  it('uses the unified estimated default window and exact output/safety reserves', () => {
     expect(createContextBudget()).toMatchObject({
-      contextWindow: 32000,
+      contextWindow: 256000,
       estimatedWindow: true,
-      outputReserve: 4000,
-      safetyReserve: 1600,
-      inputBudget: 26400,
+      outputReserve: 4096,
+      safetyReserve: 12800,
+      inputBudget: 239104,
     });
     expect(createContextBudget('128K')).toMatchObject({
       contextWindow: 128000,

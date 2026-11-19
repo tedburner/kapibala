@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { SessionMode } from '../capabilities/security/permissions.js';
 import { KapibalaError } from '../errors/index.js';
 import { validateProtocolContent } from '../models/protocol-state.js';
 import type { CanonicalMessage, ContentBlock } from '../types/index.js';
@@ -41,7 +42,8 @@ export type SessionRecordType =
   | 'branch_selected'
   | 'branch_summary'
   | 'archive_state'
-  | 'pin_state';
+  | 'pin_state'
+  | 'mode_state';
 
 /**
  * 判断指定记录类型是否属于全局控制记录。
@@ -58,6 +60,7 @@ export function isGlobalControlRecordType(type: SessionRecordType): boolean {
     type === 'title' ||
     type === 'archive_state' ||
     type === 'pin_state' ||
+    type === 'mode_state' ||
     type === 'usage' ||
     type === 'legacy_import'
   );
@@ -195,7 +198,16 @@ const types = new Set<SessionRecordType>([
   'branch_summary',
   'archive_state',
   'pin_state',
+  'mode_state',
 ]);
+
+/** 允许落盘的会话模式白名单；未知值一律拒绝，避免手工改文件绕过审批边界。 */
+const SESSION_MODES: readonly SessionMode[] = ['Approval', 'Plan', 'Auto', 'FullAccess'];
+
+/** 判断任意运行时值是否为合法会话模式；供读取会话控制记录时做边界校验。 */
+export function isSessionMode(value: unknown): value is SessionMode {
+  return typeof value === 'string' && (SESSION_MODES as readonly string[]).includes(value);
+}
 
 /** 判断 Store 是否支持版本化状态；不读取数据或改变旧 Store。 */
 export function supportsSessionState(store: MessageStore): store is StatefulMessageStore {
@@ -525,6 +537,31 @@ export class SessionStore implements StatefulMessageStore {
       });
     }
     return this.appendRecord('pin_state', { pinned });
+  }
+
+  /**
+   * 追加会话审批模式控制记录。
+   *
+   * 约束：
+   * - 模式记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；
+   * - payload 结构为 { mode: SessionMode }，最后一次写入生效；
+   * - 只做白名单校验后原样落盘，不在 Store 层解释权限语义；
+   * - v1 历史会话禁止变更模式，保持只读。
+   */
+  async setModeState(mode: SessionMode): Promise<SessionRecord> {
+    if (this.isReadOnly()) {
+      throw new KapibalaError('Cannot modify mode state of legacy v1 session', {
+        code: 'LEGACY_SESSION_READ_ONLY',
+        safeMessage: '无法变更只读历史会话的审批模式',
+      });
+    }
+    if (!isSessionMode(mode)) {
+      throw new KapibalaError(`Unknown session mode: ${String(mode)}`, {
+        code: 'INVALID_SESSION_MODE',
+        safeMessage: '未知的会话审批模式',
+      });
+    }
+    return this.appendRecord('mode_state', { mode });
   }
 
   /**

@@ -1,4 +1,5 @@
 import { UnicodeTokenEstimator } from '../../context/budget.js';
+import { DEFAULT_CONTEXT_WINDOW_TOKENS } from '../../models/router.js';
 import { SKILL_LIMITS, type SkillMetadata } from './types.js';
 
 const estimator = new UnicodeTokenEstimator();
@@ -29,7 +30,8 @@ export interface SkillCatalog {
 /** 生成确定性 L2.5；预算含标题、XML、转义及遗漏提示，只删完整条目。 */
 export function formatSkillCatalog(
   skills: readonly SkillMetadata[],
-  contextWindow = 32000,
+  // 未声明窗口时与上下文预算/用量展示共用同一默认值，避免各处回退口径分叉。
+  contextWindow = DEFAULT_CONTEXT_WINDOW_TOKENS,
   remainingTokens = Number.POSITIVE_INFINITY,
 ): SkillCatalog {
   const budget = Math.max(

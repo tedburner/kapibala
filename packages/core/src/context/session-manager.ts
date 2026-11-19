@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { SessionMode } from '../capabilities/security/permissions.js';
 import { KapibalaError, createSessionError } from '../errors/index.js';
 import type { CanonicalMessage } from '../types/index.js';
 import { createMessageId, identifyHistory } from './history.js';
@@ -23,6 +24,7 @@ import {
   SessionStore,
   assertClosedToolTransaction,
   isGlobalControlRecordType,
+  isSessionMode,
 } from './session-store.js';
 import { computeProjectKey, toNativePhysicalPath } from './workspace.js';
 
@@ -121,6 +123,8 @@ export interface SessionMetadata {
   archived?: boolean;
   /** 会话是否置顶；只在列表排序时前置，不改变活动时间与继续最近会话的判定。 */
   pinned?: boolean;
+  /** 最近一次持久化的会话审批模式；缺失表示沿用途宿主默认值。 */
+  mode?: SessionMode;
   /**
    * 保留型委派标记；只在 detached 子会话创建时出现，普通会话缺省。
    * 与 header.delegation 同源，供委派面板与保留预算在不读正文的情况下筛选。
@@ -1252,6 +1256,9 @@ export class SessionManager {
     } else if (record.type === 'pin_state') {
       // 置顶只影响列表次序：既不推进 lastActivityAt，也不改变 continueRecent 的选择。
       meta.pinned = Boolean(record.payload.pinned);
+    } else if (record.type === 'mode_state') {
+      // 模式只随显式切换写入；未知值忽略，避免损坏文件把会话推进未定义的权限档位。
+      if (isSessionMode(record.payload.mode)) meta.mode = record.payload.mode;
     }
 
     if (branchLeaves && !isGlobalControlRecordType(record.type)) {

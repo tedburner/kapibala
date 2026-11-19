@@ -82,6 +82,8 @@ const settings = z
     profiles: z.array(publicProfile),
     defaultModel: id,
     routing: z.record(z.string(), z.string()),
+    /** 新建会话的默认审批档位；FullAccess 不会出现在全局默认里。 */
+    permissionMode: mode,
     providers: z.array(
       z.object({ key: text, name: text, description: text, custom: z.boolean() }).strict(),
     ),
@@ -385,6 +387,8 @@ export const PARAMS = {
     })
     .strict(),
   'settings.setDefault': z.object({ profileId: id }).strict(),
+  /** 只允许三个常规档位；FullAccess 必须由本次会话显式确认，不能写进全局默认。 */
+  'settings.setPermissionMode': z.object({ mode: z.enum(['Approval', 'Plan', 'Auto']) }).strict(),
   /** 启用/停用单个模型；停用当前默认模型时由 host 迁移默认与路由引用。 */
   'settings.setEnabled': z.object({ profileId: id, enabled: z.boolean() }).strict(),
   /** 删除模型：自定义模型移除条目，内置模型只写停用态并保留已存密钥。 */
@@ -559,6 +563,7 @@ export const RESULTS = {
   /** 端点返回的模型 id 清单；条目数与长度由 host 设上限，只用于页面选择，不落盘。 */
   'settings.listModels': z.object({ models: z.array(text).max(500) }).strict(),
   'settings.setDefault': empty,
+  'settings.setPermissionMode': empty,
   'settings.setEnabled': empty,
   'settings.deleteProfile': empty,
   /** ok=false 时 message 已是可展示的中文短句，页面直接渲染。 */
@@ -775,6 +780,15 @@ export type DesktopAPI = {
     reload(): Promise<void>;
     openExternal(url: string): Promise<void>;
   };
+  preview: {
+    /** 登记一份预览文档并取回独立来源的地址；超过预览上限或来源不合法时拒绝。 */
+    url(html: string): Promise<string>;
+    /**
+     * 按路径读取本地图片并返回 data URL；相对路径以传入的 root 解析。
+     * 只接受图片扩展名白名单与大小上限内的文件，其余一律拒绝。
+     */
+    file(params: { path: string; root?: string }): Promise<string>;
+  };
   preferences: {
     read(): Promise<Output<'preferences.read'>>;
     update(theme: 'light' | 'dark' | 'system'): Promise<void>;
@@ -794,6 +808,8 @@ export type DesktopAPI = {
     /** 只读探测：按 Base URL 拉取模型目录，供自定义端点直接选模型。 */
     listModels(params: Params<'settings.listModels'>): Promise<Output<'settings.listModels'>>;
     setDefault(profileId: string): Promise<void>;
+    /** 写入新建会话的默认审批档位；只接受常规档位，完全访问不进全局默认。 */
+    setPermissionMode(mode: 'Approval' | 'Plan' | 'Auto'): Promise<void>;
     /** 启用/停用模型；停用后从选择入口消失，配置与密钥保留。 */
     setEnabled(params: Params<'settings.setEnabled'>): Promise<void>;
     /** 删除模型：内置模型等价于停用，自定义模型移除条目。 */

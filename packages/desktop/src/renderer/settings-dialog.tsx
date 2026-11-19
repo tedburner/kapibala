@@ -8,6 +8,7 @@ import {
   PaletteIcon,
   PlugsConnectedIcon,
   PulseIcon,
+  ShieldCheckIcon,
   ShuffleIcon,
   TrashIcon,
 } from '@phosphor-icons/react';
@@ -63,6 +64,12 @@ const SETTINGS_TABS = [
     subtitle: '为新建会话指定默认模型和各角色模型。',
   },
   {
+    value: 'permission',
+    label: '权限审批',
+    icon: ShieldCheckIcon,
+    subtitle: '新建会话的默认审批档位；已打开的会话各自记住上次选择。',
+  },
+  {
     value: 'resources',
     label: '资源管理',
     icon: PackageIcon,
@@ -87,6 +94,15 @@ const SETTINGS_TABS = [
     subtitle: '版本、运行环境与退出入口。',
   },
 ] as const;
+/**
+ * 全局默认审批档位：与输入框菜单同文案，但刻意不提供「完全访问」。
+ * 配置层只允许常规档位，完全访问必须由本次会话显式确认后启用。
+ */
+const PERMISSION_OPTIONS = [
+  { mode: 'Plan', label: '计划模式', hint: '编辑前先出计划。' },
+  { mode: 'Approval', label: '变更前确认', hint: '改文件前先问我。' },
+  { mode: 'Auto', label: '自主模式', hint: '在有风险时询问。' },
+] as const;
 function draftOf(model: Model): ProfileDraft {
   return {
     id: model.id,
@@ -102,7 +118,59 @@ function draftOf(model: Model): ProfileDraft {
     supportsThinking: model.supportsThinking,
   };
 }
-/** 新建自定义模型的最小草稿：只要求端点与模型名，其余走默认协议与上下文预算。 */
+/**
+ * 上下文窗口与输出上限的常用刻度。
+ *
+ * 点击只写入数值，输入框仍可手填：端点的真实容量没有统一接口可查，预设是提示而非枚举。
+ * 窗口档位对齐主流模型的实际容量，输出档位覆盖长生成任务，避免用户被默认 4096 截断。
+ */
+const CONTEXT_WINDOW_PRESETS = [128_000, 256_000, 500_000, 1_000_000] as const;
+const OUTPUT_TOKEN_PRESETS = [8_000, 16_000, 32_000, 64_000] as const;
+
+/** 预设芯片的显示名：百万级用 M，其余用 k，与配置文档的十进制写法一致。 */
+function presetLabel(tokens: number): string {
+  return tokens >= 1_000_000 ? `${tokens / 1_000_000}M` : `${tokens / 1000}k`;
+}
+
+/** 数值预设芯片组：只负责把刻度写回表单，选中态与输入框当前值联动。 */
+function TokenPresets({
+  label,
+  value,
+  presets,
+  disabled,
+  onPick,
+}: {
+  label: string;
+  value: number | undefined;
+  presets: readonly number[];
+  disabled: boolean;
+  onPick(tokens: number): void;
+}) {
+  return (
+    <fieldset className="m-0 flex flex-wrap items-center gap-1.5 border-0 p-0">
+      <legend className="sr-only">{label}</legend>
+      {presets.map((tokens) => (
+        <Button
+          key={tokens}
+          className={
+            tokens === value
+              ? 'kapibala-action text-kumo-brand'
+              : 'kapibala-action text-kumo-subtle'
+          }
+          variant="ghost"
+          size="sm"
+          disabled={disabled}
+          aria-pressed={tokens === value}
+          onClick={() => onPick(tokens)}
+        >
+          {presetLabel(tokens)}
+        </Button>
+      ))}
+    </fieldset>
+  );
+}
+
+/** 新建自定义模型的最小草稿：只要求端点与模型名，窗口留空由保存时探测回填或按统一默认值估算。 */
 function blankCustomDraft(): ProfileDraft {
   return {
     id: `custom-${crypto.randomUUID().slice(0, 8)}`,
@@ -112,7 +180,6 @@ function blankCustomDraft(): ProfileDraft {
     baseURL: '',
     apiKeyEnv: 'CUSTOM_API_KEY',
     vendorName: '',
-    contextWindow: 32000,
   };
 }
 /** 设置领域组合：Kumo 提供表单、敏感输入、过滤和焦点管理；保存即写本地配置，不经过预览态。 */
@@ -201,6 +268,8 @@ export function SettingsDialog({
   /** 探测失败或列表为空时退回手填模型名，避免被一次网络错误卡死。 */
   const [manualModel, setManualModel] = useState(false);
   const [notice, setNotice] = useState('');
+  /** 默认审批档位的写入中状态：与模型保存分开，避免互相锁住按钮。 */
+  const [permissionSaving, setPermissionSaving] = useState(false);
   /** 正在测试连接的模型 id；只锁该行按钮，其余行仍可操作。 */
   const [testingId, setTestingId] = useState<string>();
   /** 最近一次测试结果；切换厂商或模型时清空，避免结论串到别的模型。 */
@@ -620,6 +689,19 @@ export function SettingsDialog({
       setBusy(false);
     }
   }
+  /** 只提交全局默认档位；写盘后回读目录，让面板选中态以磁盘为准。 */
+  async function savePermissionMode(mode: 'Approval' | 'Plan' | 'Auto') {
+    setPermissionSaving(true);
+    try {
+      await window.kapibala.settings.setPermissionMode(mode);
+      await reload();
+      setNotice('已更新新建会话的默认审批档位。');
+    } catch (error) {
+      report(error instanceof Error ? error.message : '更新默认审批档位失败，请重试。');
+    } finally {
+      setPermissionSaving(false);
+    }
+  }
   const builtin = Boolean(selected?.builtin && selected.id === draft?.id);
   const active = SETTINGS_TABS.find((item) => item.value === tab) ?? SETTINGS_TABS[0];
   return (
@@ -972,6 +1054,17 @@ export function SettingsDialog({
                                   )
                                 }
                               />
+                              <TokenPresets
+                                label="上下文窗口预设"
+                                value={draft.contextWindow}
+                                presets={CONTEXT_WINDOW_PRESETS}
+                                disabled={busy}
+                                onPick={(tokens) => change('contextWindow', tokens)}
+                              />
+                              <p className="text-xs text-kumo-subtle">
+                                留空将在保存时自动探测端点声明的窗口；探测失败按 256K
+                                估算，也可直接填写真实窗口。
+                              </p>
                               <Input
                                 label="最大输出 Token"
                                 type="number"
@@ -983,6 +1076,13 @@ export function SettingsDialog({
                                     event.target.value ? Number(event.target.value) : undefined,
                                   )
                                 }
+                              />
+                              <TokenPresets
+                                label="最大输出 Token 预设"
+                                value={draft.maxOutputTokens}
+                                presets={OUTPUT_TOKEN_PRESETS}
+                                disabled={busy}
+                                onPick={(tokens) => change('maxOutputTokens', tokens)}
                               />
                               <Switch
                                 label="支持思考输出"
@@ -1032,6 +1132,13 @@ export function SettingsDialog({
                                     event.target.value ? Number(event.target.value) : undefined,
                                   )
                                 }
+                              />
+                              <TokenPresets
+                                label="最大输出 Token 预设"
+                                value={draft.maxOutputTokens}
+                                presets={OUTPUT_TOKEN_PRESETS}
+                                disabled={busy}
+                                onPick={(tokens) => change('maxOutputTokens', tokens)}
                               />
                               <Switch
                                 label="支持思考输出"
@@ -1120,6 +1227,41 @@ export function SettingsDialog({
                       }
                     />
                   ))}
+                </Tabs.Panel>
+                <Tabs.Panel value="permission" className="kapibala-settings-panel space-y-4">
+                  <section className="space-y-2">
+                    <h3 className="text-sm font-medium">新建会话的默认审批档位</h3>
+                    <p className="text-sm text-kumo-subtle">
+                      只影响之后新建的会话。已打开的会话各自记住上次选择的档位，重启后重新打开仍会沿用。
+                      完全访问不能设为默认，需要在会话内显式确认后启用。
+                    </p>
+                  </section>
+                  <div className="space-y-2">
+                    {PERMISSION_OPTIONS.map((option) => {
+                      const current = catalog?.permissionMode === option.mode;
+                      return (
+                        <Button
+                          key={option.mode}
+                          className={`kapibala-action flex h-auto w-full items-start justify-start gap-2 whitespace-normal rounded-lg border px-3 py-2.5 text-left font-normal ${
+                            current ? 'border-kumo-brand' : 'border-kumo-line'
+                          }`}
+                          variant="ghost"
+                          aria-pressed={current}
+                          disabled={permissionSaving || hostDown}
+                          onClick={() => void savePermissionMode(option.mode)}
+                        >
+                          <ShieldCheckIcon size={16} className="mt-0.5 shrink-0 text-kumo-subtle" />
+                          <span className="flex flex-col items-start gap-0.5">
+                            <span className="text-sm font-medium">{option.label}</span>
+                            <span className="text-xs text-kumo-subtle">{option.hint}</span>
+                          </span>
+                        </Button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-kumo-subtle">
+                    与 CLI 共用同一份全局配置；保存即写盘，不需要二次确认。
+                  </p>
                 </Tabs.Panel>
                 <Tabs.Panel value="resources" className="kapibala-settings-panel space-y-6">
                   {!workspaceId && (

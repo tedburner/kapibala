@@ -465,7 +465,12 @@ export function App() {
     });
   }
   // 已打开会话直接改本会话配置；新对话只暂存选择，创建成功后随首个任务一起生效。
+  // 两种入口都把选择写入全局默认模型：模型偏好只存内存会让重启后回落到初始默认值。
   function chooseModel(profileId: string) {
+    void api.settings
+      .setDefault(profileId)
+      .then(reloadCatalog)
+      .catch((reason) => report(failure(reason)));
     if (!opened) {
       setPendingProfile(profileId);
       return;
@@ -1066,9 +1071,7 @@ export function App() {
                   </>
                 )}
                 <DropdownMenu.Group>
-                  <DropdownMenu.Label>
-                    {opened ? '本会话模型' : '新对话使用的模型'}
-                  </DropdownMenu.Label>
+                  <DropdownMenu.Label>{opened ? '本会话模型' : '选择模型'}</DropdownMenu.Label>
                   {usableModels.map((model) => (
                     <DropdownMenu.Item key={model.id} onClick={() => chooseModel(model.id)}>
                       <span className="min-w-0 flex-1 truncate">{model.name}</span>
@@ -1312,6 +1315,7 @@ export function App() {
                 key={`${opened.workspaceId}:${opened.conversationId}`}
                 memoryKey={`${opened.workspaceId}:${opened.conversationId}`}
                 messages={messages}
+                root={workspace?.root}
                 scrollRef={scrollRef}
                 onTool={(callId, trigger) => {
                   detailTrigger.current = trigger;

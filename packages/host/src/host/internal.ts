@@ -28,6 +28,12 @@ export {
   createModelBinding,
   parsePrimaryModelRole,
 } from './model-bindings.js';
+export {
+  probeModelCatalog,
+  type ModelCatalogProbeOptions,
+  type ModelCatalogProbeResult,
+  type ModelCatalogProbeStatus,
+} from './model-probe.js';
 export { PresentationStore } from './presentation-store.js';
 export { detectProjectRoot } from './project-root.js';
 export {

@@ -135,7 +135,8 @@ describe('purpose output budgets', () => {
 
   it('caps output reserve at the model window boundary', () => {
     expect(createContextBudget('128K', 32768).outputReserve).toBe(16000);
-    expect(createContextBudget(undefined, 32768).outputReserve).toBe(4000);
+    // 未声明窗口按统一默认 256K 解析：12.5% 边界为 32000，低于显式上限 32768 时生效。
+    expect(createContextBudget(undefined, 32768).outputReserve).toBe(32000);
   });
 
   it.each([0, -1, 1.1, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(

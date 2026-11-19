@@ -1,7 +1,7 @@
 import { stdin as input, stdout as output } from 'node:process';
 import readline, { type Interface as ReadlineInterface } from 'node:readline/promises';
 import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
-import { type ProviderMeta, listBuiltinProviders } from '@kiturone/kapibala-host/internal';
+import { type ProviderMeta, listBuiltinProviders, probeModelCatalog } from '@kiturone/kapibala-host/internal';
 import {
   API_KEY_ENV_NONE,
   type UserSettings,
@@ -19,6 +19,12 @@ import { readSecret } from './ui/secret.js';
 export interface ProbeResult {
   status: 'ok' | 'auth' | 'unreachable';
   detail: string;
+  /**
+   * 端点为目标模型声明的上下文窗口（Token 数）。
+   * 仅探测成功且数值通过合理区间校验时给出；向导据此回填未声明窗口的 profile，
+   * 缺失时由运行时按统一默认值估算，不阻塞保存。
+   */
+  contextWindow?: number;
 }
 
 /**
@@ -39,41 +45,16 @@ export function makeCustomProfileId(name: string, baseURL: string, modelName = '
 /**
  * 轻量连通性探测：GET {baseURL}/models。
  * 按显式协议选择鉴权，只做只读探测，不产生任何计费 token；判定结果不阻塞配置保存。
+ * 探测委托给 host 层共享实现（probeModelCatalog），顺带解析端点为该模型声明的上下文窗口。
  */
 export async function probeEndpoint(profile: ModelProfile, apiKey: string): Promise<ProbeResult> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  const baseURL = resolveBaseURL(profile);
-  const url = `${baseURL}/models`;
-
-  try {
-    const headers: Record<string, string> = {};
-    if (apiKey && apiKey !== 'none') {
-      if (profile.provider === 'anthropic') {
-        // 与 Core AnthropicProvider 保持同源：官方 API 认 x-api-key，部分网关只认 Bearer，两者都发。
-        headers['x-api-key'] = apiKey;
-        headers.Authorization = `Bearer ${apiKey}`;
-        headers['anthropic-version'] = '2023-06-01';
-        if (profile.anthropicWorkspaceId)
-          headers['anthropic-workspace-id'] = profile.anthropicWorkspaceId;
-      } else headers.Authorization = `Bearer ${apiKey}`;
-    }
-    const response = await fetch(url, { method: 'GET', headers, signal: controller.signal });
-    if (response.ok) {
-      return { status: 'ok', detail: `HTTP ${response.status}` };
-    }
-    if (response.status === 401 || response.status === 403) {
-      return { status: 'auth', detail: `HTTP ${response.status} ${response.statusText}` };
-    }
-    return {
-      status: 'unreachable',
-      detail: `HTTP ${response.status} ${response.statusText} (端点可能未实现 GET /models)`,
-    };
-  } catch (err: unknown) {
-    return { status: 'unreachable', detail: err instanceof Error ? err.message : String(err) };
-  } finally {
-    clearTimeout(timer);
-  }
+  return probeModelCatalog({
+    baseURL: resolveBaseURL(profile),
+    provider: profile.provider,
+    modelName: profile.modelName,
+    credential: apiKey,
+    anthropicWorkspaceId: profile.anthropicWorkspaceId,
+  });
 }
 
 /**
@@ -268,6 +249,12 @@ async function executeSetupWizard(
     console.log(
       `\x1b[33m⚠ 未能验证连通性 (${probe.detail})。配置仍会保存，可稍后直接发起一次对话确认。\x1b[0m`,
     );
+  }
+  // 探测成功且端点为该模型声明了窗口时回填：仅限 profile 未声明窗口的场景（自定义端点不询问窗口），
+  // 已存配置的声明优先，绝不覆盖用户显式填写的值。回退路径由运行时按统一默认值估算。
+  if (probe.status === 'ok' && probe.contextWindow && selectedProfile.contextWindow === undefined) {
+    selectedProfile = { ...selectedProfile, contextWindow: probe.contextWindow };
+    console.log(`\x1b[36mℹ 已从端点探测到上下文窗口：${probe.contextWindow} tokens\x1b[0m`);
   }
 
   // 交互和端点探测全部结束后才获取短锁；只提交本次选中模型和默认项。

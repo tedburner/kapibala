@@ -15,6 +15,7 @@ import {
   resolveBaseURL,
   updateProfileApiKey,
 } from '@kiturone/kapibala-host/host';
+import { probeModelCatalog } from '@kiturone/kapibala-host/internal';
 import { type Output, type ProfileDraft, ProfileDraftSchema } from '../shared/contracts.js';
 import type { Workspaces } from './workspaces.js';
 
@@ -35,6 +36,8 @@ export class SettingsService {
       profiles: loaded.settings.profiles.map((item) => this.publicProfile(item, loaded.settings)),
       defaultModel: loaded.settings.defaultModel,
       routing: { ...loaded.settings.modelRouting },
+      // loadSettings 已把全局 FullAccess 降级为 Approval；这里只做投影，不再二次裁决。
+      permissionMode: loaded.settings.permissionMode ?? 'Approval',
       providers: listProviderMetas(loaded.settings.profiles).map((item) => ({
         key: item.key,
         name: item.name,
@@ -54,12 +57,16 @@ export class SettingsService {
    * 端点、协议或凭证环境变量变更，以及内置 Profile 的结构改动都必须另存新 id——
    * 避免把已可用的配置原地改成不可用。密钥留空时沿用同组已存凭证，
    * 既没有新密钥也没有可复用凭证才拒绝保存。
+   *
+   * 自定义 openai-compatible Profile 留空上下文窗口时，保存前做一次只读窗口探测
+   * （GET {baseURL}/models）：探测成功则回填端点声明的窗口，失败静默跳过，
+   * 由运行时按统一默认值估算 —— 探测永不阻塞或拒绝保存。
    */
-  saveProfile(
+  async saveProfile(
     draft: ProfileDraft,
     apiKey?: string,
     editId?: string,
-  ): Output<'settings.saveProfile'> {
+  ): Promise<Output<'settings.saveProfile'>> {
     draft = ProfileDraftSchema.parse(draft);
     const settings = this.global();
     const original = settings.profiles.find((item) => item.id === draft.id);
@@ -87,6 +94,27 @@ export class SettingsService {
       const resolved = resolveApiKeyDetailed({ ...original, ...draft }, settings);
       if ((!resolved || resolved.source === 'none') && draft.apiKeyEnv !== API_KEY_ENV_NONE)
         throw new Error('CONFIG_REQUIRED');
+    }
+    // 窗口探测放在本地校验全部通过之后：非法草稿不该触发网络请求。
+    // 已存配置声明过窗口（或草稿显式填写）时跳过 —— 用户显式值与既有声明优先，绝不覆盖。
+    if (
+      draft.contextWindow === undefined &&
+      draft.provider === 'openai-compatible' &&
+      !BUILTIN_PROFILES.some((item) => item.id === draft.id) &&
+      !(original && original.contextWindow !== undefined)
+    ) {
+      const resolved = resolveApiKeyDetailed({ ...original, ...draft }, settings);
+      const credential =
+        apiKey ?? (resolved && resolved.source !== 'none' ? resolved.key : undefined);
+      const probe = await probeModelCatalog({
+        baseURL: resolveBaseURL({ ...original, ...draft }),
+        provider: draft.provider,
+        modelName: draft.modelName,
+        credential,
+        timeoutMs: 5_000,
+      });
+      if (probe.contextWindow !== undefined)
+        draft = { ...draft, contextWindow: probe.contextWindow };
     }
     mutateGlobalSettings(
       (raw) => {
@@ -194,6 +222,18 @@ export class SettingsService {
         if (!profile) throw new Error('PROFILE_UNAVAILABLE');
         ensureProfile(raw, profile);
         raw.defaultModel = id;
+      },
+      { homeDir: this.workspaces.home },
+    );
+  }
+  /**
+   * 全局默认审批档位：只影响之后新建的会话；已打开会话沿用自身记住的档位。
+   * FullAccess 不在入参白名单内，配置层面不能把「完全访问」设为默认。
+   */
+  setPermissionMode(mode: 'Approval' | 'Plan' | 'Auto'): void {
+    mutateGlobalSettings(
+      (raw) => {
+        raw.permissionMode = mode;
       },
       { homeDir: this.workspaces.home },
     );
