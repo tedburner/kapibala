@@ -41,6 +41,7 @@ describe('v0.0.7 CLI commands and input coordination', () => {
     manager = new SessionManager({
       workspaceRoot: tempDir,
       cwd: tempDir,
+      homeDirectory: path.join(tempDir, 'home'),
     });
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
