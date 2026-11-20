@@ -64,7 +64,7 @@ type Mode = keyof typeof MODE_NAMES;
 const MODE_HINTS = {
   Plan: '编辑前先出计划。',
   Approval: '改文件前先问我。',
-  Auto: '在有风险时询问。',
+  Auto: '只读命令与文件读写自动执行。',
   FullAccess: '减少确认次数。',
 } as const;
 /** 各模式的语义图标：计划用灯泡，其余按审批强度从手（逐次确认）递进到盾。 */
@@ -312,18 +312,21 @@ export function App() {
     ].filter((item) => item.name.toLowerCase().includes(query));
   })();
   useEffect(() => {
-    void act(async () => {
-      await api.ready();
-      await client.connectRuntime();
-      await reloadCatalog();
-      const state = await api.preferences.read();
-      setRecent(state.recent);
-      await selectSpace(await api.workspace.openDefault());
-      // Host 的空间登记簿是进程内的：重启后 spaces 只剩默认空间，最近项目若不重新登记
-      // 就只存在于偏好文件里，「项目」区无法按项目聚合。逐个重新登记但不切换视图；
-      // 倒序恢复是因为每次成功登记都会把该项目移到偏好 recent 首位，倒序执行后顺序不变。
+    let cancelled = false;
+    /**
+     * 最近项目重登记只影响侧栏聚合，不阻塞输入框可用。
+     *
+     * 空间登记簿是 Host 进程内的：重启后 `spaces` 只剩默认空间，最近项目若不重新登记
+     * 就只存在于偏好文件里，「项目」区无法按项目聚合。这里逐个登记且串行执行：
+     * `openRecent` 会同步调整偏好里的最近顺序，并发会打乱下次启动的展示次序。
+     */
+    const restoreRecentProjects = async (
+      items: Output<'preferences.read'>['recent'],
+    ): Promise<void> => {
       const restored: Workspace[] = [];
-      for (const item of [...state.recent].reverse()) {
+      // 倒序恢复是因为每次成功登记都会把该项目移到偏好 recent 首位，倒序执行后顺序不变。
+      for (const item of [...items].reverse()) {
+        if (cancelled) return;
         try {
           const workspace = await api.workspace.openRecent(item.id);
           if (workspace && !restored.some((space) => space.id === workspace.id))
@@ -332,14 +335,30 @@ export function App() {
           // 目录已删除或登记失败的历史项目直接跳过，不阻断启动。
         }
       }
+      if (cancelled) return;
       restored.reverse();
       setSpaces((previous) => {
         const known = new Set(previous.map((space) => space.root));
         const additions = restored.filter((space) => !known.has(space.root));
         return additions.length > 0 ? [...previous, ...additions] : previous;
       });
+    };
+    let recentItems: Output<'preferences.read'>['recent'] = [];
+    void act(async () => {
+      await api.ready();
+      await client.connectRuntime();
+      // 关键路径只保留「默认空间可用」所需步骤；目录清单与模型目录在 selectSpace 内一次加载。
+      const state = await api.preferences.read();
+      recentItems = state.recent;
+      setRecent(state.recent);
+      await selectSpace(await api.workspace.openDefault());
+    }).then(() => {
+      if (!cancelled) void restoreRecentProjects(recentItems);
     });
-  }, [act, reloadCatalog, selectSpace]);
+    return () => {
+      cancelled = true;
+    };
+  }, [act, selectSpace]);
   useEffect(() => {
     const query = matchMedia('(min-width: 960px)');
     const change = () => ui.sidebar(query.matches);

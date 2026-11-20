@@ -101,7 +101,7 @@ const SETTINGS_TABS = [
 const PERMISSION_OPTIONS = [
   { mode: 'Plan', label: '计划模式', hint: '编辑前先出计划。' },
   { mode: 'Approval', label: '变更前确认', hint: '改文件前先问我。' },
-  { mode: 'Auto', label: '自主模式', hint: '在有风险时询问。' },
+  { mode: 'Auto', label: '自主模式', hint: '文件读写与常见只读命令自动执行；写入类、网络类与无法识别的命令仍会询问。' },
 ] as const;
 function draftOf(model: Model): ProfileDraft {
   return {

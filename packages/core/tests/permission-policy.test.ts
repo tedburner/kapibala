@@ -94,6 +94,75 @@ describe('PermissionPolicy', () => {
     ).toBe('allow');
   });
 
+  it('auto-allows only verified read-only shell commands in Auto mode', () => {
+    const shell = { command: 'git status', interpreter: 'bash' as const, cwd: '/repo' };
+    expect(
+      policy.decide({
+        mode: 'Auto',
+        toolName: 'run_command',
+        capabilities: ['exec'],
+        dangerous: true,
+        shell,
+        shellSafety: 'safe',
+      }).decision,
+    ).toBe('allow');
+    // unsafe / unknown / 缺省分级维持询问，其余模式不受分级影响。
+    for (const shellSafety of ['unsafe', 'unknown'] as const) {
+      expect(
+        policy.decide({
+          mode: 'Auto',
+          toolName: 'run_command',
+          capabilities: ['exec'],
+          dangerous: true,
+          shell,
+          shellSafety,
+        }).decision,
+      ).toBe('ask');
+    }
+    expect(
+      policy.decide({
+        mode: 'Auto',
+        toolName: 'run_command',
+        capabilities: ['exec'],
+        dangerous: true,
+        shell,
+      }).decision,
+    ).toBe('ask');
+    expect(
+      policy.decide({
+        mode: 'Approval',
+        toolName: 'run_command',
+        capabilities: ['exec'],
+        dangerous: true,
+        shell,
+        shellSafety: 'safe',
+      }).decision,
+    ).toBe('ask');
+    // 显式规则与会话缓存仍先于分级生效。
+    expect(
+      policy.decide({
+        mode: 'Auto',
+        toolName: 'run_command',
+        capabilities: ['exec'],
+        dangerous: true,
+        shell,
+        shellSafety: 'safe',
+        rules: [{ action: 'ask', shell }],
+      }).decision,
+    ).toBe('ask');
+    expect(
+      policy.decide({
+        mode: 'Auto',
+        toolName: 'run_command',
+        capabilities: ['exec'],
+        dangerous: true,
+        shell,
+        shellSafety: 'unsafe',
+        cachedApproval: true,
+      }).decision,
+    ).toBe('allow');
+  });
+
   it('rejects unsupported shell prefix and wildcard rules at load time', () => {
     expect(() =>
       validatePermissionRules([
