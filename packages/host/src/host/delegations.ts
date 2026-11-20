@@ -26,6 +26,9 @@ export const MAX_RETAINED_DELEGATIONS = 20;
 /** 首行 header 的读取上限；正常 header 远小于该值，超出视为异常文件并跳过。 */
 const HEADER_READ_LIMIT_BYTES = 64 * 1024;
 
+/** 增量索引最多记住多少个项目桶；超出按最近最少使用淘汰，避免长驻宿主无界持有。 */
+const DELEGATION_INDEX_BUCKET_LIMIT = 8;
+
 /** 读取文件首行；失败或空文件返回 undefined，不抛错。 */
 function readFirstLine(filePath: string): string | undefined {
   let fd: number | undefined;
@@ -50,23 +53,31 @@ function readFirstLine(filePath: string): string | undefined {
   }
 }
 
-/** 解析一条委派会话 header；非委派或缺少幂等字段时返回 undefined。 */
-function parseDelegationHeader(
-  filePath: string,
-): { delegation: DelegationHeader; conversationId: string } | undefined {
+type DelegationHeaderProbe =
+  | { status: 'ready'; entry?: { delegation: DelegationHeader; conversationId: string } }
+  | { status: 'retry' };
+
+/**
+ * 解析一条委派会话 header。
+ *
+ * 返回值区分「已读出结论」与「暂不可判」：首行为空、读取失败或 JSON 不完整时返回
+ * `retry`（文件可能还在创建中，不能把半行写坏当成永久否定），其余返回 `ready`。
+ * header 首行创建后不再改写，因此 `ready` 的否定结论可以安全缓存。
+ */
+function probeDelegationHeader(filePath: string): DelegationHeaderProbe {
   const line = readFirstLine(filePath);
-  if (!line) return undefined;
+  if (!line) return { status: 'retry' };
   try {
     const record = JSON.parse(line) as SessionRecord;
-    if (record.type !== 'header') return undefined;
+    if (record.type !== 'header') return { status: 'ready' };
     const header = record.payload as unknown as SessionHeader;
     const delegation = header.delegation;
-    if (!delegation || delegation.kind !== 'delegation') return undefined;
+    if (!delegation || delegation.kind !== 'delegation') return { status: 'ready' };
     if (!delegation.requestId || !delegation.requestSignature || !delegation.requestReceipt)
-      return undefined;
-    return { delegation, conversationId: header.conversationId };
+      return { status: 'ready' };
+    return { status: 'ready', entry: { delegation, conversationId: header.conversationId } };
   } catch {
-    return undefined;
+    return { status: 'retry' };
   }
 }
 
@@ -98,6 +109,39 @@ function parseReceipt(value: unknown): SpawnAgentReceipt | undefined {
   };
 }
 
+/** 单桶增量索引：已扫描文件名与其中发现的幂等条目；两者一一对应便于文件删除时同步移除。 */
+interface DelegationIndex {
+  scanned: Set<string>;
+  entries: Map<string, RestoredDelegationRequest>;
+}
+
+/**
+ * 按项目桶维护的增量索引。
+ *
+ * 为什么需要：本函数在每次会话资源创建时被调用，若每次都重读桶内全部会话头，
+ * 长期驻留的宿主（daemon/桌面）会随会话数增长产生 O(N²) 的字节分配，把 RSS 推高。
+ * header 首行在创建后不再改写，因此只需解析每个文件一次；这里按目录缓存解析结论，
+ * 仅对新增文件做 IO，文件被删除时同步移除条目。
+ */
+const delegationIndexes = new Map<string, DelegationIndex>();
+
+/** 取指定桶的增量索引；命中时刷新 LRU 次序，超出上限淘汰最久未用的桶。 */
+function delegationIndexFor(directory: string): DelegationIndex {
+  const existing = delegationIndexes.get(directory);
+  if (existing) {
+    delegationIndexes.delete(directory);
+    delegationIndexes.set(directory, existing);
+    return existing;
+  }
+  const created: DelegationIndex = { scanned: new Set(), entries: new Map() };
+  delegationIndexes.set(directory, created);
+  if (delegationIndexes.size > DELEGATION_INDEX_BUCKET_LIMIT) {
+    const oldest = delegationIndexes.keys().next().value;
+    if (oldest !== undefined) delegationIndexes.delete(oldest);
+  }
+  return created;
+}
+
 /**
  * 从当前项目桶的委派会话头重建 spawn 幂等索引条目。
  *
@@ -105,35 +149,46 @@ function parseReceipt(value: unknown): SpawnAgentReceipt | undefined {
  * 边界：只重建 spawn 侧索引；runtime 的任务记录与续聊上下文不跨进程，
  * 因此重放只返回原回执，模型侧 send_agent 仍不可用（用户级续聊走 `/delegations open`）。
  *
+ * 每次调用只解析上次扫描后新增的文件（增量索引），返回值与缓存共享对象引用，
+ * 调用方不得原地修改；桶内文件被删除时对应条目在下次调用时移除。
+ *
  * @param manager 当前项目桶的会话管理器
  * @returns 可直接传给 AgentRuntime.restoredRequests 的条目；损坏或不全的会话被跳过
  */
 export function readDelegationRequestEntries(manager: SessionManager): RestoredDelegationRequest[] {
+  const directory = manager.directory;
   let files: string[];
   try {
-    files = fs
-      .readdirSync(manager.directory)
-      .filter((name) => /^\d+_[a-zA-Z0-9-]+\.jsonl$/.test(name));
+    files = fs.readdirSync(directory).filter((name) => /^\d+_[a-zA-Z0-9-]+\.jsonl$/.test(name));
   } catch {
     return [];
   }
 
-  const entries: RestoredDelegationRequest[] = [];
+  const index = delegationIndexFor(directory);
+  const present = new Set(files);
+  for (const fileName of index.scanned) {
+    if (present.has(fileName)) continue;
+    index.scanned.delete(fileName);
+    index.entries.delete(fileName);
+  }
+
   for (const fileName of files) {
-    const filePath = path.join(manager.directory, fileName);
-    const parsed = parseDelegationHeader(filePath);
-    if (!parsed) continue;
-    const receipt = parseReceipt(parsed.delegation.requestReceipt);
+    if (index.scanned.has(fileName)) continue;
+    const probe = probeDelegationHeader(path.join(directory, fileName));
+    if (probe.status === 'retry') continue;
+    index.scanned.add(fileName);
+    if (!probe.entry) continue;
+    const receipt = parseReceipt(probe.entry.delegation.requestReceipt);
     if (!receipt) continue;
-    entries.push({
-      requestId: parsed.delegation.requestId!,
-      signature: parsed.delegation.requestSignature!,
+    index.entries.set(fileName, {
+      requestId: probe.entry.delegation.requestId!,
+      signature: probe.entry.delegation.requestSignature!,
       // 回执快照在会话创建前生成、无从得知自身 ID；以 header.conversationId 补齐，
       // 让重启后的幂等重放直接指向可续聊的委派会话。
-      receipt: { ...receipt, sessionId: receipt.sessionId ?? parsed.conversationId },
+      receipt: { ...receipt, sessionId: receipt.sessionId ?? probe.entry.conversationId },
     });
   }
-  return entries;
+  return [...index.entries.values()];
 }
 
 /** 面向 `/delegations` 面板的委派会话摘要；不包含正文。 */

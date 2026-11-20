@@ -6,7 +6,7 @@ import {
   SessionManager,
   WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_RETAINED_DELEGATIONS,
   countRetainedDelegations,
@@ -137,6 +137,70 @@ describe('delegation host helpers', () => {
         sessionId: withReceipt.conversationId,
       },
     });
+  });
+
+  it('增量解析委派头：已扫描文件不重复读取，文件删除后条目同步移除', async () => {
+    const { manager } = createManager();
+    const receipt = {
+      agentId: 'agent-1',
+      status: 'accepted',
+      role: 'explore',
+      description: 'Task',
+      depth: 1,
+      rootTaskId: 'tree',
+      modelRole: 'inherit',
+      workspaceRoot: '/tmp',
+      executionCwd: '/tmp',
+    };
+    const createDelegation = (requestId: string) =>
+      manager.create({
+        delegation: {
+          kind: 'delegation',
+          parentSessionId: 'parent-1',
+          taskName: requestId,
+          createdAt: Date.now(),
+          requestId,
+          requestSignature: `signature-${requestId}`,
+          requestReceipt: receipt,
+        },
+      });
+
+    const first = await createDelegation('request-1');
+    await first.release();
+    expect(readDelegationRequestEntries(manager)).toHaveLength(1);
+
+    // 无新增文件时不得再次打开任何会话头。
+    const idleSpy = vi.spyOn(fs, 'openSync');
+    try {
+      expect(readDelegationRequestEntries(manager)).toHaveLength(1);
+      expect(idleSpy).not.toHaveBeenCalled();
+    } finally {
+      idleSpy.mockRestore();
+    }
+
+    const second = await createDelegation('request-2');
+    await second.release();
+    // 只读取新增文件的头，旧文件复用缓存结论。
+    const appendedSpy = vi.spyOn(fs, 'openSync');
+    try {
+      expect(
+        readDelegationRequestEntries(manager)
+          .map((entry) => entry.requestId)
+          .sort(),
+      ).toEqual(['request-1', 'request-2']);
+      expect(appendedSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      appendedSpy.mockRestore();
+    }
+
+    const firstFile = fs
+      .readdirSync(manager.directory)
+      .find((name) => name.endsWith('.jsonl') && name.includes(first.conversationId));
+    expect(firstFile).toBeDefined();
+    fs.rmSync(path.join(manager.directory, firstFile!));
+    expect(readDelegationRequestEntries(manager).map((entry) => entry.requestId)).toEqual([
+      'request-2',
+    ]);
   });
 
   it('保留预算达上限时拒绝新建 detached 会话，且不消耗 runner 资源', async () => {
