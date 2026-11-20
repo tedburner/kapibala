@@ -1,7 +1,11 @@
 import { stdin as input, stdout as output } from 'node:process';
 import readline, { type Interface as ReadlineInterface } from 'node:readline/promises';
 import { type ModelProfile, resolveContextWindow } from '@kiturone/kapibala';
-import { type ProviderMeta, listBuiltinProviders, probeModelCatalog } from '@kiturone/kapibala-host/internal';
+import {
+  type ProviderMeta,
+  listBuiltinProviders,
+  probeModelCatalog,
+} from '@kiturone/kapibala-host/internal';
 import {
   API_KEY_ENV_NONE,
   type UserSettings,

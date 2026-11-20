@@ -70,16 +70,12 @@
         {
           "name": "API_KEY_ENV_NONE",
           "kind": "const",
-          "declarations": [
-            "API_KEY_ENV_NONE = \"NONE\""
-          ]
+          "declarations": ["API_KEY_ENV_NONE = \"NONE\""]
         },
         {
           "name": "BUILTIN_PROFILES",
           "kind": "const",
-          "declarations": [
-            "BUILTIN_PROFILES: ModelProfile[]"
-          ]
+          "declarations": ["BUILTIN_PROFILES: ModelProfile[]"]
         },
         {
           "name": "createManagedSession",
@@ -98,23 +94,17 @@
         {
           "name": "CUSTOM_PROVIDER_KEY",
           "kind": "const",
-          "declarations": [
-            "CUSTOM_PROVIDER_KEY = \"custom\""
-          ]
+          "declarations": ["CUSTOM_PROVIDER_KEY = \"custom\""]
         },
         {
           "name": "CUSTOM_VENDOR_KEY_PREFIX",
           "kind": "const",
-          "declarations": [
-            "CUSTOM_VENDOR_KEY_PREFIX = \"custom:\""
-          ]
+          "declarations": ["CUSTOM_VENDOR_KEY_PREFIX = \"custom:\""]
         },
         {
           "name": "DEFAULT_MODEL_ID",
           "kind": "const",
-          "declarations": [
-            "DEFAULT_MODEL_ID = \"deepseek-flash\""
-          ]
+          "declarations": ["DEFAULT_MODEL_ID = \"deepseek-flash\""]
         },
         {
           "name": "describeCredentialGroup",
@@ -273,9 +263,7 @@
         {
           "name": "PROVIDER_METAS",
           "kind": "const",
-          "declarations": [
-            "PROVIDER_METAS: ProviderMeta[]"
-          ]
+          "declarations": ["PROVIDER_METAS: ProviderMeta[]"]
         },
         {
           "name": "providerCategory",
@@ -294,16 +282,12 @@
         {
           "name": "PublicTextRedactor",
           "kind": "type",
-          "declarations": [
-            "export type PublicTextRedactor = (text: string) => string;"
-          ]
+          "declarations": ["export type PublicTextRedactor = (text: string) => string;"]
         },
         {
           "name": "redactCommonSecrets",
           "kind": "function",
-          "declarations": [
-            "export declare function redactCommonSecrets(text: string): string;"
-          ]
+          "declarations": ["export declare function redactCommonSecrets(text: string): string;"]
         },
         {
           "name": "redactPresentationChange",
@@ -357,9 +341,7 @@
         {
           "name": "resolveBaseURL",
           "kind": "function",
-          "declarations": [
-            "export declare function resolveBaseURL(profile: ModelProfile): string;"
-          ]
+          "declarations": ["export declare function resolveBaseURL(profile: ModelProfile): string;"]
         },
         {
           "name": "SessionPresentation",
@@ -482,9 +464,7 @@
         {
           "name": "isJsonData",
           "kind": "function",
-          "declarations": [
-            "export declare function isJsonData(value: unknown): boolean;"
-          ]
+          "declarations": ["export declare function isJsonData(value: unknown): boolean;"]
         },
         {
           "name": "JsonValue",
@@ -531,9 +511,7 @@
         {
           "name": "PROTOCOL_VERSION",
           "kind": "const",
-          "declarations": [
-            "PROTOCOL_VERSION: Readonly<{\n    major: 1;\n    minor: 0;\n}>"
-          ]
+          "declarations": ["PROTOCOL_VERSION: Readonly<{\n    major: 1;\n    minor: 0;\n}>"]
         },
         {
           "name": "ProtocolLimits",
@@ -601,16 +579,12 @@
         {
           "name": "SERVER_CAPABILITIES",
           "kind": "const",
-          "declarations": [
-            "SERVER_CAPABILITIES: readonly [\"sessions\", \"approval\", \"cancel\"]"
-          ]
+          "declarations": ["SERVER_CAPABILITIES: readonly [\"sessions\", \"approval\", \"cancel\"]"]
         },
         {
           "name": "ServerCapability",
           "kind": "type",
-          "declarations": [
-            "export type ServerCapability = (typeof SERVER_CAPABILITIES)[number];"
-          ]
+          "declarations": ["export type ServerCapability = (typeof SERVER_CAPABILITIES)[number];"]
         },
         {
           "name": "SessionControl",
@@ -720,9 +694,7 @@
         {
           "name": "WireErrorCode",
           "kind": "type",
-          "declarations": [
-            "export type WireErrorCode = (typeof WIRE_ERROR_CODES)[number];"
-          ]
+          "declarations": ["export type WireErrorCode = (typeof WIRE_ERROR_CODES)[number];"]
         },
         {
           "name": "WireEvent",
@@ -741,9 +713,7 @@
         {
           "name": "WireMethod",
           "kind": "type",
-          "declarations": [
-            "export type WireMethod = keyof RequestParams;"
-          ]
+          "declarations": ["export type WireMethod = keyof RequestParams;"]
         },
         {
           "name": "WireNotification",
@@ -783,9 +753,7 @@
         {
           "name": "WireSnapshot",
           "kind": "type",
-          "declarations": [
-            "export type WireSnapshot = SnapshotMetadata & SnapshotPage;"
-          ]
+          "declarations": ["export type WireSnapshot = SnapshotMetadata & SnapshotPage;"]
         }
       ]
     },
@@ -859,9 +827,7 @@
         {
           "name": "OperationResult",
           "kind": "type",
-          "declarations": [
-            "export type OperationResult = 'completed' | 'failed' | 'aborted';"
-          ]
+          "declarations": ["export type OperationResult = 'completed' | 'failed' | 'aborted';"]
         },
         {
           "name": "PresentationChange",
@@ -1313,16 +1279,12 @@
         {
           "name": "createLogId",
           "kind": "function",
-          "declarations": [
-            "export declare function createLogId(): string;"
-          ]
+          "declarations": ["export declare function createLogId(): string;"]
         },
         {
           "name": "createMessageId",
           "kind": "function",
-          "declarations": [
-            "export declare function createMessageId(): string;"
-          ]
+          "declarations": ["export declare function createMessageId(): string;"]
         },
         {
           "name": "createReferenceError",
@@ -1376,44 +1338,32 @@
         {
           "name": "DEFAULT_CHILD_LIMITS",
           "kind": "const",
-          "declarations": [
-            "DEFAULT_CHILD_LIMITS: Readonly<ChildLimits>"
-          ]
+          "declarations": ["DEFAULT_CHILD_LIMITS: Readonly<ChildLimits>"]
         },
         {
           "name": "DEFAULT_CONTEXT_WINDOW_TOKENS",
           "kind": "const",
-          "declarations": [
-            "DEFAULT_CONTEXT_WINDOW_TOKENS = 256000"
-          ]
+          "declarations": ["DEFAULT_CONTEXT_WINDOW_TOKENS = 256000"]
         },
         {
           "name": "DEFAULT_MAX_STEPS",
           "kind": "const",
-          "declarations": [
-            "DEFAULT_MAX_STEPS = 15"
-          ]
+          "declarations": ["DEFAULT_MAX_STEPS = 15"]
         },
         {
           "name": "DEFAULT_MAX_SUBAGENT_DEPTH",
           "kind": "const",
-          "declarations": [
-            "DEFAULT_MAX_SUBAGENT_DEPTH = 3"
-          ]
+          "declarations": ["DEFAULT_MAX_SUBAGENT_DEPTH = 3"]
         },
         {
           "name": "DEFAULT_REFERENCE_RECORD_LIMIT",
           "kind": "const",
-          "declarations": [
-            "DEFAULT_REFERENCE_RECORD_LIMIT = 6"
-          ]
+          "declarations": ["DEFAULT_REFERENCE_RECORD_LIMIT = 6"]
         },
         {
           "name": "DEFAULT_TIMEOUT_MS",
           "kind": "const",
-          "declarations": [
-            "DEFAULT_TIMEOUT_MS: number"
-          ]
+          "declarations": ["DEFAULT_TIMEOUT_MS: number"]
         },
         {
           "name": "defineTool",
@@ -1474,16 +1424,12 @@
         {
           "name": "escapeSkillXml",
           "kind": "function",
-          "declarations": [
-            "export declare function escapeSkillXml(text: string): string;"
-          ]
+          "declarations": ["export declare function escapeSkillXml(text: string): string;"]
         },
         {
           "name": "estimateSkillTokens",
           "kind": "function",
-          "declarations": [
-            "export declare function estimateSkillTokens(text: string): number;"
-          ]
+          "declarations": ["export declare function estimateSkillTokens(text: string): number;"]
         },
         {
           "name": "EventLogger",
@@ -1516,9 +1462,7 @@
         {
           "name": "fallbackToolResultsDirectory",
           "kind": "function",
-          "declarations": [
-            "export declare function fallbackToolResultsDirectory(): string;"
-          ]
+          "declarations": ["export declare function fallbackToolResultsDirectory(): string;"]
         },
         {
           "name": "FatalError",
@@ -1607,9 +1551,7 @@
         {
           "name": "HARD_LIMIT_MAX_SUBAGENT_DEPTH",
           "kind": "const",
-          "declarations": [
-            "HARD_LIMIT_MAX_SUBAGENT_DEPTH = 5"
-          ]
+          "declarations": ["HARD_LIMIT_MAX_SUBAGENT_DEPTH = 5"]
         },
         {
           "name": "HistoryReadOptions",
@@ -1754,9 +1696,7 @@
         {
           "name": "isSkillName",
           "kind": "function",
-          "declarations": [
-            "export declare function isSkillName(value: string): boolean;"
-          ]
+          "declarations": ["export declare function isSkillName(value: string): boolean;"]
         },
         {
           "name": "isTerminalTaskStatus",
@@ -1803,9 +1743,7 @@
         {
           "name": "isWriteOperation",
           "kind": "function",
-          "declarations": [
-            "export declare function isWriteOperation(tool: Tool): boolean;"
-          ]
+          "declarations": ["export declare function isWriteOperation(tool: Tool): boolean;"]
         },
         {
           "name": "JSONLMessageStore",
@@ -1845,9 +1783,7 @@
         {
           "name": "LogChannel",
           "kind": "type",
-          "declarations": [
-            "export type LogChannel = 'operation' | 'audit';"
-          ]
+          "declarations": ["export type LogChannel = 'operation' | 'audit';"]
         },
         {
           "name": "LogEvent",
@@ -1859,9 +1795,7 @@
         {
           "name": "LogField",
           "kind": "type",
-          "declarations": [
-            "export type LogField = string | number | boolean | null;"
-          ]
+          "declarations": ["export type LogField = string | number | boolean | null;"]
         },
         {
           "name": "LogInput",
@@ -1873,9 +1807,7 @@
         {
           "name": "LogLevel",
           "kind": "type",
-          "declarations": [
-            "export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';"
-          ]
+          "declarations": ["export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';"]
         },
         {
           "name": "LogSink",
@@ -1887,9 +1819,7 @@
         {
           "name": "MAIN_BRANCH_ID",
           "kind": "const",
-          "declarations": [
-            "MAIN_BRANCH_ID = \"main\""
-          ]
+          "declarations": ["MAIN_BRANCH_ID = \"main\""]
         },
         {
           "name": "ManagedSession",
@@ -1901,79 +1831,57 @@
         {
           "name": "MAX_ACTIVE_TASKS_PER_RUNTIME",
           "kind": "const",
-          "declarations": [
-            "MAX_ACTIVE_TASKS_PER_RUNTIME = 8"
-          ]
+          "declarations": ["MAX_ACTIVE_TASKS_PER_RUNTIME = 8"]
         },
         {
           "name": "MAX_ACTIVE_TASKS_PER_TREE",
           "kind": "const",
-          "declarations": [
-            "MAX_ACTIVE_TASKS_PER_TREE = 4"
-          ]
+          "declarations": ["MAX_ACTIVE_TASKS_PER_TREE = 4"]
         },
         {
           "name": "MAX_REFERENCE_BYTES_PER_RECORD",
           "kind": "const",
-          "declarations": [
-            "MAX_REFERENCE_BYTES_PER_RECORD = 8000"
-          ]
+          "declarations": ["MAX_REFERENCE_BYTES_PER_RECORD = 8000"]
         },
         {
           "name": "MAX_REFERENCE_BYTES_PER_RUN",
           "kind": "const",
-          "declarations": [
-            "MAX_REFERENCE_BYTES_PER_RUN = 32000"
-          ]
+          "declarations": ["MAX_REFERENCE_BYTES_PER_RUN = 32000"]
         },
         {
           "name": "MAX_REFERENCE_CHARS_PER_RECORD",
           "kind": "const",
-          "declarations": [
-            "MAX_REFERENCE_CHARS_PER_RECORD = 4000"
-          ]
+          "declarations": ["MAX_REFERENCE_CHARS_PER_RECORD = 4000"]
         },
         {
           "name": "MAX_REFERENCE_CHARS_PER_RUN",
           "kind": "const",
-          "declarations": [
-            "MAX_REFERENCE_CHARS_PER_RUN = 16000"
-          ]
+          "declarations": ["MAX_REFERENCE_CHARS_PER_RUN = 16000"]
         },
         {
           "name": "MAX_REFERENCE_RECORD_LIMIT",
           "kind": "const",
-          "declarations": [
-            "MAX_REFERENCE_RECORD_LIMIT = 12"
-          ]
+          "declarations": ["MAX_REFERENCE_RECORD_LIMIT = 12"]
         },
         {
           "name": "MAX_REFERENCE_RECORDS_PER_RUN",
           "kind": "const",
-          "declarations": [
-            "MAX_REFERENCE_RECORDS_PER_RUN = 8"
-          ]
+          "declarations": ["MAX_REFERENCE_RECORDS_PER_RUN = 8"]
         },
         {
           "name": "MAX_REFERENCE_SESSIONS_PER_RUN",
           "kind": "const",
-          "declarations": [
-            "MAX_REFERENCE_SESSIONS_PER_RUN = 3"
-          ]
+          "declarations": ["MAX_REFERENCE_SESSIONS_PER_RUN = 3"]
         },
         {
           "name": "MAX_TOTAL_TASKS_PER_TREE",
           "kind": "const",
-          "declarations": [
-            "MAX_TOTAL_TASKS_PER_TREE = 16"
-          ]
+          "declarations": ["MAX_TOTAL_TASKS_PER_TREE = 16"]
         },
         {
           "name": "MessageRole",
           "kind": "type",
-          "declarations": [
-            "export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';"
-          ]
+          "declarations": ["export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';"]
         },
         {
           "name": "MessageStore",
@@ -2076,16 +1984,12 @@
         {
           "name": "normalizedProjectRoot",
           "kind": "function",
-          "declarations": [
-            "export declare function normalizedProjectRoot(root: string): string;"
-          ]
+          "declarations": ["export declare function normalizedProjectRoot(root: string): string;"]
         },
         {
           "name": "normalizeDriveLetter",
           "kind": "function",
-          "declarations": [
-            "export declare function normalizeDriveLetter(p: string): string;"
-          ]
+          "declarations": ["export declare function normalizeDriveLetter(p: string): string;"]
         },
         {
           "name": "normalizeHistory",
@@ -2153,9 +2057,7 @@
         {
           "name": "PermissionAction",
           "kind": "type",
-          "declarations": [
-            "export type PermissionAction = 'allow' | 'ask' | 'deny';"
-          ]
+          "declarations": ["export type PermissionAction = 'allow' | 'ask' | 'deny';"]
         },
         {
           "name": "PermissionDecision",
@@ -2237,9 +2139,7 @@
         {
           "name": "PrimaryModelRole",
           "kind": "type",
-          "declarations": [
-            "export type PrimaryModelRole = Exclude<ModelRole, 'summary'>;"
-          ]
+          "declarations": ["export type PrimaryModelRole = Exclude<ModelRole, 'summary'>;"]
         },
         {
           "name": "ProjectIdentity",
@@ -2356,9 +2256,7 @@
         {
           "name": "ReferenceErrorCode",
           "kind": "type",
-          "declarations": [
-            "export type ReferenceErrorCode = keyof typeof REFERENCE_SAFE_MESSAGES;"
-          ]
+          "declarations": ["export type ReferenceErrorCode = keyof typeof REFERENCE_SAFE_MESSAGES;"]
         },
         {
           "name": "ReferenceReaderOptions",
@@ -2482,9 +2380,7 @@
         {
           "name": "ROLE_PRESETS",
           "kind": "const",
-          "declarations": [
-            "ROLE_PRESETS: Readonly<Record<SubagentRole, RolePresetDefinition>>"
-          ]
+          "declarations": ["ROLE_PRESETS: Readonly<Record<SubagentRole, RolePresetDefinition>>"]
         },
         {
           "name": "RolePresetDefinition",
@@ -2587,23 +2483,17 @@
         {
           "name": "SESSION_SCHEMA_VERSION",
           "kind": "const",
-          "declarations": [
-            "SESSION_SCHEMA_VERSION = 2"
-          ]
+          "declarations": ["SESSION_SCHEMA_VERSION = 2"]
         },
         {
           "name": "SESSION_SCHEMA_VERSION_V1",
           "kind": "const",
-          "declarations": [
-            "SESSION_SCHEMA_VERSION_V1 = 1"
-          ]
+          "declarations": ["SESSION_SCHEMA_VERSION_V1 = 1"]
         },
         {
           "name": "SESSION_SCHEMA_VERSION_V2",
           "kind": "const",
-          "declarations": [
-            "SESSION_SCHEMA_VERSION_V2 = 2"
-          ]
+          "declarations": ["SESSION_SCHEMA_VERSION_V2 = 2"]
         },
         {
           "name": "SessionApprovalCache",
@@ -2636,9 +2526,7 @@
         {
           "name": "SessionErrorCode",
           "kind": "type",
-          "declarations": [
-            "export type SessionErrorCode = keyof typeof SESSION_SAFE_MESSAGES;"
-          ]
+          "declarations": ["export type SessionErrorCode = keyof typeof SESSION_SAFE_MESSAGES;"]
         },
         {
           "name": "SessionEvent",
@@ -2699,9 +2587,7 @@
         {
           "name": "SessionMode",
           "kind": "type",
-          "declarations": [
-            "export type SessionMode = 'Approval' | 'Plan' | 'Auto' | 'FullAccess';"
-          ]
+          "declarations": ["export type SessionMode = 'Approval' | 'Plan' | 'Auto' | 'FullAccess';"]
         },
         {
           "name": "SessionOptions",
@@ -2776,16 +2662,12 @@
         {
           "name": "ShellKind",
           "kind": "type",
-          "declarations": [
-            "export type ShellKind = 'bash' | 'wsl' | 'pwsh' | 'powershell';"
-          ]
+          "declarations": ["export type ShellKind = 'bash' | 'wsl' | 'pwsh' | 'powershell';"]
         },
         {
           "name": "ShellPreference",
           "kind": "type",
-          "declarations": [
-            "export type ShellPreference = 'auto' | ShellKind | (string & {});"
-          ]
+          "declarations": ["export type ShellPreference = 'auto' | ShellKind | (string & {});"]
         },
         {
           "name": "ShellScope",
@@ -2853,9 +2735,7 @@
         {
           "name": "skillDigest",
           "kind": "function",
-          "declarations": [
-            "export declare function skillDigest(content: string): string;"
-          ]
+          "declarations": ["export declare function skillDigest(content: string): string;"]
         },
         {
           "name": "SkillDocument",
@@ -2888,9 +2768,7 @@
         {
           "name": "skillPathKey",
           "kind": "function",
-          "declarations": [
-            "export declare function skillPathKey(value: string): string;"
-          ]
+          "declarations": ["export declare function skillPathKey(value: string): string;"]
         },
         {
           "name": "SkillQuery",
@@ -2951,9 +2829,7 @@
         {
           "name": "SkillScope",
           "kind": "type",
-          "declarations": [
-            "export type SkillScope = 'builtin' | 'global' | 'project';"
-          ]
+          "declarations": ["export type SkillScope = 'builtin' | 'global' | 'project';"]
         },
         {
           "name": "SpawnAgentParams",
@@ -2979,16 +2855,12 @@
         {
           "name": "stableJsonStringify",
           "kind": "function",
-          "declarations": [
-            "export declare function stableJsonStringify(value: unknown): string;"
-          ]
+          "declarations": ["export declare function stableJsonStringify(value: unknown): string;"]
         },
         {
           "name": "stableSerialize",
           "kind": "function",
-          "declarations": [
-            "export declare function stableSerialize(value: unknown): string;"
-          ]
+          "declarations": ["export declare function stableSerialize(value: unknown): string;"]
         },
         {
           "name": "StatefulMessageStore",
@@ -3070,9 +2942,7 @@
         {
           "name": "SUMMARY_OUTPUT_BUFFER_MULTIPLIER",
           "kind": "const",
-          "declarations": [
-            "SUMMARY_OUTPUT_BUFFER_MULTIPLIER = 16"
-          ]
+          "declarations": ["SUMMARY_OUTPUT_BUFFER_MULTIPLIER = 16"]
         },
         {
           "name": "SummaryCandidate",
@@ -3266,9 +3136,7 @@
         {
           "name": "toToolDefinition",
           "kind": "function",
-          "declarations": [
-            "export declare function toToolDefinition(tool: Tool): ToolDefinition;"
-          ]
+          "declarations": ["export declare function toToolDefinition(tool: Tool): ToolDefinition;"]
         },
         {
           "name": "TransportError",
@@ -3433,9 +3301,7 @@
         {
           "name": "checkIpRestricted",
           "kind": "function",
-          "declarations": [
-            "export declare function checkIpRestricted(ip: string): IpCheckResult;"
-          ]
+          "declarations": ["export declare function checkIpRestricted(ip: string): IpCheckResult;"]
         },
         {
           "name": "checkIPv4Restricted",
@@ -3545,16 +3411,12 @@
         {
           "name": "DEFAULT_RESULT_BUDGET_BYTES",
           "kind": "const",
-          "declarations": [
-            "DEFAULT_RESULT_BUDGET_BYTES = 20480"
-          ]
+          "declarations": ["DEFAULT_RESULT_BUDGET_BYTES = 20480"]
         },
         {
           "name": "DEFAULT_STDERR_TAIL_LIMIT_BYTES",
           "kind": "const",
-          "declarations": [
-            "DEFAULT_STDERR_TAIL_LIMIT_BYTES = 8192"
-          ]
+          "declarations": ["DEFAULT_STDERR_TAIL_LIMIT_BYTES = 8192"]
         },
         {
           "name": "detectCredentialAlerts",
@@ -3594,9 +3456,7 @@
         {
           "name": "expandIPv6",
           "kind": "function",
-          "declarations": [
-            "export declare function expandIPv6(ip: string): number[];"
-          ]
+          "declarations": ["export declare function expandIPv6(ip: string): number[];"]
         },
         {
           "name": "extractReferencedEnvVars",
@@ -3650,9 +3510,7 @@
         {
           "name": "getTaskkillPath",
           "kind": "function",
-          "declarations": [
-            "export declare function getTaskkillPath(): string;"
-          ]
+          "declarations": ["export declare function getTaskkillPath(): string;"]
         },
         {
           "name": "HttpServerConfig",
@@ -3685,9 +3543,7 @@
         {
           "name": "ipv4ToUint32",
           "kind": "function",
-          "declarations": [
-            "export declare function ipv4ToUint32(ip: string): number;"
-          ]
+          "declarations": ["export declare function ipv4ToUint32(ip: string): number;"]
         },
         {
           "name": "isHttpConfig",
@@ -3699,16 +3555,12 @@
         {
           "name": "isLoopbackHost",
           "kind": "function",
-          "declarations": [
-            "export declare function isLoopbackHost(hostname: string): boolean;"
-          ]
+          "declarations": ["export declare function isLoopbackHost(hostname: string): boolean;"]
         },
         {
           "name": "isProcessAlive",
           "kind": "function",
-          "declarations": [
-            "export declare function isProcessAlive(pid: number): boolean;"
-          ]
+          "declarations": ["export declare function isProcessAlive(pid: number): boolean;"]
         },
         {
           "name": "isSensitiveEnvVarName",
@@ -3762,93 +3614,67 @@
         {
           "name": "MAX_MODEL_MCP_TOOLS_BUDGET_BYTES",
           "kind": "const",
-          "declarations": [
-            "MAX_MODEL_MCP_TOOLS_BUDGET_BYTES = 65536"
-          ]
+          "declarations": ["MAX_MODEL_MCP_TOOLS_BUDGET_BYTES = 65536"]
         },
         {
           "name": "MAX_MODEL_MCP_TOOLS_COUNT",
           "kind": "const",
-          "declarations": [
-            "MAX_MODEL_MCP_TOOLS_COUNT = 64"
-          ]
+          "declarations": ["MAX_MODEL_MCP_TOOLS_COUNT = 64"]
         },
         {
           "name": "MAX_PAGES_LIMIT",
           "kind": "const",
-          "declarations": [
-            "MAX_PAGES_LIMIT = 20"
-          ]
+          "declarations": ["MAX_PAGES_LIMIT = 20"]
         },
         {
           "name": "MAX_PROMPT_PAGES_LIMIT",
           "kind": "const",
-          "declarations": [
-            "MAX_PROMPT_PAGES_LIMIT = 20"
-          ]
+          "declarations": ["MAX_PROMPT_PAGES_LIMIT = 20"]
         },
         {
           "name": "MAX_PROMPTS_PER_SERVER_LIMIT",
           "kind": "const",
-          "declarations": [
-            "MAX_PROMPTS_PER_SERVER_LIMIT = 200"
-          ]
+          "declarations": ["MAX_PROMPTS_PER_SERVER_LIMIT = 200"]
         },
         {
           "name": "MAX_SCHEMA_DEPTH",
           "kind": "const",
-          "declarations": [
-            "MAX_SCHEMA_DEPTH = 20"
-          ]
+          "declarations": ["MAX_SCHEMA_DEPTH = 20"]
         },
         {
           "name": "MAX_SCHEMA_SIZE_BYTES",
           "kind": "const",
-          "declarations": [
-            "MAX_SCHEMA_SIZE_BYTES = 32768"
-          ]
+          "declarations": ["MAX_SCHEMA_SIZE_BYTES = 32768"]
         },
         {
           "name": "MAX_TOOL_NAME_LENGTH",
           "kind": "const",
-          "declarations": [
-            "MAX_TOOL_NAME_LENGTH = 64"
-          ]
+          "declarations": ["MAX_TOOL_NAME_LENGTH = 64"]
         },
         {
           "name": "MAX_TOOLS_PER_SERVER_LIMIT",
           "kind": "const",
-          "declarations": [
-            "MAX_TOOLS_PER_SERVER_LIMIT = 200"
-          ]
+          "declarations": ["MAX_TOOLS_PER_SERVER_LIMIT = 200"]
         },
         {
           "name": "MAX_WIRE_TRANSPORT_BYTES",
           "kind": "const",
-          "declarations": [
-            "MAX_WIRE_TRANSPORT_BYTES = 4194304"
-          ]
+          "declarations": ["MAX_WIRE_TRANSPORT_BYTES = 4194304"]
         },
         {
           "name": "MCP_LEGACY_PROTOCOL_VERSION",
           "kind": "const",
-          "declarations": [
-            "MCP_LEGACY_PROTOCOL_VERSION = \"2024-11-05\""
-          ]
+          "declarations": ["MCP_LEGACY_PROTOCOL_VERSION = \"2024-11-05\""]
         },
         {
           "name": "MCP_MODERN_PROTOCOL_VERSION",
           "kind": "const",
-          "declarations": [
-            "MCP_MODERN_PROTOCOL_VERSION = \"2025-11-25\""
-          ]
+          "declarations": ["MCP_MODERN_PROTOCOL_VERSION = \"2025-11-25\""]
         },
         {
           "name": "MCP_PACKAGE_VERSION",
           "kind": "const",
-          "declarations": [
-            "MCP_PACKAGE_VERSION = \"0.0.5\""
-          ]
+          "declarations": ["MCP_PACKAGE_VERSION = \"0.0.5\""]
         },
         {
           "name": "McpClientSession",
@@ -3930,9 +3756,7 @@
         {
           "name": "McpProtocolMode",
           "kind": "type",
-          "declarations": [
-            "export type McpProtocolMode = 'legacy' | 'auto' | 'modern';"
-          ]
+          "declarations": ["export type McpProtocolMode = 'legacy' | 'auto' | 'modern';"]
         },
         {
           "name": "McpServerManager",
@@ -3986,9 +3810,7 @@
         {
           "name": "PLATFORM_BASE_ENV_WHITELIST",
           "kind": "const",
-          "declarations": [
-            "PLATFORM_BASE_ENV_WHITELIST: readonly string[]"
-          ]
+          "declarations": ["PLATFORM_BASE_ENV_WHITELIST: readonly string[]"]
         },
         {
           "name": "prepareMcpPromptTask",
@@ -4070,9 +3892,7 @@
         {
           "name": "sanitizeMcpContentBlock",
           "kind": "function",
-          "declarations": [
-            "export declare function sanitizeMcpContentBlock(block: any): string;"
-          ]
+          "declarations": ["export declare function sanitizeMcpContentBlock(block: any): string;"]
         },
         {
           "name": "sanitizeStructuredContent",

@@ -48,7 +48,8 @@ describe('probeModelCatalog', () => {
         ok: true,
         status: 200,
         statusText: 'OK',
-        text: () => Promise.resolve(JSON.stringify({ data: [{ id: 'only', context_window: 512 }] })),
+        text: () =>
+          Promise.resolve(JSON.stringify({ data: [{ id: 'only', context_window: 512 }] })),
       }),
     );
     // 数值低于可信下限（512 < 1024）时不采信，避免把无关数值当窗口。
@@ -111,10 +112,7 @@ describe('probeModelCatalog', () => {
   });
 
   it('reports unreachable when the endpoint rejects the connection', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockRejectedValue(new TypeError('fetch failed')),
-    );
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
     expect(
       await probeModelCatalog({ baseURL: 'http://127.0.0.1:1/v1', provider: 'openai-compatible' }),
     ).toMatchObject({ status: 'unreachable' });

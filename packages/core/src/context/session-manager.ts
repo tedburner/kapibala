@@ -8,15 +8,12 @@ import { KapibalaError, createSessionError } from '../errors/index.js';
 import type { CanonicalMessage } from '../types/index.js';
 import { createMessageId, identifyHistory } from './history.js';
 import {
-  removeSessionToolResults,
-  sessionToolResultsDirectory,
-} from './managed-results.js';
-import {
   assertHistoryReadBudget,
   readHistoryBytes,
   readJsonlLines,
   syncSessionDirectory,
 } from './jsonl-lines.js';
+import { removeSessionToolResults, sessionToolResultsDirectory } from './managed-results.js';
 import { SessionLock } from './session-lock.js';
 import {
   type DelegationHeader,
@@ -62,7 +59,12 @@ export function resolveSessionProject(cwd: string, mode: 'git' | 'exact' = 'git'
   const realCwd = toNativePhysicalPath(cwd);
   const cached = projectProbeCache;
   // 只缓存短时间内的同一 cwd：启动期复用省掉重复 Git 子进程，跨时间仍按当前分支重新探测。
-  if (cached && cached.mode === mode && cached.cwd === realCwd && Date.now() - cached.at < PROJECT_PROBE_TTL_MS)
+  if (
+    cached &&
+    cached.mode === mode &&
+    cached.cwd === realCwd &&
+    Date.now() - cached.at < PROJECT_PROBE_TTL_MS
+  )
     return { ...cached.identity };
   let root = realCwd;
   let gitBranch: string | undefined;

@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PathSandbox } from '../src/capabilities/security/sandbox.js';
 import { classifyBashOutput, detectShell } from '../src/capabilities/shell/detect.js';
 import { createRunCommandTool } from '../src/capabilities/shell/tool.js';
-import { cleanupManagedResults } from '../src/context/managed-results.js';
-import { PathSandbox } from '../src/capabilities/security/sandbox.js';
 import { readFileTool } from '../src/capabilities/tools/builtin/fs.js';
 import { ToolRegistry } from '../src/capabilities/tools/registry.js';
+import { cleanupManagedResults } from '../src/context/managed-results.js';
 import { HookRegistry } from '../src/extensibility/hooks/registry.js';
 import {
   type LogEvent,

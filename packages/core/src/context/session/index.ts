@@ -15,7 +15,6 @@ import {
   visibleTools,
 } from '../../capabilities/security/permissions.js';
 import { PathSandbox } from '../../capabilities/security/sandbox.js';
-import { sessionToolResultsDirectory } from '../managed-results.js';
 import { estimateSkillTokens } from '../../capabilities/skills/catalog.js';
 import { inspectSkillContent } from '../../capabilities/skills/content.js';
 import { type PreparedSkill, SkillRuntime } from '../../capabilities/skills/loader.js';
@@ -68,6 +67,7 @@ import {
 } from '../../types/index.js';
 import { type TokenEstimator, UnicodeTokenEstimator, createContextBudget } from '../budget.js';
 import { createMessageId, identifyHistory } from '../history.js';
+import { sessionToolResultsDirectory } from '../managed-results.js';
 import { ContextManager, type ContextSnapshot } from '../manager.js';
 import { resolveSessionProject } from '../session-manager.js';
 import { supportsSessionState } from '../session-store.js';

@@ -3,14 +3,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { isPathInside, toNativePhysicalPath } from '../../context/workspace.js';
-import { KapibalaError } from '../../errors/index.js';
-import { commandAuditSummary, executionFingerprint } from '../../extensibility/logging/index.js';
 import {
   cleanupManagedResults,
   fallbackToolResultsDirectory,
   recordManagedResult,
 } from '../../context/managed-results.js';
+import { isPathInside, toNativePhysicalPath } from '../../context/workspace.js';
+import { KapibalaError } from '../../errors/index.js';
+import { commandAuditSummary, executionFingerprint } from '../../extensibility/logging/index.js';
 import type { ShellScope } from '../security/permissions.js';
 import { defineTool } from '../tools/index.js';
 import type { Tool } from '../tools/index.js';

@@ -108,7 +108,8 @@ export async function probeModelCatalog(
       headers['x-api-key'] = credential;
       headers.Authorization = `Bearer ${credential}`;
       headers['anthropic-version'] = '2023-06-01';
-      if (options.anthropicWorkspaceId) headers['anthropic-workspace-id'] = options.anthropicWorkspaceId;
+      if (options.anthropicWorkspaceId)
+        headers['anthropic-workspace-id'] = options.anthropicWorkspaceId;
     } else {
       headers.Authorization = `Bearer ${credential}`;
     }

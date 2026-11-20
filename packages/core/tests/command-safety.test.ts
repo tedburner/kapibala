@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import {
-  classifyShellCommandSafety,
-  type ShellCommandSafety,
-} from '../src/capabilities/shell/command-safety.js';
 import type { ShellScope } from '../src/capabilities/security/permissions.js';
+import {
+  type ShellCommandSafety,
+  classifyShellCommandSafety,
+} from '../src/capabilities/shell/command-safety.js';
 
 const ROOT = '/workspace';
 
@@ -79,21 +79,24 @@ describe('classifyShellCommandSafety', () => {
 
   it('never auto-allows digest-bound scripts whose content is unknown', () => {
     expect(
-      classifyShellCommandSafety(scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64) }), ROOT),
+      classifyShellCommandSafety(
+        scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64) }),
+        ROOT,
+      ),
     ).toBe('unknown');
   });
 
   it('classifies PowerShell cmdlets by table', () => {
-    expect(classifyShellCommandSafety({ ...scope('Get-ChildItem'), interpreter: 'pwsh' }, ROOT)).toBe(
-      'safe',
-    );
+    expect(
+      classifyShellCommandSafety({ ...scope('Get-ChildItem'), interpreter: 'pwsh' }, ROOT),
+    ).toBe('safe');
     expect(
       classifyShellCommandSafety({ ...scope('Remove-Item x'), interpreter: 'pwsh' }, ROOT),
     ).toBe('unsafe');
     // PowerShell 里 curl 是 Invoke-WebRequest 的别名，按网络命令询问。
-    expect(classifyShellCommandSafety({ ...scope('curl https://x'), interpreter: 'pwsh' }, ROOT)).toBe(
-      'unsafe',
-    );
+    expect(
+      classifyShellCommandSafety({ ...scope('curl https://x'), interpreter: 'pwsh' }, ROOT),
+    ).toBe('unsafe');
     expect(
       classifyShellCommandSafety({ ...scope('Invoke-Expression $x'), interpreter: 'pwsh' }, ROOT),
     ).toBe('unknown');

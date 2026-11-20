@@ -37,7 +37,11 @@ export function sessionToolResultsDirectory(options: {
   projectKey: string;
   sessionId: string;
 }): string {
-  if (!SESSION_ID_PATTERN.test(options.sessionId) || options.sessionId === '.' || options.sessionId === '..') {
+  if (
+    !SESSION_ID_PATTERN.test(options.sessionId) ||
+    options.sessionId === '.' ||
+    options.sessionId === '..'
+  ) {
     throw new Error(`Invalid session id for managed results: '${options.sessionId}'`);
   }
   return path.join(options.resultsRoot, options.projectKey, options.sessionId);

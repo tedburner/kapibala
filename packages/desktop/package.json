@@ -44,7 +44,5 @@
   },
   "license": "MIT",
   "author": "tedburner",
-  "files": [
-    "out"
-  ]
+  "files": ["out"]
 }

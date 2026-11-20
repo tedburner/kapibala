@@ -29,9 +29,7 @@ describe('sessionToolResultsDirectory', () => {
       projectKey: computeProjectKey(root),
       sessionId: 'conv-1',
     });
-    expect(dir).toBe(
-      path.join('/home/.kapibala/tool-results', computeProjectKey(root), 'conv-1'),
-    );
+    expect(dir).toBe(path.join('/home/.kapibala/tool-results', computeProjectKey(root), 'conv-1'));
   });
 
   it('rejects unsafe session ids to prevent path injection', () => {
@@ -139,7 +137,9 @@ describe('managed results lifecycle', () => {
   });
 
   it('removeSessionToolResults tolerates missing directories', () => {
-    expect(() => removeSessionToolResults(path.join(os.tmpdir(), 'kpbl-mr-missing-xyz'))).not.toThrow();
+    expect(() =>
+      removeSessionToolResults(path.join(os.tmpdir(), 'kpbl-mr-missing-xyz')),
+    ).not.toThrow();
   });
 });
 
