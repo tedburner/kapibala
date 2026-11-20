@@ -41,8 +41,11 @@ export {
 export {
   PROVIDER_METAS,
   CUSTOM_PROVIDER_KEY,
+  CUSTOM_VENDOR_KEY_PREFIX,
+  listProviderMetas,
   providerCategory,
   type ProviderMeta,
 } from './providers.js';
 
 export type { ManagedInspection } from './inspection.js';
+export type { ReferenceSelection } from './reference-blocks.js';

@@ -53,9 +53,23 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       });
       return;
     }
+    if (JSON.stringify(input).includes('html-proof') && body.messages.at(-1)?.role !== 'tool') {
+      response.end(
+        `data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call-${requests.length}`, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'preview.html', content: '<!doctype html><html><body><script>document.body.textContent="preview-ran";</script></body></html>' }) } }] }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`,
+      );
+      return;
+    }
     if (JSON.stringify(input).includes('write-proof') && body.messages.at(-1)?.role !== 'tool') {
       response.end(
         `data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call-${requests.length}`, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: JSON.stringify(input).includes('pending') ? 'pending-proof.txt' : 'proof.txt', content: 'electron-tool-proof' }) } }] }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`,
+      );
+      return;
+    }
+    if (JSON.stringify(input).includes('markdown-proof')) {
+      const content =
+        '这是**重点**内容，图片如下：\n\n![示意图](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==)';
+      response.end(
+        `data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
       );
       return;
     }
@@ -118,6 +132,14 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(page.getByRole('menuitem', { name: '本地验收模型' })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: '未配置的验收模型' })).toHaveCount(0);
     await page.getByRole('menuitem', { name: '本地验收模型' }).click();
+    // 选择即落盘为全局默认：重启后仍沿用该模型，而不是回落到初始默认值。
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          window.kapibala.settings.read().then((settings) => settings.defaultModel),
+        ),
+      )
+      .toBe('fixture');
     const input = page.getByRole('textbox', { name: '发送消息' });
     const widthBefore = (await input.boundingBox())!.width;
     await input.fill('验证本地对话');
@@ -328,16 +350,40 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     expect(fs.existsSync(path.join(project, 'pending-proof.txt'))).toBe(false);
     await page.getByRole('button', { name: 'write-proof-project', exact: true }).click();
     await expect(page.getByText('本地链路验证完成。', { exact: true })).toBeVisible();
+    // HTML 预览：write_file 写出 .html 才出现入口；点击后由独立协议来源在沙箱 iframe 里执行。
+    await send('html-proof');
+    await approve();
+    const previewButton = page.getByRole('button', { name: '预览 HTML', exact: true });
+    await expect(previewButton).toBeVisible();
+    await previewButton.click();
+    await expect(
+      page.frameLocator('iframe[title="HTML 文件预览"]').getByText('preview-ran'),
+    ).toBeVisible();
+    // Markdown 效果：CJK 相邻的粗体可解析，data: 图片直接渲染。
+    await send('markdown-proof');
+    await expect(page.getByText('重点', { exact: true })).toBeVisible();
+    await expect(page.getByRole('img', { name: '示意图' })).toBeVisible();
     expect(errors).toEqual([]);
     fs.mkdirSync(artifacts, { recursive: true });
     await page.screenshot({ path: path.join(artifacts, 'chat-1280.png') });
     await page.getByRole('button', { name: '打开设置' }).click();
     // 设置页首屏选中当前默认模型（本地验收模型，自定义端点分组）；自定义端点走 custom 表单，
-    // 密钥字段名是「API Key」，且不会回显已存凭证。
-    await expect(page.getByRole('textbox', { name: 'API Key', exact: true })).toHaveValue('');
+    // 自定义端点分组的密钥字段名是「API Key（必填）」，且不会回显已存凭证。
+    await expect(page.getByRole('textbox', { name: 'API Key（必填）', exact: true })).toHaveValue(
+      '',
+    );
     const beforeCalls = requests.length;
     // 输出预算在默认折叠的高级设置里；保存即落盘，不再有预览令牌与二次确认。
     await page.getByText('高级设置', { exact: true }).click();
+    // 容量刻度芯片：窗口与输出各一组，点击只写数值，手填仍可覆盖（下面继续填 256 验证）。
+    await page.getByRole('button', { name: '128k', exact: true }).click();
+    await expect(page.getByRole('spinbutton', { name: '上下文窗口', exact: true })).toHaveValue(
+      '128000',
+    );
+    await page.getByRole('button', { name: '8k', exact: true }).click();
+    await expect(page.getByRole('spinbutton', { name: '最大输出 Token', exact: true })).toHaveValue(
+      '8000',
+    );
     await page.getByRole('spinbutton', { name: '最大输出 Token', exact: true }).fill('256');
     await page.getByRole('button', { name: '保存到本地', exact: true }).click();
     await expect(page.getByText('已保存到本地配置。', { exact: true })).toBeVisible();
@@ -351,7 +397,18 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await page.getByRole('combobox', { name: '主题', exact: true }).click();
     await page.getByRole('option', { name: '深色', exact: true }).click();
     await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
-    await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+    // 权限审批：只提供常规三档，保存即写全局默认；完全访问不在配置层出现。
+    await page.getByRole('tab', { name: '权限审批' }).click();
+    const settingsDialog = page.getByRole('dialog');
+    await expect(settingsDialog.getByRole('button', { name: /完全访问/ })).toHaveCount(0);
+    await settingsDialog.getByRole('button', { name: /自主模式/ }).click();
+    await page.screenshot({ path: path.join(artifacts, 'settings-permission.png') });
+    await expect
+      .poll(() =>
+        page.evaluate(() => window.kapibala.settings.read().then((item) => item.permissionMode)),
+      )
+      .toBe('Auto');
+    await page.getByRole('button', { name: '返回应用', exact: true }).click();
     await expect(page.getByRole('dialog')).toBeHidden();
     await page.screenshot({ path: path.join(artifacts, 'chat-dark.png') });
     await page.reload();
@@ -361,7 +418,7 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await page.getByRole('tab', { name: '外观与应用' }).click();
     await page.getByRole('combobox', { name: '主题', exact: true }).click();
     await page.getByRole('option', { name: '浅色', exact: true }).click();
-    await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+    await page.getByRole('button', { name: '返回应用', exact: true }).click();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(800, 600));
     await expect(page.locator('[data-sidebar-wrapper]')).toHaveAttribute('data-state', 'collapsed');
     await page.screenshot({ path: path.join(artifacts, 'chat-800.png') });

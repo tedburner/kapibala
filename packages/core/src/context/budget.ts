@@ -8,7 +8,7 @@ export { stableSerialize } from '../types/serialization.js';
 /** 由生效窗口推导的请求预算；实际请求与只读展示必须共用同一份推导。 */
 export interface ContextBudget {
   contextWindow: number;
-  /** 窗口来自保守估算（未知按 32K 推导）时为 true。 */
+  /** 窗口来自估算（未声明，按 DEFAULT_CONTEXT_WINDOW_TOKENS 推导）时为 true。 */
   estimatedWindow: boolean;
   /** 输出预留（含私有推理消耗），同时作为实际请求的 maxTokens。 */
   outputReserve: number;
@@ -45,9 +45,10 @@ export interface TokenEstimator {
 
 /**
  * 计算一次有效输出预留及输入预算；输出上限须为正安全整数，缺省沿用 4096。
- * 未知窗口以 32K 控制，输出最多占窗口 12.5%，另留至少 128 的 5% 安全余量。
+ * 未声明窗口时与用量展示共用 DEFAULT_CONTEXT_WINDOW_TOKENS（256K），
+ * 输出最多占窗口 12.5%，另留至少 128 的 5% 安全余量。
  * 输出预留包含思考/推理；不能把 Profile 的较低覆盖重新放大为默认值。
- * @param window 模型声明的上下文窗口；缺省采用保守估算。
+ * @param window 模型声明的上下文窗口；缺省采用统一默认估算值。
  * @param maxOutputTokens 当前目的的输出上限，包含可见文字及私有推理消耗。
  * @returns 实际请求与上下文展示共用的预算。
  * @throws {ModelError} 输出上限不是正安全整数或窗口过小；错误纳入统一脱敏诊断通道。
@@ -63,7 +64,8 @@ export function createContextBudget(
       retryable: false,
     });
   const resolved = resolveContextWindow(window);
-  const contextWindow = resolved.estimated ? 32000 : resolved.tokens;
+  // 未声明窗口也走 resolveContextWindow 的统一默认值，保证与用量展示同一窗口口径。
+  const contextWindow = resolved.tokens;
   const outputReserve = Math.min(maxOutputTokens, Math.floor(contextWindow * 0.125));
   const safetyReserve = Math.max(128, Math.ceil(contextWindow * 0.05));
   const inputBudget = contextWindow - outputReserve - safetyReserve;

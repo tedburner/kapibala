@@ -45,6 +45,10 @@ const profile = z
       })(),
     ),
     apiKeyEnv: z.string().max(128),
+    /** 自定义厂商展示名；内置模型缺省，填写后桌面左栏按该名称独立成组。 */
+    vendorName: z.string().max(64).optional(),
+    /** 停用态：只影响选择入口，缺省视为启用。 */
+    disabled: z.boolean().optional(),
     contextWindow: z.number().int().positive().max(10_000_000).optional(),
     maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
     supportsThinking: z.boolean().optional(),
@@ -66,6 +70,8 @@ const credential = z
 const publicProfile = profile.extend({
   effectiveBaseURL: z.string(),
   builtin: z.boolean(),
+  /** 读投影恒返回布尔，页面不必再判 undefined。 */
+  disabled: z.boolean(),
   /** 厂商分组键，与 providers[].key 同源（detectProviderFamily / 'custom'）；页面据此把模型归入左侧厂商列表。 */
   providerKey: z.string(),
   credential,
@@ -76,7 +82,11 @@ const settings = z
     profiles: z.array(publicProfile),
     defaultModel: id,
     routing: z.record(z.string(), z.string()),
-    providers: z.array(z.object({ key: text, name: text, description: text }).strict()),
+    /** 新建会话的默认审批档位；FullAccess 不会出现在全局默认里。 */
+    permissionMode: mode,
+    providers: z.array(
+      z.object({ key: text, name: text, description: text, custom: z.boolean() }).strict(),
+    ),
     projectOverride: z.boolean(),
   })
   .strict();
@@ -109,6 +119,8 @@ const tool = z
   .object({
     callId: id,
     name: text,
+    /** 显示名（host 层解析的中文短名 / MCP 归一名）；只影响 UI，不参与权限判定。 */
+    displayName: text,
     invocation: text,
     input: text,
     status: z.enum(['running', 'succeeded', 'failed', 'interrupted']),
@@ -375,6 +387,14 @@ export const PARAMS = {
     })
     .strict(),
   'settings.setDefault': z.object({ profileId: id }).strict(),
+  /** 只允许三个常规档位；FullAccess 必须由本次会话显式确认，不能写进全局默认。 */
+  'settings.setPermissionMode': z.object({ mode: z.enum(['Approval', 'Plan', 'Auto']) }).strict(),
+  /** 启用/停用单个模型；停用当前默认模型时由 host 迁移默认与路由引用。 */
+  'settings.setEnabled': z.object({ profileId: id, enabled: z.boolean() }).strict(),
+  /** 删除模型：自定义模型移除条目，内置模型只写停用态并保留已存密钥。 */
+  'settings.deleteProfile': z.object({ profileId: id }).strict(),
+  /** 探测一次连接：复用已存或免密钥端点，只发 GET /models 请求。 */
+  'settings.testProfile': z.object({ profileId: id }).strict(),
   'settings.setRouting': z
     .object({
       role: z.enum(['planning', 'execution', 'fast', 'summary']),
@@ -543,6 +563,11 @@ export const RESULTS = {
   /** 端点返回的模型 id 清单；条目数与长度由 host 设上限，只用于页面选择，不落盘。 */
   'settings.listModels': z.object({ models: z.array(text).max(500) }).strict(),
   'settings.setDefault': empty,
+  'settings.setPermissionMode': empty,
+  'settings.setEnabled': empty,
+  'settings.deleteProfile': empty,
+  /** ok=false 时 message 已是可展示的中文短句，页面直接渲染。 */
+  'settings.testProfile': z.object({ ok: z.boolean(), message: text }).strict(),
   'settings.setRouting': empty,
   'resources.readMcp': mcpSnapshot,
   'resources.saveMcpServer': mcpSnapshot,
@@ -755,6 +780,15 @@ export type DesktopAPI = {
     reload(): Promise<void>;
     openExternal(url: string): Promise<void>;
   };
+  preview: {
+    /** 登记一份预览文档并取回独立来源的地址；超过预览上限或来源不合法时拒绝。 */
+    url(html: string): Promise<string>;
+    /**
+     * 按路径读取本地图片并返回 data URL；相对路径以传入的 root 解析。
+     * 只接受图片扩展名白名单与大小上限内的文件，其余一律拒绝。
+     */
+    file(params: { path: string; root?: string }): Promise<string>;
+  };
   preferences: {
     read(): Promise<Output<'preferences.read'>>;
     update(theme: 'light' | 'dark' | 'system'): Promise<void>;
@@ -774,6 +808,14 @@ export type DesktopAPI = {
     /** 只读探测：按 Base URL 拉取模型目录，供自定义端点直接选模型。 */
     listModels(params: Params<'settings.listModels'>): Promise<Output<'settings.listModels'>>;
     setDefault(profileId: string): Promise<void>;
+    /** 写入新建会话的默认审批档位；只接受常规档位，完全访问不进全局默认。 */
+    setPermissionMode(mode: 'Approval' | 'Plan' | 'Auto'): Promise<void>;
+    /** 启用/停用模型；停用后从选择入口消失，配置与密钥保留。 */
+    setEnabled(params: Params<'settings.setEnabled'>): Promise<void>;
+    /** 删除模型：内置模型等价于停用，自定义模型移除条目。 */
+    deleteProfile(profileId: string): Promise<void>;
+    /** 探测连接；失败也以 ok=false 正常返回，不当作 RPC 错误。 */
+    testProfile(profileId: string): Promise<Output<'settings.testProfile'>>;
     setRouting(params: Params<'settings.setRouting'>): Promise<void>;
   };
   resources: {

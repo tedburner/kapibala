@@ -138,6 +138,7 @@ export function checkDesktop(artifacts = false): void {
     'react',
     'react-dom',
     'react-markdown',
+    'remark-cjk-friendly',
     'remark-gfm',
     'zustand',
     'zod',

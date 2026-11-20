@@ -52,6 +52,7 @@ describe('SubagentOutbox and SessionInbox reliable notification delivery', () =>
     summary: 'Found 12 migration files',
     workspaceRoot: directory,
     executionCwd: directory,
+    mode: 'ephemeral',
     limits: {
       maxSteps: 15,
       timeoutMs: 300_000,

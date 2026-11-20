@@ -119,8 +119,9 @@ describe('Step Logs and TurnMetrics', () => {
       status: 'completed',
       contextUsage: {
         usedTokens: 20,
-        limitTokens: 1_000_000,
-        percent: 0.002,
+        // 未声明窗口按统一默认 256K 解析：20/256000×100 = 0.0078125。
+        limitTokens: 256_000,
+        percent: 0.0078125,
         estimatedLimit: true,
       },
     });
@@ -180,7 +181,7 @@ describe('Step Logs and TurnMetrics', () => {
 
     expect(session.getStats().contextUsage).toMatchObject({
       usedTokens: session.getContextSnapshot()?.estimate.total,
-      limitTokens: 1_000_000,
+      limitTokens: 256_000,
       estimatedUsage: true,
       estimatedLimit: true,
     });

@@ -21,7 +21,7 @@ describe('resolveContextWindow', () => {
     });
   });
 
-  it('uses an estimated 1M limit when the profile omits contextWindow', () => {
+  it('uses the unified estimated default when the profile omits contextWindow', () => {
     expect(resolveContextWindow()).toEqual({
       tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
       estimated: true,

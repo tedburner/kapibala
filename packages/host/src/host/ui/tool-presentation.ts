@@ -84,11 +84,149 @@ function formatGenericValue(key: string, value: unknown): string {
 }
 
 /**
+ * 工具显示信息；只影响 UI 渲染，不参与权限判定、不落盘、不进 Provider wire。
+ * 权限匹配、审批记录与历史落盘继续使用原始工具 id，避免显示层污染协议。
+ */
+export interface ToolDisplay {
+  /** 中文短名（如「读文件」）或 MCP 归一名（「服务 · 工具」）；未知工具为美化回退名。 */
+  label: string;
+  /** 动作动词（如「读取」），用于工具行前半段；缺省时渲染层回退为 label。 */
+  verb?: string;
+  /** 关键参数摘要，只承载一个 salience 字段（路径 / 查询词 / 命令等）；缺省时退回原摘要。 */
+  chip?: (input: Record<string, unknown>) => string | undefined;
+  /** chip 是否按等宽字体渲染（路径、命令类为 true）。 */
+  mono?: boolean;
+}
+
+/**
+ * 内置工具显示名表；新增内置工具必须在此登记，否则显示层退化为裸 id。
+ * 门禁测试断言 registerBuiltinTools 注册的每个工具名都能在本表命中（与 BUILTIN_PROFILES
+ * 漏同步同型的失败模式，故做成测试强制）。
+ */
+const BUILTIN_TOOL_DISPLAY: Record<string, ToolDisplay> = {
+  read_file: {
+    label: '读文件',
+    verb: '读取',
+    chip: (input) => stringInput(input, 'path') || undefined,
+    mono: true,
+  },
+  write_file: {
+    label: '写文件',
+    verb: '写入',
+    chip: (input) => stringInput(input, 'path') || undefined,
+    mono: true,
+  },
+  edit_file: {
+    label: '编辑文件',
+    verb: '编辑',
+    chip: (input) => stringInput(input, 'path') || undefined,
+    mono: true,
+  },
+  glob: {
+    label: '搜索文件',
+    verb: '搜索',
+    chip: (input) => stringInput(input, 'pattern') || undefined,
+    mono: true,
+  },
+  grep: {
+    label: '搜索内容',
+    verb: '搜索',
+    chip: (input) => stringInput(input, 'pattern') || undefined,
+    mono: true,
+  },
+  run_command: {
+    label: '运行命令',
+    verb: '运行',
+    chip: (input) => stringInput(input, 'command') || undefined,
+    mono: true,
+  },
+  spawn_agent: {
+    label: '派发子代理',
+    verb: '派发',
+    chip: (input) => stringInput(input, 'description') || undefined,
+  },
+  send_agent: {
+    label: '续聊子代理',
+    verb: '续聊',
+    chip: (input) => stringInput(input, 'agentId') || undefined,
+    mono: true,
+  },
+  list_agents: {
+    label: '查询子代理',
+    verb: '查询',
+  },
+  wait_agent: {
+    label: '等待子代理',
+    verb: '等待',
+    chip: (input) => stringInput(input, 'agentId') || undefined,
+    mono: true,
+  },
+  cancel_agent: {
+    label: '取消子代理',
+    verb: '取消',
+    chip: (input) => stringInput(input, 'agentId') || undefined,
+    mono: true,
+  },
+  load_skill: {
+    label: '加载技能',
+    verb: '加载',
+    chip: (input) => stringInput(input, 'name') || undefined,
+    mono: true,
+  },
+  list_skills: {
+    label: '列出技能',
+    verb: '查询',
+    chip: (input) => stringInput(input, 'query') || undefined,
+  },
+  read_skill_resource: {
+    label: '读取技能资源',
+    verb: '读取',
+    chip: (input) => stringInput(input, 'path') || undefined,
+    mono: true,
+  },
+};
+
+/** 归一 MCP 工具名为「服务 · 工具」；/mcp 工具清单与工具行共用本函数，保证同口径。 */
+export function formatMcpToolLabel(server: string, tool: string): string {
+  return `${sanitizeText(server)} · ${sanitizeText(tool)}`;
+}
+
+/** 未知工具的美化回退名：去 mcp__ 前缀、下划线转空格、首字母大写、截断 24 字符；绝不返回空串。 */
+function beautifyUnknownToolName(name: string): string {
+  const cleaned = sanitizeText(name)
+    .replace(/^mcp__/, '')
+    .replace(/__/g, '·')
+    .replace(/_/g, ' ');
+  const titled = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  return truncate(titled || 'Unknown tool', 24);
+}
+
+/**
+ * 三级解析工具显示名：内置工具精确命中 → `mcp__<server>__<tool>` 归一为「服务 · 工具」
+ * → 未知工具美化回退。绝不抛错、绝不返回空 label；未登记的内置工具会走回退分支，
+ * 由门禁测试兜底拦截（见 tests 对 registerBuiltinTools 全量命中的断言）。
+ */
+export function resolveToolDisplay(name: string): ToolDisplay {
+  const builtin = BUILTIN_TOOL_DISPLAY[name];
+  if (builtin) return builtin;
+  if (name.startsWith('mcp__')) {
+    const parts = name.split('__');
+    if (parts.length >= 3) {
+      const server = parts[1];
+      const toolName = parts.slice(2).join('__');
+      return { label: formatMcpToolLabel(server, toolName), mono: true };
+    }
+  }
+  return { label: beautifyUnknownToolName(name) };
+}
+
+/**
  * 把工具名与入参转换为面向终端用户的安全动作摘要。
- * 内置工具映射为 Read / Search / Write / Edit；未知与 MCP 工具保留真实名称。
+ * 内置工具取显示名表的中文动词拼接关键参数；未知与 MCP 工具保留真实名称。
  */
 export function formatToolInvocation(name: string, input: Record<string, unknown>): string {
   const safeName = sanitizeToolName(name);
+  const verb = BUILTIN_TOOL_DISPLAY[name]?.verb;
 
   if (name === 'read_file') {
     const path = stringInput(input, 'path', '.');
@@ -98,31 +236,31 @@ export function formatToolInvocation(name: string, input: Record<string, unknown
       startLine === undefined && endLine === undefined
         ? ''
         : ` · 行 ${startLine ?? 1}-${endLine ?? '末尾'}`;
-    return `Read ${path}${range}`;
+    return `${verb ?? 'Read'} ${path}${range}`;
   }
 
   if (name === 'glob') {
     const pattern = stringInput(input, 'pattern', '*');
     const directory = stringInput(input, 'subDirectory');
-    return `Search ${pattern}${directory ? ` in ${directory}` : ''}`;
+    return `${verb ?? 'Search'} ${pattern}${directory ? ` in ${directory}` : ''}`;
   }
 
   if (name === 'grep') {
     const pattern = JSON.stringify(stringInput(input, 'pattern'));
     const target = stringInput(input, 'path', '.');
-    return `Search ${pattern} in ${target}`;
+    return `${verb ?? 'Search'} ${pattern} in ${target}`;
   }
 
   if (name === 'write_file') {
     const path = stringInput(input, 'path', '.');
     const content = typeof input.content === 'string' ? input.content : '';
-    return `Write ${path} · ${formatBytes(Buffer.byteLength(content, 'utf-8'))}`;
+    return `${verb ?? 'Write'} ${path} · ${formatBytes(Buffer.byteLength(content, 'utf-8'))}`;
   }
 
   if (name === 'edit_file') {
     const path = stringInput(input, 'path', '.');
     const target = typeof input.targetContent === 'string' ? input.targetContent : '';
-    return `Edit ${path} · 替换 ${[...target].length} 字符`;
+    return `${verb ?? 'Edit'} ${path} · 替换 ${[...target].length} 字符`;
   }
 
   if (name.startsWith('mcp__')) {
@@ -136,6 +274,14 @@ export function formatToolInvocation(name: string, input: Record<string, unknown
       const payload = entries.length > 0 ? ` ${entries.join(' ')}` : '';
       return truncate(`[MCP: ${sanitizeText(server)}] ${sanitizeText(toolName)}${payload}`, 120);
     }
+  }
+
+  // 已登记的内置工具统一走「动词 · 关键参数」两段式，不再把裸 id 与全部入参拼成一行；
+  // 这样 send_agent 等新工具不会在工具行露出英文 id（U1.1/U1.2 的口径要求）。
+  const display = BUILTIN_TOOL_DISPLAY[name];
+  if (display) {
+    const chip = display.chip?.(input);
+    return truncate(chip ? `${display.verb ?? display.label} · ${chip}` : display.label, 120);
   }
 
   const entries = Object.entries(input)

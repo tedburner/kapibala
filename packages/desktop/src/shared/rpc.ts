@@ -241,5 +241,14 @@ export function safeError(error: unknown): DesktopError {
             : candidate?.name === 'ZodError'
               ? 'INVALID_REQUEST'
               : 'INTERNAL_ERROR';
-  return { code, message: messages[code] };
+  // SESSION_LOCKED 附加持有者 pid（core 内部 message 已含，属可安全透出的整数）：
+  // 提示里给出可核对的对象与自愈途径，避免用户面对「关闭客户端」却无客户端可关。
+  const lockPid =
+    code === 'SESSION_LOCKED' && candidate?.message
+      ? /pid=(\d+)/.exec(candidate.message)?.[1]
+      : undefined;
+  const message = lockPid
+    ? `${messages.SESSION_LOCKED.replace('。', '')}（持有者 pid=${lockPid}）；若确认该进程已退出，重启应用会自动清理残留锁。`
+    : messages[code];
+  return { code, message };
 }

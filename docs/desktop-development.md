@@ -35,11 +35,13 @@ pnpm verify
 
 `dev:desktop` 使用 `packages/desktop/scripts/dev.mjs`：先构建共享产物，启动仅绑定 loopback 的 Vite Renderer，再通过私有父子 IPC 请求 Main 正常退出，等待工具清理、Host 正常退出及 guard 清除后才重建并启动。源码内容指纹过滤构建器产生的元数据事件；Renderer 更新走 Vite，不以强杀 Host 换取热更新。清理失败停止重启，保留 guard。该开发 IPC 仅在非打包、Node 父子 IPC 和随机开发令牌同时存在时启用，不暴露给 Renderer。macOS 开发入口会在 `.workbuddy/desktop-dev-runtime/` 缓存独立的 Electron 应用包副本，将菜单栏与 Dock 名称设为 Kapibala 并重新签名；不修改依赖中的 Electron 包。
 
+**dev 使用独立 userData，guard 不写生产目录。** `dev.mjs` 通过标准 `--user-data-dir` 开关把开发实例的 userData 指到 `<repo>/.workbuddy/desktop-dev/userData`（gitignore，目录固定、不随 Electron 版本变化），Host guard（`host-guard.json`）与 Chromium 状态全部落在这里；watch 模式反复重启即使清理失败，也不会让正式版启动时弹出「上次执行未确认完成清理」。HOME 不隔离：agent host 继续使用真实 `~/.kapibala` 的模型密钥、会话与全局指令。`dev.mjs` 同时持有 `.workbuddy/desktop-dev/dev.lock` 防重入锁（记录 PID，持有者已死视为陈旧锁自动接管），两个 dev 实例并存会共享状态并互相触发 guard 冲突，第二个实例直接拒绝启动。
+
 不要只启动 electron-vite 就宣称共享代码已更新。开发重启同样要经过取消和清理；清理失败保留异常 guard，不能靠热更新跳过执行阻断。Renderer 的普通视图更新不重启 Host。
 
 **启动环境分两层，别绕过。** 根 `pnpm build` / `build:desktop` / `dev:desktop` 实际是 `scripts/build.mjs` 与 `scripts/dev-desktop.mjs`：它们先用 `scripts/process-env.mjs` 的 `toolchainEnv()` 摘掉宿主注入的 `--require` / `--import` 与 `ELECTRON_RUN_AS_NODE`，再拉起下一层命令 —— 否则宿主的删除守卫会把打包器清 `out/` 当成批量删除拦下，报错指向无关的 `.js.map`，看起来像打包器坏了。启动 Electron 本身则走 `packages/desktop/scripts/launch-env.mjs` 的 `desktopLaunchEnv()` 白名单。
 
-⚠️ 不要在 IDE 内嵌终端里跑 `pnpm dev:desktop`。那里的进程已处于系统沙箱内，Chromium 再初始化自己的进程级沙箱会被内核拒绝（`sandbox initialization failed` → GPU `exit_code=6` → 主进程 SIGTRAP），退出时来不及清 guard，下次打开就是「上次执行未确认完成清理」。用系统「终端」（Terminal.app）启动。
+⚠️ 不要在 IDE 内嵌终端里跑 `pnpm dev:desktop`。那里的进程已处于系统沙箱内，Chromium 再初始化自己的进程级沙箱会被内核拒绝（`sandbox initialization failed` → GPU `exit_code=6` → 主进程 SIGTRAP），退出时来不及清 guard，下次打开就是「上次执行未确认完成清理」。用系统「终端」（Terminal.app）启动。该残留现在只落在 dev 专属 userData（见上），不再污染正式版；但 dev 自己下次启动仍会撞上，仍需人工核查。
 
 ### 1.1 本机测试打包（D1）
 

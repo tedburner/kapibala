@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { ShellCommandSafety } from '../shell/command-safety.js';
 import type { Capability, Tool } from '../tools/index.js';
 
 /** 本次会话的自动执行边界；FullAccess 只能由宿主为本次会话显式选择。 */
@@ -38,6 +39,12 @@ export interface PermissionRequest {
   /** 宿主硬限制；命中即拒绝，优先级高于一切规则与缓存。 */
   hardDenied?: boolean;
   shell?: ShellScope;
+  /**
+   * Auto 模式专用：shell 命令安全分级（执行器经 classifyShellCommandSafety 对最终 ShellScope
+   * 计算）。仅参与模式默认值裁决，`safe` 允许 Auto 自动放行静态 dangerous 的 shell 工具；
+   * `unsafe`/`unknown` 与缺省（非 shell 工具）维持原有降级路径，显式规则与会话缓存仍先于此生效。
+   */
+  shellSafety?: ShellCommandSafety;
   /** 规则表须先经 validatePermissionRules 校验；同动作规则按声明顺序取首个命中。 */
   rules?: readonly PermissionRule[];
   /** 会话缓存命中标志（来自 SessionApprovalCache）；仅在 deny / ask 规则都未命中时生效。 */
@@ -151,6 +158,12 @@ export class PermissionPolicy {
     );
     if (allowIndex >= 0)
       return { decision: 'allow', source: 'explicit_rule', ruleIndex: allowIndex };
+    // Auto 模式对经过内置只读分级确认的 shell 命令自动放行：run_command 静态标记
+    // dangerous 导致能力表覆盖 exec/net/env，无法走 fs:read/write 分支，这里以
+    // 分级结果作为唯一额外豁免口；unsafe/unknown 维持询问（fail-closed）。
+    if (request.mode === 'Auto' && request.dangerous && request.shellSafety === 'safe') {
+      return { decision: 'allow', source: 'mode_default' };
+    }
     if (request.capabilities.length === 0 || (request.dangerous && request.mode !== 'FullAccess')) {
       return { decision: 'ask', source: 'mode_default' };
     }

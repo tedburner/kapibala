@@ -15,6 +15,7 @@
  *    任务失败或取消时无条件级联取消所有后代任务，并等待后代清理完成后才释放自身槽位与写入终态。
  */
 
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { WorkspaceLeaseCoordinator } from '../../capabilities/security/lease.js';
 import { isPathInside, toNativePhysicalPath } from '../../capabilities/security/sandbox.js';
@@ -25,7 +26,7 @@ import {
   type SubagentRole,
   deriveChildPolicy,
 } from '../../capabilities/security/subagent-policy.js';
-import { KapibalaError } from '../../errors/index.js';
+import { KapibalaError, createDelegationError } from '../../errors/index.js';
 import { createMessageId } from '../../types/identity.js';
 import { SubagentOutbox } from './outbox.js';
 import {
@@ -39,6 +40,8 @@ import {
   MAX_ACTIVE_TASKS_PER_RUNTIME,
   MAX_ACTIVE_TASKS_PER_TREE,
   MAX_TOTAL_TASKS_PER_TREE,
+  type SendAgentParams,
+  type SendAgentReceipt,
   type SpawnAgentParams,
   type SpawnAgentReceipt,
   isActiveTaskStatus,
@@ -50,11 +53,34 @@ export type SubagentSessionRunner = (
   record: AgentTaskRecord,
   signal: AbortSignal,
   context: SubagentRunnerContext,
+) => Promise<{ summary: string; modelId?: string; sessionId?: string; title?: string }>;
+
+/**
+ * 委派会话续聊执行器：打开已保留的子会话并追加一轮用户输入。
+ *
+ * 约束：
+ * - 只在目标 detached 任务处于终态且已回填 sessionId 时被调用；
+ * - 必须复用首次派发冻结的 `effectivePolicy` 与同一个写租约协调器，不得扩大权限；
+ * - 与首次执行一样受墙钟超时与取消信号约束。
+ */
+export type SubagentSessionResumer = (
+  record: AgentTaskRecord,
+  prompt: string,
+  signal: AbortSignal,
+  context: SubagentRunnerContext,
 ) => Promise<{ summary: string; modelId?: string }>;
 
 /** 子任务仅在内存中接收父协调器；runner 创建子会话时必须注入，不可序列化到任务记录。 */
 export interface SubagentRunnerContext {
   readonly leaseCoordinator: WorkspaceLeaseCoordinator;
+  /** 父会话标题快照，仅供 detached 委派命名；缺失时退化为仅委派名。 */
+  readonly parentTitle?: string;
+  /**
+   * 子会话创建成功后的身份回填通道；仅 detached 任务会消费。
+   * 调用它让运行时在运行中途就持有 sessionId，失败/取消后仍可续聊，
+   * 不必等 runner 正常返回（异常路径拿不到返回值）。
+   */
+  readonly onSessionCreated?: (sessionId: string) => void;
 }
 
 /** 启动子代理时的调用方上下文。 */
@@ -83,6 +109,24 @@ export interface SpawnContext {
   executionCwd: string;
   /** 父权限策略快照。 */
   parentPolicy?: ParentPolicySnapshot;
+  /** 父会话标题快照；仅用于 detached 委派命名，不参与身份或去重。 */
+  parentTitle?: string;
+}
+
+/**
+ * 重启后重建 spawn 幂等索引的条目。
+ *
+ * 来源是宿主扫描保留型委派会话头得到的 `requestId` / 参数签名 / 原回执快照；
+ * 运行时只做结构校验与登记，不凭它伪造任务状态：重放返回原回执，
+ * 但跨进程的任务记录与 runner 上下文不存在，模型侧续聊仍不可用（见设计 007 §5.1）。
+ */
+export interface RestoredDelegationRequest {
+  /** 首次派发时的幂等键。 */
+  requestId: string;
+  /** 首次派发参数的规范化签名。 */
+  signature: string;
+  /** 首次派发回执原样快照。 */
+  receipt: SpawnAgentReceipt;
 }
 
 /**
@@ -90,8 +134,30 @@ export interface SpawnContext {
  */
 export interface AgentRuntimeOptions {
   runner?: SubagentSessionRunner;
+  /** 委派会话续聊执行器；缺失时 send_agent 可用但 prepareResume 直接拒绝。 */
+  resumer?: SubagentSessionResumer;
   validateModelOverride?: (modelId: string) => boolean;
   outboxPath?: string;
+  /** 宿主扫描委派会话头后回填的幂等索引；进程重启后防止同一 requestId 重复派发。 */
+  restoredRequests?: readonly RestoredDelegationRequest[];
+}
+
+/** 幂等索引条目：签名决定「同 ID 是否同参」，回执用于直接重放。 */
+interface IdempotentRequestEntry {
+  readonly signature: string;
+  receipt: SpawnAgentReceipt | SendAgentReceipt;
+}
+
+/** 续聊受理前的终态快照；父工具事务提交失败时原样回滚，不留下伪运行状态。 */
+interface ResumeSnapshot {
+  readonly status: AgentTaskStatus;
+  readonly summary?: string;
+  readonly error?: string;
+  readonly finishedAt?: number;
+  readonly startedAt?: number;
+  readonly runGeneration: number;
+  readonly continuationOf?: string;
+  readonly requestId?: string;
 }
 
 /**
@@ -108,7 +174,14 @@ export class AgentRuntime {
   private taskChangeNotificationPending = false;
   private readonly outbox: SubagentOutbox;
   private readonly runningPromises = new Map<string, Promise<void>>();
+  /** 幂等索引：spawn:/send: 前缀分离两条线的 requestId，避免碰撞。 */
+  private readonly idempotentRequests = new Map<string, IdempotentRequestEntry>();
+  /** 待激活的续聊输入；由 activateResume 消费，父事务回滚时清除。 */
+  private readonly resumePrompts = new Map<string, string>();
+  /** 续聊受理前的终态快照；仅用于父事务未提交时回滚。 */
+  private readonly resumeSnapshots = new Map<string, ResumeSnapshot>();
   private runner: SubagentSessionRunner;
+  private resumer?: SubagentSessionResumer;
   private readonly validateModelOverride?: (modelId: string) => boolean;
   private isClosed = false;
 
@@ -122,8 +195,34 @@ export class AgentRuntime {
       (async () => {
         return { summary: 'Completed successfully' };
       });
+    this.resumer = options?.resumer;
     this.validateModelOverride = options?.validateModelOverride;
     this.outbox = new SubagentOutbox({ storagePath: options?.outboxPath });
+    if (options?.restoredRequests) this.restoreIdempotentRequests(options.restoredRequests);
+  }
+
+  /**
+   * 登记宿主从委派会话头重建的 spawn 幂等条目。
+   *
+   * 约束：只登记结构完整的条目；重复 requestId 以先到者为准，
+   * 不覆盖进程内已发生的派发（内存索引优先级高于持久快照）。
+   *
+   * @param entries 宿主扫描得到的幂等条目列表
+   */
+  restoreIdempotentRequests(entries: readonly RestoredDelegationRequest[]): void {
+    for (const entry of entries) {
+      if (!entry?.requestId || !entry.signature || !entry.receipt?.agentId) continue;
+      const key = `spawn:${entry.requestId}`;
+      if (this.idempotentRequests.has(key)) continue;
+      this.idempotentRequests.set(key, { signature: entry.signature, receipt: entry.receipt });
+    }
+  }
+
+  /**
+   * 注入或替换委派续聊执行器；替换只影响后续续聊，已受理的续聊仍走原执行器。
+   */
+  setResumer(resumer: SubagentSessionResumer): void {
+    this.resumer = resumer;
   }
 
   /**
@@ -211,6 +310,23 @@ export class AgentRuntime {
         code: 'CONFIG_INVALID',
         safeMessage: '子代理运行时已关闭，无法受理新任务',
       });
+    }
+
+    // 幂等优先于一切校验与容量检查：同 requestId 同参直接重放原回执，不再预留槽位。
+    const requestId = params.requestId?.trim();
+    let requestSignature: string | undefined;
+    if (requestId) {
+      requestSignature = spawnRequestSignature(params);
+      const existing = this.idempotentRequests.get(`spawn:${requestId}`);
+      if (existing) {
+        if (existing.signature !== requestSignature) {
+          throw createDelegationError(
+            'DELEGATION_REQUEST_CONFLICT',
+            `Spawn requestId "${requestId}" was already used with different parameters`,
+          );
+        }
+        return existing.receipt as SpawnAgentReceipt;
+      }
     }
 
     if (params.isolation === 'worktree') {
@@ -368,16 +484,39 @@ export class AgentRuntime {
       executionCwd: nativeExecutionCwd,
       allowedTools: params.allowedTools,
       isolation: params.isolation ?? 'inherit',
+      mode: params.mode ?? 'ephemeral',
+      runGeneration: 1,
       modelOverride: params.modelOverride,
       effectivePolicy: derivedPolicy,
       limits: Object.freeze({
         maxSteps,
         timeoutMs,
       }),
+      ...(requestId ? { requestId } : {}),
+      ...(requestSignature ? { requestSignature } : {}),
     };
 
     // 原子预留容量
-    this.runnerContexts.set(agentId, Object.freeze({ leaseCoordinator: context.leaseCoordinator }));
+    this.runnerContexts.set(
+      agentId,
+      Object.freeze({
+        leaseCoordinator: context.leaseCoordinator,
+        ...(context.parentTitle ? { parentTitle: context.parentTitle } : {}),
+        onSessionCreated: (sessionId: string) => {
+          const target = this.tasks.get(agentId);
+          if (!target || target.mode !== 'detached') return;
+          target.sessionId = sessionId;
+          if (target.requestReceipt) {
+            target.requestReceipt = { ...target.requestReceipt, sessionId };
+            if (target.requestId) {
+              const entry = this.idempotentRequests.get(`spawn:${target.requestId}`);
+              if (entry) entry.receipt = target.requestReceipt;
+            }
+          }
+          this.notifyStateChange();
+        },
+      }),
+    );
     this.tasks.set(agentId, taskRecord);
     this.totalActiveCount++;
     this.treeActiveCounts.set(rootTaskId, treeActive + 1);
@@ -393,7 +532,7 @@ export class AgentRuntime {
 
     const preferredRole = ROLE_PRESETS[params.role].preferredRole;
 
-    return {
+    const receipt: SpawnAgentReceipt = {
       agentId,
       status: 'accepted',
       role: params.role,
@@ -404,6 +543,14 @@ export class AgentRuntime {
       workspaceRoot: nativeWorkspaceRoot,
       executionCwd: nativeExecutionCwd,
     };
+
+    if (requestId && requestSignature) {
+      // 回执快照同时挂在任务记录上，宿主创建委派会话时可原样转写进 header。
+      taskRecord.requestReceipt = receipt;
+      this.idempotentRequests.set(`spawn:${requestId}`, { signature: requestSignature, receipt });
+    }
+
+    return receipt;
   }
 
   /**
@@ -438,6 +585,8 @@ export class AgentRuntime {
     if (!task) return;
     if (task.status === 'preparing') {
       this.runnerContexts.delete(agentId);
+      // 回滚后同 requestId 允许重新派发：保留索引会把失败派发误判为已完成。
+      if (task.requestId) this.idempotentRequests.delete(`spawn:${task.requestId}`);
       task.status = 'cancelled';
       task.error = 'Parent transaction aborted before commit';
       task.finishedAt = Date.now();
@@ -447,9 +596,199 @@ export class AgentRuntime {
   }
 
   /**
-   * 任务主执行流程与生命周期状态机驱动。
+   * 受理委派会话续聊请求（send_agent 执行第一阶段）。
+   *
+   * 保证：
+   * - 目标必须是本运行时的 detached 任务且已回到终态；活动态 DELEGATION_BUSY，不排队；
+   * - 只重新占用活动槽位，不消耗「累计受理」配额，也不新增任务记录；
+   * - 递增 runGeneration 并回执，父工具事务可立即闭合；真正执行由 activateResume 触发；
+   * - 同 requestId 同参直接重放原回执，异参抛 DELEGATION_REQUEST_CONFLICT。
    */
-  private async runTask(task: AgentTaskRecord): Promise<void> {
+  async prepareResume(params: SendAgentParams): Promise<SendAgentReceipt> {
+    if (this.isClosed) {
+      throw new KapibalaError('AgentRuntime is closed', {
+        code: 'CONFIG_INVALID',
+        safeMessage: '子代理运行时已关闭，无法受理续聊任务',
+      });
+    }
+    if (!this.resumer) {
+      throw new KapibalaError('Subagent resumer is not configured', {
+        code: 'CONFIG_INVALID',
+        safeMessage: '宿主未注入续聊执行器，当前无法继续委派会话',
+      });
+    }
+
+    const requestId = params.requestId?.trim();
+    let requestSignature: string | undefined;
+    if (requestId) {
+      requestSignature = resumeRequestSignature(params);
+      const existing = this.idempotentRequests.get(`send:${requestId}`);
+      if (existing) {
+        if (existing.signature !== requestSignature) {
+          throw createDelegationError(
+            'DELEGATION_REQUEST_CONFLICT',
+            `Send requestId "${requestId}" was already used with different parameters`,
+          );
+        }
+        return existing.receipt as SendAgentReceipt;
+      }
+    }
+
+    const prompt = params.prompt?.trim();
+    if (!prompt) throw new Error('Prompt is required for send_agent');
+
+    const task = this.tasks.get(params.agentId);
+    if (!task) {
+      throw createDelegationError(
+        'DELEGATION_NOT_FOUND',
+        `Delegation task not found in current runtime: ${params.agentId}`,
+      );
+    }
+    if (task.mode !== 'detached' || !task.sessionId) {
+      throw createDelegationError(
+        'DELEGATION_NOT_RETAINED',
+        `Task ${params.agentId} has no retained delegation session`,
+      );
+    }
+    if (!isTerminalTaskStatus(task.status)) {
+      throw createDelegationError(
+        'DELEGATION_BUSY',
+        `Task ${params.agentId} is still ${task.status}; busy delegations are not queued`,
+      );
+    }
+
+    if (this.totalActiveCount >= MAX_ACTIVE_TASKS_PER_RUNTIME) {
+      throw new KapibalaError(
+        `Global subagent active capacity exceeded: max ${MAX_ACTIVE_TASKS_PER_RUNTIME}`,
+        {
+          code: 'AGENT_CAPACITY_EXCEEDED',
+          safeMessage: `全局活动子代理数量已达上限（${MAX_ACTIVE_TASKS_PER_RUNTIME}）`,
+        },
+      );
+    }
+    const treeActive = this.treeActiveCounts.get(task.origin.rootTaskId) ?? 0;
+    if (treeActive >= MAX_ACTIVE_TASKS_PER_TREE) {
+      throw new KapibalaError(
+        `Tree subagent active capacity exceeded: max ${MAX_ACTIVE_TASKS_PER_TREE}`,
+        {
+          code: 'AGENT_CAPACITY_EXCEEDED',
+          safeMessage: `当前任务树并发活动子代理已达上限（${MAX_ACTIVE_TASKS_PER_TREE}）`,
+        },
+      );
+    }
+
+    const snapshot: ResumeSnapshot = {
+      status: task.status,
+      summary: task.summary,
+      error: task.error,
+      finishedAt: task.finishedAt,
+      startedAt: task.startedAt,
+      runGeneration: task.runGeneration ?? 1,
+      continuationOf: task.continuationOf,
+      requestId,
+    };
+    this.resumeSnapshots.set(task.agentId, snapshot);
+    this.resumePrompts.set(task.agentId, prompt);
+
+    task.status = 'accepted';
+    task.runGeneration = snapshot.runGeneration + 1;
+    task.continuationOf = `run-${snapshot.runGeneration}`;
+    task.summary = undefined;
+    task.error = undefined;
+    task.startedAt = undefined;
+    task.finishedAt = undefined;
+    task.slotReleased = false;
+
+    this.totalActiveCount++;
+    this.treeActiveCounts.set(task.origin.rootTaskId, treeActive + 1);
+
+    const receipt: SendAgentReceipt = {
+      agentId: task.agentId,
+      status: 'accepted',
+      role: task.role,
+      description: task.description,
+      depth: task.origin.depth,
+      rootTaskId: task.origin.rootTaskId,
+      sessionId: task.sessionId,
+      runGeneration: task.runGeneration,
+    };
+    if (requestId && requestSignature) {
+      this.idempotentRequests.set(`send:${requestId}`, { signature: requestSignature, receipt });
+    }
+    this.notifyStateChange();
+    return receipt;
+  }
+
+  /**
+   * 清理已被物理删除的委派会话在运行时留下的身份（用户执行 `/delegations delete` 后调用）。
+   *
+   * 保证：
+   * - 只清空 `sessionId` / `title`，让后续 send_agent 在 prepareResume 阶段直接得到
+   *   DELEGATION_NOT_RETAINED，而不是在 resumer 里以未分类的打开错误失败；
+   * - 同步移除指向该会话的 spawn 幂等条目，避免重放回执再次指向已删除的会话；
+   * - 不删除任务记录、不改状态机：父会话对账与历史观测仍需看到该任务已结束。
+   *
+   * @param sessionId 被物理删除的委派会话 ID
+   */
+  forgetDelegationSession(sessionId: string): void {
+    let changed = false;
+    for (const task of this.tasks.values()) {
+      if (task.sessionId !== sessionId) continue;
+      task.sessionId = undefined;
+      task.title = undefined;
+      changed = true;
+    }
+    for (const [key, entry] of this.idempotentRequests) {
+      if (entry.receipt.sessionId === sessionId) this.idempotentRequests.delete(key);
+    }
+    if (changed) this.notifyStateChange();
+  }
+
+  /**
+   * 激活已受理的续聊（父事务提交确认后触发）；状态跃迁 accepted → running。
+   */
+  async activateResume(agentId: string): Promise<void> {
+    const task = this.tasks.get(agentId);
+    const prompt = this.resumePrompts.get(agentId);
+    if (!task || task.status !== 'accepted' || prompt === undefined) return;
+    const runPromise = this.runTask(task, prompt);
+    this.runningPromises.set(agentId, runPromise);
+    runPromise.finally(() => {
+      this.runningPromises.delete(agentId);
+    });
+  }
+
+  /**
+   * 撤销未提交的续聊受理：恢复原终态、释放重新占用的槽位并清理幂等条目。
+   */
+  async rollbackPreparedResume(agentId: string): Promise<void> {
+    const task = this.tasks.get(agentId);
+    const snapshot = this.resumeSnapshots.get(agentId);
+    if (!task || !snapshot) return;
+    this.resumeSnapshots.delete(agentId);
+    this.resumePrompts.delete(agentId);
+    if (task.status !== 'accepted') return;
+
+    task.status = snapshot.status;
+    task.summary = snapshot.summary;
+    task.error = snapshot.error;
+    task.finishedAt = snapshot.finishedAt;
+    task.startedAt = snapshot.startedAt;
+    task.runGeneration = snapshot.runGeneration;
+    task.continuationOf = snapshot.continuationOf;
+    task.slotReleased = false;
+    if (snapshot.requestId) this.idempotentRequests.delete(`send:${snapshot.requestId}`);
+    this.releaseActiveSlot(task.origin.rootTaskId);
+    this.notifyStateChange();
+  }
+
+  /**
+   * 任务主执行流程与生命周期状态机驱动。
+   *
+   * @param task 目标任务记录
+   * @param resumePrompt 续聊输入；给出时走 resumer，缺省走首次执行 runner
+   */
+  private async runTask(task: AgentTaskRecord, resumePrompt?: string): Promise<void> {
     if (task.status !== 'accepted') {
       return;
     }
@@ -472,7 +811,13 @@ export class AgentRuntime {
       const context = this.runnerContexts.get(task.agentId);
       if (!context)
         throw new KapibalaError('Runner context is unavailable', { code: 'CONFIG_INVALID' });
-      const result = await this.runner(task, controller.signal, context);
+      // 续聊只接受 summary/modelId；会话身份在首次派发时已确定，不允许被改写。
+      let result: { summary: string; modelId?: string; sessionId?: string; title?: string };
+      if (resumePrompt === undefined) {
+        result = await this.runner(task, controller.signal, context);
+      } else {
+        result = await this.resumer!(task, resumePrompt, controller.signal, context);
+      }
 
       // 执行期间已被取消，拒绝跃迁为 completed
       if ((task.status as AgentTaskStatus) === 'cancelling') {
@@ -487,6 +832,11 @@ export class AgentRuntime {
 
       task.summary = result.summary;
       task.modelId = result.modelId;
+      // 只有 detached 任务回填对外身份与展示名；ephemeral 保持历史行为，不留可见会话。
+      if (task.mode === 'detached' && result.sessionId) {
+        task.sessionId = result.sessionId;
+        task.title = result.title;
+      }
 
       // 自身主轮结束后，检查是否有未结束的后代子代理
       const hasActiveChildren = () =>
@@ -534,7 +884,11 @@ export class AgentRuntime {
       }
       task.error = runError.message;
     } finally {
-      this.runnerContexts.delete(task.agentId);
+      // detached 任务保留运行上下文：sessionId 已给出，续聊仍需同一租约协调器与父标题快照。
+      // ephemeral 会话终态即销毁，上下文一并释放，避免按已结束任务累积内存。
+      if (task.mode !== 'detached') this.runnerContexts.delete(task.agentId);
+      this.resumePrompts.delete(task.agentId);
+      this.resumeSnapshots.delete(task.agentId);
       this.clearTaskTimer(task.agentId);
       this.controllers.delete(task.agentId);
 
@@ -554,7 +908,9 @@ export class AgentRuntime {
 
       // 幂等安全释放活动槽位（避免与 cancelTask 重复扣减）
       this.releaseTaskSlotOnce(task);
-      this.outbox.enqueueFromTask(task);
+      // 续聊复用同一 agentId/generation，终态通知必须换 revision，否则会被当作重复事件丢弃。
+      const runGeneration = task.runGeneration ?? 1;
+      this.outbox.enqueueFromTask(task, runGeneration > 1 ? `run-${runGeneration}` : 'final');
       this.notifyStateChange();
     }
   }
@@ -659,7 +1015,8 @@ export class AgentRuntime {
     task.finishedAt = Date.now();
 
     this.releaseTaskSlotOnce(task);
-    this.outbox.enqueueFromTask(task);
+    const runGeneration = task.runGeneration ?? 1;
+    this.outbox.enqueueFromTask(task, runGeneration > 1 ? `run-${runGeneration}` : 'final');
     this.notifyStateChange();
   }
 
@@ -855,4 +1212,38 @@ export class AgentRuntime {
       signal.addEventListener('abort', onAbort);
     });
   }
+}
+
+/**
+ * 生成参数签名：字段顺序固定的规范化对象再取 sha256。
+ *
+ * 约束：只用于「同 requestId 是否同参」判定，不作为安全凭证；
+ * 未给出的可选参数统一写成显式默认值，避免 undefined 与缺省值被判成不同派发。
+ */
+function buildRequestSignature(normalized: Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+}
+
+/** spawn_agent 的参数签名；description/prompt 去首尾空白后参与比较。 */
+function spawnRequestSignature(params: SpawnAgentParams): string {
+  return buildRequestSignature({
+    description: params.description?.trim() ?? '',
+    prompt: params.prompt?.trim() ?? '',
+    role: params.role,
+    allowedTools: params.allowedTools ?? [],
+    cwd: params.cwd ?? '',
+    isolation: params.isolation ?? 'inherit',
+    mode: params.mode ?? 'ephemeral',
+    modelOverride: params.modelOverride ?? '',
+    maxSteps: params.limits?.maxSteps ?? null,
+    timeoutMs: params.limits?.timeoutMs ?? null,
+  });
+}
+
+/** send_agent 的参数签名：目标 agentId 与新一轮输入共同决定幂等身份。 */
+function resumeRequestSignature(params: SendAgentParams): string {
+  return buildRequestSignature({
+    agentId: params.agentId,
+    prompt: params.prompt?.trim() ?? '',
+  });
 }

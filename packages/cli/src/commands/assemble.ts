@@ -4,6 +4,8 @@ import { branchCommand } from './branch.js';
 import type { CommandDefinition } from './catalog.js';
 import { COMMAND_CATALOG } from './catalog.js';
 import { compactCommand, contextCommand } from './context.js';
+import { delegateCommand } from './delegate.js';
+import { delegationsCommand } from './delegations.js';
 import { CommandDispatcher, type CommandHandler } from './dispatcher.js';
 import { forkCommand } from './fork.js';
 import { helpCommand } from './help.js';
@@ -15,6 +17,7 @@ import { modeCommand } from './mode.js';
 import { modelCommand } from './model.js';
 import { pluginsCommand } from './plugins.js';
 import { promptCommand, promptsCommand } from './prompts.js';
+import { quoteCommand } from './quote.js';
 import { settingsCommand } from './settings.js';
 import { skillCommand, skillsCommand } from './skills.js';
 import { statusCommand } from './status.js';
@@ -50,11 +53,14 @@ export function createDefaultCommandDispatcher(): CommandDispatcher {
     mcp: mcpCommand,
     prompts: promptsCommand,
     prompt: promptCommand,
+    quote: quoteCommand,
     help: helpCommand,
     branch: branchCommand,
     fork: forkCommand,
     archive: archiveCommand,
     agents: agentsCommand,
+    delegate: delegateCommand,
+    delegations: delegationsCommand,
     exit: async (_args, context) => {
       await context.onExit();
     },

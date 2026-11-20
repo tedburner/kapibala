@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { SessionMode } from '../capabilities/security/permissions.js';
 import { KapibalaError, createSessionError } from '../errors/index.js';
 import type { CanonicalMessage } from '../types/index.js';
 import { createMessageId, identifyHistory } from './history.js';
@@ -12,8 +13,10 @@ import {
   readJsonlLines,
   syncSessionDirectory,
 } from './jsonl-lines.js';
+import { removeSessionToolResults, sessionToolResultsDirectory } from './managed-results.js';
 import { SessionLock } from './session-lock.js';
 import {
+  type DelegationHeader,
   MAIN_BRANCH_ID,
   SESSION_SCHEMA_VERSION_V1,
   SESSION_SCHEMA_VERSION_V2,
@@ -22,6 +25,7 @@ import {
   SessionStore,
   assertClosedToolTransaction,
   isGlobalControlRecordType,
+  isSessionMode,
 } from './session-store.js';
 import { computeProjectKey, toNativePhysicalPath } from './workspace.js';
 
@@ -44,12 +48,31 @@ export function normalizedProjectRoot(root: string): string {
   return process.platform === 'win32' ? root.replaceAll('\\', '/').toLowerCase() : root;
 }
 
+/** 同 cwd 的 Git 探测在启动流程内只做一次：信任检查与 SessionManager 先后各调一次。 */
+const PROJECT_PROBE_TTL_MS = 10_000;
+let projectProbeCache:
+  | { cwd: string; mode: 'git' | 'exact'; at: number; identity: ProjectIdentity }
+  | undefined;
+
 /** 选择历史桶身份；exact 不提升显式根，git 保留同工作树子目录共桶的兼容行为。 */
 export function resolveSessionProject(cwd: string, mode: 'git' | 'exact' = 'git'): ProjectIdentity {
   const realCwd = toNativePhysicalPath(cwd);
+  const cached = projectProbeCache;
+  // 只缓存短时间内的同一 cwd：启动期复用省掉重复 Git 子进程，跨时间仍按当前分支重新探测。
+  if (
+    cached &&
+    cached.mode === mode &&
+    cached.cwd === realCwd &&
+    Date.now() - cached.at < PROJECT_PROBE_TTL_MS
+  )
+    return { ...cached.identity };
   let root = realCwd;
   let gitBranch: string | undefined;
   let gitWorktree = false;
+  const remember = (identity: ProjectIdentity): ProjectIdentity => {
+    projectProbeCache = { cwd: realCwd, mode, at: Date.now(), identity };
+    return { ...identity };
+  };
   try {
     const gitRoot = toNativePhysicalPath(
       execFileSync('git', ['-C', realCwd, 'rev-parse', '--show-toplevel'], {
@@ -59,7 +82,11 @@ export function resolveSessionProject(cwd: string, mode: 'git' | 'exact' = 'git'
     );
     if (mode === 'git') root = gitRoot;
     if (normalizedProjectRoot(gitRoot) !== normalizedProjectRoot(root))
-      return { projectRoot: root, cwd: realCwd, projectKey: computeProjectKey(root) };
+      return remember({
+        projectRoot: root,
+        cwd: realCwd,
+        projectKey: computeProjectKey(root),
+      });
     gitWorktree = true;
     gitBranch =
       execFileSync('git', ['-C', realCwd, 'symbolic-ref', '--short', '-q', 'HEAD'], {
@@ -69,13 +96,13 @@ export function resolveSessionProject(cwd: string, mode: 'git' | 'exact' = 'git'
   } catch {
     /* 非 Git 或 detached HEAD 保留已确定的工作树根。 */
   }
-  return {
+  return remember({
     projectRoot: root,
     cwd: realCwd,
     projectKey: computeProjectKey(root),
     gitBranch,
     gitWorktree,
-  };
+  });
 }
 
 /**
@@ -120,6 +147,13 @@ export interface SessionMetadata {
   archived?: boolean;
   /** 会话是否置顶；只在列表排序时前置，不改变活动时间与继续最近会话的判定。 */
   pinned?: boolean;
+  /** 最近一次持久化的会话审批模式；缺失表示沿用途宿主默认值。 */
+  mode?: SessionMode;
+  /**
+   * 保留型委派标记；只在 detached 子会话创建时出现，普通会话缺省。
+   * 与 header.delegation 同源，供委派面板与保留预算在不读正文的情况下筛选。
+   */
+  delegation?: SessionHeader['delegation'];
   /** 预算不足时仅提供定位与提示，不把超限文件误判为损坏或写入不完整缓存。 */
   unavailableReason?: 'HISTORY_READ_LIMIT';
 }
@@ -151,6 +185,8 @@ export interface SessionManagerOptions {
   /** 元数据重建、升级、打开和重载共用的单文件字节预算；省略保持原行为。 */
   maxReadBytes?: number;
   homeDirectory?: string;
+  /** 受管工具结果根目录（宿主传 `~/.kapibala/tool-results`）；提供后删除会话会联动清理该会话的结果子树。 */
+  toolResultsDirectory?: string;
   onDiagnostic?: (message: string) => void;
 }
 
@@ -173,6 +209,20 @@ export function sanitizeSessionTitle(title: string, maximum = 200): string {
     .join('');
 }
 
+/**
+ * 委派会话的展示名（自定规则，非对标结论）。
+ *
+ * 规则：`委派名 · 父会话名`，两段各截断到 60 字符，总长不超过 120；
+ * 父标题缺失时退化为仅委派名。创建时写一次，之后父会话改名、续聊与幂等重试都不联动改名。
+ * 与 codex-host「只取子任务名」的口径有意偏离：桌面侧栏把委派会话与普通会话混排，
+ * 父会话名是用户判断归属的唯一线索。
+ */
+export function formatDelegationTitle(taskName: string, parentTitle?: string): string {
+  const task = sanitizeSessionTitle(taskName, 60);
+  const parent = parentTitle ? sanitizeSessionTitle(parentTitle, 60) : '';
+  return (parent ? `${task} · ${parent}` : task).slice(0, 120);
+}
+
 /** 按项目发现、创建和打开独立会话；缓存可丢弃，JSONL 是唯一恢复依据。 */
 export class SessionManager {
   readonly project: ProjectIdentity;
@@ -180,6 +230,7 @@ export class SessionManager {
   private readonly handles = new Map<string, ManagedSession>();
   private readonly diagnostic?: (message: string) => void;
   private readonly readOptions: { maxReadBytes?: number };
+  private readonly toolResultsDirectory?: string;
 
   constructor(options: SessionManagerOptions = {}) {
     this.readOptions = { maxReadBytes: options.maxReadBytes };
@@ -199,11 +250,12 @@ export class SessionManager {
       this.project.projectKey,
     );
     this.diagnostic = options.onDiagnostic;
+    this.toolResultsDirectory = options.toolResultsDirectory;
     fs.mkdirSync(this.directory, { recursive: true });
   }
 
   /** 默认新建独立空会话，写入头部并持有单写者锁；不读取其它正文。 */
-  async create(): Promise<ManagedSession> {
+  async create(options: { delegation?: DelegationHeader } = {}): Promise<ManagedSession> {
     const conversationId = createMessageId();
     const file = path.join(this.directory, `${Date.now()}_${conversationId}.jsonl`);
     const lock = await SessionLock.acquire(this.lockPath(conversationId));
@@ -215,6 +267,7 @@ export class SessionManager {
           projectRoot: this.project.projectRoot,
           initialCwd: this.project.cwd,
           gitBranch: this.project.gitBranch,
+          ...(options.delegation ? { delegation: options.delegation } : {}),
         },
         this.readOptions,
       );
@@ -367,6 +420,7 @@ export class SessionManager {
    * - 本 Manager 已持有句柄的会话拒绝（SESSION_IN_USE），避免删掉正在追加的文件；
    * - 其它进程持锁时以 SESSION_LOCKED 失败，不抢占他人写入权，也不做「先等一会儿」的重试；
    * - 只删该会话自己的 `.jsonl` 与 `.meta.json`；桶目录内其它文件（含 `*.tmp-*` 残片）不动；
+   * - 提供受管结果根目录时，联动删除该会话在 `tool-results` 下的结果子树（仅 harness 自建文件）；
    * - 删除前复核首条头部身份与桶归属：文件名匹配但正文身份不符的残留文件删除会放大错误；
    * - 缓存先删、正文后删：缓存本可重建，若正文删除失败该会话会在下次浏览时自动重建缓存。
    */
@@ -400,6 +454,16 @@ export class SessionManager {
       if (fs.existsSync(metadata)) fs.unlinkSync(metadata);
       fs.unlinkSync(targetFile);
       syncSessionDirectory(this.directory);
+      // 正文身份核实后联动清理受管结果子树；容忍目录缺失，失败不阻断删除。
+      if (this.toolResultsDirectory) {
+        removeSessionToolResults(
+          sessionToolResultsDirectory({
+            resultsRoot: this.toolResultsDirectory,
+            projectKey: this.project.projectKey,
+            sessionId: conversationId,
+          }),
+        );
+      }
     } finally {
       await lock.release();
     }
@@ -1153,6 +1217,7 @@ export class SessionManager {
         lastActivityGitBranch: header.gitBranch,
         importIdentity: header.importIdentity,
         upgradeIdentity: header.upgradeIdentity,
+        ...(header.delegation ? { delegation: header.delegation } : {}),
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         revision: first.value.recordId,
@@ -1230,6 +1295,9 @@ export class SessionManager {
     } else if (record.type === 'pin_state') {
       // 置顶只影响列表次序：既不推进 lastActivityAt，也不改变 continueRecent 的选择。
       meta.pinned = Boolean(record.payload.pinned);
+    } else if (record.type === 'mode_state') {
+      // 模式只随显式切换写入；未知值忽略，避免损坏文件把会话推进未定义的权限档位。
+      if (isSessionMode(record.payload.mode)) meta.mode = record.payload.mode;
     }
 
     if (branchLeaves && !isGlobalControlRecordType(record.type)) {

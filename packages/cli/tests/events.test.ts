@@ -58,7 +58,7 @@ describe('createEventRenderer tool output', () => {
       { isTTY: false },
     );
 
-    expect(output).toBe('\n⚙  Search *  ✓ 9ms · 25 个匹配\n');
+    expect(output).toBe('\n⚙  搜索 *  ✓ 9ms · 25 个匹配\n');
   });
 
   it('filters terminal controls from untrusted model output while keeping line breaks', () => {
@@ -97,7 +97,7 @@ describe('createEventRenderer tool output', () => {
       { isTTY: true, columns: 120 },
     );
 
-    expect(output).toContain('⚙  Write packages/cli/src/foo.ts · 1.2KB');
+    expect(output).toContain('⚙  写入 packages/cli/src/foo.ts · 1.2KB');
     expect(output).toContain('✓ 4ms');
     expect(output).toContain('\x1b[1A');
     expect(output).not.toContain('{"path"');
@@ -125,7 +125,7 @@ describe('createEventRenderer tool output', () => {
       { isTTY: false },
     );
 
-    expect(output).toBe('\n⚙  Read missing.txt  ✗ 37ms · File not found: missing.txt\n');
+    expect(output).toBe('\n⚙  读取 missing.txt  ✗ 37ms · File not found: missing.txt\n');
     expect(output).not.toContain('\x1b');
   });
 

@@ -27,13 +27,19 @@ export interface ResolvedContextWindow {
   estimated: boolean;
 }
 
-/** 模型未声明 contextWindow 时的默认窗口估算值。 */
-export const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000;
+/**
+ * 模型未声明 contextWindow 时的统一默认窗口估算值。
+ *
+ * 预算推导（createContextBudget）与用量展示（computeContextUsage）必须共用本常量，
+ * 不允许各自再设回退值 —— 否则会出现「展示按一个窗口、压缩按另一个窗口」的静默分叉。
+ * 取 256K 是现代主流窗口的保守下限：留空用户的真实窗口若更小，要到 Provider 侧报错才暴露。
+ */
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000;
 
 /**
  * 将模型上下文窗口统一解析为整数 Token 数。
  *
- * 配置允许直接填写整数，或使用十进制 K/M 简写；未填写时返回默认 1M，并标记为估算值。
+ * 配置允许直接填写整数，或使用十进制 K/M 简写；未填写时返回默认 256K，并标记为估算值。
  */
 export function resolveContextWindow(value?: ContextWindowValue): ResolvedContextWindow {
   if (value === undefined) {
@@ -79,6 +85,22 @@ export interface ModelProfile {
   /** 未声明时按 DEFAULT_CONTEXT_WINDOW_TOKENS 估算；解析规则见 resolveContextWindow。 */
   contextWindow?: ContextWindowValue;
   supportsThinking?: boolean;
+  /**
+   * 自定义厂商的展示名（如 'magpie'）。
+   *
+   * 只有用户自建端点使用；内置模型始终为空。宿主据此把同一厂商的多个自建模型归入
+   * 独立分组（桌面左栏与 CLI /model 菜单同源），缺省时归入「自定义端点 / 其它」兜底桶。
+   * 纯展示字段：不参与协议、端点与绑定校验（validateModelBinding 不比较它）。
+   */
+  vendorName?: string;
+  /**
+   * 是否停用（纯可用性开关，缺省视为启用）。
+   *
+   * 停用只影响选择入口（CLI /model 菜单、桌面设置与新建会话默认模型），不参与协议、
+   * 端点与绑定校验（validateModelBinding 不比较它）。内置清单可把依赖本机服务的条目
+   * （如 Ollama）默认置为停用，用户启用后由全局配置覆盖。
+   */
+  disabled?: boolean;
   /** 单次输出上限；参与上下文预算推导，缺省按 4096 预留。 */
   maxOutputTokens?: number;
   chatCapabilities?: ChatCapabilities;

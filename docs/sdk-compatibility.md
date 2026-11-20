@@ -46,9 +46,28 @@ CLI `/host` 新增导出类型 `ManagedInspection`；`ManagedHostSession` 新增
 
 `deleteSession` 是不可逆的物理删除（正文 + sidecar），只拒绝本进程持句柄或其它进程持锁的会话，不提供回收站；`pinSession` 只影响 `list()` 的分组次序，不写活动时间。自定义实现 `ManagedHostSession` 的适配器必须补齐新增的两个方法，否则 TypeScript 编译失败；wire 1.0 形状与版本不变，桌面 RPC 契约属客户端内部面，不构成对外承诺。
 
-## 桌面命令系统与资源面板增量（未发布，随桌面命令宿主进入下一版本）
+## 桌面命令系统与资源面板增量（已随 v0.1.0 发布）
+
+> 本节撰写时标记为未发布；桌面命令宿主实际随 v0.1.0 进入发布集，现更正为已发布。以下内容不变。
 
 CLI `/host` 新增导出类型 `LoadedSettings`（`settings`/`sourcePath`/`pendingProject`）：此前该类型仅经 internal 门面提供给仓库内宿主，桌面 agent-host 需要在公共面拿到它与 `loadSettings` 配对使用；纯类型增补，不改变任何函数签名。同批 `ManagedHostSession` 的声明文本随新增 `session` 字段（同进程宿主构造命令上下文专用，禁止跨进程传输）与接口注释修订刷新，成员集合相对上一条记录不变的部分按原样登记。`@kiturone/kapibala-cli` 新增 `./commands` 子路径与声明模块 `commands/assemble.d.ts`、`commands/index.d.ts`（命令目录与装配面，桌面 agent-host 经它接入同一命令系统）。wire 1.0 形状与版本不变。
+
+## v0.1.3 增量（已随 v0.1.3 发布）
+
+本版公共面变化集中在引用、委派与受管结果三条线；**wire 保持 1.0**，方法白名单与契约快照未变（设计 007 的 R3.x 协议 1.1 扩展未实施）。逐条登记如下：
+
+| 变化 | 影响 | 迁移方式 |
+|---|---|---|
+| `cleanupCommandResults` 更名为 `cleanupManagedResults`（Core 根导出，v0.0.2 起公开） | 旧导入在编译期失败，属破坏性改名 | 改用新名；参数 `(directory, now?)` 与清理语义不变 |
+| `ManagedHostSession.configure()` 由同步返回改为 `Promise<void>` | 自定义宿主适配器必须改签名；不 await 会丢失失败 | 实现方返回 Promise，调用方 `await` |
+| `ManagedHostSession` 新增 `runWithReferences(input, references, signal?)` 必填成员 | 自定义实现必须补齐，否则编译失败 | 只接收引用身份（`ReferenceSelection`），正文由宿主读取；失败零追加 |
+| shell 大输出路径迁至全局受管目录 `~/.kapibala/tool-results/<项目哈希>/<会话ID>/`，`CommandResult.outputPath` 语义随之变化；裸 SDK 退回系统临时目录 | 依赖旧工作区 `.kapibala/tool-results/` 路径的脚本或宿主失效 | 一律读取 `outputPath`，不要硬编码旧目录；按 7 天保留期清理 |
+| `PathSandbox.resolveSafePath(target, { mode })`；`SandboxConfig.readOnlyExemptions`；`ToolContext.managedResultsDir` / `ExecutorOptions.managedResultsDir` | 缺省 `mode: 'write'` 行为不变；仅 `read` 允许只读豁免根 | 需要读本会话结果桶的宿主显式开启；`write` 永不豁免 |
+| `PermissionRequest.shellSafety`（Auto 模式命令分级）、`SessionStore.setModeState()`、`SessionRecordType` 新增 `mode_state` | Auto 模式对分级 `safe` 的只读 shell 命令自动放行，会话级批准缓存改变审批时机 | 审批策略由宿主/用户显式配置；显式规则仍优先于分级默认值 |
+| `ModelProfile.vendorName` / `disabled`、`ProviderMeta.custom`、`CUSTOM_VENDOR_KEY_PREFIX`、`listProviderMetas()` | 纯新增可选字段与导出，类型兼容 | 无迁移动作；停用模型自动迁移默认模型与场景路由引用 |
+| 委派与引用新类型：`DelegationHeader`、`DelegationErrorCode`、`SendAgentParams`、`SendAgentReceipt`、`SubagentSessionResumer`、`RestoredDelegationRequest`、`createSendAgentTool`、`formatDelegationTitle`、`SessionReferenceReader`、`ReferenceContentSource`、`ReferenceSelection`、`ReferenceErrorCode`、`MAX_REFERENCE_*` 等 | 纯新增 | 无迁移动作；`SpawnAgentParams.mode` 缺省 `ephemeral`，与旧行为一致 |
+| `SessionManager.create({ delegation? })`、`SessionMetadata.mode` / `delegation`、`SessionHeader.delegation`、`AgentTaskRecord` 委派字段、`AgentSession.getLeaseCoordinator()`、`isSessionMode()` | 新增可选面与只读访问器 | 无迁移动作；不使用委派时行为不变 |
+| `ViewTool.displayName` | 显示名由宿主统一解析下发，只影响 UI | 自定义渲染可直接使用；不得用于权限判定或落盘 |
 
 ## 1. 盘点口径
 

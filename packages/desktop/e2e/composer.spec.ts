@@ -44,6 +44,27 @@ test.describe
       fs.mkdirSync(path.join(workspaceRoot, 'src'), { recursive: true });
       fs.writeFileSync(path.join(workspaceRoot, 'src/demo.ts'), 'demo');
       fs.writeFileSync(path.join(workspaceRoot, 'README.md'), 'demo readme');
+      // 发送口要求至少有一个「已配置且启用」的模型：Ollama 已改为默认停用，
+      // 不能再用它的内置内联密钥兜底。这里显式登记一个指向关闭端口的本地模型，
+      // 让首轮运行快速失败但会话照常打开，技能目录数据源随之可用。
+      fs.writeFileSync(
+        path.join(home, '.kapibala/settings.json'),
+        JSON.stringify({
+          profiles: [
+            {
+              id: 'offline-fixture',
+              name: '离线验收模型',
+              provider: 'openai-compatible',
+              modelName: 'offline',
+              baseURL: 'http://127.0.0.1:1/v1',
+              apiKeyEnv: 'KPBL_COMPOSER_FIXTURE_KEY',
+              apiKey: 'test-only-local-credential',
+              contextWindow: 32000,
+            },
+          ],
+          defaultModel: 'offline-fixture',
+        }),
+      );
       // 全局技能目录（~/.kapibala/skills）：会话打开时由运行时 registry 扫描装载
       const skillDir = path.join(home, '.kapibala/skills/demo-skill');
       fs.mkdirSync(skillDir, { recursive: true });
@@ -84,8 +105,9 @@ test.describe
     });
 
     test('home 态技能预览与无匹配提示', async () => {
-      // 未打开会话：技能组来自配置层快照预览（新会话将可用），`/` 搜索照常工作
-      await page.getByLabel('发送消息').fill('/de');
+      // 未打开会话：技能组来自配置层快照预览（新会话将可用），`/` 搜索照常工作。
+      // 前缀避开 /delegate、/delegations：命令组排在技能组之前，/de 会先命中命令。
+      await page.getByLabel('发送消息').fill('/demo');
       const skillItem = page.getByRole('button', { name: /\/skill demo-skill/ });
       await expect(skillItem).toBeVisible();
       await page.getByLabel('发送消息').press('Tab');
@@ -104,7 +126,7 @@ test.describe
       await expect(page.getByLabel('发送消息')).toBeEnabled();
       // `/` 分组面板：技能组出现 demo-skill（可访问名含描述文本，用正则匹配），
       // Tab 接受后草稿进入 /skill 名字段
-      await page.getByLabel('发送消息').fill('/de');
+      await page.getByLabel('发送消息').fill('/demo');
       const skillItem = page.getByRole('button', { name: /\/skill demo-skill/ });
       await expect(skillItem).toBeVisible();
       await page.getByLabel('发送消息').press('Tab');

@@ -43,7 +43,8 @@ export const readFileTool = defineTool({
   },
   async execute(input: { path: string; startLine?: number; endLine?: number }, ctx) {
     const sandbox = resolveToolSandbox(ctx);
-    const safePath = sandbox.resolveSafePath(input.path);
+    // read 模式允许 PathSandbox 的只读豁免（本会话受管结果目录），写入工具不得传此模式。
+    const safePath = sandbox.resolveSafePath(input.path, { mode: 'read' });
 
     if (!fs.existsSync(safePath)) {
       throw new ToolError(`File not found: ${input.path}`);

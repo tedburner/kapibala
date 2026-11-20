@@ -10,10 +10,13 @@ import {
   PencilSimpleIcon,
   SparkleIcon,
   SpinnerGapIcon,
+  WarningIcon,
   XCircleIcon,
 } from '@phosphor-icons/react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { toolPreview } from './html-preview-model.js';
+import { HtmlPreview, HtmlPreviewButton } from './html-preview.js';
 import { MessageMarkdown } from './message-markdown.js';
 import { useUI } from './ui-state.js';
 
@@ -65,7 +68,14 @@ function summarize(tools: readonly ViewTool[]): {
 }
 
 function formatDuration(ms: number): string {
-  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  // 长跑任务超过一分钟换 m/s 组合，避免「125.0 s」这种不便扫读的秒数。
+  // 先取整总秒数再拆分，防止 119.6s 被拆成「1m 60s」。
+  const totalSeconds = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
 function ToolRow({
@@ -75,23 +85,45 @@ function ToolRow({
   tool?: ViewTool;
   onTool(callId: string, trigger: HTMLElement): void;
 }) {
+  // 只对内置 write_file 的目标为 html/htm/svg 时给预览入口；解析失败或超限时该值为空。
+  // 按 name/input 两段文本做记忆，避免流式事件换对象引用时重复解析整份入参。
+  const toolName = tool?.name;
+  const toolInput = tool?.input ?? '';
+  const previewDoc = useMemo(
+    () => (toolName ? toolPreview(toolName, toolInput) : undefined),
+    [toolName, toolInput],
+  );
+  const [showPreview, setShowPreview] = useState(false);
   const state = TOOL_STATES[tool?.status ?? 'running'];
   // 限制单行预览长度与行数，完整的已脱敏内容仍由详情抽屉展示。
   const lines = tool?.result?.slice(0, 1201).split('\n') ?? [];
   const preview = lines.slice(0, 8).join('\n').slice(0, 1200);
   const truncated = lines.length > 8 || (tool?.result?.length ?? 0) > preview.length;
   const diff = lines.some((line) => /^(diff --git |@@ |--- |\+\+\+ )/.test(line));
+  // 主行只放显示名与结果摘要；参数降为次要行，避免固定列宽把 mcp__ 名称截断。
+  const resultSummary = tool?.result
+    ? tool.result.split('\n')[0]?.slice(0, 120)
+    : tool?.status === 'running'
+      ? '执行中…'
+      : undefined;
   return (
     <div className="min-w-0 rounded-md hover:bg-kumo-tint">
-      <div className="flex min-w-0 items-center gap-2 px-2 py-1">
+      <div className="flex min-w-0 items-center gap-2 px-2 pt-1">
         <state.icon size={14} className={`shrink-0 ${state.tone}`} aria-hidden="true" />
         <span className="sr-only">{state.label}</span>
-        <span className="w-28 shrink-0 truncate font-mono text-xs text-kumo-default">
-          {tool?.name ?? '工具'}
+        <span className="shrink-0 text-xs font-medium text-kumo-default">
+          {tool?.displayName ?? '工具'}
         </span>
-        <span className="min-w-0 flex-1 truncate text-xs text-kumo-subtle" title={tool?.invocation}>
-          {tool?.invocation}
+        <span className="min-w-0 flex-1 truncate text-xs text-kumo-subtle">
+          {resultSummary ?? tool?.invocation}
         </span>
+        {previewDoc && (
+          <HtmlPreviewButton
+            open={showPreview}
+            onClick={() => setShowPreview(!showPreview)}
+            kind={previewDoc.label === 'SVG 文件预览' ? 'SVG' : 'HTML'}
+          />
+        )}
         <Button
           className="kapibala-action shrink-0 text-kumo-subtle"
           variant="ghost"
@@ -104,6 +136,14 @@ function ToolRow({
           <CaretRightIcon size={14} />
         </Button>
       </div>
+      {tool?.invocation && (
+        <div
+          className="truncate px-2 pb-1 pl-[30px] font-mono text-2xs text-kumo-faint"
+          title={tool.invocation}
+        >
+          {tool.invocation}
+        </div>
+      )}
       {preview && (
         <Collapsible.Root className="px-2 pb-1">
           <Collapsible.Trigger
@@ -137,6 +177,11 @@ function ToolRow({
           </Collapsible.Panel>
         </Collapsible.Root>
       )}
+      {showPreview && previewDoc && (
+        <div className="px-2 pt-1 pb-2">
+          <HtmlPreview html={previewDoc.html} label={previewDoc.label} />
+        </div>
+      )}
     </div>
   );
 }
@@ -152,17 +197,17 @@ function ToolGroup({
   const summary = summarize(tools);
   const totalMs = tools.reduce((sum, tool) => sum + (tool.durationMs ?? 0), 0);
   return (
-    <Collapsible.Root defaultOpen className="kapibala-tool-group my-2">
+    <Collapsible.Root defaultOpen className="kapibala-tool-group my-1">
       <Collapsible.Trigger
         render={
           <Button
-            className="kapibala-action group h-auto w-full justify-start gap-2 px-2.5 py-1.5 font-normal"
+            className="kapibala-action group h-auto w-full justify-start gap-2 px-2 py-1.5 font-normal"
             variant="ghost"
             size="sm"
           />
         }
       >
-        <summary.icon size={15} className={`shrink-0 ${summary.tone}`} aria-hidden="true" />
+        <summary.icon size={14} className={`shrink-0 ${summary.tone}`} aria-hidden="true" />
         <span className="shrink-0 text-xs font-medium text-kumo-default">
           执行 {tools.length} 步
         </span>
@@ -177,7 +222,8 @@ function ToolGroup({
         />
       </Collapsible.Trigger>
       <Collapsible.Panel>
-        <div className="px-1 py-1">
+        {/* 行间 2px 呼吸避免 hover 高亮块粘连；行内自带 px-2，图标锚点与组标题对齐在 8px。 */}
+        <div className="flex flex-col gap-0.5 py-1">
           {blocks.map((block) => (
             <ToolRow key={block.id} tool={block.tool} onTool={onTool} />
           ))}
@@ -191,6 +237,7 @@ function ToolGroup({
 export function MessageList({
   messages,
   memoryKey,
+  root,
   scrollRef,
   onTool,
   onEdit,
@@ -198,6 +245,8 @@ export function MessageList({
 }: {
   messages: readonly ViewMessage[];
   memoryKey: string;
+  /** 当前工作区根路径；正文里相对路径的本地图片以它为基准解析。 */
+  root?: string;
   scrollRef: RefObject<HTMLDivElement | null>;
   onTool(callId: string, trigger: HTMLElement): void;
   /** 将用户消息原文回填到输入框供修改重发；只填草稿，不改写已落盘历史。 */
@@ -285,13 +334,19 @@ export function MessageList({
               .filter((block) => block.kind === 'text' && !block.skillName)
               .map((block) => block.text)
               .join('\n');
+            // 失败与中断在 ViewMessage 里统一为 interrupted：没有正文时界面原本只剩一段
+            // 折叠的思考过程，看起来像「什么都没渲染」，必须显式说明这一轮没有产出。
+            const interrupted = !isUser && message.state === 'interrupted';
+            const hasBody = message.blocks.some(
+              (block) => block.kind === 'text' || block.kind === 'tool',
+            );
             return (
               <div
                 key={row.key}
                 data-index={row.index}
                 ref={virtualizer.measureElement}
                 className={`absolute top-0 left-0 w-full px-6 ${
-                  isUser ? 'pt-8 pb-3' : row.index === 0 ? 'pt-6 pb-1' : 'pt-1 pb-1'
+                  isUser ? 'pt-7 pb-2' : row.index === 0 ? 'pt-5 pb-2' : 'pt-2 pb-2'
                 }`}
                 style={{ transform: `translateY(${row.start}px)` }}
               >
@@ -346,14 +401,26 @@ export function MessageList({
                         <MessageMarkdown
                           key={group.block.id}
                           text={group.block.text}
+                          root={root}
                           report={report}
                         />
                       ),
                     )}
                   </div>
+                  {/* output 的隐式 role 就是 status：原生元素替代 ARIA 角色，a11y 门禁要求。 */}
+                  {interrupted && (
+                    <output className="mt-1 flex items-start gap-1.5 text-xs text-kumo-warning">
+                      <WarningIcon size={14} className="mt-0.5 shrink-0" />
+                      <span>
+                        {hasBody
+                          ? '本轮生成中断，输出可能不完整。'
+                          : '本轮没有收到可展示的正文，常见原因是输出达到上限。可在「设置 → 高级设置」调大该模型的「最大输出 Token」后重试。'}
+                      </span>
+                    </output>
+                  )}
                   {message.role === 'assistant' && copyText && (
                     <InlineCopyText
-                      className="kapibala-action mt-2 text-xs text-kumo-subtle opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 focus-visible:opacity-100"
+                      className="kapibala-action mt-2 text-xs text-kumo-subtle opacity-0 transition-opacity [@media(hover:none)]:opacity-100 group-hover:opacity-100 focus-within:opacity-100 focus-visible:opacity-100"
                       value={copyText}
                       labels={{ copyAction: '复制正文', copied: '已复制正文' }}
                     >
@@ -362,7 +429,7 @@ export function MessageList({
                   )}
                   {/* 用户消息 hover 操作：复制原文 + 回填编辑；协议不支持截断重发，编辑只填草稿。 */}
                   {isUser && copyText && (
-                    <div className="mt-1 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                    <div className="mt-1 flex items-center justify-end gap-1 opacity-0 transition-opacity [@media(hover:none)]:opacity-100 group-hover:opacity-100 focus-within:opacity-100">
                       <InlineCopyText
                         className="kapibala-action text-kumo-subtle"
                         // 图标由组件内置（hover 显示），空文本节点仅满足 children 类型必填。

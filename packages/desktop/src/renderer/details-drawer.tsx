@@ -89,7 +89,8 @@ export function DetailsDrawer({
               tool ? (
                 <>
                   <div>
-                    <p className="font-medium">{tool.name}</p>
+                    <p className="font-medium">{tool.displayName || tool.name}</p>
+                    <p className="mt-1 font-mono text-2xs text-kumo-faint">{tool.name}</p>
                     <p className="mt-1 text-kumo-subtle">
                       {
                         {

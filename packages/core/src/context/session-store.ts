@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { SessionMode } from '../capabilities/security/permissions.js';
 import { KapibalaError } from '../errors/index.js';
 import { validateProtocolContent } from '../models/protocol-state.js';
 import type { CanonicalMessage, ContentBlock } from '../types/index.js';
@@ -41,7 +42,8 @@ export type SessionRecordType =
   | 'branch_selected'
   | 'branch_summary'
   | 'archive_state'
-  | 'pin_state';
+  | 'pin_state'
+  | 'mode_state';
 
 /**
  * 判断指定记录类型是否属于全局控制记录。
@@ -58,6 +60,7 @@ export function isGlobalControlRecordType(type: SessionRecordType): boolean {
     type === 'title' ||
     type === 'archive_state' ||
     type === 'pin_state' ||
+    type === 'mode_state' ||
     type === 'usage' ||
     type === 'legacy_import'
   );
@@ -77,6 +80,41 @@ export interface SessionHeader {
   /** 派生或 Fork 来源会话与切点记录 ID。 */
   parentSessionId?: string;
   forkPointRecordId?: string;
+  /**
+   * 保留型委派标记：只在 detached 子代理会话的创建时写入。
+   * 用途是让列表与引用候选在不扫描正文的前提下识别委派归属；
+   * 可选字段，旧会话缺省即普通会话，无需迁移。
+   */
+  delegation?: DelegationHeader;
+}
+
+/**
+ * 委派会话的头部身份；`requestId` 供未来的幂等索引在重启后重建。
+ *
+ * 约束：创建后不再改写；父会话改名不联动，名称只取创建时的快照。
+ */
+export interface DelegationHeader {
+  kind: 'delegation';
+  /** 发起派发的父会话 ID。 */
+  parentSessionId: string;
+  /** 父会话标题快照；缺失时展示名退化为仅委派名。 */
+  parentTitle?: string;
+  /** 委派任务名（spawn 的 description）。 */
+  taskName: string;
+  /** 调用方幂等键；同一 requestId 的重试应复用同一委派。 */
+  requestId?: string;
+  /**
+   * 首次派发参数的规范化签名；重启后与重放请求对比，判定「同 ID 是否同参」。
+   * 只随 requestId 出现，缺失时不参与任何幂等判定。
+   */
+  requestSignature?: string;
+  /**
+   * 首次派发回执的结构化快照；结构归 runtime 所有，宿主只转写不解释。
+   * 重启后据此重建幂等索引，确保同一 requestId 不会重复派发第二个委派会话。
+   */
+  requestReceipt?: Record<string, unknown>;
+  /** 创建时间（毫秒）。 */
+  createdAt: number;
 }
 
 /** 单条 JSONL 记录封装；v2 引入连续物理 seq 与 prevRecordId，因果 parentId 与 branchId 独立。 */
@@ -160,7 +198,16 @@ const types = new Set<SessionRecordType>([
   'branch_summary',
   'archive_state',
   'pin_state',
+  'mode_state',
 ]);
+
+/** 允许落盘的会话模式白名单；未知值一律拒绝，避免手工改文件绕过审批边界。 */
+const SESSION_MODES: readonly SessionMode[] = ['Approval', 'Plan', 'Auto', 'FullAccess'];
+
+/** 判断任意运行时值是否为合法会话模式；供读取会话控制记录时做边界校验。 */
+export function isSessionMode(value: unknown): value is SessionMode {
+  return typeof value === 'string' && (SESSION_MODES as readonly string[]).includes(value);
+}
 
 /** 判断 Store 是否支持版本化状态；不读取数据或改变旧 Store。 */
 export function supportsSessionState(store: MessageStore): store is StatefulMessageStore {
@@ -490,6 +537,31 @@ export class SessionStore implements StatefulMessageStore {
       });
     }
     return this.appendRecord('pin_state', { pinned });
+  }
+
+  /**
+   * 追加会话审批模式控制记录。
+   *
+   * 约束：
+   * - 模式记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；
+   * - payload 结构为 { mode: SessionMode }，最后一次写入生效；
+   * - 只做白名单校验后原样落盘，不在 Store 层解释权限语义；
+   * - v1 历史会话禁止变更模式，保持只读。
+   */
+  async setModeState(mode: SessionMode): Promise<SessionRecord> {
+    if (this.isReadOnly()) {
+      throw new KapibalaError('Cannot modify mode state of legacy v1 session', {
+        code: 'LEGACY_SESSION_READ_ONLY',
+        safeMessage: '无法变更只读历史会话的审批模式',
+      });
+    }
+    if (!isSessionMode(mode)) {
+      throw new KapibalaError(`Unknown session mode: ${String(mode)}`, {
+        code: 'INVALID_SESSION_MODE',
+        safeMessage: '未知的会话审批模式',
+      });
+    }
+    return this.appendRecord('mode_state', { mode });
   }
 
   /**

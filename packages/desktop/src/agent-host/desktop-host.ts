@@ -5,6 +5,7 @@ import {
   type ApprovalChannel,
   type ApprovalChoice,
   type ApprovalRequest,
+  SessionLock,
   type SessionManager,
   WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
@@ -121,6 +122,9 @@ export class DesktopHost {
     this.workspaces = new Workspaces(home);
     this.settings = new SettingsService(this.workspaces);
     this.resources = new ResourceService(this.workspaces);
+    // 启动清扫：进程异常退出遗留的死锁会让归档/恢复/删除以 SESSION_LOCKED 永久失败。
+    // 只清「持有者确认死亡」与超宽限期的损坏锁；存活的锁（含本进程与并行实例的）一律不动。
+    void SessionLock.sweepStaleDead(path.join(home, '.kapibala', 'sessions')).catch(() => {});
   }
 
   /** 斜杠命令分发器（与 CLI 同一装配源）；首次使用时装配，进程内单例。 */
@@ -170,6 +174,19 @@ export class DesktopHost {
       case 'settings.setDefault':
         this.settings.setDefault(PARAMS[method].parse(params).profileId);
         return {};
+      case 'settings.setPermissionMode':
+        this.settings.setPermissionMode(PARAMS[method].parse(params).mode);
+        return {};
+      case 'settings.setEnabled': {
+        const p = PARAMS[method].parse(params);
+        this.settings.setEnabled(p.profileId, p.enabled);
+        return {};
+      }
+      case 'settings.deleteProfile':
+        this.settings.deleteProfile(PARAMS[method].parse(params).profileId);
+        return {};
+      case 'settings.testProfile':
+        return this.settings.testProfile(PARAMS[method].parse(params).profileId);
       case 'settings.setRouting': {
         const p = PARAMS[method].parse(params);
         this.settings.setRouting(p.role, p.profileId);
@@ -312,7 +329,7 @@ export class DesktopHost {
         if (slot.cleanupFailed) throw new Error('SESSION_CLEANUP_FAILED');
         if (slot.closing) throw new Error('SESSION_BUSY');
         if (p.mode === 'FullAccess' && p.confirmFullAccess !== true) throw new Error('FORBIDDEN');
-        slot.handle.configure({
+        await slot.handle.configure({
           profileId: p.profileId,
           role: p.role,
           mode: p.mode,

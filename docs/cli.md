@@ -36,7 +36,7 @@ pnpm build && node packages/cli/dist/bin.js
   -h, --help             查看帮助信息
 ```
 
-当前工作区默认保存脱敏的运行日志和逐工具审计于 `~/.kapibala/logs/`、`~/.kapibala/audit/`；使用 `/logs [count]` 查看最近记录，`/status` 查看路径。审计记录操作 ID、工具调用 ID、审批来源和结果，不保存原始提示词、命令输出、密钥或完整命令；完整命令可能出现在已有会话历史中。`--debug` 增加的诊断也经过脱敏。命令的大输出保存在工作区 `.kapibala/tool-results/`，可用 `read_file` 按行读取；这些文件随工作区权限可见。
+当前工作区默认保存脱敏的运行日志和逐工具审计于 `~/.kapibala/logs/`、`~/.kapibala/audit/`；使用 `/logs [count]` 查看最近记录，`/status` 查看路径。审计记录操作 ID、工具调用 ID、审批来源和结果，不保存原始提示词、命令输出、密钥或完整命令；完整命令可能出现在已有会话历史中。`--debug` 增加的诊断也经过脱敏。命令的大输出保存在全局受管目录 `~/.kapibala/tool-results/<项目哈希>/<会话ID>/`（项目目录内不落运行时产物；裸 SDK 退回系统临时目录），可用 `read_file` 按行读取——沙箱对本会话的结果桶开放只读豁免，其余会话与写入仍按工作区边界约束；文件按 7 天保留期清理，删除会话时联动清除该会话的产物。
 
 历史正文存放在 `~/.kapibala/sessions/<project-key>/`，每会话独立 JSONL，列表缓存可重建。保护范围外、成功完成旧轮次的成功读取/搜索结果先剪裁，仍超过阈值再滚动摘要；原文保留，各级提交后激活。当前任务、最近成功轮次及失败尾部完整保护，超限明确停止，任务内部压缩留到后续。迁移、命令和 SDK 接入见 [v0.0.3 迁移说明](migration/v0.0.3.md)，实测证据见 [v0.0.3 验收记录](verification/v0.0.3.md)。
 
@@ -124,6 +124,9 @@ pnpm build && node packages/cli/dist/bin.js
 | `/fork [title]` | 把当前活动分支导出为独立新会话并切换，导入历史不计入新会话费用 | `/fork 性能实验` |
 | `/archive <id>`、`/archive list [page]`、`/archive restore <id>` | 逻辑归档、浏览归档清单与恢复；运行中会话禁止归档 | `/archive list` |
 | `/agents`、`/agents show <id>`、`/agents cancel <id>`、`/agents collect <id>` | 观测任务树、查看明细、取消任务、把终态通知注入来源分支（异分支拒绝） | `/agents collect a1b2` |
+| `/quote`、`/quote <id\|id#record>`、`/quote --search <query>`、`/quote --list [--remove n]` | 引用其它会话历史：菜单选择、`会话ID#记录ID` 精确引用、项目桶内检索、查看并删除本轮已挂载引用；草稿在下一条输入发送时冻结注入 | `/quote --search 并发调度` |
+| `/delegate <任务> [--role\|--model\|--name]` | 用户级派发 detached 委派会话（复用当前会话写租约），终态保留可续聊 | `/delegate 整理 docs/ 链接 --name 文档巡检` |
+| `/delegations [list\|show\|open\|cancel\|delete] <id>` | 委派会话面板：元数据跨进程可见，按 ID 或唯一前缀操作；delete 物理删除释放保留名额 | `/delegations open a1b2` |
 | `/rename <title>` | 修改当前会话标题 | `/rename 上下文设计` |
 | `/context` | 查看保护范围、预算、剪裁与有效检查点 | `/context` |
 | `/compact` | 空闲时手动摘要旧完整交互 | `/compact` |

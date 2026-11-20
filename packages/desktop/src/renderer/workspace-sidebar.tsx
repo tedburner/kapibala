@@ -346,7 +346,7 @@ export function WorkspaceSidebar({
                       content={`在 ${space.name} 新建对话`}
                       render={
                         <Button
-                          className="kapibala-action pointer-events-none absolute right-9 shrink-0 opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/space:pointer-events-auto group-focus-within/space:opacity-100 group-hover/space:pointer-events-auto group-hover/space:opacity-100 group-data-[state=collapsed]/sidebar:hidden"
+                          className="kapibala-action pointer-events-none absolute right-9 shrink-0 opacity-0 transition-opacity [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/space:pointer-events-auto group-focus-within/space:opacity-100 group-hover/space:pointer-events-auto group-hover/space:opacity-100 group-data-[state=collapsed]/sidebar:hidden"
                           variant="ghost"
                           shape="square"
                           size="base"
@@ -453,7 +453,7 @@ export function WorkspaceSidebar({
                               <DropdownMenu.Trigger
                                 render={
                                   <Button
-                                    className="kapibala-action pointer-events-none absolute right-0 shrink-0 bg-(--kapibala-sidebar-surface) opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 group-hover/row:pointer-events-auto group-hover/row:opacity-100"
+                                    className="kapibala-action pointer-events-none absolute right-0 shrink-0 bg-(--kapibala-sidebar-surface) opacity-0 transition-opacity [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 group-hover/row:pointer-events-auto group-hover/row:opacity-100"
                                     variant="ghost"
                                     shape="square"
                                     size="base"

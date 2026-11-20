@@ -89,18 +89,22 @@ test.describe
       await page.getByRole('tab', { name: '资源管理' }).click();
       await expect(page.getByText('demo-cmd')).toBeVisible();
       await page.getByLabel('启用 demo', { exact: true }).click();
-      // 点击与宿主写回是异步链路：轮询文件直到反映变更，避免固定延时竞态
+      // 点击与宿主写回是异步链路：轮询文件直到反映变更，避免固定延时竞态；
+      // Windows runner 磁盘与 Host 往返更慢，放宽默认 5 秒轮询窗口。
       await expect
-        .poll(() => {
-          try {
-            const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as {
-              mcpServers?: Record<string, { enabled?: boolean }>;
-            };
-            return saved.mcpServers?.demo?.enabled;
-          } catch {
-            return undefined;
-          }
-        })
+        .poll(
+          () => {
+            try {
+              const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+                mcpServers?: Record<string, { enabled?: boolean }>;
+              };
+              return saved.mcpServers?.demo?.enabled;
+            } catch {
+              return undefined;
+            }
+          },
+          { timeout: 15_000 },
+        )
         .toBe(false);
     });
   });

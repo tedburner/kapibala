@@ -11,6 +11,7 @@ import type {
   SessionMode,
   ShellScope,
 } from '../../capabilities/security/permissions.js';
+import { classifyShellCommandSafety } from '../../capabilities/shell/command-safety.js';
 import type { Tool, ToolExecutionIdentity } from '../../capabilities/tools/index.js';
 import { commandAuditSummary } from '../../extensibility/logging/index.js';
 import type { ToolResultBlock, ToolResultExecution, ToolUseBlock } from '../../types/index.js';
@@ -84,6 +85,7 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
   const executionIdentity = deps.executionIdentity;
   let auditFields: Record<string, unknown> = {};
   for (let attempt = 0; attempt < 2; attempt++) {
+    const activeMode: SessionMode = typeof mode === 'function' ? mode() : mode;
     const request: ApprovalRequest = {
       toolName: call.name,
       capabilities: tool.metadata?.permissions ?? [],
@@ -91,13 +93,15 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
       rootDir,
       ...(shell ? { shell } : {}),
       ...(executionIdentity ? { executionIdentity } : {}),
-      // 解释器内建查询与内容已绑定摘要的工作区直引脚本可确认不受外部脚本变更影响，
-      // 允许会话级批准；其余 shell 命令仅允许单次批准。
-      // 非 shell 工具（含深度绑定 executionIdentity 的外部工具）允许会话级批准。
+      // 会话级批准的准入：非 shell 工具一律允许；shell 命令原本仅限无歧义绑定
+      // 内容摘要的工作区直引脚本，Auto 模式下放宽到普通命令——缓存键含完整
+      // 执行指纹，且执行前有 TOCTOU 指纹复核（TARGET_CHANGED fail-closed），
+      // 同一精确执行上下文复用人工批准是安全的；其他模式下 shell 仍仅单次批准。
       sessionAllowed:
         !shell ||
-        /^(?:pwd|get-location)$/i.test(shell.command.trim()) ||
-        shell.scriptDigest !== undefined,
+        shell.scriptDigest !== undefined ||
+        activeMode === 'Auto' ||
+        /^(?:pwd|get-location)$/i.test(shell.command.trim()),
     };
     const repeatKey = createHash('sha256')
       .update(stableJsonStringify([call.name, finalInput]))
@@ -131,14 +135,14 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
     const cached = approvalCache.get(request);
     const decision = policy.decide({
       hardDenied: hardDenied !== undefined,
-      mode: typeof mode === 'function' ? mode() : mode,
+      mode: activeMode,
       toolName: call.name,
       capabilities: request.capabilities,
       dangerous: tool.metadata?.dangerous,
       cachedApproval: cached === 'allow',
       cachedDenial: cached === 'deny',
       rules: permissionRules,
-      ...(shell ? { shell } : {}),
+      ...(shell ? { shell, shellSafety: classifyShellCommandSafety(shell, rootDir) } : {}),
     });
     let permitted = decision.decision === 'allow';
     let source: string = decision.source;

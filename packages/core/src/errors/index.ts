@@ -228,6 +228,66 @@ export function createSessionError(code: SessionErrorCode, message: string): Kap
   });
 }
 
+/**
+ * 跨会话引用读取失败的稳定分类；safeMessage 面向用户展示，不携带源会话路径或正文。
+ * 与 DELEGATION_* 命名空间互不交叉复用：引用线与派发线共用块装配但错误语义独立。
+ */
+const REFERENCE_SAFE_MESSAGES = {
+  /** 源会话不存在或 ID 前缀歧义。 */
+  REFERENCE_SESSION_NOT_FOUND: '找不到被引用的会话',
+  /** 源会话不在当前项目桶内。 */
+  REFERENCE_PROJECT_MISMATCH: '本版只支持引用同一项目内的会话',
+  /** 源会话已归档。 */
+  REFERENCE_ARCHIVED: '该会话已归档，请先恢复再引用',
+  /** recordId 不存在或不在指定分支上。 */
+  REFERENCE_RECORD_NOT_FOUND: '该条消息已不在当前分支上',
+  /** 目标是工具结果、思考块等不可见内容。 */
+  REFERENCE_UNSUPPORTED_ROLE: '只能引用用户或助手正文',
+  /** 超出条数 / 会话数 / 字符 / 字节任一预算上限。 */
+  REFERENCE_BUDGET_EXCEEDED: '引用过多，请减少后重试',
+} as const;
+
+/** 跨会话引用错误码集合；仅限 createReferenceError 构造，调用方按码做机器判定。 */
+export type ReferenceErrorCode = keyof typeof REFERENCE_SAFE_MESSAGES;
+
+/** 生成固定安全文案的引用错误；内部 message 保留诊断细节，安全文案不含路径与正文。 */
+export function createReferenceError(code: ReferenceErrorCode, message: string): KapibalaError {
+  return new KapibalaError(message, {
+    code,
+    safeMessage: REFERENCE_SAFE_MESSAGES[code],
+    retryPolicy: 'after_user_action',
+  });
+}
+
+/**
+ * 委派会话续聊与保留预算失败的稳定分类；safeMessage 面向用户展示，不携带会话路径。
+ * 同一命名空间只描述派发线的生命周期失败，不承载引用线的语义。
+ */
+const DELEGATION_SAFE_MESSAGES = {
+  /** 目标委派会话仍在运行，busy 即拒绝不排队。 */
+  DELEGATION_BUSY: '该任务仍在运行',
+  /** 目标是 ephemeral 会话或会话文件已被清理，无法续聊。 */
+  DELEGATION_NOT_RETAINED: '该子任务未保留会话，无法续聊',
+  /** 保留会话已达上限且无自动淘汰。 */
+  DELEGATION_LIMIT_EXCEEDED: '已达保留上限，请先清理',
+  /** 目标委派任务不在当前运行时（进程重启后模型侧索引不跨进程）。 */
+  DELEGATION_NOT_FOUND: '找不到该委派任务',
+  /** 同一 requestId 已用于不同的派发参数，拒绝隐式覆盖。 */
+  DELEGATION_REQUEST_CONFLICT: '同一 requestId 已用于不同的派发参数',
+} as const;
+
+/** 委派错误码集合；仅限 createDelegationError 构造，调用方按码做机器判定。 */
+export type DelegationErrorCode = keyof typeof DELEGATION_SAFE_MESSAGES;
+
+/** 生成固定安全文案的委派错误；内部 message 保留诊断细节，安全文案不含路径与正文。 */
+export function createDelegationError(code: DelegationErrorCode, message: string): KapibalaError {
+  return new KapibalaError(message, {
+    code,
+    safeMessage: DELEGATION_SAFE_MESSAGES[code],
+    retryPolicy: 'after_user_action',
+  });
+}
+
 /** 工具向外部发送前在微任务复核或状态检查中被撤销/拒绝；dispatchOutcome 固定 not_sent。 */
 export class PreDispatchError extends KapibalaError {
   constructor(

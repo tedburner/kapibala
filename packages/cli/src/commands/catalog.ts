@@ -80,6 +80,21 @@ const history = (args: string[]) => {
   return integer(args);
 };
 
+const quote = (args: string[]) => {
+  if (!args.length) return undefined;
+  if (args[0] === '--list') {
+    if (args.length === 1) return undefined;
+    return args.length === 3 && args[1] === '--remove' && /^[1-9]\d*$/.test(args[2])
+      ? undefined
+      : '用法: /quote --list [--remove <序号>]';
+  }
+  if (args[0] === '--search')
+    return args.length >= 2 ? undefined : '用法: /quote --search <关键词>';
+  return args.length === 1
+    ? undefined
+    : '用法: /quote [<sessionId>[#<recordId>]] | /quote --search <query> | /quote --list';
+};
+
 const branch = (args: string[]) => {
   if (args.length === 0) return undefined;
   if (args[0] === 'switch') {
@@ -115,6 +130,22 @@ const agents = (args: string[]) => {
     return args.length === 2 && args[1].trim() ? undefined : `用法: /agents ${sub} <agentId>`;
   }
   return '用法: /agents [show <id> | cancel <id> | collect <id>]';
+};
+
+const delegate = (args: string[]) =>
+  args.length === 1 && args[0].trim()
+    ? undefined
+    : '用法: /delegate <任务描述> [--role <角色>] [--model <模型 id>] [--name <名称>]';
+
+const delegations = (args: string[]) => {
+  if (args.length === 0 || args[0] === 'list') {
+    return args.length <= 1 ? undefined : '用法: /delegations [list]';
+  }
+  const sub = args[0];
+  if (['show', 'open', 'cancel', 'delete'].includes(sub)) {
+    return args.length === 2 && args[1].trim() ? undefined : `用法: /delegations ${sub} <id>`;
+  }
+  return '用法: /delegations [list | show <id> | open <id> | cancel <id> | delete <id>]';
 };
 
 /**
@@ -231,6 +262,16 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     validate: history,
   },
   {
+    name: 'quote',
+    interactionLevel: 'select',
+    usage:
+      '/quote [<sessionId>[#<recordId>]] | /quote --search <query> | /quote --list [--remove <序号>]',
+    description: '引用同项目其它会话的历史，挂载后随下一条输入注入',
+    group: 'session',
+    mutates: (args) => args[0] !== '--list' || args[1] === '--remove',
+    validate: quote,
+  },
+  {
     name: 'branch',
     interactionLevel: 'none',
     usage: '/branch [recordId [name]] | /branch switch <branchId>',
@@ -266,6 +307,25 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     group: 'diagnostic',
     mutates: (args) => args[0] === 'cancel' || args[0] === 'collect',
     validate: agents,
+  },
+  {
+    name: 'delegate',
+    interactionLevel: 'none',
+    usage: '/delegate <任务描述> [--role <角色>] [--model <模型 id>] [--name <名称>]',
+    description: '以当前会话策略派发可续聊的保留型委派会话',
+    group: 'session',
+    rawTail: true,
+    mutates: () => true,
+    validate: delegate,
+  },
+  {
+    name: 'delegations',
+    interactionLevel: 'none',
+    usage: '/delegations [list | show <id> | open <id> | cancel <id> | delete <id>]',
+    description: '查看、接续、取消或删除保留型委派会话',
+    group: 'diagnostic',
+    mutates: (args) => ['open', 'cancel', 'delete'].includes(args[0] ?? ''),
+    validate: delegations,
   },
   {
     name: 'rename',

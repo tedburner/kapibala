@@ -2,9 +2,10 @@ import { type ModelProfile, type ModelRole, resolveContextWindow } from '@kituro
 import {
   ROUTABLE_MODEL_ROLES,
   createModelBinding,
+  listProviderMetas,
   parsePrimaryModelRole,
+  providerCategory,
 } from '@kiturone/kapibala-host/internal';
-import { PROVIDER_METAS, providerCategory } from '@kiturone/kapibala-host/internal';
 import {
   API_KEY_ENV_NONE,
   type LoadSettingsOptions,
@@ -121,6 +122,23 @@ function describeKeyStatus(models: ModelProfile[], settings: UserSettings): stri
 }
 
 /**
+ * 停用模型不进入任何选择入口：菜单、只读列表、默认与角色绑定、直切都跳过。
+ * 配置与密钥仍保留在 settings 里，用户可在桌面设置中重新启用。
+ */
+function isAvailable(profile: ModelProfile): boolean {
+  return profile.disabled !== true;
+}
+
+/** 命中停用模型时打印统一提示并返回 true，调用方据此中止切换/绑定。 */
+function rejectDisabled(profile: ModelProfile, ctx: Parameters<CommandHandler>[1]): boolean {
+  if (profile.disabled !== true) return false;
+  resolveCommandOutput(ctx).log(
+    `\x1b[33m模型 '${profile.name}' 已停用，请先在设置 → 模型与服务商中启用。\x1b[0m`,
+  );
+  return true;
+}
+
+/**
  * `/model` 入口：`key [id]` 更新密钥、`<角色> <id>` 绑定角色、`route <role>` 选择主任务角色，
  * 兼容 `setup` / `set-default` 子命令；无参数时非 TTY 输出只读列表，TTY 进入分级选择菜单。
  * 切换与绑定前都先确保密钥就绪，缺密钥时引导补录，补录取消则整体中止。
@@ -139,6 +157,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     const role = target as Exclude<ModelRole, 'default'>;
     const profile = ctx.settings.profiles.find((candidate) => candidate.id === args[1]);
     if (!profile) throw new Error(`未找到模型 Profile '${args[1]}'`);
+    if (rejectDisabled(profile, ctx)) return;
     if (!ctx.onRoleBound) throw new Error('当前宿主不支持模型角色绑定');
     if (!(await ensureApiKey(profile, ctx))) return;
     createModelBinding(profile, ctx.settings);
@@ -178,6 +197,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
       resolveCommandOutput(ctx).log(`\x1b[31m未找到模型 Profile '${defaultId}'。\x1b[0m`);
       return;
     }
+    if (rejectDisabled(found, ctx)) return;
     persistDefaultModel(found, ctx.settings, { homeDir: ctx.homeDir });
     resolveCommandOutput(ctx).log(`\x1b[32m✔ 已将 '${found.name}' 设为全局默认模型。\x1b[0m`);
     return;
@@ -193,6 +213,7 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
       return;
     }
 
+    if (rejectDisabled(profile, ctx)) return;
     if (!(await ensureApiKey(profile, ctx))) return;
 
     ctx.onModelSwitched(profile.id);
@@ -208,13 +229,16 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     resolveCommandOutput(ctx).log(
       `当前角色: ${ctx.session.getModelRole?.() ?? 'default'} | 模型: ${active.id} (${active.name})`,
     );
-    for (const profile of ctx.settings.profiles)
+    for (const profile of ctx.settings.profiles.filter(isAvailable))
       resolveCommandOutput(ctx).log(`  ${profile.id}: ${profile.name}`);
     resolveCommandOutput(ctx).log('使用 /model <id> 切换模型。');
     return;
   }
   if (!ctx.select) throw new Error('交互输入不可用，请使用 /model <id>');
   const currentProviderKey = providerCategory(active);
+  // 分组来自配置现状：内置厂商 + 用户填过厂商名的自建端点 + 通用自定义桶。
+  // 分组只统计启用的模型：整组都停用时该厂商不出现在菜单里。
+  const providerMetas = listProviderMetas(ctx.settings.profiles.filter(isAvailable));
 
   while (true) {
     // -------------------------------------------------------------
@@ -222,8 +246,10 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     // -------------------------------------------------------------
     const providerOptions: SelectOption<string>[] = [];
 
-    for (const meta of PROVIDER_METAS) {
-      const models = ctx.settings.profiles.filter((p) => providerCategory(p) === meta.key);
+    for (const meta of providerMetas) {
+      const models = ctx.settings.profiles.filter(
+        (p) => providerCategory(p) === meta.key && isAvailable(p),
+      );
       if (models.length > 0) {
         const isCurrent = meta.key === currentProviderKey;
         providerOptions.push({
@@ -287,10 +313,10 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
     // -------------------------------------------------------------
     // 第二步：选择该提供商下的具体模型
     // -------------------------------------------------------------
-    const providerMeta = PROVIDER_METAS.find((m) => m.key === chosenProvider);
+    const providerMeta = providerMetas.find((m) => m.key === chosenProvider);
     const providerName = providerMeta ? providerMeta.name : chosenProvider;
     const modelsUnderProvider = ctx.settings.profiles.filter(
-      (p) => providerCategory(p) === chosenProvider,
+      (p) => providerCategory(p) === chosenProvider && isAvailable(p),
     );
 
     const modelOptions: SelectOption<string>[] = modelsUnderProvider.map((p) => {

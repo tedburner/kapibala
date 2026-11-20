@@ -4,8 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   AgentSession,
+  type PreparedTaskResult,
   type SessionEvent,
   SessionManager,
+  type TextBlock,
   WorkspaceLeaseCoordinator,
 } from '@kiturone/kapibala';
 import { createManagedSession } from '@kiturone/kapibala-host/internal';
@@ -79,6 +81,39 @@ describe('共享受管宿主', () => {
       expect(sources).toContain(fs.realpathSync.native(path.join(home, '.kapibala/AGENTS.md')));
     } finally {
       await host.dispose();
+    }
+  });
+  it('审批档位随会话落盘：重开同一会话沿用上次选择', async () => {
+    const { home } = fixture();
+    const root = directory();
+    const options = {
+      workspaceRoot: root,
+      homeDirectory: home,
+      approvalChannel: approval,
+      leaseCoordinator: new WorkspaceLeaseCoordinator(),
+    };
+    const host = await createManagedSession(options);
+    const conversationId = host.conversationId;
+    try {
+      expect(host.configuration().mode).toBe('Approval');
+      await host.configure({ mode: 'Auto' });
+      expect(host.configuration().mode).toBe('Auto');
+      // 元数据投影同样带回模式：sidecar 重建后列表仍能读到上次档位。
+      const list = await new SessionManager({
+        workspaceRoot: root,
+        homeDirectory: home,
+        projectRootMode: 'exact',
+      }).list();
+      expect(list.items.find((item) => item.conversationId === conversationId)?.mode).toBe('Auto');
+    } finally {
+      await host.dispose();
+    }
+    const reopened = await createManagedSession({ ...options, conversationId });
+    try {
+      // 会话级记忆优先于全局默认；全局默认仍是 Approval。
+      expect(reopened.configuration().mode).toBe('Auto');
+    } finally {
+      await reopened.dispose();
     }
   });
   it('运行保留选择，刷新密钥且旧值仍脱敏；完整流和历史 DTO 不暴露秘密', async () => {
@@ -211,7 +246,7 @@ it('观察只返回有界脱敏状态、技能与未启动 MCP，不启动服务
     expect(fs.existsSync(marker)).toBe(false);
     const changes: number[] = [];
     const unsubscribe = host.subscribeInspection(() => changes.push(1));
-    host.configure({ mode: 'Plan' });
+    await host.configure({ mode: 'Plan' });
     expect(changes.length).toBeGreaterThan(0);
     unsubscribe();
     await host.dispose();
@@ -251,6 +286,88 @@ it('缺少 Provider usage 的运行保持未知；真实零用量保留，部分
     });
     await host.run('partial');
     expect(host.status().runUsage).toBeUndefined();
+  } finally {
+    await host.dispose();
+  }
+});
+
+it('引用运行在运行锁内冻结快照：引用块带完整溯源，超预算零追加', async () => {
+  const { home } = fixture();
+  const root = directory();
+  const manager = new SessionManager({
+    workspaceRoot: root,
+    homeDirectory: home,
+    projectRootMode: 'exact',
+  });
+  const source = await manager.create();
+  await source.store.append({
+    id: 'm1',
+    role: 'user',
+    timestamp: Date.now(),
+    content: [{ type: 'text', text: '源会话的调研结论' }],
+  });
+  const recordId = (await source.store.readRecords()).find(
+    (record) => record.type === 'message',
+  )?.recordId;
+  expect(recordId).toBeDefined();
+  await source.release();
+
+  const captured: PreparedTaskResult[] = [];
+  vi.spyOn(AgentSession.prototype, 'runPreparedTask').mockImplementation(async function* (
+    this: AgentSession,
+    _task: string,
+    prepare,
+  ) {
+    captured.push(await prepare({ runId: 'fixture-run', tools: this.tools.snapshot() }));
+    yield { type: 'turn_start', turn: 1 };
+  });
+  const host = await createManagedSession({
+    workspaceRoot: root,
+    homeDirectory: home,
+    approvalChannel: approval,
+    leaseCoordinator: new WorkspaceLeaseCoordinator(),
+  });
+  try {
+    await host.runWithReferences('接上面的结论继续', [
+      { sessionId: source.conversationId, recordIds: [recordId!] },
+    ]);
+    expect(captured).toHaveLength(1);
+    const blocks = captured[0].content as TextBlock[];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).toContain('<session-reference');
+    expect(blocks[0].text).toContain('源会话的调研结论');
+    expect(blocks[0].referenceSource).toMatchObject({
+      version: 1,
+      sessionId: source.conversationId,
+      recordId,
+      role: 'user',
+    });
+    expect(blocks[0].referenceSource?.contentDigest).toMatch(/^[0-9a-f]{16}$/);
+  } finally {
+    await host.dispose();
+  }
+});
+
+it('引用超预算时在准备阶段抛错，历史保持零追加', async () => {
+  const { home } = fixture();
+  const host = await createManagedSession({
+    workspaceRoot: directory(),
+    homeDirectory: home,
+    approvalChannel: approval,
+    leaseCoordinator: new WorkspaceLeaseCoordinator(),
+  });
+  try {
+    // 4 个源会话超过单轮上限；读取前即拒绝，不触碰任何源会话文件。
+    await expect(
+      host.runWithReferences('引用太多', [
+        { sessionId: 'a' },
+        { sessionId: 'b' },
+        { sessionId: 'c' },
+        { sessionId: 'd' },
+      ]),
+    ).rejects.toMatchObject({ code: 'REFERENCE_BUDGET_EXCEEDED' });
+    expect(host.session.getHistory()).toHaveLength(0);
+    expect(host.isBusy()).toBe(false);
   } finally {
     await host.dispose();
   }

@@ -5,6 +5,7 @@ import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 import {
   formatToolDetail,
   formatToolInvocation,
+  resolveToolDisplay,
   sanitizeToolName,
 } from './ui/tool-presentation.js';
 
@@ -101,6 +102,7 @@ export function projectHistory(
         const tool: ViewTool = {
           callId: block.id,
           name: sanitizeToolName(block.name),
+          displayName: resolveToolDisplay(block.name).label,
           invocation: sanitizeUntrustedOutput(formatToolInvocation(block.name, block.input)),
           input: sanitizeUntrustedOutput(formatToolDetail(block.input)),
           status: result ? (result.block.isError ? 'failed' : 'succeeded') : 'interrupted',
@@ -124,6 +126,7 @@ export function projectHistory(
         const tool: ViewTool = {
           callId: block.toolUseId,
           name: 'unknown',
+          displayName: resolveToolDisplay('unknown').label,
           invocation: '工具结果',
           input: '',
           status: block.isError ? 'failed' : 'succeeded',

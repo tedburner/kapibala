@@ -23,17 +23,24 @@ import {
   type Workspace,
   notificationLane,
 } from '../shared/contracts.js';
+import { HTML_PREVIEW_LIMIT, PREVIEW_SCHEME } from '../shared/preview.js';
 import { RpcEndpoint, safeError } from '../shared/rpc.js';
 import { readBuildInfo, testPaths } from './build-info.js';
 import { ControlLifetime } from './control-lifetime.js';
 import { HostGuard } from './guard.js';
 import { NativeNotices } from './native-notices.js';
 import { Preferences } from './preferences.js';
+import { PreviewDocuments } from './preview-documents.js';
+import { readImageDataUrl, resolveLocalImagePath } from './preview-file.js';
+import { installPreviewProtocol, previewUrl, registerPreviewScheme } from './preview-protocol.js';
 import { HostSupervisor } from './supervisor.js';
 import { normalizeUrl } from './url.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 app.setName('Kapibala');
+// 预览协议必须在 ready 前声明特权，否则拿不到独立来源，沙箱 iframe 会被页面 CSP 拦住。
+registerPreviewScheme();
+const previews = new PreviewDocuments();
 // 品牌图标由构建期从 assets/icon.png 拷到 main 产物同目录（唯一真源仍在 assets/）；
 // 开发态 Electron 默认用自身图标，必须在 ready 后显式覆盖 Dock，否则窗口和托盘一眼是「原生 Electron」。
 const brandIconFile = path.join(directory, 'icon.png');
@@ -456,10 +463,17 @@ function createWindow(): void {
         new URL(developmentURL).origin,
         new URL(developmentURL.replace('http:', 'ws:')).origin,
       ].includes(new URL(url).origin);
+    // 预览文档走独立协议；不在白名单里会被这里统一取消，表现为 iframe 空白。
+    const allowedPreview = url.startsWith(`${PREVIEW_SCHEME}:`);
+    // 消息正文里的远程图片是唯一放行的外部子资源：只认 image 类型与 http(s)，
+    // 脚本、样式、字体等请求继续被取消，避免把页面网络的缺口一起打开。
+    const allowedRemoteImage = details.resourceType === 'image' && /^https?:\/\//i.test(url);
     callback({
       cancel:
         !allowedFile &&
         !allowedDevelopment &&
+        !allowedPreview &&
+        !allowedRemoteImage &&
         !url.startsWith('devtools://') &&
         !url.startsWith('data:'),
     });
@@ -583,6 +597,36 @@ else {
         return;
       void connect().catch(unavailable);
     });
+    // 预览只接受来自当前主页面的登记请求：其它帧/来源一律拒绝，避免把任意内容塞进协议表。
+    ipcMain.handle('kpbl:preview', (event, html: unknown) => {
+      if (
+        !window ||
+        event.sender !== window.webContents ||
+        event.senderFrame !== window.webContents.mainFrame ||
+        normalizeUrl(event.senderFrame?.url ?? '') !== expectedURL
+      )
+        throw new Error('FORBIDDEN');
+      if (typeof html !== 'string' || html.length > HTML_PREVIEW_LIMIT)
+        throw new Error('PREVIEW_INVALID');
+      return previewUrl(previews.publish(html));
+    });
+    // 本地图片预览只接受来自当前主页面的读取请求：只回 data URL，不暴露文件系统句柄。
+    ipcMain.handle('kpbl:preview-file', async (event, params: unknown) => {
+      if (
+        !window ||
+        event.sender !== window.webContents ||
+        event.senderFrame !== window.webContents.mainFrame ||
+        normalizeUrl(event.senderFrame?.url ?? '') !== expectedURL
+      )
+        throw new Error('FORBIDDEN');
+      if (typeof params !== 'object' || params === null) throw new Error('PREVIEW_INVALID');
+      const { path, root } = params as { path?: unknown; root?: unknown };
+      if (typeof path !== 'string' || (root !== undefined && typeof root !== 'string'))
+        throw new Error('PREVIEW_INVALID');
+      const target = resolveLocalImagePath(path, root);
+      if (!target) throw new Error('PREVIEW_INVALID');
+      return readImageDataUrl(target);
+    });
     nativeTheme.on('updated', () => {
       window?.setBackgroundColor(surfaces[displayMode()]);
       if (renderer)
@@ -621,6 +665,7 @@ else {
         tray = undefined;
       }
     }
+    installPreviewProtocol(previews);
     createWindow();
     if (!blocked)
       startup = startHost().catch(() => {

@@ -78,6 +78,8 @@ export interface SessionOptions {
   onDiagnostic?: (message: string) => void;
   /** 会话持有的沙箱实例；缺省基于 workspaceRoot 自动创建独占实例。 */
   sandbox?: PathSandbox;
+  /** 受管工具结果根目录（宿主传 `~/.kapibala/tool-results`）；缺省时 run_command 大输出退回系统临时目录。 */
+  toolResultsDirectory?: string;
   /** 宿主显式共享的写租约协调器；缺省为本会话独占实例，不隐含跨会话互斥。 */
   leaseCoordinator?: WorkspaceLeaseCoordinator;
   /** 父任务或任务树根 ID，用于多智能体任务层级限制与追踪。 */

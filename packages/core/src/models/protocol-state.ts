@@ -162,6 +162,33 @@ export function validateProtocolContent(content: readonly ContentBlock[]): void 
       )
         invalidState();
     }
+    // 引用来源是审计元数据，不随 wire 发送；损坏历史必须在这里拦住，不能被适配器静默忽略。
+    if (
+      block.type === 'text' &&
+      'referenceSource' in block &&
+      block.referenceSource !== undefined
+    ) {
+      const rs = block.referenceSource;
+      if (
+        !rs ||
+        typeof rs !== 'object' ||
+        rs.version !== 1 ||
+        typeof rs.sessionId !== 'string' ||
+        !rs.sessionId ||
+        typeof rs.recordId !== 'string' ||
+        !rs.recordId ||
+        typeof rs.branchId !== 'string' ||
+        !rs.branchId ||
+        !['user', 'assistant', 'branch_summary'].includes(rs.role) ||
+        !Number.isSafeInteger(rs.timestamp) ||
+        rs.timestamp < 0 ||
+        (rs.title !== undefined && typeof rs.title !== 'string') ||
+        typeof rs.contentDigest !== 'string' ||
+        !/^[a-f0-9]{16}$/.test(rs.contentDigest) ||
+        (rs.truncated !== undefined && typeof rs.truncated !== 'boolean')
+      )
+        invalidState();
+    }
     validatedBlocks.set(block, true);
   }
   validatedContents.set(content as object, true);

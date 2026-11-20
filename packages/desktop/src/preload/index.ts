@@ -102,6 +102,12 @@ const api: DesktopAPI = {
     reload: () => done('app.reload', {}),
     openExternal: (url) => done('app.openExternal', { url }),
   },
+  preview: {
+    // 预览内容不进 RPC 协议：只走主进程的短期登记表，返回独立来源地址给沙箱 iframe。
+    url: (html) => ipcRenderer.invoke('kpbl:preview', html) as Promise<string>,
+    // 本地图片同理：主进程按白名单扩展整读后回 data URL，渲染层不接触文件系统。
+    file: (params) => ipcRenderer.invoke('kpbl:preview-file', params) as Promise<string>,
+  },
   preferences: {
     read: () => call('preferences.read', {}),
     update: (theme) => done('preferences.update', { theme }),
@@ -119,6 +125,10 @@ const api: DesktopAPI = {
     saveProfile: (params) => call('settings.saveProfile', params),
     listModels: (params) => call('settings.listModels', params),
     setDefault: (profileId) => done('settings.setDefault', { profileId }),
+    setPermissionMode: (mode) => done('settings.setPermissionMode', { mode }),
+    setEnabled: (params) => done('settings.setEnabled', params),
+    deleteProfile: (profileId) => done('settings.deleteProfile', { profileId }),
+    testProfile: (profileId) => call('settings.testProfile', { profileId }),
     setRouting: (params) => done('settings.setRouting', params),
   },
   resources: {
