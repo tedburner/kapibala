@@ -41,14 +41,56 @@
 | **v0.1.1** | **桌面四平台自动打包修复**（已于 2026-11-15 发布；[发布说明](releases/v0.1.1.md)） | 未签名测试包改由 `release.yml` 的 `desktop-unsigned` 作业在四个原生 runner 上自动生成并上传同一 Release，另有 `desktop_only` 手动补跑入口；修复三处干净机器才暴露的打包缺陷（`--offline` 解析不了 registry 元数据、工作区成员名单硬编码、Windows e2e 路径断言）。实际交付 mac arm64 / mac x64 / Linux x86_64 三平台，Windows 安装副本 smoke 在全新安装首启时超 30 秒被判死连接（v0.1.2 修复） | 桌面发布链路增量，无新功能 |
 | **v0.1.2** | **Windows 安装副本挂死与受限 PATH 阻断修复**（已于 2026-11-15 发布；[发布说明](releases/v0.1.2.md)） | 修复两个确定性失败：① 8.3 短名 `~` 的 URL 编码不一致致控制端口永不投递（`normalizeUrl` 比较前统一规范化）；② 受限 GUI PATH 下 `detectShell` 抛错阻断 `session.create`（宿主 `registerBuiltinTools` 解释器降级为惰性 fallback）。另含冷启动握手兜底 30s→90s、preload 故障投递修正、Release 附件命名简化与 smoke 诊断产物。⚠️ npm 三包在 shell 修复前发布且不可覆盖，Release 四平台安装包已用修复提交重建（tag 前移），修复随 v0.1.3 进 npm | 桌面 + 宿主修复增量 |
 | **v0.1.3** | **跨会话引用、可续聊委派与桌面模型管理**（已开发完成、待发布；2026-11-16 按 `aigc` 开源副本逐条核实后重排，见[设计 007 §0](design/007-v0.1.3-cross-session-reference-and-delegation.md)；2026-11-20 分支 Verify 全绿，run [44698746827](https://github.com/tedburner/kapibala/actions/runs/44698746827)） | 交付分 **MVP + 增强项** 两档：MVP = 引用 CLI 闭环（R0.1–R0.4、R1.1）+ 派发 Core/CLI（D0.1–D0.3、D1.1–D1.2、D2.1、D4.1 最小保留：上限 20 + 手动删除）+ 工具显示名与行结构（U1.1、U1.2；U1.4 无 hover 兜底为准 MVP）；增强项失败只回退该项、不阻塞发布（压缩降级、`branchWithSummary`（可能再次顺延，不作承诺）、桌面 mention、桌面委派可见化、D4.2 LIFO 淘汰与闲置清理）；工具行增强组 U1.3 / U1.5 / U1.6 **整组判定**，未完成则整组顺延 v0.1.4，U1.7 与 D3.2 绑定随后者版本发布。跨会话引用：同项目桶内把其它会话（含本会话其它分支）的历史消息作为冻结快照引入当前会话，宿主经 `runPreparedTask` 注入带溯源头的引用块（源会话 + `recordId` + 角色 + 时间戳 + 正文片段）并随 user 消息落盘，Core 新增只读不取锁的会话读取 API，CLI `/quote` 已交付，桌面端 mention 弹层与 `branchWithSummary` 属增强项、未交付；多任务派发：委派会话升级为用户可见、可续聊的一等会话（`spawn_agent` detached 保留预算、`send_agent` 续聊、requestId 幂等、「委派名 · 父会话名」命名），CLI `/delegate` `/delegations` 用户级派发与委派会话面板已交付，桌面委派可见化（D3.x）未交付；单条/单轮引用预算上限与压缩投影保留溯源头已交付，压缩降级未交付；共享件：工具显示名统一（宿主层 `host/ui/tool-presentation.ts` 显示名表，经 `ViewTool.displayName` 下发，CLI / 桌面 / `/mcp` 同口径，新增内置工具漏登记即门禁失败），并完成工具行信息层级与无 hover 操作兜底（U1.2 / U1.4）；结果预览与失败态、动词加对象 chip、运行耗时与最后活动（U1.3 / U1.5 / U1.6）完成则交付，否则整组顺延 v0.1.4，子代理嵌套内联（U1.7）跟随 D3.2。另携带 v0.1.2 的 shell 兜底修复进 npm（消除 tag/npm 分叉）。跨项目桶引用、活引用、跨 Harness 托管、Worktree 隔离、编排画布明确未交付。另随本版分支交付：设置页厂商分组与模型级启停（测试连接 / 启用停用 / 删除，Ollama 默认停用）、桌面 HTML 预览与 Markdown 图片渲染、会话锁自愈（pid 复用识别与死锁清扫）、host 模型探测、Auto 模式只读命令放行与会话级批准缓存、shell 大输出迁全局受管目录（`~/.kapibala/tool-results/`，项目目录零运行时产物）、沙箱只读豁免、CLI 启动优化与 dev userData 隔离；本地 wire 保持 1.0 | Core + CLI + 桌面增量 |
-| **v0.1.4** | **会话级监视、技能管理、会话看板、MCP 管理与分发更新（四主题）**（规划中；[设计 008](design/008-v0.1.4-session-watch.md) 主题一、[设计 009](design/009-v0.1.4-skills-management-and-import.md) 主题二、[设计 010](design/010-v0.1.4-session-evidence-dashboard.md) 主题三**初稿待终审**、[设计 011](design/011-v0.1.4-mcp-management-and-release-updates.md) 主题四**初稿待终审**；2026-11-16 维护者决策：MCP 管理与分发更新（GitHub Releases 通道，不走签名链路）统一并入本版） | 主题一「会话级监视」：把「等外部条件」从模型轮询升级为宿主侧监视 + 完成通知驱动续跑——新增全局控制记录 `watch_state`（五处同步、重启可恢复），v1 三类触发源（文件变化 / 本会话子进程退出 / localhost 端口就绪），触发后以 `role: 'user'` 背景消息落盘并自动续跑一轮（空闲投递、每分钟最多 1 次）；模型侧 `watch_start` / `watch_cancel`，用户侧 `/watches`，协议 `watch/list` / `watch/cancel`。不接入 webhook 与 CI 状态源，不做跨会话唤醒。主题二「技能管理与导入」：技能只从自有根读写，**不做兼容根长期读取**（维护者 2026-11-16 决策）；补技能生命周期事件与 `/skills inspect` 诊断，新增管理界面**从其它 Harness 单个或全部导入**——一次性拷贝进自有目录，导入前预览、默认跳过同名冲突、剥离 `context: fork` / `model` / `hooks` 等不支持字段并诊断、写 `.imported-from.json` 溯源，导入后不自动同步。技能运行时修饰（model / effort / autoinvoke）、`context: fork` 执行、远程分发安装均后置，不承诺版本。另承接 v0.1.3 未完成的工具行增强组（U1.3 / U1.5 / U1.6 整组顺延，含 U1.8 分组汇总评估） | Core + CLI + 桌面增量 |
+| **v0.1.4** | **会话级监视、资源管理、右侧信息面板与任务面板（六份设计 / 四组）**（规划中；六主题全量纳入本版，2026-11-20 维护者确认；[设计 008](design/008-v0.1.4-session-watch.md)、[设计 009](design/009-v0.1.4-skills-management-and-import.md)、[设计 010](design/010-v0.1.4-session-evidence-dashboard.md) **初稿待终审**、[设计 011](design/011-v0.1.4-mcp-management-and-release-updates.md) **初稿待终审**、[设计 012](design/012-v0.1.4-artifact-preview.md) **初稿待终审**、[设计 013](design/013-v0.1.4-task-panel-and-composer-status.md) **方案已定**；2026-11-16 维护者决策：MCP 管理与分发更新（GitHub Releases 通道，不走签名链路）统一并入本版；2026-11-20 维护者追加右侧产物预览与任务面板。统一归纳、依赖与推进顺序见下方「v0.1.4 统一规划」） | 主题一「会话级监视」：把「等外部条件」从模型轮询升级为宿主侧监视 + 完成通知驱动续跑——新增全局控制记录 `watch_state`（五处同步、重启可恢复），v1 三类触发源（文件变化 / 本会话子进程退出 / localhost 端口就绪），触发后以 `role: 'user'` 背景消息落盘并自动续跑一轮（空闲投递、每分钟最多 1 次）；模型侧 `watch_start` / `watch_cancel`，用户侧 `/watches`，协议 `watch/list` / `watch/cancel`。不接入 webhook 与 CI 状态源，不做跨会话唤醒。主题二「技能管理与导入」：技能只从自有根读写，**不做兼容根长期读取**（维护者 2026-11-16 决策）；补技能生命周期事件与 `/skills inspect` 诊断，新增管理界面**从其它 Harness 单个或全部导入**——一次性拷贝进自有目录，导入前预览、默认跳过同名冲突、剥离 `context: fork` / `model` / `hooks` 等不支持字段并诊断、写 `.imported-from.json` 溯源，导入后不自动同步。技能运行时修饰（model / effort / autoinvoke）、`context: fork` 执行、远程分发安装均后置，不承诺版本。主题三「会话看板」：按会话聚合变更行数、引用来源、MCP 调用与委派任务四分区 + 头部摘要行（010，初稿待终审）。主题四「MCP 管理与分发更新」：`/mcp` 配置增删改与桌面管理区块、跨 Harness 导入 MCP 配置；未签名口径下的 GitHub Releases 版本检查与手动安装提示（011，初稿待终审）。另承接 v0.1.3 未完成的工具行增强组（U1.3 / U1.5 / U1.6 整组顺延，含 U1.8 分组汇总评估）。主题五「右侧产物预览」：`write_file` 成功写入图片产物时投影到既有右侧 dock 自动预览一次，工具行保留常驻 chip；不做多面板 tab 与远程产物（012）。主题六「任务面板与输入区状态」：新增 `todo_write` 会话任务清单（历史重算 + 压缩保护最近一次成功调用，不落新记录类型），桌面输入框上方任务进度 pill 与浮层、下方状态条（空间 / Git 分支 / 上下文），CLI `/todos` 同口径（013） | Core + CLI + 桌面增量 |
+
+### v0.1.4 统一规划（2026-11-20）
+
+> 本节是 v0.1.4 六份设计的统一归纳，单份细节仍以 design 文档为准。2026-11-20 维护者决策：① 新增右侧产物预览（012）；② 新增任务面板与输入区状态（013，数据源为新增 `todo_write`、本版交付全套）；③ **六主题全量纳入 v0.1.4**——保留各文档 MVP 边界，不设必达 / 弹性分档，出现不可控风险时个别主题再顺延 v0.1.5。011 §5「v0.1.4 不再新增主题」自本节起失效。
+
+**分组**
+
+| 组 | 设计 | 范围 | 状态 / 依赖 |
+|:---:|---|---|---|
+| 后台运行 | [008](design/008-v0.1.4-session-watch.md) | 会话级监视：`watch_state` 控制记录、三类触发源、空闲投递与自动续跑、`/watches` | 规划中；依赖 v0.1.3 通知通道 |
+| 资源管理 | [009](design/009-v0.1.4-skills-management-and-import.md) | 技能诊断 + 跨 Harness 显式导入 | 规划中；无外部依赖 |
+| 资源管理 | [011](design/011-v0.1.4-mcp-management-and-release-updates.md) | MCP 配置管理；GitHub Releases 轻量更新（不走签名） | 初稿待终审；M0.2 复用 009 导入框架 |
+| 右侧信息面板 | [010](design/010-v0.1.4-session-evidence-dashboard.md) | 会话看板：变更 / 引用 / MCP / 委派四分区 + 摘要行 | 初稿待终审；依赖 U1.8 |
+| 右侧信息面板 | [012](design/012-v0.1.4-artifact-preview.md) | 右侧 dock 图片产物自动预览 | 初稿待终审；与 010 共用 dock |
+| 任务与输入区 | [013](design/013-v0.1.4-task-panel-and-composer-status.md) | `todo_write` + 任务浮层 + 进度 pill + 底栏状态条 | 方案已定（2026-11-20） |
+| 承接项 | [007 §6.2](design/007-v0.1.3-cross-session-reference-and-delegation.md) | 工具行增强组 U1.3 / U1.5 / U1.6（整组）+ U1.8 分组汇总 | U1.8 是 010 的前置 |
+
+**共享基础设施（一次做对，多处复用）**
+
+- **wire 统一一次 minor 升级**：008 的 `watch/list` / `watch/cancel`、009 的 `resources.inspectSkills` / `resources.importSkills`、010 的 `evidence/read` 与看板字段、012 的 `ViewTool.artifacts`、013 的会话 `todos` 字段同批升级；协议契约快照手工 `--update` 并评审，桌面 preload / schema / results 同步。
+- **界面线顺序**：U1.3 / U1.5 / U1.6 → U1.8 → 010 看板；012 与 013 可在 U1.5 后并行，013 的 pill 在 010 E0.2 未落地时降级为只显示任务进度。
+- **显示名契约**：`watch_start` / `watch_cancel` / `todo_write` 等新工具必须登记 `BUILTIN_TOOL_DISPLAY`，漏登记门禁失败（U1.1）。
+- **桌面 dock**：010 / 012 共用 `DetailsDrawer` 的 wide 非模态模式，v0.1.4 单 dock 单内容，不做多面板 tab。
+- **落盘不变量**：仅 008 新增控制记录 `watch_state`（三处类型同步、两处元数据重建）；010 / 012 / 013 全部从既有历史重算，不落新记录类型；013 只增补一条压缩保护规则。
+
+**推进顺序（2026-11-20 确认全量后）**
+
+1. 界面轨道：U1.3 / U1.5 / U1.6 收口 → U1.8 → 010 → 012 / 013；
+2. 资源轨道：009（K0 / K1）→ 011 M0.2；011 的 M0.1 与 U0.x / U1.1 可独立并行；
+3. 后台轨道：008 的 Core 工作（W0–W4）与上述并行，投递通道单独收口；
+4. 每个主题落地即跑完整 `pnpm verify`，不攒批验证；出现不可控风险时**个别主题**顺延 v0.1.5，不预先砍范围。
+
+**已定口径（2026-11-20 锁定）**
+
+- 范围：六主题全量纳入，各文档 MVP 边界不变；不设必达 / 弹性分档。
+- 008：自动续跑默认开启；触发后窗口失焦时发系统级通知、前台仅更新会话徽标；v1 不允许绑定父会话（跨会话唤醒拒绝）。
+- 009：来源检测只在打开导入界面时扫描；全部导入默认作用域为全局；导入后默认保持启用。
+- 010：接受「变更行数不含 run_command 间接改动」的保守声明。
+- 011：未签名更新三平台统一「检查 → 下载 → 手动安装」，macOS 附右键 / xattr 提示。
+- 012：v1 只识别 `write_file` 成功终态的图片产物；SVG 不投影；自动弹不加设置开关。
+- 013：pill 仅在有清单时显示；底栏空间名优先、无空间回退「本地」；`todo_write` 在子代理会话注册；进度分母为全部条目、分子为 `completed`。
+- 跨主题：013 数据源为新增 `todo_write`（不是 U1.8 派生）；009 不做兼容根长期读取；011 不走签名链路；010 / 012 / 013 不落新记录类型。
 
 ### v0.1.0 桌面发布口径调整（2026-11-14）
 
 维护者决定 v0.1.0 以**未签名个人自用版**发布，桌面签名与人工安装证据不再作为发布前置。改动的只有发布口径，桌面代码与候选流程的能力边界不变：
 
 - `release.yml` 默认跳过 `verify:release-evidence`（prepare 与 publish 各一次，只打印 `::warning::`）：六类专项与桌面证据都不是 v0.1.0 的阻塞项；把仓库变量 `KPBL_RELEASE_STRICT` 设为 `true` 可恢复六类专项的同 SHA 强制校验，阈值与字段不变。
-- **自动门禁没有放宽**：`verify` 工作流的 ubuntu/macos/windows 矩阵、Node 20 安装、compat、release 长跑、`verify:desktop` 的 mac/win e2e 与三包 registry 安装 smoke 仍须全绿，任一失败即不发版。
+- **自动门禁没有放宽**：`verify` 工作流的 ubuntu/macos/windows 矩阵、Node 20 安装、compat、PR soak 冒烟（10 轮）、`verify:desktop` 的 mac/win e2e 与三包 registry 安装 smoke 仍须全绿，任一失败即不发版（release 档长跑自 2026-11-20 起改为 Soak 工作流手动趋势运行，不再阻断发布）。
 - 桌面附件默认附带未签名测试包；把仓库变量 `KPBL_DESKTOP_RELEASE` 设为 `true` 则改为“只下载已审核候选”的严格流程。
 - 未签名测试包由 `release.yml` 的 `desktop-unsigned` 作业在四个原生 runner 上自动生成并上传到同一次 GitHub Release（产物名带 `Test`、appId `dev.kapibala.desktop.test`，`test-build.json` 会写明 `verification: skipped`，自动门禁证据以同 SHA 的 Verify 工作流为准）；安装器沿用自带 `os-arch` 的文件名，`SHA256SUMS.txt` 与 `test-build.json` 追加平台短名区分；macOS 首次打开需右键或 `xattr -dr com.apple.quarantine`，Windows 会触发 SmartScreen。
 - 因此 v0.1.0 不宣称：四平台安装验收、签名与公证、自动更新。托盘（Windows/Linux）与失焦系统通知已实现，但只有 macOS arm64 做过人工实机确认。发布说明必须逐条写明。
