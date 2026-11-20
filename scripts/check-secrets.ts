@@ -20,6 +20,9 @@ const ALLOWED_PLACEHOLDERS = [
   'sk-test',
   'sk-********************',
   'sk-xxxxxxxx',
+  // 设计文件名 slug 里天然含 `sk-panel-and-composer-status`（task-panel...），
+  // 与密钥特征同形；只放行这一整段文档 slug，其余 `sk-` 长串仍照常拦截。
+  'sk-panel-and-composer-status',
 ];
 
 // 常见大模型 API Key 正则特征 (例如 sk- 后面跟随超过 20 位字母数字下划线/横杠)
