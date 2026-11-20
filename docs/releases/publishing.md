@@ -1,6 +1,6 @@
 # GitHub Actions 自动发布
 
-正式发布的**人工验收证据**默认不再强制（2026-11-14 口径，v0.1.0 未签名个人自用版）：六类专项的审核清单本应由仓库变量 `KPBL_RELEASE_EVIDENCE` 提供且全部属于最终候选 SHA，现在只在 `KPBL_RELEASE_STRICT=true` 时校验，缺失、pending 或覆盖不全都阻断 Release。跳过时工作流打印 `::warning::`，文档与 Release 不得据此宣称人工专项已完成；格式见[发布证据说明](../release-evidence.md)。**自动门禁始终强制**：`verify` 矩阵、Node 20 安装、compat、release 长跑、桌面 e2e 与 registry 安装 smoke 任一失败即停止。
+正式发布的**人工验收证据**默认不再强制（2026-11-14 口径，v0.1.0 未签名个人自用版）：六类专项的审核清单本应由仓库变量 `KPBL_RELEASE_EVIDENCE` 提供且全部属于最终候选 SHA，现在只在 `KPBL_RELEASE_STRICT=true` 时校验，缺失、pending 或覆盖不全都阻断 Release。跳过时工作流打印 `::warning::`，文档与 Release 不得据此宣称人工专项已完成；格式见[发布证据说明](../release-evidence.md)。**自动门禁始终强制**：`verify` 矩阵、Node 20 安装、compat、PR soak 冒烟（10 轮）、桌面 e2e 与 registry 安装 smoke 任一失败即停止；release 档长跑自 2026-11-20 起只在 Soak 工作流手动运行，不阻断发布，严格证据口径下仍需同 SHA 报告。
 
 工作流文件为 `.github/workflows/release.yml`。推送稳定版本标签后，固定发布源提交，复用 `verify.yml` 执行 Windows/macOS/Linux 构建与完整门禁，再在 Ubuntu 构建、打包、依次发布 Core、MCP 和 CLI、验证 registry 安装，最后创建 GitHub Release 并附压缩包和 SHA256 校验文件。
 

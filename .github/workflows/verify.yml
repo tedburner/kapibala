@@ -16,16 +16,6 @@ on:
         description: Exact source commit to verify
         required: true
         type: string
-      soak_tier:
-        description: Soak tier to run for this source commit
-        required: false
-        default: pr
-        type: string
-      soak_baseline:
-        description: Reviewed baseline file tracked at the source commit
-        required: false
-        default: scripts/fixtures/soak/release-baseline.json
-        type: string
 
 permissions:
   contents: read
@@ -145,8 +135,9 @@ jobs:
           path: .workbuddy/v0.0.10-compat/evidence/*.json
           if-no-files-found: error
 
+  # 10 轮确定性冒烟：验证会话/取消/传输回收/进程树清理，成本约 2 秒，PR 与发布路径共用。
+  # 长跑（nightly/release 档）已移出发布门禁，由 Soak 工作流定时或手动触发并归档证据。
   soak-pr:
-    if: inputs.soak_tier == '' || inputs.soak_tier == 'pr'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -169,43 +160,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: soak-pr
-          path: .workbuddy/v0.0.10-soak/evidence/*.json
-          if-no-files-found: ignore
-
-  soak-release:
-    if: inputs.soak_tier == 'release'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-      - uses: pnpm/setup@v3
-        with:
-          version: 12.4.1
-          runtime: node@24
-          require-lockfile: true
-          cache: true
-          save-cache: false
-      - name: Build candidate
-        run: pnpm build
-      - name: Require the reviewed release baseline
-        env:
-          SOAK_BASELINE: ${{ inputs.soak_baseline }}
-        run: |
-          if [ ! -f "$SOAK_BASELINE" ]; then
-            echo "Missing reviewed release baseline: $SOAK_BASELINE. See scripts/fixtures/soak/README.md."
-            exit 1
-          fi
-      - name: Release soak (1000 rounds, at least 30 minutes)
-        env:
-          SOAK_BASELINE: ${{ inputs.soak_baseline }}
-        run: pnpm verify:soak --no-build --tier release --baseline "$SOAK_BASELINE"
-      - name: Preserve soak evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: soak-release
           path: .workbuddy/v0.0.10-soak/evidence/*.json
           if-no-files-found: ignore
 

@@ -1,3 +1,5 @@
+# 长时趋势观察入口：nightly 100 轮 + 手动 release 1000 轮，结果只归档证据、不进发布门禁。
+# PR 必跑的 10 轮确定性冒烟在 verify.yml 的 soak-pr 作业内，与发布路径共用。
 name: Soak
 
 on:
@@ -9,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       tier:
-        description: Soak tier, or collect three full release baseline candidates
+        description: Soak tier (manual trend run, not a release gate), or collect three full release baseline candidates
         required: false
         default: nightly
         type: choice

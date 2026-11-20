@@ -79,7 +79,8 @@ v0.0.10 已使用维护者审核的完整清单发布，原始报告见[最终�
 
 **但 Release 工作流默认完全跳过这项检查**：2026-11-14 维护者决定，v0.1.0 以未签名个人自用版交付，六类专项与桌面证据都不再是标签发布的阻塞项。
 
-- 默认路径只要求**自动门禁**：`verify` 工作流的 ubuntu/macos/windows 矩阵、Node 20 安装、compat、release 长跑、`verify:desktop` 的 mac/win e2e、三包 registry 安装 smoke，以及 `node scripts/release.ts check` 的版本与说明一致性；
+- 默认路径只要求**自动门禁**：`verify` 工作流的 ubuntu/macos/windows 矩阵、Node 20 安装、compat、PR soak 冒烟（10 轮）、`verify:desktop` 的 mac/win e2e、三包 registry 安装 smoke，以及 `node scripts/release.ts check` 的版本与说明一致性；
+- release 档长跑（1000 轮 / ≥30 分钟）自 2026-11-20 起不再进入发布路径：需要时手动触发 Soak 工作流或本地运行 `pnpm verify:soak:release --baseline ...` 并归档证据；`KPBL_RELEASE_STRICT=true` 的六类专项仍要求同 SHA 的人工审核长跑报告；
 - 手动门禁不静默消失：工作流会打印 `::warning::`，说明本次发布未完成人工审核，不能在文档或 Release 里宣称 Node 20 / Windows ACL·ConPTY / POSIX PTY / 跨解释器进程树 / MCP / release 长跑的人工验收；
 - 恢复严格流程只需 `gh variable set KPBL_RELEASE_STRICT true`，此时六类专项回到强制、字段与阈值不变、仍需同 SHA；
 - `desktop-candidate.yml` 自身仍要求真实证书与四平台签名，不会产出未签名候选；Release 只在 `KPBL_DESKTOP_RELEASE=true` 时下载并附带经审核的桌面附件，默认路径的未签名测试包由 `desktop-unsigned` 作业在四个原生 runner 上自动生成并上传（v0.1.1 起，不再手工上传）。

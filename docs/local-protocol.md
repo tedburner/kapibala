@@ -140,7 +140,7 @@
 pnpm check-protocol-contract   # wire 契约冻结比较（只读）
 pnpm verify:compat             # v0.0.9 tarball 与候选构建的 4 组合 × 2 传输真实进程比较
 pnpm verify:platform           # 当前 OS 真实进程：stdio、daemon 鉴权、进程树取消、MCP 生命周期、三包隔离安装
-pnpm verify:soak               # 分档长时资源验收（PR 10 / nightly 100 / release 1000 且 ≥30 分钟）
+pnpm verify:soak               # 分档资源验收（PR 10 / nightly 100 / release 1000 且 ≥30 分钟；PR 档随 verify 必跑，nightly/release 档为定时或手动趋势运行，不阻断发布）
 ```
 
 已验证范围与仍未取得的平台门禁见 [验收记录](verification/v0.0.10.md)。

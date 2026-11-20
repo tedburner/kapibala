@@ -4,7 +4,7 @@
 
 文件包含两个以「字节 / 轮」计量的数值字段：`rssGrowthBytesPerRound`（宿主 RSS 增长上限）与 `heapGrowthBytesPerRound`（客户端 heap 增长上限）。阈值应覆盖实测波动，并记录环境和审核依据；不能凭经验填写或用无穷大绕过门禁。
 
-采集趋势时可运行 `pnpm verify:soak:release`。缺少 `--baseline` 的运行仍保存采样证据，但结果为 `pending`、退出码为 1，不能用于发布。
+采集趋势时可运行 `pnpm verify:soak:release`。缺少 `--baseline` 的运行仍保存采样证据，但结果为 `pending`、退出码为 1，不能作为审核基线或严格模式下的发布证据。release 档自 2026-11-20 起不进入默认发布路径，仅在 Soak 工作流手动触发或本地运行时使用。
 
 也可手动运行 **Soak** 工作流，选择 `tier=collect-baseline`：在与正式 release 相同的 Ubuntu 24.04 / Node 24 通道，在同一个 runner 上连续采集三次 1000 轮、至少 30 分钟的完整报告。`soak-baseline-candidates` 资产中的 `1/2/3` 目录分别保存每轮原始报告；三次构建与运行共用同一 VM、Node 安装和 runner 镜像，避免独立矩阵 job 被分配到不同镜像。采集只允许「缺少冻结阈值」这一项 pending；探针失败、轮数/时长不足、调试覆盖、脏工作区和缺少有效斜率都会阻断。采集 job 通过只表示候选数据可供审核，不表示 release soak 通过。每轮还检查报告生成时间不早于本轮启动时间，拒绝在进程失败后复用上一轮报告；环境快照逐轮与首轮比对。
 
@@ -18,6 +18,6 @@
 pnpm verify:soak:release --baseline scripts/fixtures/soak/release-baseline.json
 ```
 
-Release 工作流默认读取上述路径；复用 Verify 工作流可通过 `soak_baseline` 输入指定同一源提交内的其他基线文件。手动 Soak 工作流使用 `baseline` 输入。CI 在开始 release 长跑前检查文件存在，缺失时直接阻断。
+手动 Soak 工作流的 `baseline` 输入默认指向上述路径，也可指定同一源提交内的其他基线文件；长跑开始前会检查文件存在，缺失时直接失败。Release 工作流与 Verify 工作流不再传入 `soak_baseline`，发布路径只跑 `verify.yml` 内的 10 轮 PR 冒烟。
 
 提供基线后，heap 与宿主 RSS 都必须能从至少两个不同轮次的有限采样值计算斜率；任何已开始采样的宿主样本不足也失败，不能由另一宿主的有效斜率掩盖。
