@@ -8,6 +8,10 @@ import { KapibalaError, createSessionError } from '../errors/index.js';
 import type { CanonicalMessage } from '../types/index.js';
 import { createMessageId, identifyHistory } from './history.js';
 import {
+  removeSessionToolResults,
+  sessionToolResultsDirectory,
+} from './managed-results.js';
+import {
   assertHistoryReadBudget,
   readHistoryBytes,
   readJsonlLines,
@@ -47,12 +51,26 @@ export function normalizedProjectRoot(root: string): string {
   return process.platform === 'win32' ? root.replaceAll('\\', '/').toLowerCase() : root;
 }
 
+/** 同 cwd 的 Git 探测在启动流程内只做一次：信任检查与 SessionManager 先后各调一次。 */
+const PROJECT_PROBE_TTL_MS = 10_000;
+let projectProbeCache:
+  | { cwd: string; mode: 'git' | 'exact'; at: number; identity: ProjectIdentity }
+  | undefined;
+
 /** 选择历史桶身份；exact 不提升显式根，git 保留同工作树子目录共桶的兼容行为。 */
 export function resolveSessionProject(cwd: string, mode: 'git' | 'exact' = 'git'): ProjectIdentity {
   const realCwd = toNativePhysicalPath(cwd);
+  const cached = projectProbeCache;
+  // 只缓存短时间内的同一 cwd：启动期复用省掉重复 Git 子进程，跨时间仍按当前分支重新探测。
+  if (cached && cached.mode === mode && cached.cwd === realCwd && Date.now() - cached.at < PROJECT_PROBE_TTL_MS)
+    return { ...cached.identity };
   let root = realCwd;
   let gitBranch: string | undefined;
   let gitWorktree = false;
+  const remember = (identity: ProjectIdentity): ProjectIdentity => {
+    projectProbeCache = { cwd: realCwd, mode, at: Date.now(), identity };
+    return { ...identity };
+  };
   try {
     const gitRoot = toNativePhysicalPath(
       execFileSync('git', ['-C', realCwd, 'rev-parse', '--show-toplevel'], {
@@ -62,7 +80,11 @@ export function resolveSessionProject(cwd: string, mode: 'git' | 'exact' = 'git'
     );
     if (mode === 'git') root = gitRoot;
     if (normalizedProjectRoot(gitRoot) !== normalizedProjectRoot(root))
-      return { projectRoot: root, cwd: realCwd, projectKey: computeProjectKey(root) };
+      return remember({
+        projectRoot: root,
+        cwd: realCwd,
+        projectKey: computeProjectKey(root),
+      });
     gitWorktree = true;
     gitBranch =
       execFileSync('git', ['-C', realCwd, 'symbolic-ref', '--short', '-q', 'HEAD'], {
@@ -72,13 +94,13 @@ export function resolveSessionProject(cwd: string, mode: 'git' | 'exact' = 'git'
   } catch {
     /* 非 Git 或 detached HEAD 保留已确定的工作树根。 */
   }
-  return {
+  return remember({
     projectRoot: root,
     cwd: realCwd,
     projectKey: computeProjectKey(root),
     gitBranch,
     gitWorktree,
-  };
+  });
 }
 
 /**
@@ -161,6 +183,8 @@ export interface SessionManagerOptions {
   /** 元数据重建、升级、打开和重载共用的单文件字节预算；省略保持原行为。 */
   maxReadBytes?: number;
   homeDirectory?: string;
+  /** 受管工具结果根目录（宿主传 `~/.kapibala/tool-results`）；提供后删除会话会联动清理该会话的结果子树。 */
+  toolResultsDirectory?: string;
   onDiagnostic?: (message: string) => void;
 }
 
@@ -204,6 +228,7 @@ export class SessionManager {
   private readonly handles = new Map<string, ManagedSession>();
   private readonly diagnostic?: (message: string) => void;
   private readonly readOptions: { maxReadBytes?: number };
+  private readonly toolResultsDirectory?: string;
 
   constructor(options: SessionManagerOptions = {}) {
     this.readOptions = { maxReadBytes: options.maxReadBytes };
@@ -223,6 +248,7 @@ export class SessionManager {
       this.project.projectKey,
     );
     this.diagnostic = options.onDiagnostic;
+    this.toolResultsDirectory = options.toolResultsDirectory;
     fs.mkdirSync(this.directory, { recursive: true });
   }
 
@@ -392,6 +418,7 @@ export class SessionManager {
    * - 本 Manager 已持有句柄的会话拒绝（SESSION_IN_USE），避免删掉正在追加的文件；
    * - 其它进程持锁时以 SESSION_LOCKED 失败，不抢占他人写入权，也不做「先等一会儿」的重试；
    * - 只删该会话自己的 `.jsonl` 与 `.meta.json`；桶目录内其它文件（含 `*.tmp-*` 残片）不动；
+   * - 提供受管结果根目录时，联动删除该会话在 `tool-results` 下的结果子树（仅 harness 自建文件）；
    * - 删除前复核首条头部身份与桶归属：文件名匹配但正文身份不符的残留文件删除会放大错误；
    * - 缓存先删、正文后删：缓存本可重建，若正文删除失败该会话会在下次浏览时自动重建缓存。
    */
@@ -425,6 +452,16 @@ export class SessionManager {
       if (fs.existsSync(metadata)) fs.unlinkSync(metadata);
       fs.unlinkSync(targetFile);
       syncSessionDirectory(this.directory);
+      // 正文身份核实后联动清理受管结果子树；容忍目录缺失，失败不阻断删除。
+      if (this.toolResultsDirectory) {
+        removeSessionToolResults(
+          sessionToolResultsDirectory({
+            resultsRoot: this.toolResultsDirectory,
+            projectKey: this.project.projectKey,
+            sessionId: conversationId,
+          }),
+        );
+      }
     } finally {
       await lock.release();
     }

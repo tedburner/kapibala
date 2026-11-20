@@ -15,6 +15,7 @@ import {
   visibleTools,
 } from '../../capabilities/security/permissions.js';
 import { PathSandbox } from '../../capabilities/security/sandbox.js';
+import { sessionToolResultsDirectory } from '../managed-results.js';
 import { estimateSkillTokens } from '../../capabilities/skills/catalog.js';
 import { inspectSkillContent } from '../../capabilities/skills/content.js';
 import { type PreparedSkill, SkillRuntime } from '../../capabilities/skills/loader.js';
@@ -145,6 +146,17 @@ export class AgentSession {
   private readonly rootTaskId?: string;
   private readonly depth: number;
   private readonly agentId?: string;
+  private readonly managedResultsRoot?: string;
+
+  /** 本会话专属的受管结果目录；conversationId 在恢复中可能被改写，因此按当前值即时计算。 */
+  private get managedResultsDir(): string | undefined {
+    if (!this.managedResultsRoot) return undefined;
+    return sessionToolResultsDirectory({
+      resultsRoot: this.managedResultsRoot,
+      projectKey: this.projectKey,
+      sessionId: this.persistentId,
+    });
+  }
 
   private history: CanonicalMessage[] = [];
   private totalTurns = 0;
@@ -183,7 +195,22 @@ export class AgentSession {
     this.projectRoot = resolvedWorkspace.projectRoot;
     this.cwd = resolvedWorkspace.executionCwd;
     this.projectKey = resolvedWorkspace.projectKey;
-    this.sandbox = config.sandbox ?? new PathSandbox({ workspaceRoot: this.workspaceRoot });
+    // 受管结果根目录注入后：run_command 大输出按 <根>/<项目哈希>/<会话>/ 分桶落盘，
+    // 沙箱对该桶开放只读豁免（每次校验重取当前 conversationId，兼容恢复改名）。
+    this.managedResultsRoot = config.toolResultsDirectory;
+    this.sandbox =
+      config.sandbox ??
+      new PathSandbox({
+        workspaceRoot: this.workspaceRoot,
+        ...(this.managedResultsRoot
+          ? {
+              readOnlyExemptions: () => {
+                const dir = this.managedResultsDir;
+                return dir ? [dir] : [];
+              },
+            }
+          : {}),
+      });
     this.leaseCoordinator = config.leaseCoordinator ?? new WorkspaceLeaseCoordinator();
     this.userInstructionsPath = config.userInstructionsPath;
     // 事件日志先于技能运行时创建：SkillRuntime 的资源读取审计回调在构造期注入，
@@ -231,16 +258,12 @@ export class AgentSession {
   /** 幂等初始化：恢复审计残留、指令快照与持久历史，校验会话身份并回放 usage。 */
   async init(): Promise<void> {
     if (this.initialized) return;
-    if (this.auditRecoveryDirectory) {
-      const count = await recoverIncompleteAudit(this.auditRecoveryDirectory);
-      if (count > 0)
-        await this.eventLogger.record({
-          level: 'warn',
-          event: 'audit.recovered_unknown',
-          sessionId: this.sessionId,
-          fields: { count },
-        });
-    }
+    // 审计恢复与历史读取互不依赖：并行执行可省掉一次全量审计扫描的墙钟等待。
+    // 先挂 catch 防止 await 之前出现 unhandledRejection，真正的异常仍在下方 await 处上抛。
+    const recovery = this.auditRecoveryDirectory
+      ? recoverIncompleteAudit(this.auditRecoveryDirectory)
+      : Promise.resolve(0);
+    recovery.catch(() => {});
     this.instructionSnapshot = loadInstructions({
       projectRoot: this.projectRoot,
       cwd: this.cwd,
@@ -284,6 +307,14 @@ export class AgentSession {
             ));
       } else this.usageKnown = this.history.length === 0;
     }
+    const recovered = await recovery;
+    if (recovered > 0)
+      await this.eventLogger.record({
+        level: 'warn',
+        event: 'audit.recovered_unknown',
+        sessionId: this.sessionId,
+        fields: { count: recovered },
+      });
     this.context = this.createContextManager();
     await this.context.restore(this.history);
     await this.skillRegistry?.refresh();
@@ -876,6 +907,7 @@ export class AgentSession {
         logger: this.logger,
         eventLogger: this.eventLogger,
         sessionId: this.sessionId,
+        ...(this.managedResultsDir ? { managedResultsDir: this.managedResultsDir } : {}),
         runId,
         branchId:
           this.store &&
@@ -997,6 +1029,7 @@ export class AgentSession {
         signal: options?.signal,
         eventLogger: this.eventLogger,
         sessionId: this.sessionId,
+        ...(this.managedResultsDir ? { managedResultsDir: this.managedResultsDir } : {}),
         runId,
         getMode: () => this.mode,
         permissionRules: this.permissionRules,

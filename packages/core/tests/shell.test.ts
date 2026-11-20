@@ -4,7 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { classifyBashOutput, detectShell } from '../src/capabilities/shell/detect.js';
-import { cleanupCommandResults, createRunCommandTool } from '../src/capabilities/shell/tool.js';
+import { createRunCommandTool } from '../src/capabilities/shell/tool.js';
+import { cleanupManagedResults } from '../src/context/managed-results.js';
+import { PathSandbox } from '../src/capabilities/security/sandbox.js';
 import { readFileTool } from '../src/capabilities/tools/builtin/fs.js';
 import { ToolRegistry } from '../src/capabilities/tools/registry.js';
 import { HookRegistry } from '../src/extensibility/hooks/registry.js';
@@ -116,10 +118,15 @@ describe('cross-platform shell discovery and execution', () => {
       environment.kind === 'bash' || environment.kind === 'wsl'
         ? "printf '%070000d' 1"
         : "Write-Output ('x' * 70000)";
-    const big = await tool.execute({ command: large }, { rootDir: root });
+    const big = await tool.execute(
+      { command: large },
+      { rootDir: root, managedResultsDir: path.join(root, 'results') },
+    );
     expect(big.outputTruncated).toBe(true);
     expect(Buffer.byteLength(big.output, 'utf8')).toBeLessThanOrEqual(64 * 1024);
     expect(big.outputFile).toBeDefined();
+    // 结果文件必须落在受管目录，不得写进用户项目目录。
+    expect(big.outputFile!.startsWith(path.join(root, 'results'))).toBe(true);
     expect(fs.statSync(big.outputFile!).size).toBeGreaterThan(64 * 1024);
   }, 20_000);
 
@@ -153,7 +160,10 @@ describe('cross-platform shell discovery and execution', () => {
       environment.kind === 'bash' || environment.kind === 'wsl'
         ? "printf '界%.0s' {1..24000}"
         : "Write-Output ('界' * 24000)";
-    const result = await tool.execute({ command }, { rootDir: root });
+    const result = await tool.execute(
+      { command },
+      { rootDir: root, managedResultsDir: path.join(root, 'results') },
+    );
     expect(result.outputTruncated).toBe(true);
     expect(result.output).not.toContain('\u0000');
     expect(result.output).not.toContain('\ufffd');
@@ -176,7 +186,10 @@ describe('cross-platform shell discovery and execution', () => {
       environment.kind === 'bash' || environment.kind === 'wsl'
         ? "yes 界界 | tr -d '\\n' | head -c 17000000"
         : "Write-Output ('界' * 5700000)";
-    const result = await tool.execute({ command }, { rootDir: root });
+    const result = await tool.execute(
+      { command },
+      { rootDir: root, managedResultsDir: path.join(root, 'results') },
+    );
     expect(result.outputFileTruncated).toBe(true);
     const saved = fs.readFileSync(result.outputFile!);
     expect(saved.length).toBeLessThanOrEqual(16 * 1024 * 1024);
@@ -425,7 +438,8 @@ describe('cross-platform shell discovery and execution', () => {
       });
     expect((await executor('Plan').executeOne(call)).errorCode).toBe('PERMISSION_DENIED');
     expect((await executor('Approval').executeOne(call)).errorCode).toBe('PERMISSION_DENIED');
-    expect((await executor('Auto').executeOne(call)).errorCode).toBe('PERMISSION_DENIED');
+    // Auto 模式下 pwd / Get-Location 属内置只读分级 safe，自动放行而非询问。
+    expect((await executor('Auto').executeOne(call)).isError).toBe(false);
     expect(
       (await executor('FullAccess', [{ action: 'deny', tool: 'run_command' }]).executeOne(call))
         .errorCode,
@@ -532,14 +546,14 @@ describe('cross-platform shell discovery and execution', () => {
   it('cleans only expired managed result files', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-shell-cleanup-'));
     directories.push(root);
-    const directory = path.join(root, '.kapibala', 'tool-results');
+    const directory = path.join(root, 'results');
     const environment = detectShell({ cwd: root });
     const tool = createRunCommandTool(environment);
     const command =
       environment.kind === 'bash' || environment.kind === 'wsl'
         ? "printf '%070000d' 1"
         : "Write-Output ('x' * 70000)";
-    const result = await tool.execute({ command }, { rootDir: root });
+    const result = await tool.execute({ command }, { rootDir: root, managedResultsDir: directory });
     const managed = result.outputFile!;
     const userMadeSamePattern = path.join(
       directory,
@@ -553,7 +567,7 @@ describe('cross-platform shell discovery and execution', () => {
     fs.utimesSync(managed, old, old);
     fs.utimesSync(userMadeSamePattern, old, old);
     fs.utimesSync(privateFile, old, old);
-    cleanupCommandResults(root);
+    cleanupManagedResults(directory);
     expect(fs.existsSync(managed)).toBe(false);
     expect(fs.existsSync(userMadeSamePattern)).toBe(true);
     expect(fs.existsSync(privateFile)).toBe(true);
@@ -568,14 +582,24 @@ describe('cross-platform shell discovery and execution', () => {
       environment.kind === 'bash' || environment.kind === 'wsl'
         ? 'yes 0123456789 | head -c 17000000'
         : "Write-Output (('x' * 80 + [Environment]::NewLine) * 210000)";
-    const result = await tool.execute({ command, timeout_ms: 30_000 }, { rootDir: root });
+    const result = await tool.execute(
+      { command, timeout_ms: 30_000 },
+      { rootDir: root, managedResultsDir: path.join(root, 'results') },
+    );
     expect(result.exitCode).toBe(0);
     expect(result.outputBytes).toBeGreaterThan(16 * 1024 * 1024);
     expect(result.outputFileTruncated).toBe(true);
     expect(fs.statSync(result.outputFile!).size).toBeLessThanOrEqual(16 * 1024 * 1024);
+    // 结果文件在工作区外：read_file 依赖 PathSandbox 的只读豁免才能回读本会话大输出。
     const firstLines = await readFileTool.execute(
       { path: result.outputFile!, startLine: 1, endLine: 2 },
-      { rootDir: root },
+      {
+        rootDir: root,
+        sandbox: new PathSandbox({
+          workspaceRoot: root,
+          readOnlyExemptions: () => [path.join(root, 'results')],
+        }),
+      },
     );
     expect(firstLines.split('\n')).toHaveLength(2);
   }, 40_000);

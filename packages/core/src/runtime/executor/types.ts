@@ -48,6 +48,8 @@ export interface ExecutorOptions {
   toolTimeoutMs?: number;
   eventLogger?: EventLogger;
   sessionId?: string;
+  /** 本会话专属的受管工具结果目录；注入后 run_command 大输出写这里且沙箱对其只读豁免。 */
+  managedResultsDir?: string;
   runId?: string;
   branchId?: string;
   rootTaskId?: string;

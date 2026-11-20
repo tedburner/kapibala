@@ -6,6 +6,11 @@ import { StringDecoder } from 'node:string_decoder';
 import { isPathInside, toNativePhysicalPath } from '../../context/workspace.js';
 import { KapibalaError } from '../../errors/index.js';
 import { commandAuditSummary, executionFingerprint } from '../../extensibility/logging/index.js';
+import {
+  cleanupManagedResults,
+  fallbackToolResultsDirectory,
+  recordManagedResult,
+} from '../../context/managed-results.js';
 import type { ShellScope } from '../security/permissions.js';
 import { defineTool } from '../tools/index.js';
 import type { Tool } from '../tools/index.js';
@@ -16,8 +21,6 @@ const FILE_LIMIT = 16 * 1024 * 1024;
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_TIMEOUT = 600_000;
 const MAX_COMMAND_BYTES = 8 * 1024;
-const OWNED_RESULT = /^run-[a-f0-9-]{36}\.txt$/;
-const RESULT_MANIFEST = 'managed-results.jsonl';
 
 /** run_command 的输入；cwd 相对工作区根解析，timeout_ms 合法区间 1..600000，越界在执行前失败。 */
 export interface RunCommandInput {
@@ -35,7 +38,7 @@ export interface CommandResult {
   output: string;
   /** output 并非全部输出的标志；超出内联上限的完整内容写入 outputFile。 */
   outputTruncated: boolean;
-  /** 受管结果文件路径（工作区内 .kapibala/tool-results/），仅输出超过内联上限时存在。 */
+  /** 受管结果文件路径（全局目录 ~/.kapibala/tool-results/<项目哈希>/<会话>/；裸 SDK 退回系统临时目录），仅输出超过内联上限时存在。 */
   outputFile?: string;
   /** 结果文件触及 16 MiB 上限后被截断的标志。 */
   outputFileTruncated: boolean;
@@ -358,48 +361,6 @@ function waitForClose(promise: Promise<unknown>, milliseconds: number): Promise<
   });
 }
 
-function resultDirectory(rootDir: string): string {
-  return path.join(rootDir, '.kapibala', 'tool-results');
-}
-
-/** 仅清理受管 UUID 文件，避免删除用户在同目录保存的结果。 */
-export function cleanupCommandResults(rootDir: string, now = Date.now()): void {
-  const directory = resultDirectory(rootDir);
-  if (!fs.existsSync(directory)) return;
-  const manifest = path.join(directory, RESULT_MANIFEST);
-  if (!fs.existsSync(manifest) || !fs.lstatSync(manifest).isFile()) return;
-  const cutoff = now - 7 * 86_400_000;
-  const retained: string[] = [];
-  for (const line of fs.readFileSync(manifest, 'utf8').split('\n')) {
-    if (!line) continue;
-    let record: { name: string; dev: number; ino: number };
-    try {
-      record = JSON.parse(line) as typeof record;
-    } catch {
-      continue;
-    }
-    if (!OWNED_RESULT.test(record.name)) continue;
-    const file = path.join(directory, record.name);
-    if (!fs.existsSync(file)) continue;
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.dev !== record.dev || stat.ino !== record.ino) continue;
-    if (stat.mtimeMs < cutoff) fs.unlinkSync(file);
-    else retained.push(line);
-  }
-  const replacement = path.join(directory, `.managed-results-${randomUUID()}.tmp`);
-  fs.writeFileSync(replacement, retained.length ? `${retained.join('\n')}\n` : '', { mode: 0o600 });
-  fs.renameSync(replacement, manifest);
-}
-
-function recordManagedResult(directory: string, file: string, descriptor: number): void {
-  const stat = fs.fstatSync(descriptor);
-  fs.appendFileSync(
-    path.join(directory, RESULT_MANIFEST),
-    `${JSON.stringify({ name: path.basename(file), dev: stat.dev, ino: stat.ino })}\n`,
-    { mode: 0o600 },
-  );
-}
-
 /** 使用固定解释器执行命令；超时和中止必须先处理进程树再返回。 */
 export function createRunCommandTool(
   environment: ShellEnvironment,
@@ -473,7 +434,10 @@ export function createRunCommandTool(
       }
       const cwd = effectiveCwd(input, ctx.workspaceRoot ?? ctx.rootDir, ctx.executionCwd);
       const timeoutMs = effectiveTimeout(input);
-      cleanupCommandResults(ctx.rootDir);
+      // 受管结果目录优先取宿主装配的全局会话桶；裸 SDK（无注入）退回系统临时目录。
+      // 两种路径都不进用户项目目录，保证项目对 git 干净。
+      const resultsDirectory = ctx.managedResultsDir ?? fallbackToolResultsDirectory();
+      cleanupManagedResults(resultsDirectory);
       const nativeGroup = createNativeBashGroup(environment);
       const command = nativeGroup
         ? `printf '${nativeGroup.token}:%s\\n' "$$" >&2\n${input.command}`
@@ -503,7 +467,7 @@ export function createRunCommandTool(
           inlineBytes += part.length;
         }
         if (outputBytes > INLINE_LIMIT && descriptor === undefined) {
-          const directory = resultDirectory(ctx.rootDir);
+          const directory = resultsDirectory;
           fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
           outputFile = path.join(directory, `run-${randomUUID()}.txt`);
           descriptor = fs.openSync(outputFile, 'wx', 0o600);

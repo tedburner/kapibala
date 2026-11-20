@@ -70,6 +70,9 @@ export interface ToolContext {
   onProgress?: (progress: { elapsedMs: number; outputBytes: number }) => void;
   /** 子代理调度与后台执行上下文字段。 */
   sessionId?: string;
+  /** 本会话专属的受管工具结果目录（全局 ~/.kapibala/tool-results/<项目哈希>/<会话>/）；
+   *  run_command 的大输出落这里，PathSandbox 对其开放只读豁免。缺省时工具退回系统临时目录。 */
+  managedResultsDir?: string;
   branchId?: string;
   runId?: string;
   toolCallId?: string;

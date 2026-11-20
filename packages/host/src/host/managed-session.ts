@@ -226,6 +226,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     homeDirectory,
     projectRootMode: 'exact',
     maxReadBytes: options.maxReadBytes,
+    // 受管结果根目录：删除会话时联动清理对应结果子树。
+    toolResultsDirectory: path.join(homeDirectory, '.kapibala', 'tool-results'),
   });
   let handle: ManagedSession | undefined;
   let session: AgentSession | undefined;
@@ -277,6 +279,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       userInstructionsPath: path.join(homeDirectory, '.kapibala/AGENTS.md'),
       loggingDirectory: path.join(homeDirectory, '.kapibala'),
       auditRecoveryDirectory: path.join(homeDirectory, '.kapibala/audit'),
+      toolResultsDirectory: path.join(homeDirectory, '.kapibala', 'tool-results'),
       workspaceRoot: root,
       executionCwd: root,
       projectRoot: root,

@@ -16,6 +16,13 @@ export interface SandboxConfig {
    * 不存在 fail-open 开关。
    */
   allowSymlinks?: boolean;
+  /**
+   * 只读豁免根提供者：返回 harness 受管的只读目录（如本会话的 tool-results 桶）。
+   * 仅对显式 read 模式的 resolveSafePath 生效，write/edit 永远不豁免；
+   * 每次校验时重新求值，以兼容会话恢复后 conversationId 变化的场景。
+   * 豁免根按 realpath 比对物理路径，符号链接穿透依然 fail-closed。
+   */
+  readOnlyExemptions?: () => readonly string[];
 }
 
 function tryNativeRealpath(target: string): string | undefined {
@@ -36,6 +43,7 @@ export class PathSandbox {
   /** 兼容别名：等同于 workspaceRoot。 */
   readonly rootDir: string;
   readonly allowSymlinks: boolean;
+  private readonly readOnlyExemptions?: () => readonly string[];
   private cachedRealRootDir?: string;
 
   constructor(config: SandboxConfig) {
@@ -46,6 +54,7 @@ export class PathSandbox {
     this.workspaceRoot = toNativePhysicalPath(raw);
     this.rootDir = this.workspaceRoot;
     this.allowSymlinks = config.allowSymlinks ?? false;
+    this.readOnlyExemptions = config.readOnlyExemptions;
   }
 
   /**
@@ -60,11 +69,15 @@ export class PathSandbox {
 
   /**
    * 检查并解析安全路径
-   * 1. 解析相对路径为相对于 workspaceRoot 的绝对路径
-   * 2. 词法检查：`..` 归一化后必须仍在 workspaceRoot 内
-   * 3. 物理检查：解析符号链接与短名后的真实物理路径必须仍在 workspaceRoot 内
+   * 1. read 模式先尝试只读豁免根：物理路径落在豁免根内即放行（仅 harness 受管目录）
+   * 2. 解析相对路径为相对于 workspaceRoot 的绝对路径
+   * 3. 词法检查：`..` 归一化后必须仍在 workspaceRoot 内
+   * 4. 物理检查：解析符号链接与短名后的真实物理路径必须仍在 workspaceRoot 内
+   *
+   * @param options.mode 缺省 'write'：工作区外的路径一律拒绝；'read' 才允许豁免根放行。
+   *   只读豁免先于工作区检查执行，因此豁免根可以位于 workspaceRoot 之外。
    */
-  resolveSafePath(targetPath: string): string {
+  resolveSafePath(targetPath: string, options?: { mode?: 'read' | 'write' }): string {
     if (!targetPath || typeof targetPath !== 'string') {
       throw new ToolError('Invalid path: path must be a non-empty string');
     }
@@ -73,6 +86,14 @@ export class PathSandbox {
     const resolvedPath = path.isAbsolute(targetPath)
       ? path.resolve(targetPath)
       : path.resolve(this.workspaceRoot, targetPath);
+
+    if (options?.mode === 'read' && this.readOnlyExemptions) {
+      const physicalPath = this.toPhysicalPath(resolvedPath);
+      for (const exemption of this.readOnlyExemptions()) {
+        const realRoot = tryNativeRealpath(exemption);
+        if (realRoot && isPathInside(realRoot, physicalPath)) return resolvedPath;
+      }
+    }
 
     // 词法检查：规范化相对路径判定
     if (!isPathInside(this.workspaceRoot, resolvedPath)) {

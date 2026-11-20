@@ -21,15 +21,18 @@ import {
   AgentSession,
   type AgentTaskRecord,
   type ApprovalChannel,
+  computeProjectKey,
   KapibalaError,
   type ManagedSession,
   PathSandbox,
   type PrimaryModelRole,
+  sessionToolResultsDirectory,
   type SessionManager,
   type SessionMode,
   type SubagentRunnerContext,
   type SubagentSessionResumer,
   type SubagentSessionRunner,
+  toNativePhysicalPath,
   ToolRegistry,
   type WorkspaceLeaseCoordinator,
   createDelegationError,
@@ -89,7 +92,22 @@ async function runDelegationTurn(request: DelegationTurnRequest): Promise<{
   modelId?: string;
 }> {
   const { handle, task, prompt, signal, options } = request;
-  const sandbox = new PathSandbox({ workspaceRoot: task.workspaceRoot });
+  // 与 AgentSession 内部同源的项目哈希与结果桶：子代理的大输出也落全局受管目录，
+  // 沙箱只对该桶开放只读豁免；未注入 homeDirectory 时退回系统临时目录且无豁免。
+  const toolResultsRoot = options.homeDirectory
+    ? path.join(options.homeDirectory, '.kapibala', 'tool-results')
+    : undefined;
+  const subagentResultsDir = toolResultsRoot
+    ? sessionToolResultsDirectory({
+        resultsRoot: toolResultsRoot,
+        projectKey: computeProjectKey(toNativePhysicalPath(task.workspaceRoot)),
+        sessionId: handle.conversationId,
+      })
+    : undefined;
+  const sandbox = new PathSandbox({
+    workspaceRoot: task.workspaceRoot,
+    ...(subagentResultsDir ? { readOnlyExemptions: () => [subagentResultsDir] } : {}),
+  });
 
   const defaultBinding = options.models.defaultBinding;
   let selectedProfile = defaultBinding.profile;
@@ -124,6 +142,7 @@ async function runDelegationTurn(request: DelegationTurnRequest): Promise<{
     executionCwd: task.executionCwd,
     rootDir: task.workspaceRoot,
     sandbox,
+    ...(toolResultsRoot ? { toolResultsDirectory: toolResultsRoot } : {}),
     store: handle.store,
     conversationId: handle.conversationId,
     defaultProfile: selectedProfile,

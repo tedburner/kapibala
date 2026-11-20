@@ -50,6 +50,7 @@ export class ToolExecutor {
   private readonly toolTimeoutMs: number;
   private readonly eventLogger?: EventLogger;
   private readonly sessionId?: string;
+  private readonly managedResultsDir?: string;
   private readonly runId?: string;
   private readonly branchId?: string;
   private readonly rootTaskId?: string;
@@ -82,6 +83,7 @@ export class ToolExecutor {
     this.toolTimeoutMs = options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
     this.eventLogger = options.eventLogger;
     this.sessionId = options.sessionId;
+    this.managedResultsDir = options.managedResultsDir;
     this.runId = options.runId;
     this.branchId = options.branchId;
     this.rootTaskId = options.rootTaskId;
@@ -476,6 +478,7 @@ export class ToolExecutor {
         signal: executionController.signal,
         logger: this.logger,
         sessionId: this.sessionId,
+        ...(this.managedResultsDir ? { managedResultsDir: this.managedResultsDir } : {}),
         runId: this.runId,
         branchId: this.branchId,
         toolCallId: call.id,

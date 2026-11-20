@@ -15,6 +15,7 @@ export * from './context/budget.js';
 export * from './context/workspace.js';
 export * from './context/lease.js';
 export * from './context/manager.js';
+export * from './context/managed-results.js';
 export * from './context/summary.js';
 export * from './errors/index.js';
 export * from './extensibility/logging/index.js';
