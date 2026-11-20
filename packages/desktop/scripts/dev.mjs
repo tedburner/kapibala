@@ -12,6 +12,45 @@ import { desktopLaunchEnv } from './launch-env.mjs';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repository = path.resolve(desktop, '../..');
+// dev 专用 userData：guard（host-guard.json）与 Chromium 状态全部落在 gitignore 的
+// .workbuddy/ 里，与生产目录彻底隔离；watch 模式反复重启异常退出也不再污染生产栅栏，
+// 正式版不会被 dev 残留的 guard 顶成「上次执行未确认完成清理」。HOME 不隔离，
+// agent host 继续使用真实 ~/.kapibala 的模型密钥与会话。
+const devUserData = path.join(repository, '.workbuddy/desktop-dev/userData');
+// 防重入锁：两个 dev 实例并存会共享同一份 dev 状态并互相触发 guard 冲突
+// （Electron 单实例锁拦不住两个 dev.mjs 各自拉起的进程），锁文件记录持有者 PID，
+// 持有进程已死视为陈旧锁直接接管。
+const devLockFile = path.join(repository, '.workbuddy/desktop-dev/dev.lock');
+function acquireDevLock() {
+  fs.mkdirSync(path.dirname(devLockFile), { recursive: true });
+  for (;;) {
+    try {
+      fs.writeFileSync(devLockFile, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), {
+        flag: 'wx',
+        mode: 0o600,
+      });
+      return;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      let owner;
+      try {
+        owner = JSON.parse(fs.readFileSync(devLockFile, 'utf8'));
+      } catch {}
+      const alive =
+        typeof owner?.pid === 'number' &&
+        (() => {
+          try {
+            process.kill(owner.pid, 0);
+            return true;
+          } catch (signalError) {
+            return signalError?.code === 'EPERM';
+          }
+        })();
+      if (alive) throw new Error(`另一个 pnpm dev:desktop（PID ${owner.pid}）正在运行，已退出。`);
+      fs.unlinkSync(devLockFile);
+    }
+  }
+}
 const token = randomUUID();
 const executable = developmentExecutable(
   electron,
@@ -94,7 +133,7 @@ async function stopChild() {
   });
 }
 function launch() {
-  child = spawn(executable, [desktop], {
+  child = spawn(executable, [desktop, `--user-data-dir=${devUserData}`], {
     cwd: desktop,
     // 白名单构造：宿主的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE 绝不能进主进程（会让应用启动即退出）。
     env: desktopLaunchEnv(process.env, {
@@ -147,8 +186,12 @@ async function finish() {
     process.exitCode = 1;
   }
   await server?.close();
+  try {
+    fs.unlinkSync(devLockFile);
+  } catch {}
 }
 
+acquireDevLock();
 await sharedBuild();
 await build({ root: desktop });
 const config = await resolveConfig({ root: desktop }, 'serve', 'development');
