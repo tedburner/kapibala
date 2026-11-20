@@ -54,7 +54,8 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsup --config tsup.node.config.ts && pnpm run build:host && pnpm run build:client && pnpm run build:transport && pnpm run build:protocol && pnpm run build:view-model",
+    "build": "pnpm run build:node && node ../../scripts/tsup-parallel.mjs tsup.host.config.ts tsup.client.config.ts tsup.transport.config.ts tsup.protocol.config.ts tsup.view-model.config.ts",
+    "build:node": "tsup --config tsup.node.config.ts",
     "build:host": "tsup --config tsup.host.config.ts",
     "build:client": "tsup --config tsup.client.config.ts",
     "build:transport": "tsup --config tsup.transport.config.ts",

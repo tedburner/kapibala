@@ -7,10 +7,10 @@ import {
   type SessionMode,
   ToolRegistry,
   WorkspaceLeaseCoordinator,
+  resolveSessionProject,
 } from '@kiturone/kapibala';
 import { attachMcpToSession, resolveCliMcpOptions } from '@kiturone/kapibala-host/internal';
 import { CliModelBindings, parsePrimaryModelRole } from '@kiturone/kapibala-host/internal';
-import { detectProjectRoot } from '@kiturone/kapibala-host/internal';
 import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
@@ -136,7 +136,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // 1. 加载 settings
-  const trustResult = await resolveProjectTrust(loadSettings());
+  // 项目根只解析一次：信任检查复用该结果，SessionManager 在缓存窗口内直接命中，避免重复 Git 探测。
+  const startupCwd = fs.realpathSync.native(path.resolve(process.cwd()));
+  const projectIdentity = resolveSessionProject(startupCwd);
+  const trustResult = await resolveProjectTrust(loadSettings(), {
+    projectRoot: projectIdentity.projectRoot,
+  });
   if (trustResult.status === 'rejected') {
     console.error('\x1b[31m项目配置未获信任，Kapibala 已退出。\x1b[0m');
     process.exitCode = 2;
@@ -207,7 +212,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `角色 ${requestedRole} 的模型 '${roleProfile.id}' 没有可用密钥，请先配置厂商密钥。`,
       );
   }
-  const startupCwd = fs.realpathSync.native(path.resolve(process.cwd()));
   const manager = new SessionManager({
     workspaceRoot: startupCwd,
     cwd: startupCwd,
