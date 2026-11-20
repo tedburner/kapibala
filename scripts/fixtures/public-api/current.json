@@ -70,12 +70,16 @@
         {
           "name": "API_KEY_ENV_NONE",
           "kind": "const",
-          "declarations": ["API_KEY_ENV_NONE = \"NONE\""]
+          "declarations": [
+            "API_KEY_ENV_NONE = \"NONE\""
+          ]
         },
         {
           "name": "BUILTIN_PROFILES",
           "kind": "const",
-          "declarations": ["BUILTIN_PROFILES: ModelProfile[]"]
+          "declarations": [
+            "BUILTIN_PROFILES: ModelProfile[]"
+          ]
         },
         {
           "name": "createManagedSession",
@@ -94,17 +98,23 @@
         {
           "name": "CUSTOM_PROVIDER_KEY",
           "kind": "const",
-          "declarations": ["CUSTOM_PROVIDER_KEY = \"custom\""]
+          "declarations": [
+            "CUSTOM_PROVIDER_KEY = \"custom\""
+          ]
         },
         {
           "name": "CUSTOM_VENDOR_KEY_PREFIX",
           "kind": "const",
-          "declarations": ["CUSTOM_VENDOR_KEY_PREFIX = \"custom:\""]
+          "declarations": [
+            "CUSTOM_VENDOR_KEY_PREFIX = \"custom:\""
+          ]
         },
         {
           "name": "DEFAULT_MODEL_ID",
           "kind": "const",
-          "declarations": ["DEFAULT_MODEL_ID = \"deepseek-flash\""]
+          "declarations": [
+            "DEFAULT_MODEL_ID = \"deepseek-flash\""
+          ]
         },
         {
           "name": "describeCredentialGroup",
@@ -201,7 +211,7 @@
           "name": "ManagedHostSession",
           "kind": "interface",
           "declarations": [
-            "export interface ManagedHostSession {\n    readonly conversationId: string;\n    /**\n     * 同进程宿主（桌面命令适配器等）所需的会话对象。\n     * 仅供宿主侧在进程内构造命令上下文使用；不得跨进程传输或序列化。\n     */\n    readonly session: AgentSession;\n    /** 完整驱动一次运行；并发请求拒绝，外部中止也等待工具事务收口。 */\n    run(input: string, signal?: AbortSignal): Promise<void>;\n    /**\n     * 显式技能直发：与 run 共用同一投影、审批与工具事务管线，事件流语义一致。\n     * task 为空或技能名非法时由底层 Session 以 SKILL_INVALID_INPUT 拒绝。\n     */\n    runSkill(skillName: string, task: string, signal?: AbortSignal): Promise<void>;\n    /**\n     * 带跨会话引用的运行：在运行锁内读取并冻结引用快照，装配成消息级溯源块。\n     *\n     * 边界：\n     * - 调用方只传身份（`ReferenceSelection`），正文一律由宿主读取，不接受外部上传正文；\n     * - 任一条引用读取失败、跨桶、已归档或合计超预算时抛稳定错误码并零追加；\n     * - 引用块与普通正文共享同一条任务预算预检，不额外熔断。\n     */\n    runWithReferences(input: string, references: readonly ReferenceSelection[], signal?: AbortSignal): Promise<void>;\n    /** 中止当前父子任务并等待清理；不因退订展示而自动触发。 */\n    cancel(): Promise<void>;\n    /** 清理失败保留写锁，可重试；成功后禁止再运行或配置。 */\n    dispose(): Promise<void>;\n    /** 清理中的句柄仍忙碌，只有终态且清理结束才能复用。 */\n    isBusy(): boolean;\n    /** 只更新空闲会话，保持全局设置不变；失效 Profile 明确拒绝。 */\n    configure(configuration: ManagedSessionConfiguration): void;\n    /** 就地重命名：追加 title 控制记录，运行中也可改，不打断当前任务。 */\n    rename(title: string): Promise<void>;\n    /** 就地切换置顶：追加 pin_state 控制记录，只影响列表次序，不改活动时间。 */\n    setPinned(pinned: boolean): Promise<void>;\n    /** 返回脱敏后的公共展示快照，不提供原始历史或资源句柄。 */\n    snapshot(): PresentationState;\n    /** 交付已接受的有序展示事件；退订不取消执行。 */\n    subscribeEvents(listener: (event: PresentationEvent) => void): () => void;\n    /** 当前生效选择的白名单事实，不含 Profile 对象、端点或凭证。 */\n    configuration(): {\n        profileId: string;\n        role: PrimaryModelRole;\n        mode: SessionMode;\n    };\n    /** 仅读取当前状态；缺失的 Provider usage 不以默认零补齐。 */\n    status(): StatusFacts;\n    /** 只读取已知状态，不启动探测或收集；诊断与任务摘要有界脱敏。 */\n    inspection(): ManagedInspection;\n    /** 观察变更不依赖页面正文订阅，退订不影响执行。 */\n    subscribeInspection(listener: () => void): () => void;\n}"
+            "export interface ManagedHostSession {\n    readonly conversationId: string;\n    /**\n     * 同进程宿主（桌面命令适配器等）所需的会话对象。\n     * 仅供宿主侧在进程内构造命令上下文使用；不得跨进程传输或序列化。\n     */\n    readonly session: AgentSession;\n    /** 完整驱动一次运行；并发请求拒绝，外部中止也等待工具事务收口。 */\n    run(input: string, signal?: AbortSignal): Promise<void>;\n    /**\n     * 显式技能直发：与 run 共用同一投影、审批与工具事务管线，事件流语义一致。\n     * task 为空或技能名非法时由底层 Session 以 SKILL_INVALID_INPUT 拒绝。\n     */\n    runSkill(skillName: string, task: string, signal?: AbortSignal): Promise<void>;\n    /**\n     * 带跨会话引用的运行：在运行锁内读取并冻结引用快照，装配成消息级溯源块。\n     *\n     * 边界：\n     * - 调用方只传身份（`ReferenceSelection`），正文一律由宿主读取，不接受外部上传正文；\n     * - 任一条引用读取失败、跨桶、已归档或合计超预算时抛稳定错误码并零追加；\n     * - 引用块与普通正文共享同一条任务预算预检，不额外熔断。\n     */\n    runWithReferences(input: string, references: readonly ReferenceSelection[], signal?: AbortSignal): Promise<void>;\n    /** 中止当前父子任务并等待清理；不因退订展示而自动触发。 */\n    cancel(): Promise<void>;\n    /** 清理失败保留写锁，可重试；成功后禁止再运行或配置。 */\n    dispose(): Promise<void>;\n    /** 清理中的句柄仍忙碌，只有终态且清理结束才能复用。 */\n    isBusy(): boolean;\n    /** 只更新空闲会话，保持全局设置不变；失效 Profile 明确拒绝。 */\n    configure(configuration: ManagedSessionConfiguration): Promise<void>;\n    /** 就地重命名：追加 title 控制记录，运行中也可改，不打断当前任务。 */\n    rename(title: string): Promise<void>;\n    /** 就地切换置顶：追加 pin_state 控制记录，只影响列表次序，不改活动时间。 */\n    setPinned(pinned: boolean): Promise<void>;\n    /** 返回脱敏后的公共展示快照，不提供原始历史或资源句柄。 */\n    snapshot(): PresentationState;\n    /** 交付已接受的有序展示事件；退订不取消执行。 */\n    subscribeEvents(listener: (event: PresentationEvent) => void): () => void;\n    /** 当前生效选择的白名单事实，不含 Profile 对象、端点或凭证。 */\n    configuration(): {\n        profileId: string;\n        role: PrimaryModelRole;\n        mode: SessionMode;\n    };\n    /** 仅读取当前状态；缺失的 Provider usage 不以默认零补齐。 */\n    status(): StatusFacts;\n    /** 只读取已知状态，不启动探测或收集；诊断与任务摘要有界脱敏。 */\n    inspection(): ManagedInspection;\n    /** 观察变更不依赖页面正文订阅，退订不影响执行。 */\n    subscribeInspection(listener: () => void): () => void;\n}"
           ]
         },
         {
@@ -263,7 +273,9 @@
         {
           "name": "PROVIDER_METAS",
           "kind": "const",
-          "declarations": ["PROVIDER_METAS: ProviderMeta[]"]
+          "declarations": [
+            "PROVIDER_METAS: ProviderMeta[]"
+          ]
         },
         {
           "name": "providerCategory",
@@ -282,12 +294,16 @@
         {
           "name": "PublicTextRedactor",
           "kind": "type",
-          "declarations": ["export type PublicTextRedactor = (text: string) => string;"]
+          "declarations": [
+            "export type PublicTextRedactor = (text: string) => string;"
+          ]
         },
         {
           "name": "redactCommonSecrets",
           "kind": "function",
-          "declarations": ["export declare function redactCommonSecrets(text: string): string;"]
+          "declarations": [
+            "export declare function redactCommonSecrets(text: string): string;"
+          ]
         },
         {
           "name": "redactPresentationChange",
@@ -341,7 +357,9 @@
         {
           "name": "resolveBaseURL",
           "kind": "function",
-          "declarations": ["export declare function resolveBaseURL(profile: ModelProfile): string;"]
+          "declarations": [
+            "export declare function resolveBaseURL(profile: ModelProfile): string;"
+          ]
         },
         {
           "name": "SessionPresentation",
@@ -464,7 +482,9 @@
         {
           "name": "isJsonData",
           "kind": "function",
-          "declarations": ["export declare function isJsonData(value: unknown): boolean;"]
+          "declarations": [
+            "export declare function isJsonData(value: unknown): boolean;"
+          ]
         },
         {
           "name": "JsonValue",
@@ -511,7 +531,9 @@
         {
           "name": "PROTOCOL_VERSION",
           "kind": "const",
-          "declarations": ["PROTOCOL_VERSION: Readonly<{\n    major: 1;\n    minor: 0;\n}>"]
+          "declarations": [
+            "PROTOCOL_VERSION: Readonly<{\n    major: 1;\n    minor: 0;\n}>"
+          ]
         },
         {
           "name": "ProtocolLimits",
@@ -545,7 +567,7 @@
           "name": "REQUEST_SCHEMAS",
           "kind": "const",
           "declarations": [
-            "REQUEST_SCHEMAS: {\n    readonly initialize: {\n        type: \"object\";\n        properties: {\n            readonly major: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly minMinor: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly maxMinor: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly clientName: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly capabilities: {\n                readonly type: \"array\";\n                readonly items: {\n                    readonly maxLength: 256;\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                };\n                readonly maxItems: 64;\n            };\n            readonly token: {\n                readonly maxLength: 512;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"capabilities\" | \"major\" | \"minMinor\" | \"maxMinor\" | \"clientName\")[];\n        additionalProperties: false;\n    };\n    readonly ping: {\n        type: \"object\";\n        properties: {};\n        required: never[];\n        additionalProperties: false;\n    };\n    readonly 'session/list': {\n        type: \"object\";\n        properties: {\n            readonly workspaceRoot: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n            readonly cursor: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly limit: {\n                readonly minimum: 1;\n                readonly maximum: 50;\n                readonly type: \"integer\";\n            };\n        };\n        required: \"workspaceRoot\"[];\n        additionalProperties: false;\n    };\n    readonly 'session/create': {\n        type: \"object\";\n        properties: {\n            readonly workspaceRoot: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n        };\n        required: \"workspaceRoot\"[];\n        additionalProperties: false;\n    };\n    readonly 'session/open': {\n        type: \"object\";\n        properties: {\n            readonly workspaceRoot: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n            readonly conversationId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"conversationId\" | \"workspaceRoot\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/attach': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly mode: {\n                type: \"string\";\n                enum: readonly [\"control\", \"observe\"];\n            };\n            readonly serverInstanceId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"sessionId\" | \"mode\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/detach': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: \"sessionId\"[];\n        additionalProperties: false;\n    };\n    readonly 'session/close': {\n        type: \"object\";\n        properties: {\n            sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            streamEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"sessionId\" | \"streamEpoch\" | \"controlEpoch\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/snapshot': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly cursor: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: \"sessionId\"[];\n        additionalProperties: false;\n    };\n    readonly 'run/start': {\n        type: \"object\";\n        properties: {\n            readonly clientOperationId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly input: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly streamEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"sessionId\" | \"input\" | \"streamEpoch\" | \"controlEpoch\" | \"clientOperationId\")[];\n        additionalProperties: false;\n    };\n    readonly 'run/cancel': {\n        type: \"object\";\n        properties: {\n            readonly runId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly streamEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"runId\" | \"sessionId\" | \"streamEpoch\" | \"controlEpoch\")[];\n        additionalProperties: false;\n    };\n    readonly 'approval/request': {\n        type: \"object\";\n        properties: {\n            readonly approvalId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly runId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly toolName: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly target: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n            readonly sessionAllowed: {\n                readonly type: \"boolean\";\n            };\n            readonly expiresAt: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly streamEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"runId\" | \"sessionId\" | \"toolName\" | \"target\" | \"streamEpoch\" | \"controlEpoch\" | \"approvalId\" | \"sessionAllowed\" | \"expiresAt\")[];\n        additionalProperties: false;\n    };\n    readonly 'host/shutdown': {\n        type: \"object\";\n        properties: {};\n        required: never[];\n        additionalProperties: false;\n    };\n}"
+            "REQUEST_SCHEMAS: {\n    readonly initialize: {\n        type: \"object\";\n        properties: {\n            readonly major: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly minMinor: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly maxMinor: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly clientName: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly capabilities: {\n                readonly type: \"array\";\n                readonly items: {\n                    readonly maxLength: 256;\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                };\n                readonly maxItems: 64;\n            };\n            readonly token: {\n                readonly maxLength: 512;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"capabilities\" | \"major\" | \"minMinor\" | \"maxMinor\" | \"clientName\")[];\n        additionalProperties: false;\n    };\n    readonly ping: {\n        type: \"object\";\n        properties: {};\n        required: never[];\n        additionalProperties: false;\n    };\n    readonly 'session/list': {\n        type: \"object\";\n        properties: {\n            readonly workspaceRoot: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n            readonly cursor: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly limit: {\n                readonly minimum: 1;\n                readonly maximum: 50;\n                readonly type: \"integer\";\n            };\n        };\n        required: \"workspaceRoot\"[];\n        additionalProperties: false;\n    };\n    readonly 'session/create': {\n        type: \"object\";\n        properties: {\n            readonly workspaceRoot: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n        };\n        required: \"workspaceRoot\"[];\n        additionalProperties: false;\n    };\n    readonly 'session/open': {\n        type: \"object\";\n        properties: {\n            readonly workspaceRoot: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n            readonly conversationId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"workspaceRoot\" | \"conversationId\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/attach': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly mode: {\n                type: \"string\";\n                enum: readonly [\"control\", \"observe\"];\n            };\n            readonly serverInstanceId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"mode\" | \"sessionId\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/detach': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: \"sessionId\"[];\n        additionalProperties: false;\n    };\n    readonly 'session/close': {\n        type: \"object\";\n        properties: {\n            sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            streamEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"sessionId\" | \"streamEpoch\" | \"controlEpoch\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/snapshot': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly cursor: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: \"sessionId\"[];\n        additionalProperties: false;\n    };\n    readonly 'run/start': {\n        type: \"object\";\n        properties: {\n            readonly clientOperationId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly input: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly streamEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"sessionId\" | \"input\" | \"streamEpoch\" | \"controlEpoch\" | \"clientOperationId\")[];\n        additionalProperties: false;\n    };\n    readonly 'run/cancel': {\n        type: \"object\";\n        properties: {\n            readonly runId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly streamEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"runId\" | \"sessionId\" | \"streamEpoch\" | \"controlEpoch\")[];\n        additionalProperties: false;\n    };\n    readonly 'approval/request': {\n        type: \"object\";\n        properties: {\n            readonly approvalId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly runId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly toolName: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly target: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 1048576;\n            };\n            readonly sessionAllowed: {\n                readonly type: \"boolean\";\n            };\n            readonly expiresAt: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly sessionId: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly streamEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n            readonly controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n                readonly minLength: 1;\n            };\n        };\n        required: (\"runId\" | \"sessionId\" | \"toolName\" | \"target\" | \"streamEpoch\" | \"controlEpoch\" | \"approvalId\" | \"sessionAllowed\" | \"expiresAt\")[];\n        additionalProperties: false;\n    };\n    readonly 'host/shutdown': {\n        type: \"object\";\n        properties: {};\n        required: never[];\n        additionalProperties: false;\n    };\n}"
           ]
         },
         {
@@ -566,7 +588,7 @@
           "name": "RESULT_SCHEMAS",
           "kind": "const",
           "declarations": [
-            "RESULT_SCHEMAS: {\n    readonly initialize: {\n        type: \"object\";\n        properties: {\n            readonly major: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly minor: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly capabilities: {\n                type: \"array\";\n                items: {\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                };\n                maxItems: number;\n            };\n            readonly serverInstanceId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly clientId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly limits: {\n                type: \"object\";\n                properties: {\n                    readonly maxFrameBytes: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly initializationTimeoutMs: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxInflightRequests: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxConnections: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxOpenSessions: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxConcurrentRuns: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxPendingApprovals: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxSnapshotBytes: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxSendQueueBytes: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxOperationIds: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly approvalTimeoutMs: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                };\n                required: (\"maxFrameBytes\" | \"initializationTimeoutMs\" | \"maxInflightRequests\" | \"maxConnections\" | \"maxOpenSessions\" | \"maxConcurrentRuns\" | \"maxPendingApprovals\" | \"maxSnapshotBytes\" | \"maxSendQueueBytes\" | \"maxOperationIds\" | \"approvalTimeoutMs\")[];\n                additionalProperties: false;\n            };\n        };\n        required: (\"limits\" | \"capabilities\" | \"major\" | \"serverInstanceId\" | \"minor\" | \"clientId\")[];\n        additionalProperties: false;\n    };\n    readonly ping: {\n        type: \"object\";\n        properties: {\n            readonly alive: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n            readonly serverInstanceId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n        };\n        required: (\"serverInstanceId\" | \"alive\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/list': {\n        type: \"object\";\n        properties: {\n            readonly items: {\n                type: \"array\";\n                items: {\n                    type: \"object\";\n                    properties: {\n                        readonly conversationId: {\n                            readonly type: \"string\";\n                            readonly minLength: 1;\n                            readonly maxLength: 256;\n                        };\n                        readonly title: {\n                            readonly type: \"string\";\n                        };\n                    };\n                    required: (\"title\" | \"conversationId\")[];\n                    additionalProperties: false;\n                };\n                maxItems: number;\n            };\n            readonly cursor: {\n                anyOf: readonly [{\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                }, {\n                    readonly type: \"null\";\n                }];\n            };\n        };\n        required: (\"items\" | \"cursor\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/create': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly conversationId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n        };\n        required: (\"conversationId\" | \"sessionId\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/open': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly conversationId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n        };\n        required: (\"conversationId\" | \"sessionId\")[];\n        additionalProperties: false;\n    };\n    readonly 'snapshot:first': {\n        type: \"object\";\n        properties: {\n            readonly chunk: {\n                readonly type: \"string\";\n            };\n            readonly cursor: {\n                anyOf: readonly [{\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                }, {\n                    readonly type: \"null\";\n                }];\n            };\n            readonly sessionId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly streamEpoch: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n            };\n            readonly serverInstanceId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly seq: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly conversationId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly runId: {\n                anyOf: readonly [{\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                }, {\n                    readonly type: \"null\";\n                }];\n            };\n            readonly pendingApprovals: {\n                type: \"array\";\n                items: {\n                    type: \"object\";\n                    properties: {\n                        readonly approvalId: {\n                            readonly type: \"string\";\n                            readonly minLength: 1;\n                            readonly maxLength: 256;\n                        };\n                        readonly toolName: {\n                            readonly type: \"string\";\n                            readonly minLength: 1;\n                            readonly maxLength: 256;\n                        };\n                        readonly target: {\n                            readonly type: \"string\";\n                        };\n                        readonly expiresAt: {\n                            readonly type: \"integer\";\n                            readonly minimum: 0;\n                            readonly maximum: number;\n                        };\n                    };\n                    required: (\"toolName\" | \"target\" | \"approvalId\" | \"expiresAt\")[];\n                    additionalProperties: false;\n                };\n                maxItems: number;\n            };\n            readonly openSessions: {\n                readonly minimum: 1;\n                readonly type: \"integer\";\n                readonly maximum: number;\n            };\n            readonly maxOpenSessions: {\n                readonly minimum: 1;\n                readonly type: \"integer\";\n                readonly maximum: number;\n            };\n        };\n        required: (\"runId\" | \"conversationId\" | \"sessionId\" | \"cursor\" | \"serverInstanceId\" | \"streamEpoch\" | \"controlEpoch\" | \"seq\" | \"maxOpenSessions\" | \"chunk\" | \"pendingApprovals\" | \"openSessions\")[];\n        additionalProperties: false;\n    };\n    readonly 'snapshot:page': {\n        type: \"object\";\n        properties: {\n            readonly chunk: {\n                readonly type: \"string\";\n            };\n            readonly cursor: {\n                anyOf: readonly [{\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                }, {\n                    readonly type: \"null\";\n                }];\n            };\n        };\n        required: (\"cursor\" | \"chunk\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/detach': {\n        type: \"object\";\n        properties: {\n            readonly detached: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: \"detached\"[];\n        additionalProperties: false;\n    };\n    readonly 'session/close': {\n        type: \"object\";\n        properties: {\n            readonly closed: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: \"closed\"[];\n        additionalProperties: false;\n    };\n    readonly 'run/start': {\n        type: \"object\";\n        properties: {\n            readonly runId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly accepted: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: (\"runId\" | \"accepted\")[];\n        additionalProperties: false;\n    };\n    readonly 'run/cancel': {\n        type: \"object\";\n        properties: {\n            readonly cancellationRequested: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: \"cancellationRequested\"[];\n        additionalProperties: false;\n    };\n    readonly 'approval/request': {\n        type: \"object\";\n        properties: {\n            readonly choice: {\n                type: \"string\";\n                enum: readonly [\"allow_once\", \"allow_session\", \"deny_once\", \"deny_session\", \"cancel\"];\n            };\n        };\n        required: \"choice\"[];\n        additionalProperties: false;\n    };\n    readonly 'host/shutdown': {\n        type: \"object\";\n        properties: {\n            readonly stopped: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: \"stopped\"[];\n        additionalProperties: false;\n    };\n}"
+            "RESULT_SCHEMAS: {\n    readonly initialize: {\n        type: \"object\";\n        properties: {\n            readonly major: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly minor: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly capabilities: {\n                type: \"array\";\n                items: {\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                };\n                maxItems: number;\n            };\n            readonly serverInstanceId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly clientId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly limits: {\n                type: \"object\";\n                properties: {\n                    readonly maxFrameBytes: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly initializationTimeoutMs: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxInflightRequests: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxConnections: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxOpenSessions: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxConcurrentRuns: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxPendingApprovals: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxSnapshotBytes: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxSendQueueBytes: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly maxOperationIds: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                    readonly approvalTimeoutMs: {\n                        readonly minimum: 1;\n                        readonly type: \"integer\";\n                        readonly maximum: number;\n                    };\n                };\n                required: (\"maxFrameBytes\" | \"initializationTimeoutMs\" | \"maxInflightRequests\" | \"maxConnections\" | \"maxOpenSessions\" | \"maxConcurrentRuns\" | \"maxPendingApprovals\" | \"maxSnapshotBytes\" | \"maxSendQueueBytes\" | \"maxOperationIds\" | \"approvalTimeoutMs\")[];\n                additionalProperties: false;\n            };\n        };\n        required: (\"limits\" | \"capabilities\" | \"major\" | \"serverInstanceId\" | \"minor\" | \"clientId\")[];\n        additionalProperties: false;\n    };\n    readonly ping: {\n        type: \"object\";\n        properties: {\n            readonly alive: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n            readonly serverInstanceId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n        };\n        required: (\"serverInstanceId\" | \"alive\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/list': {\n        type: \"object\";\n        properties: {\n            readonly items: {\n                type: \"array\";\n                items: {\n                    type: \"object\";\n                    properties: {\n                        readonly conversationId: {\n                            readonly type: \"string\";\n                            readonly minLength: 1;\n                            readonly maxLength: 256;\n                        };\n                        readonly title: {\n                            readonly type: \"string\";\n                        };\n                    };\n                    required: (\"title\" | \"conversationId\")[];\n                    additionalProperties: false;\n                };\n                maxItems: number;\n            };\n            readonly cursor: {\n                anyOf: readonly [{\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                }, {\n                    readonly type: \"null\";\n                }];\n            };\n        };\n        required: (\"items\" | \"cursor\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/create': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly conversationId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n        };\n        required: (\"conversationId\" | \"sessionId\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/open': {\n        type: \"object\";\n        properties: {\n            readonly sessionId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly conversationId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n        };\n        required: (\"conversationId\" | \"sessionId\")[];\n        additionalProperties: false;\n    };\n    readonly 'snapshot:first': {\n        type: \"object\";\n        properties: {\n            readonly chunk: {\n                readonly type: \"string\";\n            };\n            readonly cursor: {\n                anyOf: readonly [{\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                }, {\n                    readonly type: \"null\";\n                }];\n            };\n            readonly sessionId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly streamEpoch: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly controlEpoch: {\n                readonly maxLength: 256;\n                readonly type: \"string\";\n            };\n            readonly serverInstanceId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly seq: {\n                readonly type: \"integer\";\n                readonly minimum: 0;\n                readonly maximum: number;\n            };\n            readonly conversationId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly runId: {\n                anyOf: readonly [{\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                }, {\n                    readonly type: \"null\";\n                }];\n            };\n            readonly pendingApprovals: {\n                type: \"array\";\n                items: {\n                    type: \"object\";\n                    properties: {\n                        readonly approvalId: {\n                            readonly type: \"string\";\n                            readonly minLength: 1;\n                            readonly maxLength: 256;\n                        };\n                        readonly toolName: {\n                            readonly type: \"string\";\n                            readonly minLength: 1;\n                            readonly maxLength: 256;\n                        };\n                        readonly target: {\n                            readonly type: \"string\";\n                        };\n                        readonly expiresAt: {\n                            readonly type: \"integer\";\n                            readonly minimum: 0;\n                            readonly maximum: number;\n                        };\n                    };\n                    required: (\"toolName\" | \"target\" | \"approvalId\" | \"expiresAt\")[];\n                    additionalProperties: false;\n                };\n                maxItems: number;\n            };\n            readonly openSessions: {\n                readonly minimum: 1;\n                readonly type: \"integer\";\n                readonly maximum: number;\n            };\n            readonly maxOpenSessions: {\n                readonly minimum: 1;\n                readonly type: \"integer\";\n                readonly maximum: number;\n            };\n        };\n        required: (\"runId\" | \"seq\" | \"conversationId\" | \"sessionId\" | \"cursor\" | \"serverInstanceId\" | \"streamEpoch\" | \"controlEpoch\" | \"maxOpenSessions\" | \"chunk\" | \"pendingApprovals\" | \"openSessions\")[];\n        additionalProperties: false;\n    };\n    readonly 'snapshot:page': {\n        type: \"object\";\n        properties: {\n            readonly chunk: {\n                readonly type: \"string\";\n            };\n            readonly cursor: {\n                anyOf: readonly [{\n                    readonly type: \"string\";\n                    readonly minLength: 1;\n                    readonly maxLength: 256;\n                }, {\n                    readonly type: \"null\";\n                }];\n            };\n        };\n        required: (\"cursor\" | \"chunk\")[];\n        additionalProperties: false;\n    };\n    readonly 'session/detach': {\n        type: \"object\";\n        properties: {\n            readonly detached: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: \"detached\"[];\n        additionalProperties: false;\n    };\n    readonly 'session/close': {\n        type: \"object\";\n        properties: {\n            readonly closed: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: \"closed\"[];\n        additionalProperties: false;\n    };\n    readonly 'run/start': {\n        type: \"object\";\n        properties: {\n            readonly runId: {\n                readonly type: \"string\";\n                readonly minLength: 1;\n                readonly maxLength: 256;\n            };\n            readonly accepted: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: (\"runId\" | \"accepted\")[];\n        additionalProperties: false;\n    };\n    readonly 'run/cancel': {\n        type: \"object\";\n        properties: {\n            readonly cancellationRequested: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: \"cancellationRequested\"[];\n        additionalProperties: false;\n    };\n    readonly 'approval/request': {\n        type: \"object\";\n        properties: {\n            readonly choice: {\n                type: \"string\";\n                enum: readonly [\"allow_once\", \"allow_session\", \"deny_once\", \"deny_session\", \"cancel\"];\n            };\n        };\n        required: \"choice\"[];\n        additionalProperties: false;\n    };\n    readonly 'host/shutdown': {\n        type: \"object\";\n        properties: {\n            readonly stopped: {\n                readonly type: \"boolean\";\n                readonly enum: readonly [true];\n            };\n        };\n        required: \"stopped\"[];\n        additionalProperties: false;\n    };\n}"
           ]
         },
         {
@@ -579,12 +601,16 @@
         {
           "name": "SERVER_CAPABILITIES",
           "kind": "const",
-          "declarations": ["SERVER_CAPABILITIES: readonly [\"sessions\", \"approval\", \"cancel\"]"]
+          "declarations": [
+            "SERVER_CAPABILITIES: readonly [\"sessions\", \"approval\", \"cancel\"]"
+          ]
         },
         {
           "name": "ServerCapability",
           "kind": "type",
-          "declarations": ["export type ServerCapability = (typeof SERVER_CAPABILITIES)[number];"]
+          "declarations": [
+            "export type ServerCapability = (typeof SERVER_CAPABILITIES)[number];"
+          ]
         },
         {
           "name": "SessionControl",
@@ -694,7 +720,9 @@
         {
           "name": "WireErrorCode",
           "kind": "type",
-          "declarations": ["export type WireErrorCode = (typeof WIRE_ERROR_CODES)[number];"]
+          "declarations": [
+            "export type WireErrorCode = (typeof WIRE_ERROR_CODES)[number];"
+          ]
         },
         {
           "name": "WireEvent",
@@ -713,7 +741,9 @@
         {
           "name": "WireMethod",
           "kind": "type",
-          "declarations": ["export type WireMethod = keyof RequestParams;"]
+          "declarations": [
+            "export type WireMethod = keyof RequestParams;"
+          ]
         },
         {
           "name": "WireNotification",
@@ -753,7 +783,9 @@
         {
           "name": "WireSnapshot",
           "kind": "type",
-          "declarations": ["export type WireSnapshot = SnapshotMetadata & SnapshotPage;"]
+          "declarations": [
+            "export type WireSnapshot = SnapshotMetadata & SnapshotPage;"
+          ]
         }
       ]
     },
@@ -827,7 +859,9 @@
         {
           "name": "OperationResult",
           "kind": "type",
-          "declarations": ["export type OperationResult = 'completed' | 'failed' | 'aborted';"]
+          "declarations": [
+            "export type OperationResult = 'completed' | 'failed' | 'aborted';"
+          ]
         },
         {
           "name": "PresentationChange",
@@ -972,7 +1006,7 @@
           "name": "AgentSession",
           "kind": "class",
           "declarations": [
-            "export declare class AgentSession {\n    private readonly skillRegistry?;\n    private readonly skillRuntime?;\n    private persistentId;\n    private readonly configuredConversationId?;\n    private readonly estimator?;\n    private readonly onDiagnostic?;\n    private readonly gitBranch?;\n    private context;\n    private usageKnown;\n    private summaryUsageKnown;\n    private summaryUsage;\n    private readonly summaryAttempts;\n    private readonly accountedAttempts;\n    /** 文件访问与沙箱隔离的物理根绝对路径，经 native realpath 规范化。 */\n    readonly workspaceRoot: string;\n    /** 默认命令执行目录绝对路径，必须位于 workspaceRoot 内部。 */\n    readonly executionCwd: string;\n    /** 规范化项目身份哈希。 */\n    readonly projectKey: string;\n    /** 工具执行与会话基目录兼容别名；语义等同于 workspaceRoot。 */\n    readonly rootDir: string;\n    readonly tools: ToolRegistry;\n    readonly hooks: HookRegistry;\n    /** 会话持有的独占路径沙箱实例。 */\n    readonly sandbox: PathSandbox;\n    private readonly leaseCoordinator;\n    private readonly router;\n    private readonly store?;\n    private readonly customSystemPrompt?;\n    private readonly maxSteps;\n    private readonly logger?;\n    private readonly eventLogger;\n    private readonly sessionId;\n    private mode;\n    private readonly permissionRules;\n    private readonly approvalChannel?;\n    private readonly approvalCache;\n    private readonly projectRoot;\n    private readonly cwd;\n    private readonly userInstructionsPath?;\n    private instructionSnapshot?;\n    private readonly auditRecoveryDirectory?;\n    private readonly rootTaskId?;\n    private readonly depth;\n    private readonly agentId?;\n    private history;\n    private totalTurns;\n    private usageStats;\n    private lastMetrics?;\n    private lastRunMetrics?;\n    private initialized;\n    private pendingResume;\n    private destroyed;\n    private cleanupStarted;\n    private cleanupPromise?;\n    private sessionEndFinished;\n    private activeRun;\n    private primaryRole;\n    private lastPrimaryProfile?;\n    private lastPrimaryProvider?;\n    private readonly plugins;\n    constructor(config: SessionConfig);\n    /** 幂等初始化：恢复审计残留、指令快照与持久历史，校验会话身份并回放 usage。 */\n    init(): Promise<void>;\n    /** 挂载插件并执行 setup；销毁后或运行中拒绝，setup 失败的插件不进入已装列表。 */\n    use(plugin: AgentPlugin): Promise<void>;\n    /**\n     * 获取当前会话已成功挂载的扩展插件只读列表。\n     *\n     * 保证返回当前状态的独立切片，外部修改不污染内部挂载表。\n     */\n    getPlugins(): readonly AgentPlugin[];\n    /**\n     * 获取当前会话绑定的路径沙箱实例。\n     *\n     * 保证：\n     * - 返回由当前会话独立持有的 PathSandbox 实例，其根目录严格绑定到当前会话的 workspaceRoot；\n     * - 外部通过此沙箱执行路径规范化与逃逸校验时，遵循 native realpath 解析语义。\n     */\n    getSandbox(): PathSandbox;\n    /**\n     * 获取当前会话持有的工作区写租约协调器。\n     *\n     * 约束：宿主在会话外发起子代理派发（如 CLI `/delegate`）时必须传入同一实例，\n     * 子会话据此与父会话共享写互斥；另建协调器会绕过互斥，导致并发写同一工作区。\n     */\n    getLeaseCoordinator(): WorkspaceLeaseCoordinator;\n    /**\n     * 空闲时原子替换角色的模型绑定；本方法不改变当前角色或工具权限。\n     * @param profile 模型协议、请求目标和输出预算。\n     * @param role 被配置的主任务或摘要角色。\n     * @param provider 与目标匹配的适配器；省略时只允许复用相同目标。\n     * @throws {ModelError} 协议、模型、端点或 workspace 与适配器错配，旧绑定保留。\n     * @throws {SessionBusyError} 正在执行或清理当前任务。\n     */\n    switchModel(profile: ModelProfile, role?: ModelRole, provider?: ModelProvider): void;\n    /** 查询指定绑定或当前明确选择的主任务模型，返回独立配置副本。 */\n    getActiveProfile(role?: ModelRole): ModelProfile;\n    /** 空闲时显式选择场景；缺少映射或凭据时拒绝，不回退默认模型、不修改权限。 */\n    selectModelRole(role: PrimaryModelRole): void;\n    /** 返回本进程明确选择的场景，历史恢复不改变此状态。 */\n    getModelRole(): PrimaryModelRole;\n    /** 严格解析主任务快照，在输入落盘与网络调用之前检查角色、凭据与预算。 */\n    private resolvePrimaryBinding;\n    /** 只在空闲时切换本次会话模式；宿主负责 FullAccess 的显式选择交互。 */\n    switchMode(mode: SessionMode): void;\n    getMode(): SessionMode;\n    /** 获取当前会话生效的权限规则列表。 */\n    getPermissionRules(): readonly PermissionRule[];\n    /** 返回最近一次成功装载的来源路径，不暴露指令正文。 */\n    getInstructionSources(): string[];\n    /** 稳定会话身份，独立于当前进程日志实例和每次用户交互。 */\n    get conversationId(): string;\n    /** 返回原始历史独立快照，外部修改不会改变落盘事实或当前工具事务。 */\n    getHistory(): CanonicalMessage[];\n    /** 返回当前投影视图，区别于原始历史；不执行模型或 Hook。 */\n    getContextHistory(): CanonicalMessage[];\n    /** 查询技能元数据、诊断与本轮活动状态；只读，不加载正文或改变权限。 */\n    getSkills(query?: string): {\n        skills: import(\"../../capabilities/skills/types.js\").SkillMetadata[];\n        diagnostics: import(\"../../capabilities/skills/types.js\").SkillDiagnostic[];\n        activations: import(\"../../capabilities/skills/types.js\").SkillActivation[];\n        content: import(\"../../capabilities/skills/content.js\").SkillContextState[];\n        catalog: {\n            included: number;\n            omitted: number;\n        };\n    };\n    /** 查询最近最终请求的预算快照，尚未准备请求时返回 undefined。 */\n    getContextSnapshot(): ContextSnapshot | undefined;\n    /** 执行中止后的工具/摘要与存储收口期间仍返回 true。 */\n    isBusy(): boolean;\n    /** 返回独立统计快照，宿主修改嵌套指标不会改变会话状态或预算展示。 */\n    getStats(): SessionStats;\n    /** 返回最近请求指标的独立副本；尚无完成请求时返回 undefined。 */\n    getLastMetrics(): TurnMetrics | undefined;\n    /** 返回最近用户任务指标的独立副本；恢复的 usage 不伪造实时任务指标。 */\n    getLastRunMetrics(): RunMetrics | undefined;\n    /** 空闲时清空存储与全部内存状态；conversationId 不变，恢复语义等同全新会话。 */\n    reset(): Promise<void>;\n    /**\n     * 执行一次用户输入，并以宿主无关的语义事件流返回全过程。\n     *\n     * Core 不负责终端或图形界面渲染；CLI、TUI、GUI 与其它宿主应消费同一组\n     * {@link SessionEvent}，分别完成展示、交互和中止控制。\n     *\n     * @param userInput 用户本轮输入。\n     * @param options 可选中止信号与显式主任务角色；角色在整个工具任务内固定。\n     * @returns 文本、思考、工具、指标和错误等结构化事件的异步流。\n     * @throws {SessionBusyError} 当前会话已有正在执行的 run 时抛出。\n     * @throws {ModelError} 显式角色缺少绑定或凭据时，在输入落盘和网络调用前抛出。\n     */\n    run(userInput: string, options?: {\n        signal?: AbortSignal;\n        role?: PrimaryModelRole;\n    }): AsyncIterable<SessionEvent>;\n    /** 显式用户技能入口；任务原文单条提交，与普通run共享互斥、取消及清理，不恢复历史授权。 */\n    runSkill(name: string, task: string, options?: {\n        signal?: AbortSignal;\n        role?: PrimaryModelRole;\n    }): AsyncIterable<SessionEvent>;\n    /**\n     * 受控任务准备入口：在同一运行锁内异步准备文本块/来源，预算和存储成功后才进入模型。\n     *\n     * @param task 用户显式任务正文（或命令描述）。\n     * @param prepare 异步任务准备函数；在锁内执行，若准备失败或取消则释放锁且零 append。\n     * @param options 可选中止信号与显式主任务角色。\n     * @returns 结构化事件的异步流。\n     * @throws {SessionBusyError} 当前会话忙碌时抛出。\n     */\n    runPreparedTask(task: string, prepare: (context: PreparedTaskContext) => Promise<PreparedTaskResult>, options?: {\n        signal?: AbortSignal;\n        role?: PrimaryModelRole;\n    }): AsyncIterable<SessionEvent>;\n    /** 单次任务执行主体；调用方 return 的中止与 finally 清理由外层统一协调。 */\n    private runOperation;\n    /** 幂等销毁：卸载插件后发出 session:end；运行中拒绝，teardown 失败聚合抛出且不完成销毁。 */\n    destroy(): Promise<void>;\n    private assertIdle;\n    /** 实际请求、静态统计和手动压缩共用目录空间推导；先计正文、工具和非目录提示，再预算整段目录。 */\n    private createPromptAssembler;\n    /** 完整消息提交后完成技能审计；审计失败保留真实历史，停止本轮且不发布成功事件。 */\n    private commitSkills;\n    /** 显式加载仍按同一读取策略、精确缓存与宿主审批裁决；拒绝/取消/审计失败时不追加用户任务。 */\n    private authorizeSkill;\n    /**\n     * 计算最近一次内部模型请求的上下文占用；无 usage 时显式标注预算估算。\n     * run 累计 promptTokens 会重复计算每一步都重发的历史，不能用于窗口占用率。\n     */\n    private createContextUsage;\n    private persistAssistant;\n    /** 创建上下文协调器并注入当前路由；摘要不经过主任务 Loop，插件结果不默认为可剪裁。 */\n    private createContextManager;\n    /** 摘要实际消耗按 attempt 身份独立累加；缺失消耗保留未知，不计入主任务指标。 */\n    private accountSummaryUsage;\n    /**\n     * 空闲时手动摘要旧完整前缀，不创建用户任务、不执行工具，不突破当前与最近成功交互。\n     * 迭代结束或取消后等候摘要与提交收口，再释放执行状态；已提交检查点保持有效。\n     */\n    compact(options?: {\n        signal?: AbortSignal;\n    }): AsyncGenerator<SessionEvent>;\n    /** 手动压缩按主任务协议投影旧历史，不复用旧 run 私有状态；原始历史与落盘内容保持不变。 */\n    private compactOperation;\n    /** 压缩与预算超限事件写入操作日志并携带 runId；其他事件不落日志。 */\n    private logContextEvent;\n    /** 以模型 attempt 身份幂等累加真实消耗；非法或缺失 usage 保持未知。 */\n    private accountUsage;\n    private persistToolMessages;\n    /** 中止时为缓冲 assistant 的每个 tool_use 生成 OUTCOME_UNKNOWN 结果并入历史，保持事务闭合。 */\n    private closeInterruptedToolCalls;\n    /** 收集历史中紧跟该 assistant 的连续 tool 消息；仅当覆盖全部 tool_use 时视为已闭合。 */\n    private findClosedToolMessages;\n}"
+            "export declare class AgentSession {\n    private readonly skillRegistry?;\n    private readonly skillRuntime?;\n    private persistentId;\n    private readonly configuredConversationId?;\n    private readonly estimator?;\n    private readonly onDiagnostic?;\n    private readonly gitBranch?;\n    private context;\n    private usageKnown;\n    private summaryUsageKnown;\n    private summaryUsage;\n    private readonly summaryAttempts;\n    private readonly accountedAttempts;\n    /** 文件访问与沙箱隔离的物理根绝对路径，经 native realpath 规范化。 */\n    readonly workspaceRoot: string;\n    /** 默认命令执行目录绝对路径，必须位于 workspaceRoot 内部。 */\n    readonly executionCwd: string;\n    /** 规范化项目身份哈希。 */\n    readonly projectKey: string;\n    /** 工具执行与会话基目录兼容别名；语义等同于 workspaceRoot。 */\n    readonly rootDir: string;\n    readonly tools: ToolRegistry;\n    readonly hooks: HookRegistry;\n    /** 会话持有的独占路径沙箱实例。 */\n    readonly sandbox: PathSandbox;\n    private readonly leaseCoordinator;\n    private readonly router;\n    private readonly store?;\n    private readonly customSystemPrompt?;\n    private readonly maxSteps;\n    private readonly logger?;\n    private readonly eventLogger;\n    private readonly sessionId;\n    private mode;\n    private readonly permissionRules;\n    private readonly approvalChannel?;\n    private readonly approvalCache;\n    private readonly projectRoot;\n    private readonly cwd;\n    private readonly userInstructionsPath?;\n    private instructionSnapshot?;\n    private readonly auditRecoveryDirectory?;\n    private readonly rootTaskId?;\n    private readonly depth;\n    private readonly agentId?;\n    private readonly managedResultsRoot?;\n    /** 本会话专属的受管结果目录；conversationId 在恢复中可能被改写，因此按当前值即时计算。 */\n    private get managedResultsDir();\n    private history;\n    private totalTurns;\n    private usageStats;\n    private lastMetrics?;\n    private lastRunMetrics?;\n    private initialized;\n    private pendingResume;\n    private destroyed;\n    private cleanupStarted;\n    private cleanupPromise?;\n    private sessionEndFinished;\n    private activeRun;\n    private primaryRole;\n    private lastPrimaryProfile?;\n    private lastPrimaryProvider?;\n    private readonly plugins;\n    constructor(config: SessionConfig);\n    /** 幂等初始化：恢复审计残留、指令快照与持久历史，校验会话身份并回放 usage。 */\n    init(): Promise<void>;\n    /** 挂载插件并执行 setup；销毁后或运行中拒绝，setup 失败的插件不进入已装列表。 */\n    use(plugin: AgentPlugin): Promise<void>;\n    /**\n     * 获取当前会话已成功挂载的扩展插件只读列表。\n     *\n     * 保证返回当前状态的独立切片，外部修改不污染内部挂载表。\n     */\n    getPlugins(): readonly AgentPlugin[];\n    /**\n     * 获取当前会话绑定的路径沙箱实例。\n     *\n     * 保证：\n     * - 返回由当前会话独立持有的 PathSandbox 实例，其根目录严格绑定到当前会话的 workspaceRoot；\n     * - 外部通过此沙箱执行路径规范化与逃逸校验时，遵循 native realpath 解析语义。\n     */\n    getSandbox(): PathSandbox;\n    /**\n     * 获取当前会话持有的工作区写租约协调器。\n     *\n     * 约束：宿主在会话外发起子代理派发（如 CLI `/delegate`）时必须传入同一实例，\n     * 子会话据此与父会话共享写互斥；另建协调器会绕过互斥，导致并发写同一工作区。\n     */\n    getLeaseCoordinator(): WorkspaceLeaseCoordinator;\n    /**\n     * 空闲时原子替换角色的模型绑定；本方法不改变当前角色或工具权限。\n     * @param profile 模型协议、请求目标和输出预算。\n     * @param role 被配置的主任务或摘要角色。\n     * @param provider 与目标匹配的适配器；省略时只允许复用相同目标。\n     * @throws {ModelError} 协议、模型、端点或 workspace 与适配器错配，旧绑定保留。\n     * @throws {SessionBusyError} 正在执行或清理当前任务。\n     */\n    switchModel(profile: ModelProfile, role?: ModelRole, provider?: ModelProvider): void;\n    /** 查询指定绑定或当前明确选择的主任务模型，返回独立配置副本。 */\n    getActiveProfile(role?: ModelRole): ModelProfile;\n    /** 空闲时显式选择场景；缺少映射或凭据时拒绝，不回退默认模型、不修改权限。 */\n    selectModelRole(role: PrimaryModelRole): void;\n    /** 返回本进程明确选择的场景，历史恢复不改变此状态。 */\n    getModelRole(): PrimaryModelRole;\n    /** 严格解析主任务快照，在输入落盘与网络调用之前检查角色、凭据与预算。 */\n    private resolvePrimaryBinding;\n    /** 只在空闲时切换本次会话模式；宿主负责 FullAccess 的显式选择交互。 */\n    switchMode(mode: SessionMode): void;\n    getMode(): SessionMode;\n    /** 获取当前会话生效的权限规则列表。 */\n    getPermissionRules(): readonly PermissionRule[];\n    /** 返回最近一次成功装载的来源路径，不暴露指令正文。 */\n    getInstructionSources(): string[];\n    /** 稳定会话身份，独立于当前进程日志实例和每次用户交互。 */\n    get conversationId(): string;\n    /** 返回原始历史独立快照，外部修改不会改变落盘事实或当前工具事务。 */\n    getHistory(): CanonicalMessage[];\n    /** 返回当前投影视图，区别于原始历史；不执行模型或 Hook。 */\n    getContextHistory(): CanonicalMessage[];\n    /** 查询技能元数据、诊断与本轮活动状态；只读，不加载正文或改变权限。 */\n    getSkills(query?: string): {\n        skills: import(\"../../capabilities/skills/types.js\").SkillMetadata[];\n        diagnostics: import(\"../../capabilities/skills/types.js\").SkillDiagnostic[];\n        activations: import(\"../../capabilities/skills/types.js\").SkillActivation[];\n        content: import(\"../../capabilities/skills/content.js\").SkillContextState[];\n        catalog: {\n            included: number;\n            omitted: number;\n        };\n    };\n    /** 查询最近最终请求的预算快照，尚未准备请求时返回 undefined。 */\n    getContextSnapshot(): ContextSnapshot | undefined;\n    /** 执行中止后的工具/摘要与存储收口期间仍返回 true。 */\n    isBusy(): boolean;\n    /** 返回独立统计快照，宿主修改嵌套指标不会改变会话状态或预算展示。 */\n    getStats(): SessionStats;\n    /** 返回最近请求指标的独立副本；尚无完成请求时返回 undefined。 */\n    getLastMetrics(): TurnMetrics | undefined;\n    /** 返回最近用户任务指标的独立副本；恢复的 usage 不伪造实时任务指标。 */\n    getLastRunMetrics(): RunMetrics | undefined;\n    /** 空闲时清空存储与全部内存状态；conversationId 不变，恢复语义等同全新会话。 */\n    reset(): Promise<void>;\n    /**\n     * 执行一次用户输入，并以宿主无关的语义事件流返回全过程。\n     *\n     * Core 不负责终端或图形界面渲染；CLI、TUI、GUI 与其它宿主应消费同一组\n     * {@link SessionEvent}，分别完成展示、交互和中止控制。\n     *\n     * @param userInput 用户本轮输入。\n     * @param options 可选中止信号与显式主任务角色；角色在整个工具任务内固定。\n     * @returns 文本、思考、工具、指标和错误等结构化事件的异步流。\n     * @throws {SessionBusyError} 当前会话已有正在执行的 run 时抛出。\n     * @throws {ModelError} 显式角色缺少绑定或凭据时，在输入落盘和网络调用前抛出。\n     */\n    run(userInput: string, options?: {\n        signal?: AbortSignal;\n        role?: PrimaryModelRole;\n    }): AsyncIterable<SessionEvent>;\n    /** 显式用户技能入口；任务原文单条提交，与普通run共享互斥、取消及清理，不恢复历史授权。 */\n    runSkill(name: string, task: string, options?: {\n        signal?: AbortSignal;\n        role?: PrimaryModelRole;\n    }): AsyncIterable<SessionEvent>;\n    /**\n     * 受控任务准备入口：在同一运行锁内异步准备文本块/来源，预算和存储成功后才进入模型。\n     *\n     * @param task 用户显式任务正文（或命令描述）。\n     * @param prepare 异步任务准备函数；在锁内执行，若准备失败或取消则释放锁且零 append。\n     * @param options 可选中止信号与显式主任务角色。\n     * @returns 结构化事件的异步流。\n     * @throws {SessionBusyError} 当前会话忙碌时抛出。\n     */\n    runPreparedTask(task: string, prepare: (context: PreparedTaskContext) => Promise<PreparedTaskResult>, options?: {\n        signal?: AbortSignal;\n        role?: PrimaryModelRole;\n    }): AsyncIterable<SessionEvent>;\n    /** 单次任务执行主体；调用方 return 的中止与 finally 清理由外层统一协调。 */\n    private runOperation;\n    /** 幂等销毁：卸载插件后发出 session:end；运行中拒绝，teardown 失败聚合抛出且不完成销毁。 */\n    destroy(): Promise<void>;\n    private assertIdle;\n    /** 实际请求、静态统计和手动压缩共用目录空间推导；先计正文、工具和非目录提示，再预算整段目录。 */\n    private createPromptAssembler;\n    /** 完整消息提交后完成技能审计；审计失败保留真实历史，停止本轮且不发布成功事件。 */\n    private commitSkills;\n    /** 显式加载仍按同一读取策略、精确缓存与宿主审批裁决；拒绝/取消/审计失败时不追加用户任务。 */\n    private authorizeSkill;\n    /**\n     * 计算最近一次内部模型请求的上下文占用；无 usage 时显式标注预算估算。\n     * run 累计 promptTokens 会重复计算每一步都重发的历史，不能用于窗口占用率。\n     */\n    private createContextUsage;\n    private persistAssistant;\n    /** 创建上下文协调器并注入当前路由；摘要不经过主任务 Loop，插件结果不默认为可剪裁。 */\n    private createContextManager;\n    /** 摘要实际消耗按 attempt 身份独立累加；缺失消耗保留未知，不计入主任务指标。 */\n    private accountSummaryUsage;\n    /**\n     * 空闲时手动摘要旧完整前缀，不创建用户任务、不执行工具，不突破当前与最近成功交互。\n     * 迭代结束或取消后等候摘要与提交收口，再释放执行状态；已提交检查点保持有效。\n     */\n    compact(options?: {\n        signal?: AbortSignal;\n    }): AsyncGenerator<SessionEvent>;\n    /** 手动压缩按主任务协议投影旧历史，不复用旧 run 私有状态；原始历史与落盘内容保持不变。 */\n    private compactOperation;\n    /** 压缩与预算超限事件写入操作日志并携带 runId；其他事件不落日志。 */\n    private logContextEvent;\n    /** 以模型 attempt 身份幂等累加真实消耗；非法或缺失 usage 保持未知。 */\n    private accountUsage;\n    private persistToolMessages;\n    /** 中止时为缓冲 assistant 的每个 tool_use 生成 OUTCOME_UNKNOWN 结果并入历史，保持事务闭合。 */\n    private closeInterruptedToolCalls;\n    /** 收集历史中紧跟该 assistant 的连续 tool 消息；仅当覆盖全部 tool_use 时视为已闭合。 */\n    private findClosedToolMessages;\n}"
           ]
         },
         {
@@ -1116,10 +1150,10 @@
           ]
         },
         {
-          "name": "cleanupCommandResults",
+          "name": "cleanupManagedResults",
           "kind": "function",
           "declarations": [
-            "export declare function cleanupCommandResults(rootDir: string, now?: number): void;"
+            "export declare function cleanupManagedResults(directory: string, now?: number): void;"
           ]
         },
         {
@@ -1133,7 +1167,7 @@
           "name": "CommandResult",
           "kind": "interface",
           "declarations": [
-            "export interface CommandResult {\n    /** 进程正常退出时的退出码；被信号终止时为 null。 */\n    exitCode: number | null;\n    /** stdout 与 stderr 交错合并的文本，最多前 64 KiB（按 UTF-8 字符边界截断）。 */\n    output: string;\n    /** output 并非全部输出的标志；超出内联上限的完整内容写入 outputFile。 */\n    outputTruncated: boolean;\n    /** 受管结果文件路径（工作区内 .kapibala/tool-results/），仅输出超过内联上限时存在。 */\n    outputFile?: string;\n    /** 结果文件触及 16 MiB 上限后被截断的标志。 */\n    outputFileTruncated: boolean;\n    /** 两个流产生的原始字节总数（不受截断影响），供进度与审计使用。 */\n    outputBytes: number;\n    shell: ShellEnvironment['kind'];\n}"
+            "export interface CommandResult {\n    /** 进程正常退出时的退出码；被信号终止时为 null。 */\n    exitCode: number | null;\n    /** stdout 与 stderr 交错合并的文本，最多前 64 KiB（按 UTF-8 字符边界截断）。 */\n    output: string;\n    /** output 并非全部输出的标志；超出内联上限的完整内容写入 outputFile。 */\n    outputTruncated: boolean;\n    /** 受管结果文件路径（全局目录 ~/.kapibala/tool-results/<项目哈希>/<会话>/；裸 SDK 退回系统临时目录），仅输出超过内联上限时存在。 */\n    outputFile?: string;\n    /** 结果文件触及 16 MiB 上限后被截断的标志。 */\n    outputFileTruncated: boolean;\n    /** 两个流产生的原始字节总数（不受截断影响），供进度与审计使用。 */\n    outputBytes: number;\n    shell: ShellEnvironment['kind'];\n}"
           ]
         },
         {
@@ -1168,7 +1202,7 @@
           "name": "ContextBudget",
           "kind": "interface",
           "declarations": [
-            "export interface ContextBudget {\n    contextWindow: number;\n    /** 窗口来自保守估算（未知按 32K 推导）时为 true。 */\n    estimatedWindow: boolean;\n    /** 输出预留（含私有推理消耗），同时作为实际请求的 maxTokens。 */\n    outputReserve: number;\n    /** 至少 128 的窗口安全余量，防止输入预算顶满窗口。 */\n    safetyReserve: number;\n    /** 输入预算 = 窗口 − 输出预留 − 安全余量；超限请求在 Provider 调用前失败。 */\n    inputBudget: number;\n    /** 触发阈值 0.85B：超过才启动一级剪裁/二级摘要（迁移文档：剪裁后低于触发阈值则不调用摘要模型）。 */\n    trigger: number;\n    /**\n     * 目标 0.65B：压缩后期望达到的占用水平，随 ContextSnapshot 暴露给 /context 展示。\n     * 当前算法的启停条件是 trigger；设计文档未定义向该目标迭代收敛的机制，\n     * 故不作为候选接受条件或强制收敛线使用。\n     */\n    target: number;\n}"
+            "export interface ContextBudget {\n    contextWindow: number;\n    /** 窗口来自估算（未声明，按 DEFAULT_CONTEXT_WINDOW_TOKENS 推导）时为 true。 */\n    estimatedWindow: boolean;\n    /** 输出预留（含私有推理消耗），同时作为实际请求的 maxTokens。 */\n    outputReserve: number;\n    /** 至少 128 的窗口安全余量，防止输入预算顶满窗口。 */\n    safetyReserve: number;\n    /** 输入预算 = 窗口 − 输出预留 − 安全余量；超限请求在 Provider 调用前失败。 */\n    inputBudget: number;\n    /** 触发阈值 0.85B：超过才启动一级剪裁/二级摘要（迁移文档：剪裁后低于触发阈值则不调用摘要模型）。 */\n    trigger: number;\n    /**\n     * 目标 0.65B：压缩后期望达到的占用水平，随 ContextSnapshot 暴露给 /context 展示。\n     * 当前算法的启停条件是 trigger；设计文档未定义向该目标迭代收敛的机制，\n     * 故不作为候选接受条件或强制收敛线使用。\n     */\n    target: number;\n}"
           ]
         },
         {
@@ -1279,12 +1313,16 @@
         {
           "name": "createLogId",
           "kind": "function",
-          "declarations": ["export declare function createLogId(): string;"]
+          "declarations": [
+            "export declare function createLogId(): string;"
+          ]
         },
         {
           "name": "createMessageId",
           "kind": "function",
-          "declarations": ["export declare function createMessageId(): string;"]
+          "declarations": [
+            "export declare function createMessageId(): string;"
+          ]
         },
         {
           "name": "createReferenceError",
@@ -1338,32 +1376,44 @@
         {
           "name": "DEFAULT_CHILD_LIMITS",
           "kind": "const",
-          "declarations": ["DEFAULT_CHILD_LIMITS: Readonly<ChildLimits>"]
+          "declarations": [
+            "DEFAULT_CHILD_LIMITS: Readonly<ChildLimits>"
+          ]
         },
         {
           "name": "DEFAULT_CONTEXT_WINDOW_TOKENS",
           "kind": "const",
-          "declarations": ["DEFAULT_CONTEXT_WINDOW_TOKENS = 1000000"]
+          "declarations": [
+            "DEFAULT_CONTEXT_WINDOW_TOKENS = 256000"
+          ]
         },
         {
           "name": "DEFAULT_MAX_STEPS",
           "kind": "const",
-          "declarations": ["DEFAULT_MAX_STEPS = 15"]
+          "declarations": [
+            "DEFAULT_MAX_STEPS = 15"
+          ]
         },
         {
           "name": "DEFAULT_MAX_SUBAGENT_DEPTH",
           "kind": "const",
-          "declarations": ["DEFAULT_MAX_SUBAGENT_DEPTH = 3"]
+          "declarations": [
+            "DEFAULT_MAX_SUBAGENT_DEPTH = 3"
+          ]
         },
         {
           "name": "DEFAULT_REFERENCE_RECORD_LIMIT",
           "kind": "const",
-          "declarations": ["DEFAULT_REFERENCE_RECORD_LIMIT = 6"]
+          "declarations": [
+            "DEFAULT_REFERENCE_RECORD_LIMIT = 6"
+          ]
         },
         {
           "name": "DEFAULT_TIMEOUT_MS",
           "kind": "const",
-          "declarations": ["DEFAULT_TIMEOUT_MS: number"]
+          "declarations": [
+            "DEFAULT_TIMEOUT_MS: number"
+          ]
         },
         {
           "name": "defineTool",
@@ -1424,12 +1474,16 @@
         {
           "name": "escapeSkillXml",
           "kind": "function",
-          "declarations": ["export declare function escapeSkillXml(text: string): string;"]
+          "declarations": [
+            "export declare function escapeSkillXml(text: string): string;"
+          ]
         },
         {
           "name": "estimateSkillTokens",
           "kind": "function",
-          "declarations": ["export declare function estimateSkillTokens(text: string): number;"]
+          "declarations": [
+            "export declare function estimateSkillTokens(text: string): number;"
+          ]
         },
         {
           "name": "EventLogger",
@@ -1449,7 +1503,7 @@
           "name": "ExecutorOptions",
           "kind": "interface",
           "declarations": [
-            "export interface ExecutorOptions {\n    /** 在最终参数上补充硬拒绝，不能把拒绝转为授权。 */\n    hardDenial?: (tool: Tool, input: Record<string, unknown>) => ToolHardDenial | undefined;\n    /** 结果钩子和执行审计完成后调用；用于在同批次下一调用前安装宿主收紧状态。 */\n    onToolResult?: (tool: Tool, input: Record<string, unknown>, result: ToolResultBlock) => void | Promise<void>;\n    tools: ToolRegistry | ToolRegistrySnapshot;\n    hooks: HookRegistry;\n    /** 显式工作区物理根路径，经 native realpath 规范化；缺省回退到 rootDir。 */\n    workspaceRoot?: string;\n    /** 显式命令执行工作目录绝对路径（位于 workspaceRoot 内部）；缺省回退到 rootDir。 */\n    executionCwd?: string;\n    /** 会话持有的 PathSandbox 独占实例；文件类工具优先使用此沙箱。 */\n    sandbox?: PathSandbox;\n    /** 共享工作区写租约协调器；并发写入互斥保护。 */\n    leaseCoordinator?: WorkspaceLeaseCoordinator;\n    /** 工具执行的绝对根目录；路径解析与审批均以此为基准。 */\n    rootDir: string;\n    /** 会话级取消信号；与 cancel() 的内部信号合并生效。 */\n    signal?: AbortSignal;\n    logger?: (msg: string) => void;\n    /** 单次工具执行超时(毫秒)。异步挂起的工具超时后返回 isError 结果，避免永久卡死会话循环 */\n    toolTimeoutMs?: number;\n    eventLogger?: EventLogger;\n    sessionId?: string;\n    runId?: string;\n    branchId?: string;\n    rootTaskId?: string;\n    depth?: number;\n    agentId?: string;\n    /** 固定模式或每次裁决时读取的取值函数；宿主可中途切换。 */\n    mode?: SessionMode | (() => SessionMode);\n    permissionRules?: readonly PermissionRule[];\n    /** 审批入口；缺省视为非交互环境，需要询问的调用一律拒绝。 */\n    approvalChannel?: ApprovalChannel;\n    /** 会话内 allow_session / deny_session 审批缓存；缺省使用实例私有缓存。 */\n    approvalCache?: SessionApprovalCache;\n}"
+            "export interface ExecutorOptions {\n    /** 在最终参数上补充硬拒绝，不能把拒绝转为授权。 */\n    hardDenial?: (tool: Tool, input: Record<string, unknown>) => ToolHardDenial | undefined;\n    /** 结果钩子和执行审计完成后调用；用于在同批次下一调用前安装宿主收紧状态。 */\n    onToolResult?: (tool: Tool, input: Record<string, unknown>, result: ToolResultBlock) => void | Promise<void>;\n    tools: ToolRegistry | ToolRegistrySnapshot;\n    hooks: HookRegistry;\n    /** 显式工作区物理根路径，经 native realpath 规范化；缺省回退到 rootDir。 */\n    workspaceRoot?: string;\n    /** 显式命令执行工作目录绝对路径（位于 workspaceRoot 内部）；缺省回退到 rootDir。 */\n    executionCwd?: string;\n    /** 会话持有的 PathSandbox 独占实例；文件类工具优先使用此沙箱。 */\n    sandbox?: PathSandbox;\n    /** 共享工作区写租约协调器；并发写入互斥保护。 */\n    leaseCoordinator?: WorkspaceLeaseCoordinator;\n    /** 工具执行的绝对根目录；路径解析与审批均以此为基准。 */\n    rootDir: string;\n    /** 会话级取消信号；与 cancel() 的内部信号合并生效。 */\n    signal?: AbortSignal;\n    logger?: (msg: string) => void;\n    /** 单次工具执行超时(毫秒)。异步挂起的工具超时后返回 isError 结果，避免永久卡死会话循环 */\n    toolTimeoutMs?: number;\n    eventLogger?: EventLogger;\n    sessionId?: string;\n    /** 本会话专属的受管工具结果目录；注入后 run_command 大输出写这里且沙箱对其只读豁免。 */\n    managedResultsDir?: string;\n    runId?: string;\n    branchId?: string;\n    rootTaskId?: string;\n    depth?: number;\n    agentId?: string;\n    /** 固定模式或每次裁决时读取的取值函数；宿主可中途切换。 */\n    mode?: SessionMode | (() => SessionMode);\n    permissionRules?: readonly PermissionRule[];\n    /** 审批入口；缺省视为非交互环境，需要询问的调用一律拒绝。 */\n    approvalChannel?: ApprovalChannel;\n    /** 会话内 allow_session / deny_session 审批缓存；缺省使用实例私有缓存。 */\n    approvalCache?: SessionApprovalCache;\n}"
           ]
         },
         {
@@ -1457,6 +1511,13 @@
           "kind": "function",
           "declarations": [
             "export declare function extractFileDetails(history: readonly CanonicalMessage[], _projectRoot: string, previous?: FileDetails): FileDetails;"
+          ]
+        },
+        {
+          "name": "fallbackToolResultsDirectory",
+          "kind": "function",
+          "declarations": [
+            "export declare function fallbackToolResultsDirectory(): string;"
           ]
         },
         {
@@ -1546,7 +1607,9 @@
         {
           "name": "HARD_LIMIT_MAX_SUBAGENT_DEPTH",
           "kind": "const",
-          "declarations": ["HARD_LIMIT_MAX_SUBAGENT_DEPTH = 5"]
+          "declarations": [
+            "HARD_LIMIT_MAX_SUBAGENT_DEPTH = 5"
+          ]
         },
         {
           "name": "HistoryReadOptions",
@@ -1682,9 +1745,18 @@
           ]
         },
         {
+          "name": "isSessionMode",
+          "kind": "function",
+          "declarations": [
+            "export declare function isSessionMode(value: unknown): value is SessionMode;"
+          ]
+        },
+        {
           "name": "isSkillName",
           "kind": "function",
-          "declarations": ["export declare function isSkillName(value: string): boolean;"]
+          "declarations": [
+            "export declare function isSkillName(value: string): boolean;"
+          ]
         },
         {
           "name": "isTerminalTaskStatus",
@@ -1731,7 +1803,9 @@
         {
           "name": "isWriteOperation",
           "kind": "function",
-          "declarations": ["export declare function isWriteOperation(tool: Tool): boolean;"]
+          "declarations": [
+            "export declare function isWriteOperation(tool: Tool): boolean;"
+          ]
         },
         {
           "name": "JSONLMessageStore",
@@ -1771,7 +1845,9 @@
         {
           "name": "LogChannel",
           "kind": "type",
-          "declarations": ["export type LogChannel = 'operation' | 'audit';"]
+          "declarations": [
+            "export type LogChannel = 'operation' | 'audit';"
+          ]
         },
         {
           "name": "LogEvent",
@@ -1783,7 +1859,9 @@
         {
           "name": "LogField",
           "kind": "type",
-          "declarations": ["export type LogField = string | number | boolean | null;"]
+          "declarations": [
+            "export type LogField = string | number | boolean | null;"
+          ]
         },
         {
           "name": "LogInput",
@@ -1795,7 +1873,9 @@
         {
           "name": "LogLevel",
           "kind": "type",
-          "declarations": ["export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';"]
+          "declarations": [
+            "export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';"
+          ]
         },
         {
           "name": "LogSink",
@@ -1807,7 +1887,9 @@
         {
           "name": "MAIN_BRANCH_ID",
           "kind": "const",
-          "declarations": ["MAIN_BRANCH_ID = \"main\""]
+          "declarations": [
+            "MAIN_BRANCH_ID = \"main\""
+          ]
         },
         {
           "name": "ManagedSession",
@@ -1819,57 +1901,79 @@
         {
           "name": "MAX_ACTIVE_TASKS_PER_RUNTIME",
           "kind": "const",
-          "declarations": ["MAX_ACTIVE_TASKS_PER_RUNTIME = 8"]
+          "declarations": [
+            "MAX_ACTIVE_TASKS_PER_RUNTIME = 8"
+          ]
         },
         {
           "name": "MAX_ACTIVE_TASKS_PER_TREE",
           "kind": "const",
-          "declarations": ["MAX_ACTIVE_TASKS_PER_TREE = 4"]
+          "declarations": [
+            "MAX_ACTIVE_TASKS_PER_TREE = 4"
+          ]
         },
         {
           "name": "MAX_REFERENCE_BYTES_PER_RECORD",
           "kind": "const",
-          "declarations": ["MAX_REFERENCE_BYTES_PER_RECORD = 8000"]
+          "declarations": [
+            "MAX_REFERENCE_BYTES_PER_RECORD = 8000"
+          ]
         },
         {
           "name": "MAX_REFERENCE_BYTES_PER_RUN",
           "kind": "const",
-          "declarations": ["MAX_REFERENCE_BYTES_PER_RUN = 32000"]
+          "declarations": [
+            "MAX_REFERENCE_BYTES_PER_RUN = 32000"
+          ]
         },
         {
           "name": "MAX_REFERENCE_CHARS_PER_RECORD",
           "kind": "const",
-          "declarations": ["MAX_REFERENCE_CHARS_PER_RECORD = 4000"]
+          "declarations": [
+            "MAX_REFERENCE_CHARS_PER_RECORD = 4000"
+          ]
         },
         {
           "name": "MAX_REFERENCE_CHARS_PER_RUN",
           "kind": "const",
-          "declarations": ["MAX_REFERENCE_CHARS_PER_RUN = 16000"]
+          "declarations": [
+            "MAX_REFERENCE_CHARS_PER_RUN = 16000"
+          ]
         },
         {
           "name": "MAX_REFERENCE_RECORD_LIMIT",
           "kind": "const",
-          "declarations": ["MAX_REFERENCE_RECORD_LIMIT = 12"]
+          "declarations": [
+            "MAX_REFERENCE_RECORD_LIMIT = 12"
+          ]
         },
         {
           "name": "MAX_REFERENCE_RECORDS_PER_RUN",
           "kind": "const",
-          "declarations": ["MAX_REFERENCE_RECORDS_PER_RUN = 8"]
+          "declarations": [
+            "MAX_REFERENCE_RECORDS_PER_RUN = 8"
+          ]
         },
         {
           "name": "MAX_REFERENCE_SESSIONS_PER_RUN",
           "kind": "const",
-          "declarations": ["MAX_REFERENCE_SESSIONS_PER_RUN = 3"]
+          "declarations": [
+            "MAX_REFERENCE_SESSIONS_PER_RUN = 3"
+          ]
         },
         {
           "name": "MAX_TOTAL_TASKS_PER_TREE",
           "kind": "const",
-          "declarations": ["MAX_TOTAL_TASKS_PER_TREE = 16"]
+          "declarations": [
+            "MAX_TOTAL_TASKS_PER_TREE = 16"
+          ]
         },
         {
           "name": "MessageRole",
           "kind": "type",
-          "declarations": ["export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';"]
+          "declarations": [
+            "export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';"
+          ]
         },
         {
           "name": "MessageStore",
@@ -1972,12 +2076,16 @@
         {
           "name": "normalizedProjectRoot",
           "kind": "function",
-          "declarations": ["export declare function normalizedProjectRoot(root: string): string;"]
+          "declarations": [
+            "export declare function normalizedProjectRoot(root: string): string;"
+          ]
         },
         {
           "name": "normalizeDriveLetter",
           "kind": "function",
-          "declarations": ["export declare function normalizeDriveLetter(p: string): string;"]
+          "declarations": [
+            "export declare function normalizeDriveLetter(p: string): string;"
+          ]
         },
         {
           "name": "normalizeHistory",
@@ -2039,13 +2147,15 @@
           "name": "PathSandbox",
           "kind": "class",
           "declarations": [
-            "export declare class PathSandbox {\n    /** 显式工作区绝对物理根路径。 */\n    readonly workspaceRoot: string;\n    /** 兼容别名：等同于 workspaceRoot。 */\n    readonly rootDir: string;\n    readonly allowSymlinks: boolean;\n    private cachedRealRootDir?;\n    constructor(config: SandboxConfig);\n    /**\n     * workspaceRoot 的物理路径。经过 toNativePhysicalPath 展开符号链接与 8.3 短名。\n     */\n    private get realRootDir();\n    /**\n     * 检查并解析安全路径\n     * 1. 解析相对路径为相对于 workspaceRoot 的绝对路径\n     * 2. 词法检查：`..` 归一化后必须仍在 workspaceRoot 内\n     * 3. 物理检查：解析符号链接与短名后的真实物理路径必须仍在 workspaceRoot 内\n     */\n    resolveSafePath(targetPath: string): string;\n    /**\n     * 把词法路径映射为物理路径。\n     *\n     * 关键点在于**向上回溯到最近一个真实存在的祖先**再取 realpath，然后把尚未存在的尾段拼回去：\n     * - 目标已存在 → 直接 realpath，符号链接立刻被展开；\n     * - 目标不存在(典型场景：write_file 新建文件) → 若只看目标本身，所有校验都会被跳过，\n     *   于是 `write_file('linkDir/new.txt')` 可以借道指向外部的 linkDir 越界写入。\n     *   回溯到 linkDir 取 realpath 即可识破这种穿透。\n     */\n    private toPhysicalPath;\n}"
+            "export declare class PathSandbox {\n    /** 显式工作区绝对物理根路径。 */\n    readonly workspaceRoot: string;\n    /** 兼容别名：等同于 workspaceRoot。 */\n    readonly rootDir: string;\n    readonly allowSymlinks: boolean;\n    private readonly readOnlyExemptions?;\n    private cachedRealRootDir?;\n    constructor(config: SandboxConfig);\n    /**\n     * workspaceRoot 的物理路径。经过 toNativePhysicalPath 展开符号链接与 8.3 短名。\n     */\n    private get realRootDir();\n    /**\n     * 检查并解析安全路径\n     * 1. read 模式先尝试只读豁免根：物理路径落在豁免根内即放行（仅 harness 受管目录）\n     * 2. 解析相对路径为相对于 workspaceRoot 的绝对路径\n     * 3. 词法检查：`..` 归一化后必须仍在 workspaceRoot 内\n     * 4. 物理检查：解析符号链接与短名后的真实物理路径必须仍在 workspaceRoot 内\n     *\n     * @param options.mode 缺省 'write'：工作区外的路径一律拒绝；'read' 才允许豁免根放行。\n     *   只读豁免先于工作区检查执行，因此豁免根可以位于 workspaceRoot 之外。\n     */\n    resolveSafePath(targetPath: string, options?: {\n        mode?: 'read' | 'write';\n    }): string;\n    /**\n     * 把词法路径映射为物理路径。\n     *\n     * 关键点在于**向上回溯到最近一个真实存在的祖先**再取 realpath，然后把尚未存在的尾段拼回去：\n     * - 目标已存在 → 直接 realpath，符号链接立刻被展开；\n     * - 目标不存在(典型场景：write_file 新建文件) → 若只看目标本身，所有校验都会被跳过，\n     *   于是 `write_file('linkDir/new.txt')` 可以借道指向外部的 linkDir 越界写入。\n     *   回溯到 linkDir 取 realpath 即可识破这种穿透。\n     */\n    private toPhysicalPath;\n}"
           ]
         },
         {
           "name": "PermissionAction",
           "kind": "type",
-          "declarations": ["export type PermissionAction = 'allow' | 'ask' | 'deny';"]
+          "declarations": [
+            "export type PermissionAction = 'allow' | 'ask' | 'deny';"
+          ]
         },
         {
           "name": "PermissionDecision",
@@ -2065,7 +2175,7 @@
           "name": "PermissionRequest",
           "kind": "interface",
           "declarations": [
-            "export interface PermissionRequest {\n    mode: SessionMode;\n    toolName: string;\n    capabilities: readonly Capability[];\n    /** 危险性来自工具元数据；未命中 allow 规则时，非 FullAccess 模式一律降级为 ask。 */\n    dangerous?: boolean;\n    /** 宿主硬限制；命中即拒绝，优先级高于一切规则与缓存。 */\n    hardDenied?: boolean;\n    shell?: ShellScope;\n    /** 规则表须先经 validatePermissionRules 校验；同动作规则按声明顺序取首个命中。 */\n    rules?: readonly PermissionRule[];\n    /** 会话缓存命中标志（来自 SessionApprovalCache）；仅在 deny / ask 规则都未命中时生效。 */\n    cachedApproval?: boolean;\n    /** 会话缓存拒绝标志；在 deny 规则之后、ask 规则之前生效。 */\n    cachedDenial?: boolean;\n}"
+            "export interface PermissionRequest {\n    mode: SessionMode;\n    toolName: string;\n    capabilities: readonly Capability[];\n    /** 危险性来自工具元数据；未命中 allow 规则时，非 FullAccess 模式一律降级为 ask。 */\n    dangerous?: boolean;\n    /** 宿主硬限制；命中即拒绝，优先级高于一切规则与缓存。 */\n    hardDenied?: boolean;\n    shell?: ShellScope;\n    /**\n     * Auto 模式专用：shell 命令安全分级（执行器经 classifyShellCommandSafety 对最终 ShellScope\n     * 计算）。仅参与模式默认值裁决，`safe` 允许 Auto 自动放行静态 dangerous 的 shell 工具；\n     * `unsafe`/`unknown` 与缺省（非 shell 工具）维持原有降级路径，显式规则与会话缓存仍先于此生效。\n     */\n    shellSafety?: ShellCommandSafety;\n    /** 规则表须先经 validatePermissionRules 校验；同动作规则按声明顺序取首个命中。 */\n    rules?: readonly PermissionRule[];\n    /** 会话缓存命中标志（来自 SessionApprovalCache）；仅在 deny / ask 规则都未命中时生效。 */\n    cachedApproval?: boolean;\n    /** 会话缓存拒绝标志；在 deny 规则之后、ask 规则之前生效。 */\n    cachedDenial?: boolean;\n}"
           ]
         },
         {
@@ -2127,7 +2237,9 @@
         {
           "name": "PrimaryModelRole",
           "kind": "type",
-          "declarations": ["export type PrimaryModelRole = Exclude<ModelRole, 'summary'>;"]
+          "declarations": [
+            "export type PrimaryModelRole = Exclude<ModelRole, 'summary'>;"
+          ]
         },
         {
           "name": "ProjectIdentity",
@@ -2207,6 +2319,13 @@
           ]
         },
         {
+          "name": "recordManagedResult",
+          "kind": "function",
+          "declarations": [
+            "export declare function recordManagedResult(directory: string, file: string, descriptor: number): void;"
+          ]
+        },
+        {
           "name": "recoverIncompleteAudit",
           "kind": "function",
           "declarations": [
@@ -2237,7 +2356,9 @@
         {
           "name": "ReferenceErrorCode",
           "kind": "type",
-          "declarations": ["export type ReferenceErrorCode = keyof typeof REFERENCE_SAFE_MESSAGES;"]
+          "declarations": [
+            "export type ReferenceErrorCode = keyof typeof REFERENCE_SAFE_MESSAGES;"
+          ]
         },
         {
           "name": "ReferenceReaderOptions",
@@ -2286,6 +2407,13 @@
           "kind": "type",
           "declarations": [
             "export type ReferenceSourceRole = 'user' | 'assistant' | 'branch_summary';"
+          ]
+        },
+        {
+          "name": "removeSessionToolResults",
+          "kind": "function",
+          "declarations": [
+            "export declare function removeSessionToolResults(directory: string): void;"
           ]
         },
         {
@@ -2354,7 +2482,9 @@
         {
           "name": "ROLE_PRESETS",
           "kind": "const",
-          "declarations": ["ROLE_PRESETS: Readonly<Record<SubagentRole, RolePresetDefinition>>"]
+          "declarations": [
+            "ROLE_PRESETS: Readonly<Record<SubagentRole, RolePresetDefinition>>"
+          ]
         },
         {
           "name": "RolePresetDefinition",
@@ -2395,7 +2525,7 @@
           "name": "SandboxConfig",
           "kind": "interface",
           "declarations": [
-            "export interface SandboxConfig {\n    /** 显式工作区物理根路径。 */\n    workspaceRoot?: string;\n    /** 兼容别名：等同于 workspaceRoot。 */\n    rootDir?: string;\n    /**\n     * 严格模式：任何解析后落在 workspaceRoot 之外的物理路径一律拒绝，\n     * 不存在 fail-open 开关。\n     */\n    allowSymlinks?: boolean;\n}"
+            "export interface SandboxConfig {\n    /** 显式工作区物理根路径。 */\n    workspaceRoot?: string;\n    /** 兼容别名：等同于 workspaceRoot。 */\n    rootDir?: string;\n    /**\n     * 严格模式：任何解析后落在 workspaceRoot 之外的物理路径一律拒绝，\n     * 不存在 fail-open 开关。\n     */\n    allowSymlinks?: boolean;\n    /**\n     * 只读豁免根提供者：返回 harness 受管的只读目录（如本会话的 tool-results 桶）。\n     * 仅对显式 read 模式的 resolveSafePath 生效，write/edit 永远不豁免；\n     * 每次校验时重新求值，以兼容会话恢复后 conversationId 变化的场景。\n     * 豁免根按 realpath 比对物理路径，符号链接穿透依然 fail-closed。\n     */\n    readOnlyExemptions?: () => readonly string[];\n}"
           ]
         },
         {
@@ -2457,17 +2587,23 @@
         {
           "name": "SESSION_SCHEMA_VERSION",
           "kind": "const",
-          "declarations": ["SESSION_SCHEMA_VERSION = 2"]
+          "declarations": [
+            "SESSION_SCHEMA_VERSION = 2"
+          ]
         },
         {
           "name": "SESSION_SCHEMA_VERSION_V1",
           "kind": "const",
-          "declarations": ["SESSION_SCHEMA_VERSION_V1 = 1"]
+          "declarations": [
+            "SESSION_SCHEMA_VERSION_V1 = 1"
+          ]
         },
         {
           "name": "SESSION_SCHEMA_VERSION_V2",
           "kind": "const",
-          "declarations": ["SESSION_SCHEMA_VERSION_V2 = 2"]
+          "declarations": [
+            "SESSION_SCHEMA_VERSION_V2 = 2"
+          ]
         },
         {
           "name": "SessionApprovalCache",
@@ -2500,7 +2636,9 @@
         {
           "name": "SessionErrorCode",
           "kind": "type",
-          "declarations": ["export type SessionErrorCode = keyof typeof SESSION_SAFE_MESSAGES;"]
+          "declarations": [
+            "export type SessionErrorCode = keyof typeof SESSION_SAFE_MESSAGES;"
+          ]
         },
         {
           "name": "SessionEvent",
@@ -2534,14 +2672,14 @@
           "name": "SessionManager",
           "kind": "class",
           "declarations": [
-            "export declare class SessionManager {\n    readonly project: ProjectIdentity;\n    readonly directory: string;\n    private readonly handles;\n    private readonly diagnostic?;\n    private readonly readOptions;\n    constructor(options?: SessionManagerOptions);\n    /** 默认新建独立空会话，写入头部并持有单写者锁；不读取其它正文。 */\n    create(options?: {\n        delegation?: DelegationHeader;\n    }): Promise<ManagedSession>;\n    /**\n     * 按正文活动排序分页；有效 sidecar 只读元数据，不读取完整 JSONL。默认排除已归档会话。\n     * pageSize 由调用方显式给出时必须在 1–100 之间；filter 在分页前筛选元数据，调用方须自行处理敏感信息。\n     * 置顶项整体前置、组内仍按活动时间排序；排序只作用于本方法的返回值，不影响 continueRecent。\n     */\n    list(page?: number, options?: {\n        includeArchived?: boolean;\n        pageSize?: number;\n        filter?: (metadata: SessionMetadata) => boolean;\n    }): Promise<{\n        items: SessionMetadata[];\n        total: number;\n        page: number;\n        pages: number;\n    }>;\n    /** 解析完整 ID 或唯一前缀对应的会话文件与 ID。 */\n    private resolveSession;\n    /**\n     * 归档、恢复、重命名与置顶都向正文追加一条全局控制记录，共用同一套前置约束。\n     *\n     * 约束：\n     * - 必须取得会话独占锁；\n     * - 若会话当前正处于活动打开状态，拒绝并抛出 SESSION_IN_USE（调用方先关闭句柄）；\n     * - v1 只读历史不能变更，明确以 LEGACY_SESSION_READ_ONLY 失败而不是静默忽略；\n     * - 写入后按正文重建 sidecar，状态只以正文记录为准。\n     */\n    private appendControlRecord;\n    /**\n     * 逻辑归档指定会话：向正文追加 archive_state { archived: true } 并刷新 sidecar 缓存。\n     */\n    archiveSession(id: string): Promise<void>;\n    /**\n     * 恢复已逻辑归档的会话：追加 archive_state { archived: false }，正文保持不动。\n     */\n    restoreSession(id: string): Promise<void>;\n    /**\n     * 单独重命名指定会话，不保留句柄：追加 title 记录后立即释放写锁。\n     *\n     * 与 `rename` 的分工：本方法面向「没有打开该会话」的宿主（桌面侧栏、设置页），\n     * 因此不接受活动句柄；已打开的会话由宿主经自己的 Store 追加，避免同进程锁冲突。\n     */\n    renameSession(id: string, title: string): Promise<void>;\n    /**\n     * 切换会话置顶：追加 pin_state { pinned } 控制记录，只在列表排序时前置。\n     *\n     * 置顶不是「最近活动」，因此不写 run_started、也不改 lastActivityAt；\n     * 关闭置顶后会话回到按活动时间排序的原有位置。\n     */\n    pinSession(id: string, pinned: boolean): Promise<void>;\n    /**\n     * 物理删除指定会话的正文与 sidecar 缓存。\n     *\n     * 约束与边界：\n     * - 删除不可逆，本方法不提供回收站或软删除，调用方必须先取得用户确认；\n     * - 本 Manager 已持有句柄的会话拒绝（SESSION_IN_USE），避免删掉正在追加的文件；\n     * - 其它进程持锁时以 SESSION_LOCKED 失败，不抢占他人写入权，也不做「先等一会儿」的重试；\n     * - 只删该会话自己的 `.jsonl` 与 `.meta.json`；桶目录内其它文件（含 `*.tmp-*` 残片）不动；\n     * - 删除前复核首条头部身份与桶归属：文件名匹配但正文身份不符的残留文件删除会放大错误；\n     * - 缓存先删、正文后删：缓存本可重建，若正文删除失败该会话会在下次浏览时自动重建缓存。\n     */\n    deleteSession(id: string): Promise<void>;\n    /** 一次扫描建立排序目录，分页和继续最近会话共用；有效缓存不读取正文。 */\n    private allMetadata;\n    /**\n     * 打开完整 ID 或唯一前缀；跨桶、缺失与歧义均失败，同一 Manager 已持有的目标直接返回。\n     *\n     * @param id 完整会话 ID 或唯一前缀\n     * @param options 可选参数，autoUpgradeLegacy 为 true 时若目标为 v1 旧会话则自动创建/复用 v2 副本以支持无感续写\n     */\n    open(id: string, options?: {\n        autoUpgradeLegacy?: boolean;\n    }): Promise<ManagedSession>;\n    /** 继续最近有正文的会话；没有历史才新建，显式打开失败绝不回退为空会话。 */\n    continueRecent(options?: {\n        autoUpgradeLegacy?: boolean;\n    }): Promise<ManagedSession>;\n    /**\n     * 重命名已打开或待打开的会话；标题作为独立耐久记录，标题或浏览都不改变正文活动排序。\n     *\n     * 未持有句柄时临时打开并在追加后释放：只改标题不该把会话一直挂在写锁上，\n     * 否则同进程后续的归档、删除与置顶都会被自己占住的锁挡掉。\n     */\n    rename(id: string, title: string): Promise<void>;\n    /** 等候所有存储队列后释放句柄；宿主必须先结束 AgentSession 的工具/摘要清理。 */\n    close(): Promise<void>;\n    /**\n     * 只发现 cwd 和工作树根的旧文件；来源快照 hash 幂等，完整临时文件 fsync 后独占安装。\n     * 保留源文件，安装身份写入头部，缓存丢失或进程退出后仍不会重复导入。\n     */\n    importLegacy(): Promise<string[]>;\n    /**\n     * 将旧版 v1 会话升级为独立的 v2 会话副本。\n     *\n     * 保证与约束：\n     * - 原 v1 会话文件保持只读且绝不进行原地修改；\n     * - 升级生成全新独立会话文件，Header 中记录 upgradeIdentity；\n     * - 幂等：若同一 v1 文件已升级过，直接返回已有 v2 会话句柄，不重复生成副本；\n     * - 升级过程使用单写者锁保护临时文件，原子发布；\n     * - 失败时不污染目标桶目录。\n     *\n     * @param idOrFileName 原会话 conversationId 或文件名（如 `xxx.jsonl`）\n     * @returns 升级后的独立 v2 会话句柄（持有写者锁）\n     */\n    upgradeLegacyV1Session(idOrFileName: string): Promise<ManagedSession>;\n    /**\n     * 从当前会话的指定路径（指定分支或切点）导出生成全新的独立会话文件。\n     *\n     * 保证与约束：\n     * - 新会话拥有全新独立的 conversationId；\n     * - Header 记录 parentSessionId 与 forkPointRecordId；\n     * - 仅复制导出路径上的必需状态，映射为新会话的 main 分支并重排连续 seq/prevRecordId；\n     * - 拒绝半事务分叉：切点若为未闭合工具调用的 assistant 消息，立即报错；\n     * - 历史 usage 标为导入来源（importedFromFork: true），不重复计入新会话执行费用；\n     * - 临时文件写入、fsync 后原子发布，同步目录；\n     * - 导出失败绝不污染或修改源会话。\n     *\n     * @param options 导出配置\n     * @returns 新独立会话句柄（持有写者锁）\n     */\n    forkSession(options: {\n        sourceSessionId: string;\n        branchId?: string;\n        forkPointRecordId?: string;\n    }): Promise<ManagedSession>;\n    /** 绑定写后缓存与锁生命周期；正文优先，缓存失败不使保存成功的消息消失。 */\n    private attach;\n    /** 超限列表只解析有界头部并核对桶身份，不读取正文、不生成可误用的耐久缓存。 */\n    private readOversizedMetadata;\n    /** 缓存通过文件名、身份、统计与正文 stat 校验；失败交由正文重建。 */\n    private readMetadata;\n    /** 浏览仅解析完整记录；严格打开由 SessionStore 验证，浏览不能改写残片。 */\n    private readDiscoveryRecords;\n    /** 从正文重建元数据，标题和上下文事件不改变内容活动时间。 */\n    private buildMetadata;\n    /** 只由正文、用户 run 与 reset 更新活动；usage、标题、摘要均不能把浏览对象置顶。 */\n    private applyRecord;\n    /** 临时 sidecar 完整写入后替换，可重建缓存不承担正文提交职责。 */\n    private writeMetadata;\n    private metadataPath;\n    private lockPath;\n    private report;\n}"
+            "export declare class SessionManager {\n    readonly project: ProjectIdentity;\n    readonly directory: string;\n    private readonly handles;\n    private readonly diagnostic?;\n    private readonly readOptions;\n    private readonly toolResultsDirectory?;\n    constructor(options?: SessionManagerOptions);\n    /** 默认新建独立空会话，写入头部并持有单写者锁；不读取其它正文。 */\n    create(options?: {\n        delegation?: DelegationHeader;\n    }): Promise<ManagedSession>;\n    /**\n     * 按正文活动排序分页；有效 sidecar 只读元数据，不读取完整 JSONL。默认排除已归档会话。\n     * pageSize 由调用方显式给出时必须在 1–100 之间；filter 在分页前筛选元数据，调用方须自行处理敏感信息。\n     * 置顶项整体前置、组内仍按活动时间排序；排序只作用于本方法的返回值，不影响 continueRecent。\n     */\n    list(page?: number, options?: {\n        includeArchived?: boolean;\n        pageSize?: number;\n        filter?: (metadata: SessionMetadata) => boolean;\n    }): Promise<{\n        items: SessionMetadata[];\n        total: number;\n        page: number;\n        pages: number;\n    }>;\n    /** 解析完整 ID 或唯一前缀对应的会话文件与 ID。 */\n    private resolveSession;\n    /**\n     * 归档、恢复、重命名与置顶都向正文追加一条全局控制记录，共用同一套前置约束。\n     *\n     * 约束：\n     * - 必须取得会话独占锁；\n     * - 若会话当前正处于活动打开状态，拒绝并抛出 SESSION_IN_USE（调用方先关闭句柄）；\n     * - v1 只读历史不能变更，明确以 LEGACY_SESSION_READ_ONLY 失败而不是静默忽略；\n     * - 写入后按正文重建 sidecar，状态只以正文记录为准。\n     */\n    private appendControlRecord;\n    /**\n     * 逻辑归档指定会话：向正文追加 archive_state { archived: true } 并刷新 sidecar 缓存。\n     */\n    archiveSession(id: string): Promise<void>;\n    /**\n     * 恢复已逻辑归档的会话：追加 archive_state { archived: false }，正文保持不动。\n     */\n    restoreSession(id: string): Promise<void>;\n    /**\n     * 单独重命名指定会话，不保留句柄：追加 title 记录后立即释放写锁。\n     *\n     * 与 `rename` 的分工：本方法面向「没有打开该会话」的宿主（桌面侧栏、设置页），\n     * 因此不接受活动句柄；已打开的会话由宿主经自己的 Store 追加，避免同进程锁冲突。\n     */\n    renameSession(id: string, title: string): Promise<void>;\n    /**\n     * 切换会话置顶：追加 pin_state { pinned } 控制记录，只在列表排序时前置。\n     *\n     * 置顶不是「最近活动」，因此不写 run_started、也不改 lastActivityAt；\n     * 关闭置顶后会话回到按活动时间排序的原有位置。\n     */\n    pinSession(id: string, pinned: boolean): Promise<void>;\n    /**\n     * 物理删除指定会话的正文与 sidecar 缓存。\n     *\n     * 约束与边界：\n     * - 删除不可逆，本方法不提供回收站或软删除，调用方必须先取得用户确认；\n     * - 本 Manager 已持有句柄的会话拒绝（SESSION_IN_USE），避免删掉正在追加的文件；\n     * - 其它进程持锁时以 SESSION_LOCKED 失败，不抢占他人写入权，也不做「先等一会儿」的重试；\n     * - 只删该会话自己的 `.jsonl` 与 `.meta.json`；桶目录内其它文件（含 `*.tmp-*` 残片）不动；\n     * - 提供受管结果根目录时，联动删除该会话在 `tool-results` 下的结果子树（仅 harness 自建文件）；\n     * - 删除前复核首条头部身份与桶归属：文件名匹配但正文身份不符的残留文件删除会放大错误；\n     * - 缓存先删、正文后删：缓存本可重建，若正文删除失败该会话会在下次浏览时自动重建缓存。\n     */\n    deleteSession(id: string): Promise<void>;\n    /** 一次扫描建立排序目录，分页和继续最近会话共用；有效缓存不读取正文。 */\n    private allMetadata;\n    /**\n     * 打开完整 ID 或唯一前缀；跨桶、缺失与歧义均失败，同一 Manager 已持有的目标直接返回。\n     *\n     * @param id 完整会话 ID 或唯一前缀\n     * @param options 可选参数，autoUpgradeLegacy 为 true 时若目标为 v1 旧会话则自动创建/复用 v2 副本以支持无感续写\n     */\n    open(id: string, options?: {\n        autoUpgradeLegacy?: boolean;\n    }): Promise<ManagedSession>;\n    /** 继续最近有正文的会话；没有历史才新建，显式打开失败绝不回退为空会话。 */\n    continueRecent(options?: {\n        autoUpgradeLegacy?: boolean;\n    }): Promise<ManagedSession>;\n    /**\n     * 重命名已打开或待打开的会话；标题作为独立耐久记录，标题或浏览都不改变正文活动排序。\n     *\n     * 未持有句柄时临时打开并在追加后释放：只改标题不该把会话一直挂在写锁上，\n     * 否则同进程后续的归档、删除与置顶都会被自己占住的锁挡掉。\n     */\n    rename(id: string, title: string): Promise<void>;\n    /** 等候所有存储队列后释放句柄；宿主必须先结束 AgentSession 的工具/摘要清理。 */\n    close(): Promise<void>;\n    /**\n     * 只发现 cwd 和工作树根的旧文件；来源快照 hash 幂等，完整临时文件 fsync 后独占安装。\n     * 保留源文件，安装身份写入头部，缓存丢失或进程退出后仍不会重复导入。\n     */\n    importLegacy(): Promise<string[]>;\n    /**\n     * 将旧版 v1 会话升级为独立的 v2 会话副本。\n     *\n     * 保证与约束：\n     * - 原 v1 会话文件保持只读且绝不进行原地修改；\n     * - 升级生成全新独立会话文件，Header 中记录 upgradeIdentity；\n     * - 幂等：若同一 v1 文件已升级过，直接返回已有 v2 会话句柄，不重复生成副本；\n     * - 升级过程使用单写者锁保护临时文件，原子发布；\n     * - 失败时不污染目标桶目录。\n     *\n     * @param idOrFileName 原会话 conversationId 或文件名（如 `xxx.jsonl`）\n     * @returns 升级后的独立 v2 会话句柄（持有写者锁）\n     */\n    upgradeLegacyV1Session(idOrFileName: string): Promise<ManagedSession>;\n    /**\n     * 从当前会话的指定路径（指定分支或切点）导出生成全新的独立会话文件。\n     *\n     * 保证与约束：\n     * - 新会话拥有全新独立的 conversationId；\n     * - Header 记录 parentSessionId 与 forkPointRecordId；\n     * - 仅复制导出路径上的必需状态，映射为新会话的 main 分支并重排连续 seq/prevRecordId；\n     * - 拒绝半事务分叉：切点若为未闭合工具调用的 assistant 消息，立即报错；\n     * - 历史 usage 标为导入来源（importedFromFork: true），不重复计入新会话执行费用；\n     * - 临时文件写入、fsync 后原子发布，同步目录；\n     * - 导出失败绝不污染或修改源会话。\n     *\n     * @param options 导出配置\n     * @returns 新独立会话句柄（持有写者锁）\n     */\n    forkSession(options: {\n        sourceSessionId: string;\n        branchId?: string;\n        forkPointRecordId?: string;\n    }): Promise<ManagedSession>;\n    /** 绑定写后缓存与锁生命周期；正文优先，缓存失败不使保存成功的消息消失。 */\n    private attach;\n    /** 超限列表只解析有界头部并核对桶身份，不读取正文、不生成可误用的耐久缓存。 */\n    private readOversizedMetadata;\n    /** 缓存通过文件名、身份、统计与正文 stat 校验；失败交由正文重建。 */\n    private readMetadata;\n    /** 浏览仅解析完整记录；严格打开由 SessionStore 验证，浏览不能改写残片。 */\n    private readDiscoveryRecords;\n    /** 从正文重建元数据，标题和上下文事件不改变内容活动时间。 */\n    private buildMetadata;\n    /** 只由正文、用户 run 与 reset 更新活动；usage、标题、摘要均不能把浏览对象置顶。 */\n    private applyRecord;\n    /** 临时 sidecar 完整写入后替换，可重建缓存不承担正文提交职责。 */\n    private writeMetadata;\n    private metadataPath;\n    private lockPath;\n    private report;\n}"
           ]
         },
         {
           "name": "SessionManagerOptions",
           "kind": "interface",
           "declarations": [
-            "export interface SessionManagerOptions {\n    /** 显式工作区物理根路径。 */\n    workspaceRoot?: string;\n    /** 显式项目根路径。 */\n    projectRoot?: string;\n    /** 执行或参考目录；若未提供工作区根，以此解析项目工作树。 */\n    cwd?: string;\n    /** exact 固定显式根的历史归属；缺省按 Git 工作树分桶，旧调用不迁移历史。 */\n    projectRootMode?: 'git' | 'exact';\n    /** 元数据重建、升级、打开和重载共用的单文件字节预算；省略保持原行为。 */\n    maxReadBytes?: number;\n    homeDirectory?: string;\n    onDiagnostic?: (message: string) => void;\n}"
+            "export interface SessionManagerOptions {\n    /** 显式工作区物理根路径。 */\n    workspaceRoot?: string;\n    /** 显式项目根路径。 */\n    projectRoot?: string;\n    /** 执行或参考目录；若未提供工作区根，以此解析项目工作树。 */\n    cwd?: string;\n    /** exact 固定显式根的历史归属；缺省按 Git 工作树分桶，旧调用不迁移历史。 */\n    projectRootMode?: 'git' | 'exact';\n    /** 元数据重建、升级、打开和重载共用的单文件字节预算；省略保持原行为。 */\n    maxReadBytes?: number;\n    homeDirectory?: string;\n    /** 受管工具结果根目录（宿主传 `~/.kapibala/tool-results`）；提供后删除会话会联动清理该会话的结果子树。 */\n    toolResultsDirectory?: string;\n    onDiagnostic?: (message: string) => void;\n}"
           ]
         },
         {
@@ -2555,19 +2693,21 @@
           "name": "SessionMetadata",
           "kind": "interface",
           "declarations": [
-            "export interface SessionMetadata {\n    /** 元数据缓存格式版本（1 或 2）。 */\n    schemaVersion: number;\n    conversationId: string;\n    fileName: string;\n    projectRoot: string;\n    createdAt: number;\n    /** 最后一次正文、用户 run 或 reset 的时间；usage 与标题不影响排序。 */\n    lastActivityAt: number;\n    messageCount: number;\n    title: string;\n    /** 用户显式重命名的标题；存在时 reset 不再回退为默认标题。 */\n    customTitle?: string;\n    gitBranch?: string;\n    lastActivityGitBranch?: string;\n    lastModelId?: string;\n    /** 旧历史导入的幂等身份（来源路径 + 内容哈希）；重复导入据此跳过。 */\n    importIdentity?: string;\n    /** v1 副本升级的来源身份哈希。 */\n    upgradeIdentity?: string;\n    size: number;\n    mtimeMs: number;\n    /** 兼容字段：最后计入的记录 ID。 */\n    revision: string;\n    /** 会话文件使用的 Schema 版本（1 或 2）。 */\n    sessionSchemaVersion?: number;\n    /** 物理末记录 ID（与 revision 语义一致）。 */\n    logRevision?: string;\n    /** 内容正文 revision（仅正文/修复/reset 变化）。 */\n    contentRevision?: string;\n    /** 当前活动分支 ID（默认 'main'）。 */\n    activeBranchId?: string;\n    /** 当前活动分支叶子记录 ID。 */\n    activeLeafId?: string | null;\n    /** 会话是否已归档。 */\n    archived?: boolean;\n    /** 会话是否置顶；只在列表排序时前置，不改变活动时间与继续最近会话的判定。 */\n    pinned?: boolean;\n    /**\n     * 保留型委派标记；只在 detached 子会话创建时出现，普通会话缺省。\n     * 与 header.delegation 同源，供委派面板与保留预算在不读正文的情况下筛选。\n     */\n    delegation?: SessionHeader['delegation'];\n    /** 预算不足时仅提供定位与提示，不把超限文件误判为损坏或写入不完整缓存。 */\n    unavailableReason?: 'HISTORY_READ_LIMIT';\n}"
+            "export interface SessionMetadata {\n    /** 元数据缓存格式版本（1 或 2）。 */\n    schemaVersion: number;\n    conversationId: string;\n    fileName: string;\n    projectRoot: string;\n    createdAt: number;\n    /** 最后一次正文、用户 run 或 reset 的时间；usage 与标题不影响排序。 */\n    lastActivityAt: number;\n    messageCount: number;\n    title: string;\n    /** 用户显式重命名的标题；存在时 reset 不再回退为默认标题。 */\n    customTitle?: string;\n    gitBranch?: string;\n    lastActivityGitBranch?: string;\n    lastModelId?: string;\n    /** 旧历史导入的幂等身份（来源路径 + 内容哈希）；重复导入据此跳过。 */\n    importIdentity?: string;\n    /** v1 副本升级的来源身份哈希。 */\n    upgradeIdentity?: string;\n    size: number;\n    mtimeMs: number;\n    /** 兼容字段：最后计入的记录 ID。 */\n    revision: string;\n    /** 会话文件使用的 Schema 版本（1 或 2）。 */\n    sessionSchemaVersion?: number;\n    /** 物理末记录 ID（与 revision 语义一致）。 */\n    logRevision?: string;\n    /** 内容正文 revision（仅正文/修复/reset 变化）。 */\n    contentRevision?: string;\n    /** 当前活动分支 ID（默认 'main'）。 */\n    activeBranchId?: string;\n    /** 当前活动分支叶子记录 ID。 */\n    activeLeafId?: string | null;\n    /** 会话是否已归档。 */\n    archived?: boolean;\n    /** 会话是否置顶；只在列表排序时前置，不改变活动时间与继续最近会话的判定。 */\n    pinned?: boolean;\n    /** 最近一次持久化的会话审批模式；缺失表示沿用途宿主默认值。 */\n    mode?: SessionMode;\n    /**\n     * 保留型委派标记；只在 detached 子会话创建时出现，普通会话缺省。\n     * 与 header.delegation 同源，供委派面板与保留预算在不读正文的情况下筛选。\n     */\n    delegation?: SessionHeader['delegation'];\n    /** 预算不足时仅提供定位与提示，不把超限文件误判为损坏或写入不完整缓存。 */\n    unavailableReason?: 'HISTORY_READ_LIMIT';\n}"
           ]
         },
         {
           "name": "SessionMode",
           "kind": "type",
-          "declarations": ["export type SessionMode = 'Approval' | 'Plan' | 'Auto' | 'FullAccess';"]
+          "declarations": [
+            "export type SessionMode = 'Approval' | 'Plan' | 'Auto' | 'FullAccess';"
+          ]
         },
         {
           "name": "SessionOptions",
           "kind": "interface",
           "declarations": [
-            "export interface SessionOptions {\n    /** 宿主显式技能配置；缺省不扫描home，项目根需独立信任。 */\n    skills?: SkillOptions;\n    /** 持久会话身份；有版本化 Store 时须与头部一致，日志实例身份保持独立。 */\n    conversationId?: string;\n    tokenEstimator?: TokenEstimator;\n    /** 无 Git 工作树时随 run_started 记录的分支回退值。 */\n    gitBranch?: string;\n    /** 主任务默认模型绑定；恢复历史及未显式选择角色时使用。 */\n    defaultProfile: ModelProfile;\n    /** 与 defaultProfile 匹配的协议适配器。 */\n    defaultProvider: ModelProvider;\n    /** 消息级落盘通道；支持状态能力的 Store 额外启用持久压缩与交互终态。 */\n    store?: MessageStore;\n    /** 默认命令执行目录绝对路径，必须位于 workspaceRoot 内部；缺省为 workspaceRoot。 */\n    executionCwd?: string;\n    systemPrompt?: string;\n    maxSteps?: number;\n    logger?: (msg: string) => void;\n    eventLogger?: EventLogger;\n    loggingDirectory?: string;\n    /** 初始权限模式，缺省 Approval；仅空闲时可切换。 */\n    mode?: SessionMode;\n    permissionRules?: readonly PermissionRule[];\n    approvalChannel?: ApprovalChannel;\n    /** 项目根路径；缺省为 workspaceRoot。 */\n    projectRoot?: string;\n    /** 兼容别名：执行目录。 */\n    cwd?: string;\n    userInstructionsPath?: string;\n    /** 未提供时使用默认日志 sink 的审计目录；init 时恢复不完整审计。 */\n    auditRecoveryDirectory?: string;\n    /** 接收普通运行日志失败的脱敏诊断；诊断失败也不得中断问答或替代审计。 */\n    onDiagnostic?: (message: string) => void;\n    /** 会话持有的沙箱实例；缺省基于 workspaceRoot 自动创建独占实例。 */\n    sandbox?: PathSandbox;\n    /** 宿主显式共享的写租约协调器；缺省为本会话独占实例，不隐含跨会话互斥。 */\n    leaseCoordinator?: WorkspaceLeaseCoordinator;\n    /** 父任务或任务树根 ID，用于多智能体任务层级限制与追踪。 */\n    rootTaskId?: string;\n    /** 当前子会话在代理树中的深度，根会话为 0。 */\n    depth?: number;\n    /** 当前子会话对应的 agentId。 */\n    agentId?: string;\n}"
+            "export interface SessionOptions {\n    /** 宿主显式技能配置；缺省不扫描home，项目根需独立信任。 */\n    skills?: SkillOptions;\n    /** 持久会话身份；有版本化 Store 时须与头部一致，日志实例身份保持独立。 */\n    conversationId?: string;\n    tokenEstimator?: TokenEstimator;\n    /** 无 Git 工作树时随 run_started 记录的分支回退值。 */\n    gitBranch?: string;\n    /** 主任务默认模型绑定；恢复历史及未显式选择角色时使用。 */\n    defaultProfile: ModelProfile;\n    /** 与 defaultProfile 匹配的协议适配器。 */\n    defaultProvider: ModelProvider;\n    /** 消息级落盘通道；支持状态能力的 Store 额外启用持久压缩与交互终态。 */\n    store?: MessageStore;\n    /** 默认命令执行目录绝对路径，必须位于 workspaceRoot 内部；缺省为 workspaceRoot。 */\n    executionCwd?: string;\n    systemPrompt?: string;\n    maxSteps?: number;\n    logger?: (msg: string) => void;\n    eventLogger?: EventLogger;\n    loggingDirectory?: string;\n    /** 初始权限模式，缺省 Approval；仅空闲时可切换。 */\n    mode?: SessionMode;\n    permissionRules?: readonly PermissionRule[];\n    approvalChannel?: ApprovalChannel;\n    /** 项目根路径；缺省为 workspaceRoot。 */\n    projectRoot?: string;\n    /** 兼容别名：执行目录。 */\n    cwd?: string;\n    userInstructionsPath?: string;\n    /** 未提供时使用默认日志 sink 的审计目录；init 时恢复不完整审计。 */\n    auditRecoveryDirectory?: string;\n    /** 接收普通运行日志失败的脱敏诊断；诊断失败也不得中断问答或替代审计。 */\n    onDiagnostic?: (message: string) => void;\n    /** 会话持有的沙箱实例；缺省基于 workspaceRoot 自动创建独占实例。 */\n    sandbox?: PathSandbox;\n    /** 受管工具结果根目录（宿主传 `~/.kapibala/tool-results`）；缺省时 run_command 大输出退回系统临时目录。 */\n    toolResultsDirectory?: string;\n    /** 宿主显式共享的写租约协调器；缺省为本会话独占实例，不隐含跨会话互斥。 */\n    leaseCoordinator?: WorkspaceLeaseCoordinator;\n    /** 父任务或任务树根 ID，用于多智能体任务层级限制与追踪。 */\n    rootTaskId?: string;\n    /** 当前子会话在代理树中的深度，根会话为 0。 */\n    depth?: number;\n    /** 当前子会话对应的 agentId。 */\n    agentId?: string;\n}"
           ]
         },
         {
@@ -2581,7 +2721,7 @@
           "name": "SessionRecordType",
           "kind": "type",
           "declarations": [
-            "export type SessionRecordType = 'header' | 'message' | 'run_started' | 'run_finished' | 'message_state' | 'history_repair' | 'usage' | 'checkpoint' | 'context_pruned' | 'compaction_state' | 'title' | 'reset' | 'legacy_import' | 'branch_created' | 'branch_selected' | 'branch_summary' | 'archive_state' | 'pin_state';"
+            "export type SessionRecordType = 'header' | 'message' | 'run_started' | 'run_finished' | 'message_state' | 'history_repair' | 'usage' | 'checkpoint' | 'context_pruned' | 'compaction_state' | 'title' | 'reset' | 'legacy_import' | 'branch_created' | 'branch_selected' | 'branch_summary' | 'archive_state' | 'pin_state' | 'mode_state';"
           ]
         },
         {
@@ -2609,7 +2749,14 @@
           "name": "SessionStore",
           "kind": "class",
           "declarations": [
-            "export declare class SessionStore implements StatefulMessageStore {\n    private readonly readOptions;\n    readonly filePath: string;\n    private queue;\n    private records;\n    private observer?;\n    private onDiagnostic?;\n    private stamp?;\n    private schemaVersion;\n    private activeBranchId;\n    private branchLeaves;\n    private constructor();\n    /** 获取当前会话文件使用的 Schema 版本（1 或 2）。 */\n    getSchemaVersion(): number;\n    /** 判断当前会话是否为只读历史（v1 历史文件强制只读）。 */\n    isReadOnly(): boolean;\n    /** 获取当前选中的活动分支标识。 */\n    getActiveBranchId(): string;\n    /** 获取所有分支当前叶子记录 ID 映射快照。 */\n    getBranchLeaves(): ReadonlyMap<string, string>;\n    /** 注册可重建缓存的写后通知；缓存失败只诊断，不撤销或毒化已 fsync 的正文。 */\n    setAppendObserver(observer: (record: SessionRecord) => void, onDiagnostic?: (message: string) => void): void;\n    /** 以独占创建方式安装新头部（默认生成 Schema v2 格式），已有文件明确失败，绝不覆盖其它会话。 */\n    static create(filePath: string, header: SessionHeader, options?: HistoryReadOptions): Promise<SessionStore>;\n    /** 打开并验证已有会话；尾部残片先保存到隔离文件，中部损坏与未知版本拒绝恢复。 */\n    static open(filePath: string, options?: HistoryReadOptions): Promise<SessionStore>;\n    /** 获取完整记录快照，等候已排队写入后读取；调用者不能借此修改内部记录。 */\n    readRecords(): Promise<SessionRecord[]>;\n    /** 消息级持久化，补稳定身份并保留所有终态字段，成功后方可进入下一次写入。 */\n    append(message: CanonicalMessage, options?: {\n        branchId?: string;\n        parentId?: string;\n    }): Promise<void>;\n    /** 持久化状态记录，fsync 成功才返回；失败会毒化当前写者，要求重新验证后恢复。 */\n    appendRecord(type: Exclude<SessionRecordType, 'header' | 'message'>, payload: Record<string, unknown>, options?: {\n        branchId?: string;\n        parentId?: string;\n    }): Promise<SessionRecord>;\n    /**\n     * 创建新分支记录并推进分支叶子。\n     *\n     * 约束：\n     * - 分支标识必须符合命名规范（字母、数字、下划线、短横线）；\n     * - 目标分支必须不存在；\n     * - 切点记录 baseRecordId 必须为正文中已存在的合法记录；\n     * - 拒绝未闭合工具事务分叉：因果链上不得包含未全部回填 tool_result 的工具调用；\n     * - v1 历史会话禁止创建分支。\n     */\n    createBranch(branchId: string, baseRecordId: string): Promise<SessionRecord>;\n    /**\n     * 切换活动分支并持久化记录。\n     *\n     * 约束：\n     * - 目标分支必须已被创建或存在；\n     * - v1 历史会话禁止切换分支。\n     */\n    selectBranch(branchId: string): Promise<SessionRecord>;\n    /**\n     * 追加逻辑归档控制记录。\n     *\n     * 约束：\n     * - 归档状态记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；\n     * - payload 结构为 { archived: boolean }；\n     * - v1 历史会话禁止变更归档状态。\n     */\n    setArchiveState(archived: boolean): Promise<SessionRecord>;\n    /**\n     * 查询当前会话是否处于已归档状态。\n     */\n    isArchived(): Promise<boolean>;\n    /**\n     * 追加会话置顶控制记录。\n     *\n     * 约束：\n     * - 置顶状态记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；\n     * - payload 结构为 { pinned: boolean }，最后一次写入生效；\n     * - 置顶只影响列表排序，不改变正文活动时间，因此不会让会话挤进「最近」；\n     * - v1 历史会话禁止变更置顶状态。\n     */\n    setPinnedState(pinned: boolean): Promise<SessionRecord>;\n    /**\n     * 获取当前会话中所有已知分支的元数据与状态列表。\n     */\n    getBranches(): Promise<BranchInfo[]>;\n    /** 重建指定分支（默认当前活动分支）reset 后的状态视图。 */\n    loadState(options?: {\n        branchId?: string;\n    }): Promise<SessionState>;\n    /**\n     * 沿因果 parentId 链从叶子节点回溯，生成合法线性消息序列投影。\n     *\n     * 保证与约束：\n     * - 仅包含回溯因果链上的消息与状态叠加，全局控制记录与其他分支记录被天然隔离；\n     * - 支持 reset 边界截断与 history_repair 幂等叠加；\n     * - 严格校验工具事务闭合不变量，拒绝半事务破坏；\n     * - 修复缺失结果时自动持久化 history_repair（v2 下在目标分支上记录）。\n     */\n    buildProjection(options?: {\n        branchId?: string;\n        leafRecordId?: string;\n    }): Promise<CanonicalMessage[]>;\n    /**\n     * 恢复当前活动分支的原始正文，并将幂等修复叠加到原工具事务。\n     */\n    load(): Promise<CanonicalMessage[]>;\n    /** SDK 清空语义通过持久边界实现；此前摘要、剪裁及失败状态不再参与恢复。 */\n    clear(): Promise<void>;\n    /**\n     * 生成 Envelope 记录。\n     * v2 下严格维护连续物理序号 seq、物理前驱 prevRecordId 与因果 parentId / branchId。\n     */\n    private makeRecord;\n    /** 单写者队列不吞异常；后续写入依赖同一失败 Promise，防止继续污染正文。 */\n    private enqueue;\n    /** 保存当前写者的正文版本，拒绝未经锁保护的第二写者继续追加。 */\n    private refreshStamp;\n    /** 校验每个完整记录，只有最后非空行的 JSON 残片可隔离，语义损坏绝不作为残片吞掉。 */\n    private readFile;\n}"
+            "export declare class SessionStore implements StatefulMessageStore {\n    private readonly readOptions;\n    readonly filePath: string;\n    private queue;\n    private records;\n    private observer?;\n    private onDiagnostic?;\n    private stamp?;\n    private schemaVersion;\n    private activeBranchId;\n    private branchLeaves;\n    private constructor();\n    /** 获取当前会话文件使用的 Schema 版本（1 或 2）。 */\n    getSchemaVersion(): number;\n    /** 判断当前会话是否为只读历史（v1 历史文件强制只读）。 */\n    isReadOnly(): boolean;\n    /** 获取当前选中的活动分支标识。 */\n    getActiveBranchId(): string;\n    /** 获取所有分支当前叶子记录 ID 映射快照。 */\n    getBranchLeaves(): ReadonlyMap<string, string>;\n    /** 注册可重建缓存的写后通知；缓存失败只诊断，不撤销或毒化已 fsync 的正文。 */\n    setAppendObserver(observer: (record: SessionRecord) => void, onDiagnostic?: (message: string) => void): void;\n    /** 以独占创建方式安装新头部（默认生成 Schema v2 格式），已有文件明确失败，绝不覆盖其它会话。 */\n    static create(filePath: string, header: SessionHeader, options?: HistoryReadOptions): Promise<SessionStore>;\n    /** 打开并验证已有会话；尾部残片先保存到隔离文件，中部损坏与未知版本拒绝恢复。 */\n    static open(filePath: string, options?: HistoryReadOptions): Promise<SessionStore>;\n    /** 获取完整记录快照，等候已排队写入后读取；调用者不能借此修改内部记录。 */\n    readRecords(): Promise<SessionRecord[]>;\n    /** 消息级持久化，补稳定身份并保留所有终态字段，成功后方可进入下一次写入。 */\n    append(message: CanonicalMessage, options?: {\n        branchId?: string;\n        parentId?: string;\n    }): Promise<void>;\n    /** 持久化状态记录，fsync 成功才返回；失败会毒化当前写者，要求重新验证后恢复。 */\n    appendRecord(type: Exclude<SessionRecordType, 'header' | 'message'>, payload: Record<string, unknown>, options?: {\n        branchId?: string;\n        parentId?: string;\n    }): Promise<SessionRecord>;\n    /**\n     * 创建新分支记录并推进分支叶子。\n     *\n     * 约束：\n     * - 分支标识必须符合命名规范（字母、数字、下划线、短横线）；\n     * - 目标分支必须不存在；\n     * - 切点记录 baseRecordId 必须为正文中已存在的合法记录；\n     * - 拒绝未闭合工具事务分叉：因果链上不得包含未全部回填 tool_result 的工具调用；\n     * - v1 历史会话禁止创建分支。\n     */\n    createBranch(branchId: string, baseRecordId: string): Promise<SessionRecord>;\n    /**\n     * 切换活动分支并持久化记录。\n     *\n     * 约束：\n     * - 目标分支必须已被创建或存在；\n     * - v1 历史会话禁止切换分支。\n     */\n    selectBranch(branchId: string): Promise<SessionRecord>;\n    /**\n     * 追加逻辑归档控制记录。\n     *\n     * 约束：\n     * - 归档状态记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；\n     * - payload 结构为 { archived: boolean }；\n     * - v1 历史会话禁止变更归档状态。\n     */\n    setArchiveState(archived: boolean): Promise<SessionRecord>;\n    /**\n     * 查询当前会话是否处于已归档状态。\n     */\n    isArchived(): Promise<boolean>;\n    /**\n     * 追加会话置顶控制记录。\n     *\n     * 约束：\n     * - 置顶状态记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；\n     * - payload 结构为 { pinned: boolean }，最后一次写入生效；\n     * - 置顶只影响列表排序，不改变正文活动时间，因此不会让会话挤进「最近」；\n     * - v1 历史会话禁止变更置顶状态。\n     */\n    setPinnedState(pinned: boolean): Promise<SessionRecord>;\n    /**\n     * 追加会话审批模式控制记录。\n     *\n     * 约束：\n     * - 模式记录为全局控制记录（parentId 为 null，不推进分支上下文叶子）；\n     * - payload 结构为 { mode: SessionMode }，最后一次写入生效；\n     * - 只做白名单校验后原样落盘，不在 Store 层解释权限语义；\n     * - v1 历史会话禁止变更模式，保持只读。\n     */\n    setModeState(mode: SessionMode): Promise<SessionRecord>;\n    /**\n     * 获取当前会话中所有已知分支的元数据与状态列表。\n     */\n    getBranches(): Promise<BranchInfo[]>;\n    /** 重建指定分支（默认当前活动分支）reset 后的状态视图。 */\n    loadState(options?: {\n        branchId?: string;\n    }): Promise<SessionState>;\n    /**\n     * 沿因果 parentId 链从叶子节点回溯，生成合法线性消息序列投影。\n     *\n     * 保证与约束：\n     * - 仅包含回溯因果链上的消息与状态叠加，全局控制记录与其他分支记录被天然隔离；\n     * - 支持 reset 边界截断与 history_repair 幂等叠加；\n     * - 严格校验工具事务闭合不变量，拒绝半事务破坏；\n     * - 修复缺失结果时自动持久化 history_repair（v2 下在目标分支上记录）。\n     */\n    buildProjection(options?: {\n        branchId?: string;\n        leafRecordId?: string;\n    }): Promise<CanonicalMessage[]>;\n    /**\n     * 恢复当前活动分支的原始正文，并将幂等修复叠加到原工具事务。\n     */\n    load(): Promise<CanonicalMessage[]>;\n    /** SDK 清空语义通过持久边界实现；此前摘要、剪裁及失败状态不再参与恢复。 */\n    clear(): Promise<void>;\n    /**\n     * 生成 Envelope 记录。\n     * v2 下严格维护连续物理序号 seq、物理前驱 prevRecordId 与因果 parentId / branchId。\n     */\n    private makeRecord;\n    /** 单写者队列不吞异常；后续写入依赖同一失败 Promise，防止继续污染正文。 */\n    private enqueue;\n    /** 保存当前写者的正文版本，拒绝未经锁保护的第二写者继续追加。 */\n    private refreshStamp;\n    /** 校验每个完整记录，只有最后非空行的 JSON 残片可隔离，语义损坏绝不作为残片吞掉。 */\n    private readFile;\n}"
+          ]
+        },
+        {
+          "name": "sessionToolResultsDirectory",
+          "kind": "function",
+          "declarations": [
+            "export declare function sessionToolResultsDirectory(options: {\n    resultsRoot: string;\n    projectKey: string;\n    sessionId: string;\n}): string;"
           ]
         },
         {
@@ -2629,12 +2776,16 @@
         {
           "name": "ShellKind",
           "kind": "type",
-          "declarations": ["export type ShellKind = 'bash' | 'wsl' | 'pwsh' | 'powershell';"]
+          "declarations": [
+            "export type ShellKind = 'bash' | 'wsl' | 'pwsh' | 'powershell';"
+          ]
         },
         {
           "name": "ShellPreference",
           "kind": "type",
-          "declarations": ["export type ShellPreference = 'auto' | ShellKind | (string & {});"]
+          "declarations": [
+            "export type ShellPreference = 'auto' | ShellKind | (string & {});"
+          ]
         },
         {
           "name": "ShellScope",
@@ -2702,7 +2853,9 @@
         {
           "name": "skillDigest",
           "kind": "function",
-          "declarations": ["export declare function skillDigest(content: string): string;"]
+          "declarations": [
+            "export declare function skillDigest(content: string): string;"
+          ]
         },
         {
           "name": "SkillDocument",
@@ -2735,7 +2888,9 @@
         {
           "name": "skillPathKey",
           "kind": "function",
-          "declarations": ["export declare function skillPathKey(value: string): string;"]
+          "declarations": [
+            "export declare function skillPathKey(value: string): string;"
+          ]
         },
         {
           "name": "SkillQuery",
@@ -2796,7 +2951,9 @@
         {
           "name": "SkillScope",
           "kind": "type",
-          "declarations": ["export type SkillScope = 'builtin' | 'global' | 'project';"]
+          "declarations": [
+            "export type SkillScope = 'builtin' | 'global' | 'project';"
+          ]
         },
         {
           "name": "SpawnAgentParams",
@@ -2822,12 +2979,16 @@
         {
           "name": "stableJsonStringify",
           "kind": "function",
-          "declarations": ["export declare function stableJsonStringify(value: unknown): string;"]
+          "declarations": [
+            "export declare function stableJsonStringify(value: unknown): string;"
+          ]
         },
         {
           "name": "stableSerialize",
           "kind": "function",
-          "declarations": ["export declare function stableSerialize(value: unknown): string;"]
+          "declarations": [
+            "export declare function stableSerialize(value: unknown): string;"
+          ]
         },
         {
           "name": "StatefulMessageStore",
@@ -2909,7 +3070,9 @@
         {
           "name": "SUMMARY_OUTPUT_BUFFER_MULTIPLIER",
           "kind": "const",
-          "declarations": ["SUMMARY_OUTPUT_BUFFER_MULTIPLIER = 16"]
+          "declarations": [
+            "SUMMARY_OUTPUT_BUFFER_MULTIPLIER = 16"
+          ]
         },
         {
           "name": "SummaryCandidate",
@@ -2992,7 +3155,7 @@
           "name": "ToolContext",
           "kind": "interface",
           "declarations": [
-            "export interface ToolContext {\n    /** 父会话实际协调器的内存引用；spawn 必须显式传递，禁止放入模型输入或持久记录。 */\n    readonly leaseCoordinator?: WorkspaceLeaseCoordinator;\n    /** 显式工作区物理根路径，经 native realpath 规范化。 */\n    workspaceRoot?: string;\n    /** 显式命令执行工作目录绝对路径（位于 workspaceRoot 内部）。 */\n    executionCwd?: string;\n    /** 会话持有的 PathSandbox 独占实例；文件类工具优先使用此沙箱。 */\n    sandbox?: PathSandbox;\n    /** 兼容别名：本次执行的沙箱根目录；等同于 workspaceRoot。 */\n    rootDir: string;\n    signal?: AbortSignal;\n    logger?: (message: string) => void;\n    /** 命令工具在真实进程创建后调用；审计失败时须先回收进程再报告结果未知。 */\n    onProcessSpawned?: () => Promise<void>;\n    onProgress?: (progress: {\n        elapsedMs: number;\n        outputBytes: number;\n    }) => void;\n    /** 子代理调度与后台执行上下文字段。 */\n    sessionId?: string;\n    branchId?: string;\n    runId?: string;\n    toolCallId?: string;\n    depth?: number;\n    agentId?: string;\n    rootTaskId?: string;\n    /** 父事务提交成功后的回调注册器；仅当整批工具消息持久化落盘后才调用。 */\n    onCommitted?: (action: () => void | Promise<void>) => void;\n    /** 任务准备失败或父事务未持久化时的回滚清理动作注册器。 */\n    onRollback?: (action: () => void | Promise<void>) => void;\n    /** 父级会话有效安全策略快照（用于派生子代理时的真实基线求交）。 */\n    parentPolicy?: ParentPolicySnapshot;\n}"
+            "export interface ToolContext {\n    /** 父会话实际协调器的内存引用；spawn 必须显式传递，禁止放入模型输入或持久记录。 */\n    readonly leaseCoordinator?: WorkspaceLeaseCoordinator;\n    /** 显式工作区物理根路径，经 native realpath 规范化。 */\n    workspaceRoot?: string;\n    /** 显式命令执行工作目录绝对路径（位于 workspaceRoot 内部）。 */\n    executionCwd?: string;\n    /** 会话持有的 PathSandbox 独占实例；文件类工具优先使用此沙箱。 */\n    sandbox?: PathSandbox;\n    /** 兼容别名：本次执行的沙箱根目录；等同于 workspaceRoot。 */\n    rootDir: string;\n    signal?: AbortSignal;\n    logger?: (message: string) => void;\n    /** 命令工具在真实进程创建后调用；审计失败时须先回收进程再报告结果未知。 */\n    onProcessSpawned?: () => Promise<void>;\n    onProgress?: (progress: {\n        elapsedMs: number;\n        outputBytes: number;\n    }) => void;\n    /** 子代理调度与后台执行上下文字段。 */\n    sessionId?: string;\n    /** 本会话专属的受管工具结果目录（全局 ~/.kapibala/tool-results/<项目哈希>/<会话>/）；\n     *  run_command 的大输出落这里，PathSandbox 对其开放只读豁免。缺省时工具退回系统临时目录。 */\n    managedResultsDir?: string;\n    branchId?: string;\n    runId?: string;\n    toolCallId?: string;\n    depth?: number;\n    agentId?: string;\n    rootTaskId?: string;\n    /** 父事务提交成功后的回调注册器；仅当整批工具消息持久化落盘后才调用。 */\n    onCommitted?: (action: () => void | Promise<void>) => void;\n    /** 任务准备失败或父事务未持久化时的回滚清理动作注册器。 */\n    onRollback?: (action: () => void | Promise<void>) => void;\n    /** 父级会话有效安全策略快照（用于派生子代理时的真实基线求交）。 */\n    parentPolicy?: ParentPolicySnapshot;\n}"
           ]
         },
         {
@@ -3034,7 +3197,7 @@
           "name": "ToolExecutor",
           "kind": "class",
           "declarations": [
-            "export declare class ToolExecutor {\n    private readonly hardDenial?;\n    private readonly onToolResult?;\n    private readonly tools;\n    private readonly hooks;\n    private readonly workspaceRoot;\n    private readonly executionCwd;\n    private readonly sandbox?;\n    private readonly leaseCoordinator?;\n    private readonly rootDir;\n    private readonly signal?;\n    private readonly logger?;\n    private readonly toolTimeoutMs;\n    private readonly eventLogger?;\n    private readonly sessionId?;\n    private readonly runId?;\n    private readonly branchId?;\n    private readonly rootTaskId?;\n    private readonly depth?;\n    private readonly agentId?;\n    private readonly committedActions;\n    private readonly rollbackActions;\n    private readonly mode;\n    private readonly permissionRules;\n    private readonly approvalChannel?;\n    private readonly approvalCache;\n    private readonly policy;\n    private readonly neverFailures;\n    private readonly cancellation;\n    constructor(options: ExecutorOptions);\n    /**\n     * 父工具事务提交成功后调用，按注册顺序执行所有提交动作。\n     * 动作执行成功后逐项清理对应回滚动作，若某项失败保留剩余回滚动作。\n     */\n    commit(): Promise<void>;\n    /**\n     * 父工具事务提交失败或取消时调用，按逆序执行所有回滚清理动作。\n     */\n    rollback(): Promise<void>;\n    /** 中止本轮正在等待或执行的工具；调用方仍须等待 runAll 完成资源回收及结果审计。 */\n    cancel(): void;\n    /**\n     * 串行执行全部调用并返回与入参顺序一致的结果；某个结果要求用户介入后，其余调用直接拒绝。\n     * onResult 在每个最终结果（含拒绝/失败）产生后提供独立快照，供在途预算估算，不代表历史已提交；回调不得抛错。\n     */\n    runAll(calls: ToolUseBlock[], onProgress?: (event: {\n        id: string;\n        name: string;\n        elapsedMs: number;\n        outputBytes: number;\n    }) => void, onResult?: (result: ToolResultBlock) => void): Promise<ToolResultBlock[]>;\n    /**\n     * 在最终参数上裁决并审计一次调用，所有拒绝和异常均闭合为工具结果。\n     * 为调用记录本次绝对工具根目录，供跨目录恢复后的文件事实解析；不使用历史目录授权。\n     */\n    executeOne(call: ToolUseBlock, onProgress?: (event: {\n        id: string;\n        name: string;\n        elapsedMs: number;\n        outputBytes: number;\n    }) => void, forcedDeny?: boolean): Promise<ToolResultBlock>;\n    private executeResolved;\n    /**\n     * 构建当前会话在派生时刻的父权限策略快照。\n     */\n    private deriveParentPolicySnapshot;\n}"
+            "export declare class ToolExecutor {\n    private readonly hardDenial?;\n    private readonly onToolResult?;\n    private readonly tools;\n    private readonly hooks;\n    private readonly workspaceRoot;\n    private readonly executionCwd;\n    private readonly sandbox?;\n    private readonly leaseCoordinator?;\n    private readonly rootDir;\n    private readonly signal?;\n    private readonly logger?;\n    private readonly toolTimeoutMs;\n    private readonly eventLogger?;\n    private readonly sessionId?;\n    private readonly managedResultsDir?;\n    private readonly runId?;\n    private readonly branchId?;\n    private readonly rootTaskId?;\n    private readonly depth?;\n    private readonly agentId?;\n    private readonly committedActions;\n    private readonly rollbackActions;\n    private readonly mode;\n    private readonly permissionRules;\n    private readonly approvalChannel?;\n    private readonly approvalCache;\n    private readonly policy;\n    private readonly neverFailures;\n    private readonly cancellation;\n    constructor(options: ExecutorOptions);\n    /**\n     * 父工具事务提交成功后调用，按注册顺序执行所有提交动作。\n     * 动作执行成功后逐项清理对应回滚动作，若某项失败保留剩余回滚动作。\n     */\n    commit(): Promise<void>;\n    /**\n     * 父工具事务提交失败或取消时调用，按逆序执行所有回滚清理动作。\n     */\n    rollback(): Promise<void>;\n    /** 中止本轮正在等待或执行的工具；调用方仍须等待 runAll 完成资源回收及结果审计。 */\n    cancel(): void;\n    /**\n     * 串行执行全部调用并返回与入参顺序一致的结果；某个结果要求用户介入后，其余调用直接拒绝。\n     * onResult 在每个最终结果（含拒绝/失败）产生后提供独立快照，供在途预算估算，不代表历史已提交；回调不得抛错。\n     */\n    runAll(calls: ToolUseBlock[], onProgress?: (event: {\n        id: string;\n        name: string;\n        elapsedMs: number;\n        outputBytes: number;\n    }) => void, onResult?: (result: ToolResultBlock) => void): Promise<ToolResultBlock[]>;\n    /**\n     * 在最终参数上裁决并审计一次调用，所有拒绝和异常均闭合为工具结果。\n     * 为调用记录本次绝对工具根目录，供跨目录恢复后的文件事实解析；不使用历史目录授权。\n     */\n    executeOne(call: ToolUseBlock, onProgress?: (event: {\n        id: string;\n        name: string;\n        elapsedMs: number;\n        outputBytes: number;\n    }) => void, forcedDeny?: boolean): Promise<ToolResultBlock>;\n    private executeResolved;\n    /**\n     * 构建当前会话在派生时刻的父权限策略快照。\n     */\n    private deriveParentPolicySnapshot;\n}"
           ]
         },
         {
@@ -3103,7 +3266,9 @@
         {
           "name": "toToolDefinition",
           "kind": "function",
-          "declarations": ["export declare function toToolDefinition(tool: Tool): ToolDefinition;"]
+          "declarations": [
+            "export declare function toToolDefinition(tool: Tool): ToolDefinition;"
+          ]
         },
         {
           "name": "TransportError",
@@ -3268,7 +3433,9 @@
         {
           "name": "checkIpRestricted",
           "kind": "function",
-          "declarations": ["export declare function checkIpRestricted(ip: string): IpCheckResult;"]
+          "declarations": [
+            "export declare function checkIpRestricted(ip: string): IpCheckResult;"
+          ]
         },
         {
           "name": "checkIPv4Restricted",
@@ -3378,12 +3545,16 @@
         {
           "name": "DEFAULT_RESULT_BUDGET_BYTES",
           "kind": "const",
-          "declarations": ["DEFAULT_RESULT_BUDGET_BYTES = 20480"]
+          "declarations": [
+            "DEFAULT_RESULT_BUDGET_BYTES = 20480"
+          ]
         },
         {
           "name": "DEFAULT_STDERR_TAIL_LIMIT_BYTES",
           "kind": "const",
-          "declarations": ["DEFAULT_STDERR_TAIL_LIMIT_BYTES = 8192"]
+          "declarations": [
+            "DEFAULT_STDERR_TAIL_LIMIT_BYTES = 8192"
+          ]
         },
         {
           "name": "detectCredentialAlerts",
@@ -3423,7 +3594,9 @@
         {
           "name": "expandIPv6",
           "kind": "function",
-          "declarations": ["export declare function expandIPv6(ip: string): number[];"]
+          "declarations": [
+            "export declare function expandIPv6(ip: string): number[];"
+          ]
         },
         {
           "name": "extractReferencedEnvVars",
@@ -3477,7 +3650,9 @@
         {
           "name": "getTaskkillPath",
           "kind": "function",
-          "declarations": ["export declare function getTaskkillPath(): string;"]
+          "declarations": [
+            "export declare function getTaskkillPath(): string;"
+          ]
         },
         {
           "name": "HttpServerConfig",
@@ -3510,7 +3685,9 @@
         {
           "name": "ipv4ToUint32",
           "kind": "function",
-          "declarations": ["export declare function ipv4ToUint32(ip: string): number;"]
+          "declarations": [
+            "export declare function ipv4ToUint32(ip: string): number;"
+          ]
         },
         {
           "name": "isHttpConfig",
@@ -3522,12 +3699,16 @@
         {
           "name": "isLoopbackHost",
           "kind": "function",
-          "declarations": ["export declare function isLoopbackHost(hostname: string): boolean;"]
+          "declarations": [
+            "export declare function isLoopbackHost(hostname: string): boolean;"
+          ]
         },
         {
           "name": "isProcessAlive",
           "kind": "function",
-          "declarations": ["export declare function isProcessAlive(pid: number): boolean;"]
+          "declarations": [
+            "export declare function isProcessAlive(pid: number): boolean;"
+          ]
         },
         {
           "name": "isSensitiveEnvVarName",
@@ -3581,67 +3762,93 @@
         {
           "name": "MAX_MODEL_MCP_TOOLS_BUDGET_BYTES",
           "kind": "const",
-          "declarations": ["MAX_MODEL_MCP_TOOLS_BUDGET_BYTES = 65536"]
+          "declarations": [
+            "MAX_MODEL_MCP_TOOLS_BUDGET_BYTES = 65536"
+          ]
         },
         {
           "name": "MAX_MODEL_MCP_TOOLS_COUNT",
           "kind": "const",
-          "declarations": ["MAX_MODEL_MCP_TOOLS_COUNT = 64"]
+          "declarations": [
+            "MAX_MODEL_MCP_TOOLS_COUNT = 64"
+          ]
         },
         {
           "name": "MAX_PAGES_LIMIT",
           "kind": "const",
-          "declarations": ["MAX_PAGES_LIMIT = 20"]
+          "declarations": [
+            "MAX_PAGES_LIMIT = 20"
+          ]
         },
         {
           "name": "MAX_PROMPT_PAGES_LIMIT",
           "kind": "const",
-          "declarations": ["MAX_PROMPT_PAGES_LIMIT = 20"]
+          "declarations": [
+            "MAX_PROMPT_PAGES_LIMIT = 20"
+          ]
         },
         {
           "name": "MAX_PROMPTS_PER_SERVER_LIMIT",
           "kind": "const",
-          "declarations": ["MAX_PROMPTS_PER_SERVER_LIMIT = 200"]
+          "declarations": [
+            "MAX_PROMPTS_PER_SERVER_LIMIT = 200"
+          ]
         },
         {
           "name": "MAX_SCHEMA_DEPTH",
           "kind": "const",
-          "declarations": ["MAX_SCHEMA_DEPTH = 20"]
+          "declarations": [
+            "MAX_SCHEMA_DEPTH = 20"
+          ]
         },
         {
           "name": "MAX_SCHEMA_SIZE_BYTES",
           "kind": "const",
-          "declarations": ["MAX_SCHEMA_SIZE_BYTES = 32768"]
+          "declarations": [
+            "MAX_SCHEMA_SIZE_BYTES = 32768"
+          ]
         },
         {
           "name": "MAX_TOOL_NAME_LENGTH",
           "kind": "const",
-          "declarations": ["MAX_TOOL_NAME_LENGTH = 64"]
+          "declarations": [
+            "MAX_TOOL_NAME_LENGTH = 64"
+          ]
         },
         {
           "name": "MAX_TOOLS_PER_SERVER_LIMIT",
           "kind": "const",
-          "declarations": ["MAX_TOOLS_PER_SERVER_LIMIT = 200"]
+          "declarations": [
+            "MAX_TOOLS_PER_SERVER_LIMIT = 200"
+          ]
         },
         {
           "name": "MAX_WIRE_TRANSPORT_BYTES",
           "kind": "const",
-          "declarations": ["MAX_WIRE_TRANSPORT_BYTES = 4194304"]
+          "declarations": [
+            "MAX_WIRE_TRANSPORT_BYTES = 4194304"
+          ]
         },
         {
           "name": "MCP_LEGACY_PROTOCOL_VERSION",
           "kind": "const",
-          "declarations": ["MCP_LEGACY_PROTOCOL_VERSION = \"2024-11-05\""]
+          "declarations": [
+            "MCP_LEGACY_PROTOCOL_VERSION = \"2024-11-05\""
+          ]
         },
         {
           "name": "MCP_MODERN_PROTOCOL_VERSION",
           "kind": "const",
-          "declarations": ["MCP_MODERN_PROTOCOL_VERSION = \"2025-11-25\""]
+          "declarations": [
+            "MCP_MODERN_PROTOCOL_VERSION = \"2025-11-25\""
+          ]
         },
         {
           "name": "MCP_PACKAGE_VERSION",
           "kind": "const",
-          "declarations": ["MCP_PACKAGE_VERSION = \"0.0.5\""]
+          "declarations": [
+            "MCP_PACKAGE_VERSION = \"0.0.5\""
+          ]
         },
         {
           "name": "McpClientSession",
@@ -3723,7 +3930,9 @@
         {
           "name": "McpProtocolMode",
           "kind": "type",
-          "declarations": ["export type McpProtocolMode = 'legacy' | 'auto' | 'modern';"]
+          "declarations": [
+            "export type McpProtocolMode = 'legacy' | 'auto' | 'modern';"
+          ]
         },
         {
           "name": "McpServerManager",
@@ -3777,7 +3986,9 @@
         {
           "name": "PLATFORM_BASE_ENV_WHITELIST",
           "kind": "const",
-          "declarations": ["PLATFORM_BASE_ENV_WHITELIST: readonly string[]"]
+          "declarations": [
+            "PLATFORM_BASE_ENV_WHITELIST: readonly string[]"
+          ]
         },
         {
           "name": "prepareMcpPromptTask",
@@ -3859,7 +4070,9 @@
         {
           "name": "sanitizeMcpContentBlock",
           "kind": "function",
-          "declarations": ["export declare function sanitizeMcpContentBlock(block: any): string;"]
+          "declarations": [
+            "export declare function sanitizeMcpContentBlock(block: any): string;"
+          ]
         },
         {
           "name": "sanitizeStructuredContent",
