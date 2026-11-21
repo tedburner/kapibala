@@ -18,6 +18,11 @@ export interface ViewArtifact {
   readonly path: string;
   /** 小写扩展名（不含点）；MIME 白名单由宿主按扩展名解析。 */
   readonly ext: string;
+  /**
+   * 文件字节数；宿主 `stat` 观察到的事实，用于面板展示与超过预览上限时的降级判断。
+   * 缺省表示宿主未取得大小，渲染层按普通图片尝试读取，不自行猜测。
+   */
+  readonly size?: number;
 }
 
 /** 任务状态；只表达计划状态，不承载执行结果与工具关联。`cancelled` 表示模型主动撤销。 */

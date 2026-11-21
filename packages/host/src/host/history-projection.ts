@@ -7,6 +7,7 @@ import type {
   ViewTodoStatus,
   ViewTool,
 } from '../view-model/index.js';
+import type { ArtifactPolicy } from './preview-policy.js';
 import { type PublicTextRedactor, redactViewMessage } from './public-projection.js';
 import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 import {
@@ -43,11 +44,13 @@ export function displayBlockId(messageId: string, index: number): string {
  * 只从原始 getHistory() 的公开字段重建展示；不使用压缩上下文、不重放任何工具。
  * 工具结果按历史顺序匹配最近尚未闭合的调用，合入调用卡片，兼容逆序结束与后续复用 ID。
  * 未配对结果保留为可检查卡片；历史中缺结果的调用标中断，不恢复为仍在执行。
+ * `options.artifacts` 只在调用配对到成功结果时补充产物；缺省不投影任何产物。
  */
 export function projectHistory(
   history: readonly CanonicalMessage[],
   scope: string,
   redact?: PublicTextRedactor,
+  options?: { readonly artifacts?: ArtifactPolicy },
 ): ViewMessage[] {
   const waiting = new Map<string, string>();
   const results = new Map<string, MatchedResult>();
@@ -108,6 +111,10 @@ export function projectHistory(
       } else if (block.type === 'tool_use') {
         const result = results.get(blockId);
         const activity = describeToolActivity(block.name, block.input);
+        const artifacts =
+          result && !result.block.isError
+            ? options?.artifacts?.(block.name, block.input, true)
+            : undefined;
         const tool: ViewTool = {
           callId: block.id,
           name: sanitizeToolName(block.name),
@@ -125,6 +132,7 @@ export function projectHistory(
                 resultMessageId: result.messageId,
               }
             : {}),
+          ...(artifacts?.length ? { artifacts } : {}),
         };
         blocks.push({
           id: blockId,

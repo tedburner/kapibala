@@ -121,6 +121,8 @@ const artifact = z
     kind: z.literal('image'),
     path: text,
     ext: text,
+    /** 宿主观察到的大小（字节）；缺省表示未取得，渲染层按普通图片尝试读取。 */
+    size: z.number().optional(),
   })
   .strict();
 const tool = z

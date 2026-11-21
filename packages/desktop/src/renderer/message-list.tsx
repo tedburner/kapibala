@@ -1,5 +1,6 @@
 import { Button, Collapsible, InlineCopyText } from '@cloudflare/kumo';
 import {
+  type ViewArtifact,
   type ViewBlock,
   type ViewEvidence,
   type ViewMessage,
@@ -12,6 +13,7 @@ import {
   CaretDownIcon,
   CaretRightIcon,
   CheckCircleIcon,
+  ImageSquareIcon,
   MinusCircleIcon,
   PencilSimpleIcon,
   SparkleIcon,
@@ -21,6 +23,7 @@ import {
 } from '@phosphor-icons/react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { artifactFileName } from './artifact-model.js';
 import { toolPreview } from './html-preview-model.js';
 import { HtmlPreview, HtmlPreviewButton } from './html-preview.js';
 import { MessageMarkdown } from './message-markdown.js';
@@ -160,14 +163,21 @@ function useToolElapsed(tool: ViewTool | undefined): { text?: string; stale: boo
 function ToolRow({
   tool,
   onTool,
+  onArtifact,
 }: {
   tool?: ViewTool;
   onTool(callId: string, trigger: HTMLElement): void;
+  onArtifact(callId: string, artifact: ViewArtifact, trigger: HTMLElement): void;
 }) {
   // 只对内置 write_file 的目标为 html/htm/svg 时给预览入口；解析失败或超限时该值为空。
   // 按 name/input 两段文本做记忆，避免流式事件换对象引用时重复解析整份入参。
   const toolName = tool?.name;
   const toolInput = tool?.input ?? '';
+  // 产物按路径去重：同一次调用重复下发同一路径时不重复渲染 chip。
+  const artifacts = useMemo(
+    () => [...new Map((tool?.artifacts ?? []).map((item) => [item.path, item])).values()],
+    [tool?.artifacts],
+  );
   const previewDoc = useMemo(
     () => (toolName ? toolPreview(toolName, toolInput) : undefined),
     [toolName, toolInput],
@@ -205,6 +215,20 @@ function ToolRow({
         <span className="min-w-0 flex-1 truncate text-xs text-kumo-subtle">
           {resultSummary ?? tool?.invocation}
         </span>
+        {artifacts.map((artifact) => (
+          <Button
+            key={artifact.path}
+            className="kapibala-action shrink-0 text-kumo-brand"
+            variant="ghost"
+            size="sm"
+            aria-label={`预览图片 ${artifactFileName(artifact.path)}`}
+            title={artifact.path}
+            onClick={(event) => tool && onArtifact(tool.callId, artifact, event.currentTarget)}
+          >
+            <ImageSquareIcon size={14} />
+            <span className="max-w-32 truncate">{artifactFileName(artifact.path)}</span>
+          </Button>
+        ))}
         {elapsed.text && (
           <span className="shrink-0 font-mono text-2xs text-kumo-faint" aria-label="耗时">
             {elapsed.text}
@@ -302,9 +326,11 @@ function ToolRow({
 function ToolGroup({
   blocks,
   onTool,
+  onArtifact,
 }: {
   blocks: readonly ViewBlock[];
   onTool(callId: string, trigger: HTMLElement): void;
+  onArtifact(callId: string, artifact: ViewArtifact, trigger: HTMLElement): void;
 }) {
   const tools = blocks.flatMap((block) => (block.tool ? [block.tool] : []));
   const summary = summarize(tools);
@@ -340,7 +366,7 @@ function ToolGroup({
         {/* 行间 2px 呼吸避免 hover 高亮块粘连；行内自带 px-2，图标锚点与组标题对齐在 8px。 */}
         <div className="flex flex-col gap-0.5 py-1">
           {blocks.map((block) => (
-            <ToolRow key={block.id} tool={block.tool} onTool={onTool} />
+            <ToolRow key={block.id} tool={block.tool} onTool={onTool} onArtifact={onArtifact} />
           ))}
         </div>
       </Collapsible.Panel>
@@ -356,6 +382,7 @@ export function MessageList({
   scrollRef,
   evidence,
   onTool,
+  onArtifact,
   onEvidence,
   onEdit,
   report,
@@ -368,6 +395,8 @@ export function MessageList({
   /** 会话看板摘要；为空或全零时不渲染 chip，避免新会话出现无意义入口。 */
   evidence?: ViewEvidence;
   onTool(callId: string, trigger: HTMLElement): void;
+  /** 打开产物预览；chip 是工具调用常驻的重开入口。 */
+  onArtifact(callId: string, artifact: ViewArtifact, trigger: HTMLElement): void;
   /** 打开证据面板；trigger 用于关闭后把焦点还给摘要按钮。 */
   onEvidence(trigger: HTMLElement): void;
   /** 将用户消息原文回填到输入框供修改重发；只填草稿，不改写已落盘历史。 */
@@ -496,7 +525,12 @@ export function MessageList({
                   >
                     {groupBlocks(message.blocks).map((group) =>
                       group.kind === 'tools' ? (
-                        <ToolGroup key={group.blocks[0].id} blocks={group.blocks} onTool={onTool} />
+                        <ToolGroup
+                          key={group.blocks[0].id}
+                          blocks={group.blocks}
+                          onTool={onTool}
+                          onArtifact={onArtifact}
+                        />
                       ) : group.block.kind === 'thinking' ? (
                         <Collapsible.Root
                           key={group.block.id}

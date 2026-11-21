@@ -279,3 +279,42 @@ describe('session task list projection', () => {
     expect(buildTodoState(history)?.revision).toBe(1);
   });
 });
+
+describe('artifact projection', () => {
+  const policy = (
+    name: string,
+    _input: Record<string, unknown>,
+    succeeded: boolean,
+  ): readonly { kind: 'image'; path: string; ext: string; size: number }[] | undefined =>
+    name === 'write_file' && succeeded
+      ? [{ kind: 'image', path: '/workspace/chart.png', ext: 'png', size: 12 }]
+      : undefined;
+
+  it('attaches artifacts only to succeeded write_file calls', () => {
+    const history: CanonicalMessage[] = [
+      {
+        id: 'a',
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'ok', name: 'write_file', input: { path: 'chart.png' } },
+          { type: 'tool_use', id: 'bad', name: 'write_file', input: { path: 'chart.png' } },
+        ],
+      },
+      {
+        id: 'r1',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 'ok', content: 'written' }],
+      },
+      {
+        id: 'r2',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 'bad', content: 'denied', isError: true }],
+      },
+    ];
+    const projected = projectHistory(history, 'scope', undefined, { artifacts: policy });
+    expect(projected[0].blocks[0].tool?.artifacts).toEqual([
+      { kind: 'image', path: '/workspace/chart.png', ext: 'png', size: 12 },
+    ]);
+    expect(projected[0].blocks[1].tool?.artifacts).toBeUndefined();
+  });
+});

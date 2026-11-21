@@ -250,7 +250,7 @@
           "name": "projectHistory",
           "kind": "function",
           "declarations": [
-            "export declare function projectHistory(history: readonly CanonicalMessage[], scope: string, redact?: PublicTextRedactor): ViewMessage[];"
+            "export declare function projectHistory(history: readonly CanonicalMessage[], scope: string, redact?: PublicTextRedactor, options?: {\n    readonly artifacts?: ArtifactPolicy;\n}): ViewMessage[];"
           ]
         },
         {
@@ -347,7 +347,7 @@
           "name": "SessionPresentation",
           "kind": "class",
           "declarations": [
-            "export declare class SessionPresentation {\n    private readonly store;\n    private readonly operationId;\n    private readonly getHistory;\n    private readonly redact;\n    private readonly identity;\n    private readonly scope;\n    private readonly known;\n    private readonly thinking;\n    private readonly tools;\n    private turn;\n    private counter;\n    private messageId;\n    private textId;\n    private anonymousThinking;\n    private firstEvent;\n    private result;\n    /** 已下发到视图的任务清单 revision；只在成功调用数变化时发 todos_changed。 */\n    private todosRevision;\n    constructor(store: PresentationStore, operationId: string, getHistory: () => readonly CanonicalMessage[], redact?: PublicTextRedactor);\n    /**\n     * 消费已由 AgentSession 闭合/持久化约束保护的事件；迟到旧视图不再读取历史。\n     * 工具消息完成 canonical 对齐后，以历史结果为准，后续完成通知不再生成临时卡片。\n     */\n    consume(event: SessionEvent): void;\n    /** 只改变取消展示阶段，真正 AbortSignal 和执行门由原控制器负责。 */\n    cancelling(): void;\n    /** 用户覆盖属于当前展示块，不保存到 canonical；旧视图动作不能影响新会话。 */\n    setExpanded(blockId: string, expanded: boolean): void;\n    /**\n     * 宿主确认控制器 finally 已完成后校对原历史，再解除展示忙碌状态。\n     * 最后落盘/清理失败覆盖早先成功结果；无 canonical 的片段仍保留为临时中断。\n     */\n    settle(result?: OperationResult, failure?: unknown): void;\n    private resetTurn;\n    private nextId;\n    private thinkingId;\n    private updateTool;\n    /**\n     * 在完成边界才做原历史白名单重建，按块类型/调用身份对齐，不依正文 hash 猜测身份。\n     * 临时消息成功对齐后释放其工具映射，避免 Core 随后发送的 tool_finish 重新创建副本；\n     * 尚未对齐的工具仍接收实时进度与完成结果，不能提前丢弃。\n     */\n    private syncHistory;\n    private diagnostic;\n    private isCurrent;\n    private emit;\n}"
+            "export declare class SessionPresentation {\n    private readonly store;\n    private readonly operationId;\n    private readonly getHistory;\n    private readonly redact;\n    /** 产物策略；缺省不投影产物，供未装配预览能力的宿主复用同一投影器。 */\n    private readonly artifacts?;\n    private readonly identity;\n    private readonly scope;\n    private readonly known;\n    private readonly thinking;\n    private readonly tools;\n    /** 工具原始入参；`tool_finish` 不带参数，产物识别只能在起点记住后在终点解析。 */\n    private readonly rawInputs;\n    private turn;\n    private counter;\n    private messageId;\n    private textId;\n    private anonymousThinking;\n    private firstEvent;\n    private result;\n    /** 已下发到视图的任务清单 revision；只在成功调用数变化时发 todos_changed。 */\n    private todosRevision;\n    constructor(store: PresentationStore, operationId: string, getHistory: () => readonly CanonicalMessage[], redact?: PublicTextRedactor,\n    /** 产物策略；缺省不投影产物，供未装配预览能力的宿主复用同一投影器。 */\n    artifacts?: ArtifactPolicy | undefined);\n    /**\n     * 消费已由 AgentSession 闭合/持久化约束保护的事件；迟到旧视图不再读取历史。\n     * 工具消息完成 canonical 对齐后，以历史结果为准，后续完成通知不再生成临时卡片。\n     */\n    consume(event: SessionEvent): void;\n    /** 只改变取消展示阶段，真正 AbortSignal 和执行门由原控制器负责。 */\n    cancelling(): void;\n    /** 用户覆盖属于当前展示块，不保存到 canonical；旧视图动作不能影响新会话。 */\n    setExpanded(blockId: string, expanded: boolean): void;\n    /**\n     * 宿主确认控制器 finally 已完成后校对原历史，再解除展示忙碌状态。\n     * 最后落盘/清理失败覆盖早先成功结果；无 canonical 的片段仍保留为临时中断。\n     */\n    settle(result?: OperationResult, failure?: unknown): void;\n    private resetTurn;\n    private nextId;\n    private thinkingId;\n    private updateTool;\n    /**\n     * 在完成边界才做原历史白名单重建，按块类型/调用身份对齐，不依正文 hash 猜测身份。\n     * 临时消息成功对齐后释放其工具映射，避免 Core 随后发送的 tool_finish 重新创建副本；\n     * 尚未对齐的工具仍接收实时进度与完成结果，不能提前丢弃。\n     */\n    private syncHistory;\n    private diagnostic;\n    private isCurrent;\n    private emit;\n}"
           ]
         },
         {
@@ -933,7 +933,7 @@
           "name": "ViewArtifact",
           "kind": "interface",
           "declarations": [
-            "export interface ViewArtifact {\n    readonly kind: 'image';\n    /** 绝对路径；是否可预览由宿主 `preview-policy` 判定，渲染层不自行放行。 */\n    readonly path: string;\n    /** 小写扩展名（不含点）；MIME 白名单由宿主按扩展名解析。 */\n    readonly ext: string;\n}"
+            "export interface ViewArtifact {\n    readonly kind: 'image';\n    /** 绝对路径；是否可预览由宿主 `preview-policy` 判定，渲染层不自行放行。 */\n    readonly path: string;\n    /** 小写扩展名（不含点）；MIME 白名单由宿主按扩展名解析。 */\n    readonly ext: string;\n    /**\n     * 文件字节数；宿主 `stat` 观察到的事实，用于面板展示与超过预览上限时的降级判断。\n     * 缺省表示宿主未取得大小，渲染层按普通图片尝试读取，不自行猜测。\n     */\n    readonly size?: number;\n}"
           ]
         },
         {

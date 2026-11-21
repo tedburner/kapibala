@@ -13,6 +13,7 @@ import type {
 } from '../view-model/index.js';
 import { buildTodoState, displayMessageId, projectHistory } from './history-projection.js';
 import type { PresentationStore } from './presentation-store.js';
+import type { ArtifactPolicy } from './preview-policy.js';
 import { type PublicTextRedactor, redactPresentationChange } from './public-projection.js';
 import { redactText } from './redaction.js';
 import { formatModelError } from './ui/model-errors.js';
@@ -41,6 +42,8 @@ export class SessionPresentation {
   private readonly known = new Set<string>();
   private readonly thinking = new Map<string, string>();
   private readonly tools = new Map<string, ViewBlock>();
+  /** 工具原始入参；`tool_finish` 不带参数，产物识别只能在起点记住后在终点解析。 */
+  private readonly rawInputs = new Map<string, Record<string, unknown>>();
   private turn = 0;
   private counter = 0;
   private messageId = '';
@@ -56,6 +59,8 @@ export class SessionPresentation {
     private readonly operationId: string,
     private readonly getHistory: () => readonly CanonicalMessage[],
     private readonly redact: PublicTextRedactor = (text) => redactText(text, []),
+    /** 产物策略；缺省不投影产物，供未装配预览能力的宿主复用同一投影器。 */
+    private readonly artifacts?: ArtifactPolicy,
   ) {
     this.identity = { ...store.snapshot().identity };
     this.scope = presentationScope(this.identity);
@@ -125,6 +130,7 @@ export class SessionPresentation {
       }
       case 'tool_start': {
         this.textId = undefined;
+        this.rawInputs.set(event.id, event.input);
         const activity = describeToolActivity(event.name, event.input);
         const tool: ViewTool = {
           callId: event.id,
@@ -164,6 +170,9 @@ export class SessionPresentation {
       case 'tool_finish': {
         const previous = this.tools.get(event.id);
         if (previous?.tool) {
+          const artifacts = event.isError
+            ? undefined
+            : this.artifacts?.(event.name, this.rawInputs.get(event.id) ?? {}, true);
           const block: ViewBlock = {
             ...previous,
             state: 'completed',
@@ -172,6 +181,7 @@ export class SessionPresentation {
               status: event.isError ? 'failed' : 'succeeded',
               durationMs: event.durationMs,
               result: sanitizeUntrustedOutput(formatToolDetail(event.result)),
+              ...(artifacts?.length ? { artifacts } : {}),
             },
           };
           this.tools.set(event.id, block);
@@ -241,6 +251,7 @@ export class SessionPresentation {
     this.anonymousThinking = undefined;
     this.thinking.clear();
     this.tools.clear();
+    this.rawInputs.clear();
   }
 
   private nextId(kind: string): string {
@@ -270,7 +281,9 @@ export class SessionPresentation {
    */
   private syncHistory(target?: CanonicalMessage): void {
     const history = this.getHistory();
-    const projected = projectHistory(history, this.scope, this.redact);
+    const projected = projectHistory(history, this.scope, this.redact, {
+      ...(this.artifacts ? { artifacts: this.artifacts } : {}),
+    });
     const targetIndex = target
       ? history.findIndex(
           (message) => message === target || (target.id !== undefined && message.id === target.id),
@@ -304,7 +317,10 @@ export class SessionPresentation {
       }
       if (this.emit({ type: 'message_committed', message, provisionalId: pending?.id, aliases })) {
         this.known.add(message.id);
-        if (pending) this.tools.clear();
+        if (pending) {
+          this.tools.clear();
+          this.rawInputs.clear();
+        }
       }
     }
     // 任务清单只认最近一次成功 todo_write；revision 不变时不重复下发，避免每帧抖动。

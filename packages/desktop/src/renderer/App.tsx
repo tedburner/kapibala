@@ -27,6 +27,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -34,6 +35,7 @@ import {
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
+import { collectViewArtifacts } from './artifact-model.js';
 import { ComposerStatusBar } from './composer-status-bar.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
 import { HistoryListClient } from './history-list-client.js';
@@ -188,6 +190,11 @@ export function App() {
   // 编辑回填后聚焦输入框：composer 在首页与对话页互斥复用，同一时刻只挂载一份。
   const composerShell = useRef<HTMLDivElement | null>(null);
   const [details, setDetails] = useState<DetailsTarget>();
+  // 产物自动预览的基线：按「会话 + 工具调用 + 路径」记录已处理过的产物。
+  // 进入会话、窗口重建或切回会话时先把历史产物整体记为基线且不弹，
+  // 之后只有基线之外的新产物才自动打开一次；用户关闭后旧键仍在基线里，不会复弹。
+  const artifactBaseline = useRef(new Set<string>());
+  const artifactScope = useRef('');
   /** 当前会话的证据聚合；随快照序号防抖刷新，切换会话即清空。 */
   const [evidence, setEvidence] = useState<Output<'session.evidence'>>();
   const [wide, setWide] = useState(() => matchMedia('(min-width: 1200px)').matches);
@@ -225,7 +232,9 @@ export function App() {
       Boolean(workspace?.trusted) &&
       facts.runtimeValid === true &&
       Boolean(composerModel);
-  const messages = facts.state ? selectMessages(facts.state) : [];
+  // 快照到消息列表的推导按引用记忆：自动预览 effect 只应在快照真正变化时重跑，
+  // 不能因为草稿输入等无关渲染反复扫描历史。
+  const messages = useMemo(() => (facts.state ? selectMessages(facts.state) : []), [facts.state]);
   const report = setError;
   // 证据聚合是只读历史扫描：在快照连续变化时防抖，避免流式输出期间每个事件都重算。
   const evidenceWorkspaceId = opened?.workspaceId;
@@ -269,6 +278,32 @@ export function App() {
     seenApprovals.current = approvalsCount;
     if (hasNew && approvalsCount > 0 && !approvalsOpen) openApprovals(true);
   }, [approvalsCount, approvalsOpen, openApprovals]);
+  // 自动预览只在「基线之外的新产物」出现时触发一次；首帧、历史重放与切回会话都只刷新基线。
+  useEffect(() => {
+    if (!opened) {
+      artifactScope.current = '';
+      artifactBaseline.current.clear();
+      return;
+    }
+    const scope = `${opened.workspaceId}:${opened.conversationId}`;
+    const found = collectViewArtifacts(messages, scope);
+    if (artifactScope.current !== scope) {
+      artifactScope.current = scope;
+      artifactBaseline.current = new Set(found.map((item) => item.key));
+      return;
+    }
+    const fresh = found.filter((item) => !artifactBaseline.current.has(item.key));
+    for (const item of found) artifactBaseline.current.add(item.key);
+    const first = fresh[0];
+    if (!first) return;
+    setDetails({
+      kind: 'artifact',
+      callId: first.callId,
+      path: first.artifact.path,
+      ext: first.artifact.ext,
+      ...(first.artifact.size === undefined ? {} : { size: first.artifact.size }),
+    });
+  }, [messages, opened]);
   const reloadCatalog = useCallback(async () => {
     setCatalog(await api.settings.read(current.current?.trusted ? current.current.id : undefined));
   }, []);
@@ -1393,6 +1428,16 @@ export function App() {
                 onTool={(callId, trigger) => {
                   detailTrigger.current = trigger;
                   setDetails({ kind: 'tool', callId });
+                }}
+                onArtifact={(callId, artifact, trigger) => {
+                  detailTrigger.current = trigger;
+                  setDetails({
+                    kind: 'artifact',
+                    callId,
+                    path: artifact.path,
+                    ext: artifact.ext,
+                    ...(artifact.size === undefined ? {} : { size: artifact.size }),
+                  });
                 }}
                 onEvidence={(trigger) => {
                   detailTrigger.current = trigger;

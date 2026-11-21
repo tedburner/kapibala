@@ -44,6 +44,7 @@ import type { StatusFacts } from '../view-model/status.js';
 import { buildTodoState, projectHistory } from './history-projection.js';
 import { type ManagedInspection, projectInspection } from './inspection.js';
 import { PresentationStore } from './presentation-store.js';
+import { createArtifactPolicy } from './preview-policy.js';
 import { redactPresentationState } from './public-projection.js';
 import { type ReferenceSelection, readReferenceBlocks } from './reference-blocks.js';
 import { SessionPresentation, presentationScope } from './session-presentation.js';
@@ -408,9 +409,14 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       branchId: handle.store.getActiveBranchId(),
       viewEpoch: 1,
     };
+    // 产物识别绑定本次会话的工作区与主目录：允许根与 `~/.kapibala` 排除都在这里固定，
+    // 投影层只拿到纯函数，不接触全局状态或当前进程目录。
+    const artifactPolicy = createArtifactPolicy({ workspaceRoot: root, homeDirectory });
     const presentation = new PresentationStore(
       identity,
-      projectHistory(current.getHistory(), presentationScope(identity), redact),
+      projectHistory(current.getHistory(), presentationScope(identity), redact, {
+        artifacts: artifactPolicy,
+      }),
       buildTodoState(current.getHistory()),
     );
     const tasks = new TaskObservation(
@@ -579,6 +585,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         randomUUID(),
         () => current.getHistory(),
         redact,
+        artifactPolicy,
       );
       activeProjection = projected;
       runUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };

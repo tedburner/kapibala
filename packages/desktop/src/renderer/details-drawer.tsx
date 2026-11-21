@@ -4,11 +4,13 @@ import type { ViewEvidence, ViewTool } from '@kiturone/kapibala-host/view-model'
 import { XIcon } from '@phosphor-icons/react';
 import { type RefObject, useEffect, useState } from 'react';
 import type { Inspection, RuntimeSnapshot } from '../shared/observations.js';
+import { ArtifactPreview } from './artifact-preview.js';
 import { PlainCodeBlock } from './code-display.js';
 
 /** 抽屉目标只存稳定定位，实际工具与诊断每次从当前 Host 投影重新选择。 */
 export type DetailsTarget =
   | { kind: 'tool'; callId: string }
+  | { kind: 'artifact'; callId: string; path: string; ext: string; size?: number }
   | { kind: 'evidence' }
   | { kind: 'status' };
 
@@ -185,9 +187,11 @@ export function DetailsDrawer({
               <Dialog.Title className="text-base font-semibold">
                 {target?.kind === 'tool'
                   ? '工具详情'
-                  : target?.kind === 'evidence'
-                    ? '会话证据'
-                    : '会话状态'}
+                  : target?.kind === 'artifact'
+                    ? '产物预览'
+                    : target?.kind === 'evidence'
+                      ? '会话证据'
+                      : '会话状态'}
               </Dialog.Title>
               <Dialog.Description className="mt-1 break-all text-xs text-kumo-subtle">
                 {title}
@@ -208,7 +212,9 @@ export function DetailsDrawer({
             </Dialog.Close>
           </div>
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 text-sm">
-            {target?.kind === 'tool' ? (
+            {target?.kind === 'artifact' ? (
+              <ArtifactPreview path={target.path} ext={target.ext} size={target.size} />
+            ) : target?.kind === 'tool' ? (
               tool ? (
                 <>
                   <div>
