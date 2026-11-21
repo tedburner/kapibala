@@ -71,6 +71,22 @@ function handle() {
     watches: () => [],
     cancelWatch: vi.fn(async () => {}),
     subscribeWatches: () => () => {},
+    evidence: async () => ({
+      summary: {
+        additions: 0,
+        deletions: 0,
+        truncatedFiles: 0,
+        missingFiles: 0,
+        references: 0,
+        mcpCalls: 0,
+        mcpFailures: 0,
+        runningDelegations: 0,
+      },
+      changes: [],
+      references: [],
+      mcp: [],
+      delegations: [],
+    }),
   } satisfies ManagedHostSession;
 }
 it('断开等待正在装配的会话释放，未释放前不得宣告 cleaned', async () => {

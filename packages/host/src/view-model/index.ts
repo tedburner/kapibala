@@ -15,6 +15,16 @@ export {
 export { summarizeToolGroup } from './tool-summary.js';
 export type { ToolGroupSummary } from './tool-summary.js';
 export type {
+  ViewEvidence,
+  ViewEvidenceChangeFile,
+  ViewEvidenceChangeStatus,
+  ViewEvidenceDelegation,
+  ViewEvidenceDelegationState,
+  ViewEvidenceMcpServer,
+  ViewEvidenceReference,
+  ViewEvidenceSummary,
+} from './evidence.js';
+export type {
   OperationPhase,
   OperationResult,
   PresentationChange,

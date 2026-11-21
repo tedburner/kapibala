@@ -165,6 +165,7 @@ const api: DesktopAPI = {
     configure: (params) => call('session.configure', params),
     rename: (params) => done('session.rename', params),
     pin: (params) => done('session.pin', params),
+    evidence: (params) => call('session.evidence', params),
   },
   run: {
     start: (params) => call('run.start', params),

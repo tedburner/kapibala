@@ -181,6 +181,14 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect.poll(() => fs.existsSync(path.join(defaultRoot, 'proof.txt'))).toBe(true);
     expect(fs.existsSync(path.join(home, 'proof.txt'))).toBe(false);
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
+    // 会话看板：成功写入后摘要 chip 常驻，点击进入四分区面板并可用同一关闭入口返回。
+    await expect
+      .poll(() => page.getByRole('button', { name: '会话证据摘要', exact: true }).count())
+      .toBe(1);
+    await page.getByRole('button', { name: '会话证据摘要', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '会话证据', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '摘要', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
     const composer = page.getByRole('textbox', { name: '发送消息' });
     // CI runner 的显示器可能小于默认窗宽（如 macOS 1176×885），窗口会被钳制到工作区，
     // 不能假设一定拿到 ≥1200 的宽布局；两种布局分别验收真实行为。

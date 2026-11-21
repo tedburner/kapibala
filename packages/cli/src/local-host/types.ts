@@ -1,6 +1,7 @@
 import type { ApprovalChannel, SessionEvent } from '@kiturone/kapibala';
 import type { WatchView } from '@kiturone/kapibala-host/internal';
 import type { JsonValue } from '@kiturone/kapibala-host/protocol';
+import type { ViewEvidence } from '@kiturone/kapibala-host/view-model';
 
 /** 会话级监视门面；缺省表示该宿主没有布置触发源，协议方法返回 UNSUPPORTED。 */
 export interface SessionWatchControl {
@@ -16,6 +17,8 @@ export interface SessionResources {
   dispose(): Promise<void>;
   /** 会话级监视的只读列表与取消入口；不提供时协议层明确拒绝而不是假装成功。 */
   watches?: SessionWatchControl;
+  /** 会话看板只读聚合；不提供时协议层明确拒绝，而不是返回一份看似正常的空面板。 */
+  evidence?(): Promise<ViewEvidence>;
   /** run 迭代结束后 Core 仍忙时返回 true；宿主据此拒绝新运行，但 close/shutdown 仍可重试。 */
   isBusy?(): boolean;
   /** 控制连接断开或显式取消时终止该容器内后台子代理，等待清理后才能接管。 */

@@ -303,6 +303,63 @@ const historyList = z
 /** 归档/删除只按会话身份定位，不接受页面自带的文件路径或桶键。 */
 const conversation = z.object({ workspaceId: id, conversationId: id }).strict();
 
+/** 会话看板：缺失事实用 null 显式表达，渲染层据此显示「未记录」而不是 0。 */
+const evidenceChange = z
+  .object({
+    path: text,
+    callId: text,
+    status: z.enum(['recorded', 'truncated', 'missing']),
+    additions: z.number().int().nonnegative().nullable(),
+    deletions: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+const evidenceReference = z
+  .object({
+    sessionId: text,
+    recordId: text,
+    role: z.enum(['user', 'assistant', 'branch_summary']),
+    timestamp: z.number().int().nonnegative(),
+    title: text.nullable(),
+  })
+  .strict();
+const evidenceMcp = z
+  .object({
+    server: text,
+    calls: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+  })
+  .strict();
+const evidenceDelegation = z
+  .object({
+    sessionId: text,
+    title: text,
+    taskName: text,
+    state: z.enum(['running', 'ended', 'finished', 'idle', 'archived']),
+    summary: text.nullable(),
+    lastActivityAt: z.number().int().nonnegative(),
+  })
+  .strict();
+const evidence = z
+  .object({
+    summary: z
+      .object({
+        additions: z.number().int().nonnegative(),
+        deletions: z.number().int().nonnegative(),
+        truncatedFiles: z.number().int().nonnegative(),
+        missingFiles: z.number().int().nonnegative(),
+        references: z.number().int().nonnegative(),
+        mcpCalls: z.number().int().nonnegative(),
+        mcpFailures: z.number().int().nonnegative(),
+        runningDelegations: z.number().int().nonnegative(),
+      })
+      .strict(),
+    changes: z.array(evidenceChange).max(10_000),
+    references: z.array(evidenceReference).max(10_000),
+    mcp: z.array(evidenceMcp).max(1_000),
+    delegations: z.array(evidenceDelegation).max(1_000),
+  })
+  .strict();
+
 /** 面板诊断条目；message 已过脱敏管道，不得携带密钥原文。 */
 const mcpDiagnostic = z
   .object({
@@ -795,6 +852,8 @@ export const PARAMS = {
   }),
   /** 置顶只写控制记录并改变列表次序，不改活动时间，因此不需要停止在途任务。 */
   'session.pin': conversation.extend({ pinned: z.boolean() }),
+  /** 会话看板只读聚合；每次按当前 canonical 历史重算，页面只消费聚合结果。 */
+  'session.evidence': session,
   'run.start': session.extend({
     operationId: z.uuid(),
     input: z.string().min(1).max(512_000),
@@ -910,6 +969,7 @@ export const RESULTS = {
   'session.configure': opened.shape.configuration,
   'session.rename': empty,
   'session.pin': empty,
+  'session.evidence': evidence,
   'run.start': runReceipt,
   'run.cancel': runReceipt,
   'run.status': runReceipt.nullable(),
@@ -1221,6 +1281,8 @@ export type DesktopAPI = {
     rename(params: Params<'session.rename'>): Promise<void>;
     /** 置顶只改列表次序，可随时切换。 */
     pin(params: Params<'session.pin'>): Promise<void>;
+    /** 会话看板只读聚合；面板与摘要 chip 消费同一份结果。 */
+    evidence(params: Params<'session.evidence'>): Promise<Output<'session.evidence'>>;
   };
   run: {
     start(params: Params<'run.start'>): Promise<RunReceipt>;

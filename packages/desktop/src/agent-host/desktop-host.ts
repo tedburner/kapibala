@@ -348,6 +348,11 @@ export class DesktopHost {
         await this.pinConversation(p.workspaceId, p.conversationId, p.pinned);
         return {};
       }
+      case 'session.evidence': {
+        // 只读聚合：直接复用 managed 会话的同一口径，不在这里另写统计。
+        const slot = this.slot(PARAMS[method].parse(params));
+        return slot.handle.evidence();
+      }
       case 'session.configure': {
         const p = PARAMS[method].parse(params);
         const slot = this.slot(p);

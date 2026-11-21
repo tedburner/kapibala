@@ -252,6 +252,14 @@ export class LocalHostServer {
           await watches.cancel(request.params.watchId);
           return { cancelled: true };
         }
+        case 'evidence/read': {
+          // 与 watch/list 同门禁：先 attach 才允许读取该会话的观察面。
+          if (!subscriptions.has(request.params.sessionId)) throw new Error('CONTROL_REQUIRED');
+          const entry = this.registry.get(request.params.sessionId);
+          if (!entry.resources.evidence) throw new LocalHostError('INVALID_REQUEST');
+          // ViewEvidence 全部由 JSON 原生值组成；readonly 只是编译期约束，不改变 wire 形状。
+          return (await entry.resources.evidence()) as unknown as JsonValue;
+        }
         case 'host/shutdown':
           await this.stopRegistry();
           return { stopped: true };

@@ -80,6 +80,59 @@ export interface WatchWireItem {
   detail: string | null;
 }
 
+/** 会话看板单次写入事实；wire 上可空字段统一用 null，避免「缺失」与「0」混淆。 */
+export interface EvidenceWireChange {
+  path: string;
+  callId: string;
+  status: 'recorded' | 'truncated' | 'missing';
+  additions: number | null;
+  deletions: number | null;
+}
+
+/** 跨会话引用溯源；只带身份字段，不复制被引用正文。 */
+export interface EvidenceWireReference {
+  sessionId: string;
+  recordId: string;
+  role: 'user' | 'assistant' | 'branch_summary';
+  timestamp: number;
+  title: string | null;
+}
+
+/** 按 MCP 服务器聚合的调用计数。 */
+export interface EvidenceWireMcpServer {
+  server: string;
+  calls: number;
+  failed: number;
+}
+
+/** 父会话视角的委派状态；`ended` 表示父会话已收尾但子任务未终结。 */
+export interface EvidenceWireDelegation {
+  sessionId: string;
+  title: string;
+  taskName: string;
+  state: 'running' | 'ended' | 'finished' | 'idle' | 'archived';
+  summary: string | null;
+  lastActivityAt: number;
+}
+
+/** `evidence/read` 的结果形状；协议层独立定义，避免依赖宿主展示类型。 */
+export interface EvidenceWire {
+  summary: {
+    additions: number;
+    deletions: number;
+    truncatedFiles: number;
+    missingFiles: number;
+    references: number;
+    mcpCalls: number;
+    mcpFailures: number;
+    runningDelegations: number;
+  };
+  changes: EvidenceWireChange[];
+  references: EvidenceWireReference[];
+  mcp: EvidenceWireMcpServer[];
+  delegations: EvidenceWireDelegation[];
+}
+
 /** 请求参数目录；连接角色、会话权限和实际执行参数仍须由服务端复核。 */
 export interface RequestParams {
   initialize: ProtocolOffer;
@@ -100,6 +153,8 @@ export interface RequestParams {
   'approval/request': ApprovalPrompt;
   'watch/list': { sessionId: string };
   'watch/cancel': SessionControl & { watchId: string };
+  /** 会话看板只读聚合；与 watch/list 同门禁，必须先 attach 才能读取该会话证据。 */
+  'evidence/read': { sessionId: string };
   'host/shutdown': Record<string, never>;
 }
 

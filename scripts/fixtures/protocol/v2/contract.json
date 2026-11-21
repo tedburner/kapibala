@@ -191,6 +191,7 @@
   },
   "methods": [
     "approval/request",
+    "evidence/read",
     "host/shutdown",
     "initialize",
     "ping",
@@ -266,6 +267,18 @@
         "sessionAllowed",
         "expiresAt"
       ],
+      "type": "object"
+    },
+    "evidence/read": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"],
       "type": "object"
     },
     "host/shutdown": {
@@ -580,6 +593,7 @@
   },
   "resultSelections": {
     "approval/request": ["approval/request"],
+    "evidence/read": ["evidence/read"],
     "host/shutdown": ["host/shutdown"],
     "initialize": ["initialize"],
     "ping": ["ping"],
@@ -605,6 +619,221 @@
         }
       },
       "required": ["choice"],
+      "type": "object"
+    },
+    "evidence/read": {
+      "additionalProperties": false,
+      "properties": {
+        "changes": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "additions": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "callId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "deletions": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "enum": ["recorded", "truncated", "missing"],
+                "type": "string"
+              }
+            },
+            "required": ["path", "callId", "status", "additions", "deletions"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "delegations": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "lastActivityAt": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "sessionId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "state": {
+                "enum": ["running", "ended", "finished", "idle", "archived"],
+                "type": "string"
+              },
+              "summary": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "taskName": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["sessionId", "title", "taskName", "state", "summary", "lastActivityAt"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "mcp": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "calls": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "failed": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "server": {
+                "type": "string"
+              }
+            },
+            "required": ["server", "calls", "failed"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "references": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "recordId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "role": {
+                "enum": ["user", "assistant", "branch_summary"],
+                "type": "string"
+              },
+              "sessionId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "timestamp": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["sessionId", "recordId", "role", "timestamp", "title"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "summary": {
+          "additionalProperties": false,
+          "properties": {
+            "additions": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "deletions": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mcpCalls": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mcpFailures": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "missingFiles": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "references": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "runningDelegations": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "truncatedFiles": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "additions",
+            "deletions",
+            "truncatedFiles",
+            "missingFiles",
+            "references",
+            "mcpCalls",
+            "mcpFailures",
+            "runningDelegations"
+          ],
+          "type": "object"
+        }
+      },
+      "required": ["summary", "changes", "references", "mcp", "delegations"],
       "type": "object"
     },
     "host/shutdown": {

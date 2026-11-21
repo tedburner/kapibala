@@ -142,7 +142,21 @@ export function validateProtocolContent(content: readonly ContentBlock[]): void 
             typeof ex.hostError !== 'object' ||
             !['validation', 'projection', 'hook', 'audit'].includes(ex.hostError.phase) ||
             typeof ex.hostError.code !== 'string' ||
-            !ex.hostError.code))
+            !ex.hostError.code)) ||
+        // 行数事实是证据面板的唯一数据源；损坏历史必须在这里拦住，不能让面板展示坏数字。
+        (ex.facts !== undefined &&
+          (!ex.facts ||
+            typeof ex.facts !== 'object' ||
+            ex.facts.version !== 1 ||
+            (ex.facts.diff !== undefined &&
+              (!ex.facts.diff ||
+                typeof ex.facts.diff !== 'object' ||
+                ('truncated' in ex.facts.diff
+                  ? ex.facts.diff.truncated !== true
+                  : !Number.isSafeInteger(ex.facts.diff.additions) ||
+                    ex.facts.diff.additions < 0 ||
+                    !Number.isSafeInteger(ex.facts.diff.deletions) ||
+                    ex.facts.diff.deletions < 0)))))
       )
         invalidState();
     }

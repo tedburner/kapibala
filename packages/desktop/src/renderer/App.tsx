@@ -186,6 +186,8 @@ export function App() {
   // 编辑回填后聚焦输入框：composer 在首页与对话页互斥复用，同一时刻只挂载一份。
   const composerShell = useRef<HTMLDivElement | null>(null);
   const [details, setDetails] = useState<DetailsTarget>();
+  /** 当前会话的证据聚合；随快照序号防抖刷新，切换会话即清空。 */
+  const [evidence, setEvidence] = useState<Output<'session.evidence'>>();
   const [wide, setWide] = useState(() => matchMedia('(min-width: 1200px)').matches);
   const current = useRef<Workspace | undefined>(undefined);
   const run =
@@ -223,6 +225,36 @@ export function App() {
       Boolean(composerModel);
   const messages = facts.state ? selectMessages(facts.state) : [];
   const report = setError;
+  // 证据聚合是只读历史扫描：在快照连续变化时防抖，避免流式输出期间每个事件都重算。
+  const evidenceWorkspaceId = opened?.workspaceId;
+  const evidenceSessionId = opened?.sessionId;
+  // facts.state 每次变化都是新的投影对象，用它触发防抖刷新；运行中放宽间隔减少历史扫描。
+  const projection = facts.state;
+  const runPhase = run?.phase;
+  useEffect(() => {
+    if (!evidenceWorkspaceId || !evidenceSessionId || !projection) {
+      setEvidence(undefined);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(
+      () => {
+        void api.session
+          .evidence({ workspaceId: evidenceWorkspaceId, sessionId: evidenceSessionId })
+          .then((value) => {
+            if (!cancelled) setEvidence(value);
+          })
+          .catch(() => {
+            if (!cancelled) setEvidence(undefined);
+          });
+      },
+      runPhase === 'running' ? 800 : 300,
+    );
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [evidenceWorkspaceId, evidenceSessionId, projection, runPhase]);
   // 审批请求到达时立即弹出审批面板：队列没有常驻入口，错过弹窗就只能等超时被拒，
   // 用户最终只会看到莫名其妙的 PERMISSION_DENIED。
   // 只在「新增」审批时弹出（对比上次已见数量），用户手动关闭后不被反复打断。
@@ -1336,9 +1368,14 @@ export function App() {
                 messages={messages}
                 root={workspace?.root}
                 scrollRef={scrollRef}
+                evidence={evidence}
                 onTool={(callId, trigger) => {
                   detailTrigger.current = trigger;
                   setDetails({ kind: 'tool', callId });
+                }}
+                onEvidence={(trigger) => {
+                  detailTrigger.current = trigger;
+                  setDetails({ kind: 'evidence' });
                 }}
                 onEdit={(text) => {
                   // 编辑 = 回填草稿并聚焦，不截断已落盘历史；发送即作为新消息继续。
@@ -1399,6 +1436,7 @@ export function App() {
         <DetailsDrawer
           target={details}
           tool={detailTool}
+          evidence={evidence}
           inspection={facts.inspection}
           runtime={runtimeItem}
           title={`${workspace?.name ?? ''} / ${currentTitle}`}

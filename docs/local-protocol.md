@@ -50,9 +50,12 @@
 | `approval/request` | `ApprovalPrompt`（服务端 → 控制连接发起） | `{ choice: ApprovalChoice }` |
 | `watch/list` | `sessionId`（需先 attach） | `{ items: WatchWireItem[] }` |
 | `watch/cancel` | `SessionControl` + `watchId` | `{ cancelled: true }` |
+| `evidence/read` | `sessionId`（需先 attach；能力 `evidence`） | `ViewEvidence`：`{ summary, changes, references, mcp, delegations }` |
 | `host/shutdown` | `{}` | `{ stopped: true }` |
 
 `WatchWireItem = { watchId, kind: 'file_change' \| 'process_exit' \| 'port_ready', target, state: 'armed' \| 'fired' \| 'timeout' \| 'cancelled' \| 'orphaned', armedAt, deadlineAt, closedAt: number \| null, detail: string \| null }`。`watch/list` 与 `session/snapshot` 同门禁：未 attach 返回 `CONTROL_REQUIRED`；宿主没有布置监视触发源时 `watch/cancel` 返回 `INVALID_REQUEST`，不返回成功。
+
+`ViewEvidence` 的 `changes` 只统计成功的 `write_file` / `edit_file`：`status` 为 `recorded` 时带精确 `additions` / `deletions`，`truncated`（文件过大或超出差分预算）与 `missing`（旧历史没有落盘事实）都把数字置为 `null`，调用方必须显示「未记录」而不是 0；`run_command` 的间接改动不计入。`mcp` 按 `mcp__<server>__<tool>` 归组，失败只认工具结果的 `isError`；`delegations` 只含当前父会话派生的子会话，父会话已收尾但子任务仍在活动时 `state` 为 `ended`。该方法是只读聚合，宿主不提供证据面时返回 `INVALID_REQUEST`。
 
 `SessionControl = { sessionId, streamEpoch, controlEpoch }`。写类方法（`session/close`、`run/start`、`run/cancel`、`watch/cancel`）只有当前控制连接可调用：观察或未 attach 的连接返回 `CONTROL_REQUIRED`，代际过期返回 `STALE_CONTROL`。宿主进入停机流程后除 `ping`、`host/shutdown` 外一律 `SHUTTING_DOWN`。
 

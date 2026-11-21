@@ -1,17 +1,134 @@
 import { Button, InlineCopyText } from '@cloudflare/kumo';
 import { Dialog } from '@cloudflare/kumo/primitives/dialog';
-import type { ViewTool } from '@kiturone/kapibala-host/view-model';
+import type { ViewEvidence, ViewTool } from '@kiturone/kapibala-host/view-model';
 import { XIcon } from '@phosphor-icons/react';
 import { type RefObject, useEffect, useState } from 'react';
 import type { Inspection, RuntimeSnapshot } from '../shared/observations.js';
 import { PlainCodeBlock } from './code-display.js';
 
 /** 抽屉目标只存稳定定位，实际工具与诊断每次从当前 Host 投影重新选择。 */
-export type DetailsTarget = { kind: 'tool'; callId: string } | { kind: 'status' };
+export type DetailsTarget =
+  | { kind: 'tool'; callId: string }
+  | { kind: 'evidence' }
+  | { kind: 'status' };
+
+/** 委派状态文案与证据 DTO 一一对应；`ended` 不伪装成完成，而是说明父会话已收尾。 */
+const DELEGATION_STATES: Record<ViewEvidence['delegations'][number]['state'], string> = {
+  running: '运行中',
+  ended: '已结束（父会话收尾）',
+  finished: '已完成',
+  idle: '可续聊',
+  archived: '已归档',
+};
+
+/** 四分区只读渲染；所有数字都直接来自 Host 聚合，不在渲染层二次统计。 */
+function EvidenceSections({ evidence }: { evidence: ViewEvidence }) {
+  const { summary } = evidence;
+  return (
+    <>
+      <section>
+        <h3 className="mb-3 font-medium">摘要</h3>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
+          <dt>变更</dt>
+          <dd className="tabular-nums">
+            +{summary.additions} −{summary.deletions}
+            {summary.truncatedFiles ? ` · ${summary.truncatedFiles} 个未记录（过大）` : ''}
+            {summary.missingFiles ? ` · ${summary.missingFiles} 个未记录` : ''}
+          </dd>
+          <dt>引用</dt>
+          <dd>{summary.references} 条</dd>
+          <dt>MCP 调用</dt>
+          <dd>
+            {summary.mcpCalls} 次{summary.mcpFailures ? ` · ${summary.mcpFailures} 次失败` : ''}
+          </dd>
+          <dt>委派</dt>
+          <dd>
+            {summary.runningDelegations} 个运行中 · 共 {evidence.delegations.length} 个
+          </dd>
+        </dl>
+      </section>
+      <section>
+        <h3 className="mb-2 font-medium">变更</h3>
+        {evidence.changes.length ? (
+          <ul className="space-y-2 text-xs">
+            {evidence.changes.map((item) => (
+              <li key={`${item.callId}:${item.path}`} className="flex justify-between gap-3">
+                <span className="min-w-0 break-all font-mono">{item.path}</span>
+                <span className="shrink-0 tabular-nums text-kumo-subtle">
+                  {item.status === 'recorded'
+                    ? `+${item.additions} −${item.deletions}`
+                    : item.status === 'truncated'
+                      ? '未记录（文件过大）'
+                      : '未记录'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-kumo-subtle">本会话没有成功的文件写入。</p>
+        )}
+        <p className="mt-2 text-xs text-kumo-subtle">只统计成功的写入工具，不含命令行间接改动。</p>
+      </section>
+      <section>
+        <h3 className="mb-2 font-medium">引用来源</h3>
+        {evidence.references.length ? (
+          <ul className="space-y-2 text-xs">
+            {evidence.references.map((item) => (
+              <li key={`${item.sessionId}:${item.recordId}`}>
+                <p className="break-all">{item.title ?? item.sessionId}</p>
+                <p className="mt-1 text-kumo-subtle">
+                  {item.recordId} · {item.role}
+                </p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-kumo-subtle">本会话没有跨会话引用。</p>
+        )}
+      </section>
+      <section>
+        <h3 className="mb-2 font-medium">MCP 调用</h3>
+        {evidence.mcp.length ? (
+          <ul className="space-y-2 text-xs">
+            {evidence.mcp.map((item) => (
+              <li key={item.server} className="flex justify-between gap-3">
+                <span className="min-w-0 break-all">{item.server}</span>
+                <span className="shrink-0 tabular-nums text-kumo-subtle">
+                  {item.calls} 次{item.failed ? ` · ${item.failed} 次失败` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-kumo-subtle">本会话没有 MCP 调用。</p>
+        )}
+      </section>
+      <section>
+        <h3 className="mb-2 font-medium">委派任务</h3>
+        {evidence.delegations.length ? (
+          <ul className="space-y-3 text-xs">
+            {evidence.delegations.map((item) => (
+              <li key={item.sessionId}>
+                <p className="break-all">
+                  {item.title} · {item.taskName}
+                </p>
+                <p className="mt-1 text-kumo-subtle">{DELEGATION_STATES[item.state]}</p>
+                {item.summary && <p className="mt-1 text-kumo-subtle">{item.summary}</p>}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-kumo-subtle">本会话没有派生委派任务。</p>
+        )}
+      </section>
+    </>
+  );
+}
 /** Kumo 无现成非模态桌面侧栏，此领域组合仅提供布局，关闭、焦点和遮罩行为全部交给 Dialog 原语。 */
 export function DetailsDrawer({
   target,
   tool,
+  evidence,
   inspection,
   runtime,
   title,
@@ -24,6 +141,8 @@ export function DetailsDrawer({
 }: {
   target?: DetailsTarget;
   tool?: ViewTool;
+  /** 会话看板分区数据；未加载完成时 undefined，面板显示加载占位而不是空摘要。 */
+  evidence?: ViewEvidence;
   inspection?: Inspection;
   runtime?: RuntimeSnapshot['items'][number];
   title: string;
@@ -64,7 +183,11 @@ export function DetailsDrawer({
           <div className="kapibala-dock-header flex shrink-0 items-start justify-between gap-3 p-4">
             <div className="min-w-0">
               <Dialog.Title className="text-base font-semibold">
-                {target?.kind === 'tool' ? '工具详情' : '会话状态'}
+                {target?.kind === 'tool'
+                  ? '工具详情'
+                  : target?.kind === 'evidence'
+                    ? '会话证据'
+                    : '会话状态'}
               </Dialog.Title>
               <Dialog.Description className="mt-1 break-all text-xs text-kumo-subtle">
                 {title}
@@ -119,6 +242,12 @@ export function DetailsDrawer({
                 </>
               ) : (
                 <p>当前投影中没有这个工具，请重新选择。</p>
+              )
+            ) : target?.kind === 'evidence' ? (
+              evidence ? (
+                <EvidenceSections evidence={evidence} />
+              ) : (
+                <p>证据尚未加载，请稍后重试。</p>
               )
             ) : inspection ? (
               <>

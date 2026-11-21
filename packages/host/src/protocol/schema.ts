@@ -87,6 +87,7 @@ export const REQUEST_SCHEMAS = {
   }),
   'watch/list': object({ sessionId: id }),
   'watch/cancel': object({ ...control, watchId: id }),
+  'evidence/read': object({ sessionId: id }),
   'host/shutdown': empty,
 } as const satisfies Record<string, WireSchema>;
 

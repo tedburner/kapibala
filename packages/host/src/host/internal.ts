@@ -9,6 +9,8 @@
  *   新增消费符号时必须在此登记；类型重导出走 export type（isolatedModules 约束）。
  */
 export { EXPLICIT_SKILL_KICKOFF, projectHistory } from './history-projection.js';
+export { buildSessionEvidence } from './evidence.js';
+export type { SessionEvidenceInput } from './evidence.js';
 export {
   createManagedSession,
   createManagedSessionResources,

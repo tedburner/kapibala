@@ -1,6 +1,7 @@
 import { Button, Collapsible, InlineCopyText } from '@cloudflare/kumo';
 import {
   type ViewBlock,
+  type ViewEvidence,
   type ViewMessage,
   type ViewTool,
   summarizeToolGroup,
@@ -81,6 +82,19 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+}
+
+/** 摘要行只展示非零分区；全空时不渲染，避免新会话出现一排 +0 −0。 */
+function evidenceSummary(evidence: ViewEvidence | undefined): string | null {
+  if (!evidence) return null;
+  const { summary } = evidence;
+  const parts: string[] = [];
+  if (summary.additions || summary.deletions)
+    parts.push(`变更 +${summary.additions} −${summary.deletions}`);
+  if (summary.references) parts.push(`引用 ${summary.references} 条`);
+  if (summary.mcpCalls) parts.push(`MCP 调用 ${summary.mcpCalls} 次`);
+  if (summary.runningDelegations) parts.push(`委派 ${summary.runningDelegations} 个运行中`);
+  return parts.length ? parts.join(' · ') : null;
 }
 
 /** 失败原因只取首行非空文本；完整结果仍在详情抽屉，不把整段错误铺到消息流。 */
@@ -340,7 +354,9 @@ export function MessageList({
   memoryKey,
   root,
   scrollRef,
+  evidence,
   onTool,
+  onEvidence,
   onEdit,
   report,
 }: {
@@ -349,11 +365,16 @@ export function MessageList({
   /** 当前工作区根路径；正文里相对路径的本地图片以它为基准解析。 */
   root?: string;
   scrollRef: RefObject<HTMLDivElement | null>;
+  /** 会话看板摘要；为空或全零时不渲染 chip，避免新会话出现无意义入口。 */
+  evidence?: ViewEvidence;
   onTool(callId: string, trigger: HTMLElement): void;
+  /** 打开证据面板；trigger 用于关闭后把焦点还给摘要按钮。 */
+  onEvidence(trigger: HTMLElement): void;
   /** 将用户消息原文回填到输入框供修改重发；只填草稿，不改写已落盘历史。 */
   onEdit(text: string): void;
   report(message: string): void;
 }) {
+  const summary = evidenceSummary(evidence);
   const saved = useUI.getState().scrolls[memoryKey];
   const following = useRef(saved?.following ?? true);
   const userIntent = useRef(false);
@@ -392,14 +413,27 @@ export function MessageList({
     virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
   };
   return (
-    <div className="relative min-h-0 flex-1">
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {summary && (
+        <div className="shrink-0 px-6 pt-3">
+          <Button
+            className="kapibala-action"
+            variant="ghost"
+            size="sm"
+            aria-label="会话证据摘要"
+            onClick={(event) => onEvidence(event.currentTarget)}
+          >
+            {summary}
+          </Button>
+        </div>
+      )}
       <div
         ref={scrollRef}
         role="log"
         aria-label="对话内容"
         // biome-ignore lint/a11y/noNoninteractiveTabindex: 可滚动消息区接受键盘阅读，并作为虚拟行卸载后的稳定焦点返回目标。
         tabIndex={0}
-        className="h-full min-h-0 overflow-y-auto outline-offset-2"
+        className="min-h-0 flex-1 overflow-y-auto outline-offset-2"
         onWheel={(event) => {
           userIntent.current = true;
           if (event.deltaY < 0) {

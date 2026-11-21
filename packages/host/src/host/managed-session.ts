@@ -21,7 +21,8 @@ import {
 import { type McpPluginInstance, createMcpPlugin } from '@kiturone/kapibala-mcp';
 import { toWireErrorCode } from '../protocol/index.js';
 import type { JsonValue } from '../protocol/index.js';
-import { readDelegationRequestEntries } from './delegations.js';
+import { listDelegationSessions, readDelegationRequestEntries } from './delegations.js';
+import { buildSessionEvidence } from './evidence.js';
 import { resolveCliMcpOptions } from './mcp.js';
 import { CliModelBindings, ROUTABLE_MODEL_ROLES } from './model-bindings.js';
 import { StreamingRedactor, redactText } from './redaction.js';
@@ -38,7 +39,7 @@ import { createCliSubagentResumer, createCliSubagentRunner } from './subagent-ru
 import { registerBuiltinTools } from './tool-registration.js';
 import { formatToolDetail } from './ui/tool-presentation.js';
 
-import type { PresentationEvent, PresentationState } from '../view-model/index.js';
+import type { PresentationEvent, PresentationState, ViewEvidence } from '../view-model/index.js';
 import type { StatusFacts } from '../view-model/status.js';
 import { projectHistory } from './history-projection.js';
 import { type ManagedInspection, projectInspection } from './inspection.js';
@@ -178,6 +179,11 @@ export interface ManagedHostSession {
   inspection(): ManagedInspection;
   /** 观察变更不依赖页面正文订阅，退订不影响执行。 */
   subscribeInspection(listener: () => void): () => void;
+  /**
+   * 会话看板只读聚合：变更行数 / 引用 / MCP / 委派四分区。
+   * 从当前 canonical 历史实时重算，不落新记录；委派列表需要读取项目桶元数据，因此为异步。
+   */
+  evidence(): Promise<ViewEvidence>;
   /** 当前会话的监视视图（只读）；缺省没有监视时返回空数组。 */
   watches(): WatchView[];
   /** 取消一条仍在监视中的条目；终态条目明确拒绝而不是静默成功。 */
@@ -767,6 +773,21 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           inspectionListeners.delete(listener);
         };
       },
+      // 证据面板是只读聚合：每次按当前 canonical 历史重算，不缓存也不落新记录，
+      // 因此历史重放与实时观察必然同一口径。
+      evidence: async () => {
+        const phase = presentation.snapshot().operation?.phase;
+        return buildSessionEvidence(
+          {
+            conversationId: ownedHandle.conversationId,
+            history: current.getHistory(),
+            delegations: await listDelegationSessions(manager),
+            tasks: runtime?.listTasks({ parentSessionId: ownedHandle.conversationId }) ?? [],
+            parentActive: phase === 'running' || phase === 'cancelling',
+          },
+          redact,
+        );
+      },
       watches: () => watches.list(),
       cancelWatch: (watchId) => watches.cancel(watchId),
       subscribeWatches: (listener) => {
@@ -796,6 +817,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       managed,
       conversationId: ownedHandle.conversationId,
       history: () => publicHistory(current.getHistory(), redact),
+      // 本地 wire 适配器只读证据面；复用 managed 的同一聚合，避免两套口径。
+      evidence: () => managed.evidence(),
       redact,
       isBusy: managed.isBusy,
       cancelChildren,

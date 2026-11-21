@@ -7,6 +7,7 @@ import { compactCommand, contextCommand } from './context.js';
 import { delegateCommand } from './delegate.js';
 import { delegationsCommand } from './delegations.js';
 import { CommandDispatcher, type CommandHandler } from './dispatcher.js';
+import { evidenceCommand } from './evidence.js';
 import { forkCommand } from './fork.js';
 import { helpCommand } from './help.js';
 import { historyCommand, newCommand, renameCommand, resumeCommand } from './history.js';
@@ -62,6 +63,7 @@ export function createDefaultCommandDispatcher(): CommandDispatcher {
     agents: agentsCommand,
     delegate: delegateCommand,
     delegations: delegationsCommand,
+    evidence: evidenceCommand,
     watches: watchesCommand,
     exit: async (_args, context) => {
       await context.onExit();

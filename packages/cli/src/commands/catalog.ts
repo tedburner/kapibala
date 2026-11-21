@@ -365,6 +365,15 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     validate: delegations,
   },
   {
+    name: 'evidence',
+    interactionLevel: 'none',
+    usage: '/evidence',
+    description: '查看当前会话的变更行数、引用来源、MCP 调用与委派任务',
+    group: 'diagnostic',
+    mutates: () => false,
+    validate: none,
+  },
+  {
     name: 'watches',
     interactionLevel: 'none',
     usage: '/watches [cancel <watchId>]',
