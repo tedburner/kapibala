@@ -374,6 +374,15 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     validate: none,
   },
   {
+    name: 'todos',
+    interactionLevel: 'none',
+    usage: '/todos',
+    description: '查看当前会话的任务清单与完成进度',
+    group: 'session',
+    mutates: () => false,
+    validate: none,
+  },
+  {
     name: 'watches',
     interactionLevel: 'none',
     usage: '/watches [cancel <watchId>]',

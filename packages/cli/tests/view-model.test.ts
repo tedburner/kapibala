@@ -234,4 +234,21 @@ describe('pure client presentation', () => {
     ]);
     expect(selectMessages(state)[0].blocks[0].revision).toBeGreaterThan(1);
   });
+
+  it('applies session todos_changed only for the active operation', () => {
+    let state = createPresentation(identity);
+    state = reducePresentation(state, event(1, { type: 'operation_started' }));
+    const todos = {
+      items: [{ id: 'a', title: '任务', status: 'in_progress' as const }],
+      revision: 1,
+    };
+    state = reducePresentation(state, event(2, { type: 'todos_changed', todos }));
+    expect(state.todos).toEqual(todos);
+    expect(
+      reducePresentation(
+        state,
+        event(3, { type: 'todos_changed', todos: undefined }, 'previous-op'),
+      ),
+    ).toBe(state);
+  });
 });

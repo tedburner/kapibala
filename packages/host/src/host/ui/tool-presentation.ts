@@ -196,6 +196,10 @@ const BUILTIN_TOOL_DISPLAY: Record<string, ToolDisplay> = {
     chip: (input) => stringInput(input, 'watchId') || undefined,
     mono: true,
   },
+  todo_write: {
+    label: '更新任务清单',
+    verb: '更新',
+  },
 };
 
 /** 归一 MCP 工具名为「服务 · 工具」；/mcp 工具清单与工具行共用本函数，保证同口径。 */

@@ -4,6 +4,7 @@ import { AbortError, ToolError } from '../../../errors/index.js';
 import type { ToolDiffFacts } from '../../../types/index.js';
 import { PathSandbox } from '../../security/sandbox.js';
 import { defineTool } from '../index.js';
+import { todoWriteTool } from './todo.js';
 
 import type { ToolContext, ToolExecutionResult } from '../index.js';
 import { MAX_DIFF_BYTES, countLineDiff, countTextLines } from './file-diff.js';
@@ -499,5 +500,15 @@ function simpleMatch(str: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, 'i').test(str);
 }
 
-/** 五个内置文件工具的聚合；全部经 PathSandbox 校验，路径越界或符号链接穿透一律拒绝。 */
-export const builtinTools = [readFileTool, writeFileTool, editFileTool, globTool, grepTool];
+/**
+ * 内置工具聚合：五个文件工具（全部经 PathSandbox 校验，路径越界或符号链接穿透一律拒绝）
+ * 加会话任务清单写入工具（无文件副作用，见 todo.ts）。宿主按此数组整体注册。
+ */
+export const builtinTools = [
+  readFileTool,
+  writeFileTool,
+  editFileTool,
+  globTool,
+  grepTool,
+  todoWriteTool,
+];

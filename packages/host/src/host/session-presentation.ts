@@ -11,7 +11,7 @@ import type {
   ViewMessage,
   ViewTool,
 } from '../view-model/index.js';
-import { displayMessageId, projectHistory } from './history-projection.js';
+import { buildTodoState, displayMessageId, projectHistory } from './history-projection.js';
 import type { PresentationStore } from './presentation-store.js';
 import { type PublicTextRedactor, redactPresentationChange } from './public-projection.js';
 import { redactText } from './redaction.js';
@@ -48,6 +48,8 @@ export class SessionPresentation {
   private anonymousThinking: string | undefined;
   private firstEvent = true;
   private result: OperationResult | undefined;
+  /** 已下发到视图的任务清单 revision；只在成功调用数变化时发 todos_changed。 */
+  private todosRevision = 0;
 
   constructor(
     private readonly store: PresentationStore,
@@ -58,6 +60,7 @@ export class SessionPresentation {
     this.identity = { ...store.snapshot().identity };
     this.scope = presentationScope(this.identity);
     for (const message of store.snapshot().messages) this.known.add(message.id);
+    this.todosRevision = store.snapshot().todos?.revision ?? 0;
     if (!this.emit({ type: 'operation_started' }))
       throw new Error('展示操作无法在当前执行阶段启动');
     this.resetTurn(0);
@@ -303,6 +306,13 @@ export class SessionPresentation {
         this.known.add(message.id);
         if (pending) this.tools.clear();
       }
+    }
+    // 任务清单只认最近一次成功 todo_write；revision 不变时不重复下发，避免每帧抖动。
+    const todos = buildTodoState(history);
+    const revision = todos?.revision ?? 0;
+    if (revision !== this.todosRevision) {
+      this.todosRevision = revision;
+      this.emit({ type: 'todos_changed', todos });
     }
   }
 

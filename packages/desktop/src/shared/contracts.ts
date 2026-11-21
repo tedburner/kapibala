@@ -243,6 +243,7 @@ const change = z.discriminatedUnion('type', [
       expanded: z.boolean(),
     })
     .strict(),
+  z.object({ type: z.literal('todos_changed'), todos: todos.optional() }).strict(),
   notice.extend({ type: z.literal('diagnostic') }),
 ]);
 /** 顺序增量只承载展示字段，序号不作为授权凭证。 */

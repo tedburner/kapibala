@@ -8,7 +8,7 @@
  * - 显式命名导出，不用 `export *`：ESM 星号导出在多模块重导出同名符号时会静默丢弃（已踩过），
  *   新增消费符号时必须在此登记；类型重导出走 export type（isolatedModules 约束）。
  */
-export { EXPLICIT_SKILL_KICKOFF, projectHistory } from './history-projection.js';
+export { EXPLICIT_SKILL_KICKOFF, buildTodoState, projectHistory } from './history-projection.js';
 export { buildSessionEvidence } from './evidence.js';
 export type { SessionEvidenceInput } from './evidence.js';
 export {

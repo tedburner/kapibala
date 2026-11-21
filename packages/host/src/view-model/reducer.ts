@@ -247,6 +247,8 @@ export function reducePresentation(
         ),
       };
     }
+    case 'todos_changed':
+      return { ...next, todos: change.todos };
     case 'set_expanded':
       return { ...next, expanded: { ...state.expanded, [change.blockId]: change.expanded } };
     case 'diagnostic': {

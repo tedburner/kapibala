@@ -385,11 +385,11 @@ describe('builtin fs tools', () => {
   });
 
   describe('注册表装配', () => {
-    it('builtinTools 应导出 5 个工具且名称无重复', () => {
-      expect(builtinTools).toHaveLength(5);
+    it('builtinTools 应导出 6 个工具且名称无重复', () => {
+      expect(builtinTools).toHaveLength(6);
       const names = builtinTools.map((t) => t.name);
       expect(new Set(names).size).toBe(names.length);
-      expect(names).toEqual(['read_file', 'write_file', 'edit_file', 'glob', 'grep']);
+      expect(names).toEqual(['read_file', 'write_file', 'edit_file', 'glob', 'grep', 'todo_write']);
     });
 
     it('每个工具都应声明 minimal 契约：name/description/parameters/execute', () => {
@@ -401,16 +401,16 @@ describe('builtin fs tools', () => {
       }
     });
 
-    it('应能整体注册进 ToolRegistry 并产出 5 条 definitions', () => {
+    it('应能整体注册进 ToolRegistry 并产出 6 条 definitions', () => {
       const registry = new ToolRegistry();
       registry.registerSource('builtin', builtinTools);
-      expect(registry.list()).toHaveLength(5);
-      expect(registry.definitions()).toHaveLength(5);
+      expect(registry.list()).toHaveLength(6);
+      expect(registry.definitions()).toHaveLength(6);
       expect(registry.resolve('read_file').name).toBe('read_file');
     });
 
     it('权限声明应与读写语义一致', () => {
-      const readOnly = ['read_file', 'glob', 'grep'];
+      const readOnly = ['read_file', 'glob', 'grep', 'todo_write'];
       const writable = ['write_file', 'edit_file'];
       for (const tool of builtinTools) {
         const expected = readOnly.includes(tool.name)

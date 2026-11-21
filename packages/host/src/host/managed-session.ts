@@ -41,7 +41,7 @@ import { formatToolDetail } from './ui/tool-presentation.js';
 
 import type { PresentationEvent, PresentationState, ViewEvidence } from '../view-model/index.js';
 import type { StatusFacts } from '../view-model/status.js';
-import { projectHistory } from './history-projection.js';
+import { buildTodoState, projectHistory } from './history-projection.js';
 import { type ManagedInspection, projectInspection } from './inspection.js';
 import { PresentationStore } from './presentation-store.js';
 import { redactPresentationState } from './public-projection.js';
@@ -411,6 +411,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     const presentation = new PresentationStore(
       identity,
       projectHistory(current.getHistory(), presentationScope(identity), redact),
+      buildTodoState(current.getHistory()),
     );
     const tasks = new TaskObservation(
       ownedRuntime,

@@ -146,6 +146,7 @@ export type PresentationChange =
       readonly aliases?: Readonly<Record<string, string>>;
     }
   | { readonly type: 'set_expanded'; readonly blockId: string; readonly expanded: boolean }
+  | { readonly type: 'todos_changed'; readonly todos?: ViewTodoState }
   | ({ readonly type: 'diagnostic' } & ViewNotice);
 
 /** 有序事件包；宿主必须带当前会话/分支/视图与操作身份，旧代次不能写新视图。 */

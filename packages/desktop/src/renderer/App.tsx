@@ -34,6 +34,7 @@ import {
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
+import { ComposerStatusBar } from './composer-status-bar.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
 import { HistoryListClient } from './history-list-client.js';
 import { KubaiIcon } from './icons/KubaiIcon.js';
@@ -41,6 +42,7 @@ import { MessageList } from './message-list.js';
 import { ProjectDialog } from './project-dialog.js';
 import { SessionDeleteDialog, SessionRenameDialog, type SessionTarget } from './session-actions.js';
 import { SettingsDialog } from './settings-dialog.js';
+import { TaskPanel } from './task-panel.js';
 import { useUI } from './ui-state.js';
 import { ViewClient } from './view-client.js';
 import { WorkspaceSidebar, runtimeLabel } from './workspace-sidebar.js';
@@ -783,8 +785,19 @@ export function App() {
     ui.draft(draftScope, `${draft.slice(0, at)}${item.insert} `);
   }
 
+  const statusFacts = facts.inspection?.status;
+  const contextPercent = statusFacts?.contextUsage
+    ? (statusFacts.contextUsage.percent ??
+      (statusFacts.contextUsage.usedTokens !== undefined
+        ? Math.round(
+            (statusFacts.contextUsage.usedTokens / statusFacts.contextUsage.limitTokens) * 100,
+          )
+        : undefined))
+    : undefined;
+
   const composer = (
     <div ref={composerShell} className="relative w-full space-y-2">
+      <TaskPanel todos={facts.state?.todos} />
       {completion && (
         // 浮层与输入卡同宽并居中对齐：宿主外壳是整列宽度，直接 left-3/right-3 会横跨阅读列。
         <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
@@ -1180,6 +1193,14 @@ export function App() {
           </div>
         </div>
       </div>
+      {opened && (
+        <ComposerStatusBar
+          spaceName={workspace?.name}
+          branch={statusFacts?.gitBranch}
+          contextPercent={contextPercent}
+          onOpen={() => setDetails({ kind: 'status' })}
+        />
+      )}
       {!opened && workspace && !workspace.trusted && (
         <p className="kapibala-composer-hint px-1 text-kumo-warning">
           当前空间尚未信任，确认信任后才能发送。

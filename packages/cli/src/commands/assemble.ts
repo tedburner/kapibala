@@ -22,6 +22,7 @@ import { quoteCommand } from './quote.js';
 import { settingsCommand } from './settings.js';
 import { skillCommand, skillsCommand } from './skills.js';
 import { statusCommand } from './status.js';
+import { todosCommand } from './todos.js';
 import { watchesCommand } from './watches.js';
 
 /**
@@ -64,6 +65,7 @@ export function createDefaultCommandDispatcher(): CommandDispatcher {
     delegate: delegateCommand,
     delegations: delegationsCommand,
     evidence: evidenceCommand,
+    todos: todosCommand,
     watches: watchesCommand,
     exit: async (_args, context) => {
       await context.onExit();

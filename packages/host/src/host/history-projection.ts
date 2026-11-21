@@ -1,5 +1,12 @@
 import type { CanonicalMessage, ToolResultBlock } from '@kiturone/kapibala';
-import type { ViewBlock, ViewMessage, ViewTool } from '../view-model/index.js';
+import type {
+  ViewBlock,
+  ViewMessage,
+  ViewTodoItem,
+  ViewTodoState,
+  ViewTodoStatus,
+  ViewTool,
+} from '../view-model/index.js';
 import { type PublicTextRedactor, redactViewMessage } from './public-projection.js';
 import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 import {
@@ -163,4 +170,72 @@ export function projectHistory(
       });
   }
   return projected.map((message) => redactViewMessage(message, redact));
+}
+
+/** 允许的任务状态；与 Core `todo_write` 校验同口径，非法值一律丢弃整次声明。 */
+const TODO_STATUSES: ReadonlySet<string> = new Set<ViewTodoStatus>([
+  'pending',
+  'in_progress',
+  'completed',
+  'cancelled',
+]);
+
+/** 只从成功调用入参解析条目；结构不合法返回 undefined，绝不猜测缺失字段。 */
+function parseTodoItems(input: unknown): ViewTodoItem[] | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = (input as { items?: unknown }).items;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const items: ViewTodoItem[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') return undefined;
+    const { id, title, status } = entry as Record<string, unknown>;
+    if (
+      typeof id !== 'string' ||
+      !id ||
+      typeof title !== 'string' ||
+      typeof status !== 'string' ||
+      !TODO_STATUSES.has(status)
+    )
+      return undefined;
+    items.push({ id, title, status: status as ViewTodoStatus });
+  }
+  return items;
+}
+
+/**
+ * 从 canonical 历史重算会话任务清单：只认**最近一次成功**（配对结果非 error）的
+ * `todo_write` 调用，失败、中断或无结果的调用不改变视图，避免一次坏写入把面板闪空。
+ *
+ * 边界与用途：
+ * - 纯函数，不落盘、不新增记录类型；历史重放与实时观察必然同一口径。
+ * - `items` 保持模型提交顺序，不做二次排序；`revision` 为成功调用累计数，仅用于
+ *   渲染层判断是否需要重绘，不参与权限或持久化。
+ * - 从未成功调用时返回 `undefined`，桌面 pill / 浮层与 CLI 据此隐藏。
+ */
+export function buildTodoState(history: readonly CanonicalMessage[]): ViewTodoState | undefined {
+  const inputs = new Map<string, { input: unknown; timestamp?: number }>();
+  let latest: ViewTodoItem[] | undefined;
+  let updatedAt: number | undefined;
+  let revision = 0;
+  for (const message of history) {
+    for (const block of message.content) {
+      if (block.type === 'tool_use' && block.name === 'todo_write') {
+        inputs.set(block.id, { input: block.input, timestamp: message.timestamp });
+      } else if (block.type === 'tool_result' && !block.isError) {
+        const call = inputs.get(block.toolUseId);
+        if (!call) continue;
+        const items = parseTodoItems(call.input);
+        if (!items) continue;
+        latest = items;
+        updatedAt = message.timestamp ?? call.timestamp;
+        revision += 1;
+      }
+    }
+  }
+  if (!latest) return undefined;
+  return {
+    items: latest,
+    revision,
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
+  };
 }
