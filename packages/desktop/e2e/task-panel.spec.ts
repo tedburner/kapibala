@@ -99,13 +99,13 @@ test('任务面板：pill 进度、浮层四态与底栏状态条', async () => 
     await expect(page.getByRole('button', { name: '运行事实与状态' })).toBeVisible();
 
     await pill.click();
-    const panel = page.getByLabel('任务清单');
+    const panel = page.getByRole('region', { name: '任务清单', exact: true });
     await expect(panel).toBeVisible();
-    await expect(panel.getByLabel('已完成：写设计')).toBeVisible();
-    await expect(panel.getByLabel('进行中：写代码')).toBeVisible();
-    await expect(panel.getByLabel('进行中：补测试')).toBeVisible();
-    await expect(panel.getByLabel('待办：写文档')).toBeVisible();
-    await expect(panel.getByLabel('已取消：遗留项')).toBeVisible();
+    await expect(panel.getByLabel('已完成：写设计', { exact: true })).toBeVisible();
+    await expect(panel.getByLabel('进行中：写代码', { exact: true })).toBeVisible();
+    await expect(panel.getByLabel('进行中：补测试', { exact: true })).toBeVisible();
+    await expect(panel.getByLabel('待办：写文档', { exact: true })).toBeVisible();
+    await expect(panel.getByLabel('已取消：遗留项', { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: '收起任务清单' }).press('Escape');
     await expect(panel).toBeHidden();
