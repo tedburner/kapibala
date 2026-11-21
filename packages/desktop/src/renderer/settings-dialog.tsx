@@ -2374,14 +2374,15 @@ export function SettingsDialog({
                     ))}
                 </Tabs.Panel>
                 <Tabs.Panel value="diagnostics" className="kapibala-settings-panel space-y-4">
-                  <p className="text-sm">
-                    Kapibala {info?.version ?? '读取中'}
-                    {info?.testBuild ? ' · 内部测试构建' : ''}
-                  </p>
                   <section aria-label="关于与更新" className="space-y-2">
                     <h3 className="text-sm font-medium">关于与更新</h3>
+                    {/* 当前版本与更新入口同处一个分区：更新状态永远和「我正在用哪一版」放在一起读。 */}
+                    <p className="text-sm">
+                      Kapibala {info?.version ?? '读取中'}
+                      {info?.testBuild ? ' · 内部测试构建' : ''}
+                    </p>
                     <p className="text-xs text-kumo-subtle">
-                      未签名个人自用版；检查与安装都由你手动触发，不自动下载或静默安装。
+                      未签名个人自用版；检查、下载与安装都由你手动触发，不自动下载或静默安装。
                     </p>
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
