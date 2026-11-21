@@ -22,16 +22,17 @@ export interface LocalClientOptions {
 }
 
 const limitKeys = Object.keys(DEFAULT_LIMITS) as (keyof ProtocolLimits)[];
-/** 服务端可收紧任一预算，但不能放大客户端声明的硬上限；非法字段由结果 Schema 拒绝。 */
+/**
+ * 服务端可收紧任一预算，但不能放大客户端声明的硬上限；非法字段由结果 Schema 拒绝。
+ * 协议版本严格相等、能力必须是客户端声明集合的超集：缺失任一依赖都视为不兼容，
+ * 不做降级重连，也不自动放宽预算。
+ */
 function negotiateLimits(
   result: RequestResults['initialize'],
   offer: ProtocolOffer,
 ): ProtocolLimits {
   if (
-    result.major !== PROTOCOL_VERSION.major ||
-    result.minor < offer.minMinor ||
-    result.minor > offer.maxMinor ||
-    result.minor > PROTOCOL_VERSION.minor ||
+    result.protocolVersion !== PROTOCOL_VERSION ||
     !offer.capabilities.every((value) => result.capabilities.includes(value)) ||
     limitKeys.some((key) => result.limits[key] > DEFAULT_LIMITS[key])
   )

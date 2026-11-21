@@ -29,9 +29,7 @@ const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>
 const client = await LocalClient.connect(
   createStdioTransport(child.stdout!, child.stdin!),
   {
-    major: 1,
-    minMinor: 0,
-    maxMinor: 0,
+    protocolVersion: 2,
     clientName: 'kapibala-example',
     // 只声明本次真正依赖的能力；任一项宿主不支持即 PROTOCOL_MISMATCH，不静默降级。
     capabilities: ['sessions', 'approval', 'cancel'],

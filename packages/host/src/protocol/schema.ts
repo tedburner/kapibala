@@ -39,20 +39,27 @@ const object = <
 });
 const control = { sessionId: id, streamEpoch: id, controlEpoch: id };
 const empty = object({});
+const capabilities = { type: 'array', items: id, maxItems: 64 } as const;
+const token = { ...id, maxLength: 512 } as const;
+
+/**
+ * 初始化参数同时接受整数代际与 v0.1.3 的 `{major,minMinor,maxMinor}` 形状。
+ * 旧形状放行到 `negotiateProtocol` 后再以 `PROTOCOL_MISMATCH` 明确拒绝，
+ * 避免旧客户端只看到笼统的参数错误而无从判断需要升级。
+ */
+const initialize = {
+  anyOf: [
+    object({ protocolVersion: integer, clientName: id, capabilities, token }, ['token']),
+    object(
+      { major: integer, minMinor: integer, maxMinor: integer, clientName: id, capabilities, token },
+      ['token'],
+    ),
+  ],
+} as const;
 
 /** 初始化和方法参数 Schema 为协议单一白名单；额外参数不作隐式忽略。 */
 export const REQUEST_SCHEMAS = {
-  initialize: object(
-    {
-      major: integer,
-      minMinor: integer,
-      maxMinor: integer,
-      clientName: id,
-      capabilities: { type: 'array', items: id, maxItems: 64 },
-      token: { ...id, maxLength: 512 },
-    },
-    ['token'],
-  ),
+  initialize,
   ping: empty,
   'session/list': object(
     { workspaceRoot: string, cursor: id, limit: { ...integer, minimum: 1, maximum: 50 } },
@@ -78,6 +85,8 @@ export const REQUEST_SCHEMAS = {
     sessionAllowed: boolean,
     expiresAt: integer,
   }),
+  'watch/list': object({ sessionId: id }),
+  'watch/cancel': object({ ...control, watchId: id }),
   'host/shutdown': empty,
 } as const satisfies Record<string, WireSchema>;
 

@@ -1,5 +1,10 @@
 import type { AgentSession, ModelRole, PrimaryModelRole } from '@kiturone/kapibala';
-import type { UserSettings } from '@kiturone/kapibala-host/internal';
+import type {
+  SkillImportResult,
+  SkillImportScan,
+  SkillImportSelection,
+  UserSettings,
+} from '@kiturone/kapibala-host/internal';
 import type { ActiveSessionController } from '../active-session.js';
 import { resolveCommandOutput } from '../command-output.js';
 import type { CommandOutput } from '../command-output.js';
@@ -57,6 +62,19 @@ export interface CommandContext {
    * 宿主不提供时 `/quote` 明确报告「当前宿主不支持」，不静默降级。
    */
   references?: import('../quote-draft.js').QuoteDraft;
+  /** 项目根（绝对路径）；宿主提供后导入命令才能定位项目级技能目录。 */
+  projectRoot?: string;
+  /**
+   * 扫描外部 Harness 的可导入技能；只在命令显式调用时执行一次，不预热。
+   * 宿主不提供时 `/skill import` 明确报告不支持，不返回空表冒充「没有可导入项」。
+   */
+  scanImportableSkills?: () => Promise<SkillImportScan>;
+  /** 执行技能导入；正文读取、原子写与溯源全部由宿主完成，命令层只传来源身份。 */
+  importSkills?: (request: {
+    scope: 'global' | 'project';
+    items: SkillImportSelection[];
+    overwrite?: boolean;
+  }) => Promise<SkillImportResult>;
 }
 
 /** 命令处理器：args 已按定义切分（rawTail 命令为单元素）；抛错由 dispatcher 统一捕获输出。 */

@@ -1,6 +1,7 @@
 import { PRIMARY_MODEL_ROLES, ROUTABLE_MODEL_ROLES } from '@kiturone/kapibala-host/internal';
 import { isInteractiveTerminal } from '../input-coordinator.js';
-import { parseSkillTask } from './skills.js';
+import { parseMcpConfigArgs } from './mcp.js';
+import { parseSkillImportArgs, parseSkillTask } from './skills.js';
 
 /**
  * 单个命令的静态定义：/help、注册冲突检查与运行期门禁共用的唯一事实。
@@ -61,7 +62,11 @@ const mcp = (args: string[]) => {
   if (['tools', 'reconnect', 'enable', 'disable'].includes(sub)) {
     return args.length === 2 && args[1].trim() ? undefined : `用法: /mcp ${sub} <server>`;
   }
-  return '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server>]';
+  if (['add', 'remove', 'edit'].includes(sub)) {
+    const parsed = parseMcpConfigArgs(args.slice(1));
+    return parsed.options ? undefined : parsed.error;
+  }
+  return '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit ...]';
 };
 
 const history = (args: string[]) => {
@@ -148,6 +153,21 @@ const delegations = (args: string[]) => {
   return '用法: /delegations [list | show <id> | open <id> | cancel <id> | delete <id>]';
 };
 
+const watches = (args: string[]) => {
+  if (args.length === 0) return undefined;
+  if (args[0] === 'cancel') {
+    return args.length === 2 && args[1].trim() ? undefined : '用法: /watches cancel <watchId>';
+  }
+  return '用法: /watches [cancel <watchId>]';
+};
+
+const skills = (args: string[]) => {
+  if (args.length > 1) return '最多接受一个参数';
+  const raw = args[0];
+  if (!raw || raw === 'inspect' || raw === 'inspect --json') return undefined;
+  return raw.startsWith('inspect ') ? '用法: /skills inspect [--json]' : undefined;
+};
+
 /**
  * 解析 /prompt 原始输入行，提取 `<server>/<name>` 与可选参数。
  */
@@ -182,10 +202,13 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     name: 'mcp',
     interactionLevel: 'none',
-    usage: '/mcp [tools <server> | reconnect <server> | enable <server> | disable <server>]',
-    description: '查看 MCP 服务状态、已注册工具或重连/开关当前会话服务',
+    usage:
+      '/mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit <name> ...]',
+    description: '查看 MCP 服务状态、工具；配置级增删改走 mcp.json 事务（--project 需已信任项目）',
     group: 'diagnostic',
-    mutates: (args) => args.length > 0 && ['reconnect', 'enable', 'disable'].includes(args[0]),
+    mutates: (args) =>
+      args.length > 0 &&
+      ['reconnect', 'enable', 'disable', 'add', 'remove', 'edit'].includes(args[0]),
     validate: mcp,
   },
   {
@@ -214,23 +237,37 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     name: 'skills',
     interactionLevel: 'none',
-    usage: '/skills [query]',
-    description: '搜索技能、来源、诊断和活动状态',
+    usage: '/skills [query] | /skills inspect [--json]',
+    description: '搜索技能、来源、诊断和活动状态；inspect 输出发现环境与生命周期事件',
     group: 'diagnostic',
     rawTail: true,
     mutates: () => false,
-    validate: one,
+    validate: skills,
   },
   {
     name: 'skill',
     interactionLevel: 'none',
-    usage: '/skill <name> [task...]',
-    description: '显式加载技能并执行任务；省略任务时按技能默认启动语直发',
+    usage:
+      '/skill <name> [task...] | /skill import [<name> | --all] [--from <harness>] [--project] [--force]',
+    description: '显式加载技能并执行任务；/skill import 从其它工具一次性拷贝技能',
     group: 'session',
     rawTail: true,
-    mutates: () => true,
-    validate: (args) =>
-      args.length === 1 && parseSkillTask(args[0]) ? undefined : '请输入合法技能名',
+    mutates: (args) => {
+      const raw = args[0] ?? '';
+      if (raw === 'import' || raw.startsWith('import ')) {
+        const parsed = parseSkillImportArgs(raw.slice('import'.length).trim());
+        return Boolean(parsed.value && (parsed.value.all || parsed.value.name));
+      }
+      return true;
+    },
+    validate: (args) => {
+      const raw = args[0] ?? '';
+      if (raw === 'import' || raw.startsWith('import ')) {
+        const parsed = parseSkillImportArgs(raw.slice('import'.length).trim());
+        return parsed.value ? undefined : parsed.error;
+      }
+      return args.length === 1 && parseSkillTask(raw) ? undefined : '请输入合法技能名';
+    },
   },
   {
     name: 'new',
@@ -326,6 +363,15 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     group: 'diagnostic',
     mutates: (args) => ['open', 'cancel', 'delete'].includes(args[0] ?? ''),
     validate: delegations,
+  },
+  {
+    name: 'watches',
+    interactionLevel: 'none',
+    usage: '/watches [cancel <watchId>]',
+    description: '查看当前会话的外部条件监视，或取消其中一条',
+    group: 'diagnostic',
+    mutates: (args) => args[0] === 'cancel',
+    validate: watches,
   },
   {
     name: 'rename',

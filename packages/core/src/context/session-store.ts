@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { SessionMode } from '../capabilities/security/permissions.js';
 import { KapibalaError } from '../errors/index.js';
 import { validateProtocolContent } from '../models/protocol-state.js';
+import type { WatchState } from '../runtime/watch/types.js';
 import type { CanonicalMessage, ContentBlock } from '../types/index.js';
 import { type HistoryRepair, createMessageId, normalizeHistory } from './history.js';
 import {
@@ -43,7 +44,8 @@ export type SessionRecordType =
   | 'branch_summary'
   | 'archive_state'
   | 'pin_state'
-  | 'mode_state';
+  | 'mode_state'
+  | 'watch_state';
 
 /**
  * 判断指定记录类型是否属于全局控制记录。
@@ -61,6 +63,7 @@ export function isGlobalControlRecordType(type: SessionRecordType): boolean {
     type === 'archive_state' ||
     type === 'pin_state' ||
     type === 'mode_state' ||
+    type === 'watch_state' ||
     type === 'usage' ||
     type === 'legacy_import'
   );
@@ -199,6 +202,7 @@ const types = new Set<SessionRecordType>([
   'archive_state',
   'pin_state',
   'mode_state',
+  'watch_state',
 ]);
 
 /** 允许落盘的会话模式白名单；未知值一律拒绝，避免手工改文件绕过审批边界。 */
@@ -562,6 +566,43 @@ export class SessionStore implements StatefulMessageStore {
       });
     }
     return this.appendRecord('mode_state', { mode });
+  }
+
+  /**
+   * 追加一条会话级监视状态。
+   *
+   * 约束：
+   * - `watch_state` 为全局控制记录（parentId 为 null），不推进上下文叶子，也不改活动时间；
+   * - 同一 `watchId` 的状态变更以追加新记录表达，读取时取最后一条，绝不改写历史；
+   * - payload 为完整 `WatchState`；Store 不解释触发源语义，也不布置任何 watcher；
+   * - v1 历史会话禁止写入监视状态。
+   */
+  async appendWatchState(state: WatchState): Promise<SessionRecord> {
+    if (this.isReadOnly()) {
+      throw new KapibalaError('Cannot modify watch state of legacy v1 session', {
+        code: 'LEGACY_SESSION_READ_ONLY',
+        safeMessage: '无法变更只读历史会话的监视状态',
+      });
+    }
+    return this.appendRecord('watch_state', { ...state });
+  }
+
+  /**
+   * 读取每个 `watchId` 的最新监视状态。
+   *
+   * 只回放控制记录、按出现顺序覆盖同 id 的旧状态；损坏或缺少 watchId 的记录跳过，
+   * 不让单条残缺记录阻断整个会话的恢复。返回顺序为各监视首次出现的顺序。
+   */
+  async readWatchStates(): Promise<WatchState[]> {
+    const all = await this.readRecords();
+    const latest = new Map<string, WatchState>();
+    for (const record of all) {
+      if (record.type !== 'watch_state') continue;
+      const payload = record.payload as unknown as WatchState;
+      if (!payload || typeof payload.watchId !== 'string') continue;
+      latest.set(payload.watchId, payload);
+    }
+    return [...latest.values()];
   }
 
   /**

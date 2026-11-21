@@ -3,6 +3,7 @@ import type { ViewBlock, ViewMessage, ViewTool } from '../view-model/index.js';
 import { type PublicTextRedactor, redactViewMessage } from './public-projection.js';
 import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 import {
+  describeToolActivity,
   formatToolDetail,
   formatToolInvocation,
   resolveToolDisplay,
@@ -99,11 +100,15 @@ export function projectHistory(
         });
       } else if (block.type === 'tool_use') {
         const result = results.get(blockId);
+        const activity = describeToolActivity(block.name, block.input);
         const tool: ViewTool = {
           callId: block.id,
           name: sanitizeToolName(block.name),
           displayName: resolveToolDisplay(block.name).label,
           invocation: sanitizeUntrustedOutput(formatToolInvocation(block.name, block.input)),
+          ...(activity.verb ? { verb: activity.verb } : {}),
+          ...(activity.chip ? { chip: sanitizeUntrustedOutput(activity.chip) } : {}),
+          ...(activity.mono ? { mono: true } : {}),
           input: sanitizeUntrustedOutput(formatToolDetail(block.input)),
           status: result ? (result.block.isError ? 'failed' : 'succeeded') : 'interrupted',
           ...(result

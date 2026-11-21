@@ -68,6 +68,9 @@ function handle() {
       truncated: false,
     }),
     subscribeInspection: () => () => {},
+    watches: () => [],
+    cancelWatch: vi.fn(async () => {}),
+    subscribeWatches: () => () => {},
   } satisfies ManagedHostSession;
 }
 it('断开等待正在装配的会话释放，未释放前不得宣告 cleaned', async () => {

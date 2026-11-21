@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  net,
   BrowserWindow,
   Notification as ElectronNotification,
   Menu,
@@ -34,6 +35,7 @@ import { PreviewDocuments } from './preview-documents.js';
 import { readImageDataUrl, resolveLocalImagePath } from './preview-file.js';
 import { installPreviewProtocol, previewUrl, registerPreviewScheme } from './preview-protocol.js';
 import { HostSupervisor } from './supervisor.js';
+import { checkForDesktopUpdate } from './update-check.js';
 import { normalizeUrl } from './url.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -205,6 +207,15 @@ async function handle(
   lifetime: ControlLifetime,
 ): Promise<unknown> {
   switch (method) {
+    // 更新检查只由用户动作触发：不做启动时自动联网，也不进入宿主子进程。
+    // 任何网络 / 响应异常都在 update-check 内降级为 unknown，不抛出到这里。
+    case 'app.checkUpdate':
+      return checkForDesktopUpdate({
+        currentVersion: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        fetch: (url, init) => net.fetch(url, init),
+      });
     case 'app.getInfo':
       return {
         name: 'Kapibala',

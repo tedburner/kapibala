@@ -38,6 +38,14 @@ describe('tool display registry gate', () => {
     }
   });
 
+  it('resolves watch tools registered by the host watch service', () => {
+    // 监视工具随 WatchService 动态注册（host/src/host/watch/tools.ts），
+    // 同样不经过 registerBuiltinTools；漏登记会让工具行退化成无动词的未知名称。
+    for (const name of ['watch_start', 'watch_cancel']) {
+      expect(resolveToolDisplay(name).verb, `监视工具 '${name}' 未登记显示名表`).toBeTruthy();
+    }
+  });
+
   it('normalizes mcp tool names into the same server/tool label as /mcp', () => {
     const display = resolveToolDisplay('mcp__doc-server__read_file');
     expect(display.label).toBe(formatMcpToolLabel('doc-server', 'read_file'));

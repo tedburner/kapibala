@@ -12,16 +12,22 @@ export {
   reducePresentation,
   selectMessages,
 } from './reducer.js';
+export { summarizeToolGroup } from './tool-summary.js';
+export type { ToolGroupSummary } from './tool-summary.js';
 export type {
   OperationPhase,
   OperationResult,
   PresentationChange,
   PresentationEvent,
   PresentationState,
+  ViewArtifact,
   ViewBlock,
   ViewIdentity,
   ViewMessage,
   ViewNotice,
   ViewOperation,
+  ViewTodoItem,
+  ViewTodoState,
+  ViewTodoStatus,
   ViewTool,
 } from './types.js';

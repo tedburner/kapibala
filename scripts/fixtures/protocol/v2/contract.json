@@ -1,5 +1,5 @@
 {
-  "capabilities": ["sessions", "approval", "cancel"],
+  "capabilities": ["sessions", "approval", "cancel", "watch", "evidence", "skill-import"],
   "errors": [
     "PROTOCOL_MISMATCH",
     "UNAUTHORIZED",
@@ -202,12 +202,11 @@
     "session/detach",
     "session/list",
     "session/open",
-    "session/snapshot"
+    "session/snapshot",
+    "watch/cancel",
+    "watch/list"
   ],
-  "protocol": {
-    "major": 1,
-    "minor": 0
-  },
+  "protocol": 2,
   "requests": {
     "approval/request": {
       "additionalProperties": false,
@@ -276,45 +275,80 @@
       "type": "object"
     },
     "initialize": {
-      "additionalProperties": false,
-      "properties": {
-        "capabilities": {
-          "items": {
-            "maxLength": 256,
-            "minLength": 1,
-            "type": "string"
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "capabilities": {
+              "items": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "clientName": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "protocolVersion": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "token": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
           },
-          "maxItems": 64,
-          "type": "array"
+          "required": ["protocolVersion", "clientName", "capabilities"],
+          "type": "object"
         },
-        "clientName": {
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string"
-        },
-        "major": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "maxMinor": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "minMinor": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "token": {
-          "maxLength": 512,
-          "minLength": 1,
-          "type": "string"
+        {
+          "additionalProperties": false,
+          "properties": {
+            "capabilities": {
+              "items": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "clientName": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "major": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxMinor": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minMinor": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "token": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["major", "minMinor", "maxMinor", "clientName", "capabilities"],
+          "type": "object"
         }
-      },
-      "required": ["major", "minMinor", "maxMinor", "clientName", "capabilities"],
-      "type": "object"
+      ]
     },
     "ping": {
       "additionalProperties": false,
@@ -503,6 +537,45 @@
       },
       "required": ["sessionId"],
       "type": "object"
+    },
+    "watch/cancel": {
+      "additionalProperties": false,
+      "properties": {
+        "controlEpoch": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "streamEpoch": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "watchId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "streamEpoch", "controlEpoch", "watchId"],
+      "type": "object"
+    },
+    "watch/list": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"],
+      "type": "object"
     }
   },
   "resultSelections": {
@@ -518,7 +591,9 @@
     "session/detach": ["session/detach"],
     "session/list": ["session/list"],
     "session/open": ["session/open"],
-    "session/snapshot": ["snapshot:first", "snapshot:page"]
+    "session/snapshot": ["snapshot:first", "snapshot:page"],
+    "watch/cancel": ["watch/cancel"],
+    "watch/list": ["watch/list"]
   },
   "results": {
     "approval/request": {
@@ -634,12 +709,7 @@
           ],
           "type": "object"
         },
-        "major": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "minor": {
+        "protocolVersion": {
           "maximum": 9007199254740991,
           "minimum": 0,
           "type": "integer"
@@ -650,7 +720,7 @@
           "type": "string"
         }
       },
-      "required": ["major", "minor", "capabilities", "serverInstanceId", "clientId", "limits"],
+      "required": ["protocolVersion", "capabilities", "serverInstanceId", "clientId", "limits"],
       "type": "object"
     },
     "ping": {
@@ -925,6 +995,92 @@
         }
       },
       "required": ["chunk", "cursor"],
+      "type": "object"
+    },
+    "watch/cancel": {
+      "additionalProperties": false,
+      "properties": {
+        "cancelled": {
+          "enum": [true],
+          "type": "boolean"
+        }
+      },
+      "required": ["cancelled"],
+      "type": "object"
+    },
+    "watch/list": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "armedAt": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "closedAt": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "deadlineAt": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "detail": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "kind": {
+                "enum": ["file_change", "process_exit", "port_ready"],
+                "type": "string"
+              },
+              "state": {
+                "enum": ["armed", "fired", "timeout", "cancelled", "orphaned"],
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "watchId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "watchId",
+              "kind",
+              "target",
+              "state",
+              "armedAt",
+              "deadlineAt",
+              "closedAt",
+              "detail"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        }
+      },
+      "required": ["items"],
       "type": "object"
     }
   },

@@ -30,6 +30,38 @@ describe('versioned session store', () => {
     expect(fs.readFileSync(file)).toEqual(before);
   });
 
+  it('persists watch state as global control records without touching the branch leaf', async () => {
+    const store = await open();
+    await store.append({ role: 'user', content: [{ type: 'text', text: 'hello' }] });
+    const leafBefore = store.getBranchLeaves().get('main');
+    const armed = {
+      watchId: 'watch-1',
+      spec: { kind: 'file_change' as const, target: 'src/a.ts', intervalMs: 2000, deadlineAt: 1 },
+      state: 'armed' as const,
+      lastSeenAt: 0,
+      branchId: 'main',
+      armedAt: 10,
+    };
+    await store.appendWatchState(armed);
+    await store.appendWatchState({ ...armed, state: 'fired', lastSeenAt: 20, closedAt: 20 });
+
+    const records = await store.readRecords();
+    const watchRecords = records.filter((record) => record.type === 'watch_state');
+    expect(watchRecords).toHaveLength(2);
+    for (const record of watchRecords) {
+      // 全局控制记录：parentId/branchId 均为 null，且不推进分支叶子。
+      expect(record.parentId).toBeNull();
+      expect(record.branchId).toBeNull();
+    }
+    expect(store.getBranchLeaves().get('main')).toBe(leafBefore);
+    expect((await store.load()).map((message) => message.role)).toEqual(['user']);
+
+    const reopened = await SessionStore.open(file);
+    expect(await reopened.readWatchStates()).toMatchObject([
+      { watchId: 'watch-1', state: 'fired' },
+    ]);
+  });
+
   it('persists stable IDs, causal envelopes and a durable reset boundary', async () => {
     const store = await open();
     await store.append({ role: 'user', content: [{ type: 'text', text: 'hello' }] });

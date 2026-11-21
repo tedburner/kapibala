@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   AgentRuntime,
@@ -6,6 +7,7 @@ import {
   SessionManager,
   type SessionMode,
   ToolRegistry,
+  WatchInbox,
   WorkspaceLeaseCoordinator,
   resolveSessionProject,
 } from '@kiturone/kapibala';
@@ -25,7 +27,13 @@ import {
   createCliSubagentRunner,
 } from '@kiturone/kapibala-host/internal';
 import { readDelegationRequestEntries } from '@kiturone/kapibala-host/internal';
-import { registerBuiltinTools } from '@kiturone/kapibala-host/internal';
+import {
+  WatchService,
+  createWatchTools,
+  importSkills,
+  registerBuiltinTools,
+  scanImportableSkills,
+} from '@kiturone/kapibala-host/internal';
 import minimist from 'minimist';
 import { ActiveSessionController } from './active-session.js';
 import { createDefaultCommandDispatcher } from './commands/assemble.js';
@@ -39,6 +47,7 @@ import { openStartupSession, validateSessionStartup } from './session-startup.js
 import { CliApprovalChannel } from './ui/approval.js';
 import { parseOutputDetail } from './ui/events.js';
 import { CLI_VERSION } from './version.js';
+import { runWatchResume, setActiveWatchService } from './watch-context.js';
 import { runSetupWizard } from './wizard.js';
 
 /** 具名解释器或用户显式提供的解释器可执行文件全路径。 */
@@ -333,6 +342,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           approvalChannel,
         });
         for (const tool of builtinTools.list()) created.tools.register(tool);
+        // 监视工具与服务同生共死：登记后必须有人轮询，否则能力形同虚设。
+        const watchInbox = new WatchInbox(handle.store);
+        const watches = new WatchService({
+          workspaceRoot: manager.project.projectRoot,
+          store: handle.store,
+          deliver: (notification, branchId) => watchInbox.consume(notification, branchId),
+          isIdle: () => !created.isBusy(),
+          resume: (input, signal) => runWatchResume(input, signal),
+        });
+        for (const tool of createWatchTools(watches)) created.tools.register(tool);
+        void watches.start();
+        setActiveWatchService(watches);
         models.attach(created, controller ? models.selectedRole : requestedRole);
         try {
           await attachMcpToSession(
@@ -376,6 +397,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         runtime: agentRuntime,
         settings,
         settingsPath: sourcePath,
+        projectRoot: manager.project.projectRoot,
+        // 导入能力在命令显式调用时才扫描，不预热；信任状态每次按当前设置重算。
+        scanImportableSkills: () =>
+          scanImportableSkills({
+            homeDir: os.homedir(),
+            projectRoot: manager.project.projectRoot,
+            projectTrusted: isProjectTrusted(settings, manager.project.projectRoot),
+            settings,
+          }),
+        importSkills: (request) =>
+          importSkills({
+            homeDir: os.homedir(),
+            projectRoot: manager.project.projectRoot,
+            projectTrusted: isProjectTrusted(settings, manager.project.projectRoot),
+            settings,
+            scope: request.scope,
+            items: request.items,
+            overwrite: request.overwrite,
+          }),
         onModelSwitched: (newProfileId) => {
           const { settings: fresh, sourcePath: freshPath } = loadSettings();
           Object.assign(settings, fresh);

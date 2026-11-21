@@ -6,6 +6,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { LocalClient, type LocalClientOptions } from '@kiturone/kapibala-host/client';
+import { PROTOCOL_VERSION } from '@kiturone/kapibala-host/protocol';
 import {
   type LocalEndpoint,
   connectLocal,
@@ -137,9 +138,7 @@ async function connectDaemonSnapshot(
   const client = await LocalClient.connect(
     transport,
     {
-      major: 1,
-      minMinor: 0,
-      maxMinor: 0,
+      protocolVersion: PROTOCOL_VERSION,
       clientName: 'kpbl',
       capabilities: [],
       token: metadata.token,

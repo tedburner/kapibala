@@ -68,3 +68,18 @@ pnpm verify:release-evidence --sha <完整候选SHA> --desktop-version 0.1.0 --m
 校验完成后才发布原三份 npm 包，桌面不重新构建、签名或上传新候选。GitHub Release 中桌面附件加 `desktop-<target>__` 前缀并将子目录分隔替换为 `__`，避免四平台的同名许可/清单冲突；只复制、改上传名称，字节和 SHA256 保持不变。命名映射须结合审核的原始 `files` 使用。artifact 的机制与生命周期参考 [GitHub 官方说明](https://docs.github.com/en/actions/tutorials/store-and-share-data)。
 
 所有提交、推送、环境/凭证配置和最终发布仍由维护者执行。本地自动验证只证明实现拒绝了错误输入，不证明这些外部步骤已经完成。
+
+## 4. 应用内更新检查（v0.1.4 U0.1）
+
+桌面「设置 → 诊断 → 关于与更新」提供手动检查入口，只在用户点按钮时请求
+`https://api.github.com/repos/tedburner/kapibala/releases/latest`，启动时**不自动联网**：
+
+- 版本比较用 semver 口径（`v` 前缀忽略，预发布低于同号正式版）；非法 tag 视为「无法判断」。
+- 资产按显式矩阵匹配：`darwin-arm64 → -mac-arm64.(dmg|zip)`、`darwin-x64 → -mac-x64.(dmg|zip)`、
+  `win32-x64 → -win-x64.exe`、`linux-x64 → -linux-x64.AppImage`；未知 target 直接返回「无法判断」。
+- 校验清单优先取同平台 `SHA256SUMS-<suffix>.txt`，回退到通用 `SHA256SUMS.txt`；
+  缺安装包或缺清单显示「没有匹配当前平台的安装包」，不做模糊猜测。
+- 网络失败、HTTP 非 2xx、响应非法统一降级为「暂时无法检查更新」，不阻断启动与其它功能。
+- 本版只展示新版本号、安装包名与发布页链接；下载、SHA256 校验与手动安装属于 U0.2，
+  未实现前不得在界面或文档宣称可下载/安装。更新包**未签名**，不提供静默安装。
+

@@ -115,6 +115,14 @@ const workspace = z
 const error = z.object({ code: z.string().max(100), message: z.string().max(2000) }).strict();
 /** 错误只输出稳定业务码和安全说明，不携带 stack 或内部 cause。 */
 export type DesktopError = z.infer<typeof error>;
+/** 工具产物只投影宿主已按允许根校验过的图片；路径与扩展名都是宿主下发值。 */
+const artifact = z
+  .object({
+    kind: z.literal('image'),
+    path: text,
+    ext: text,
+  })
+  .strict();
 const tool = z
   .object({
     callId: id,
@@ -122,6 +130,10 @@ const tool = z
     /** 显示名（host 层解析的中文短名 / MCP 归一名）；只影响 UI，不参与权限判定。 */
     displayName: text,
     invocation: text,
+    /** 动作动词与唯一对象 chip；缺省时渲染层退回 invocation。 */
+    verb: text.optional(),
+    chip: text.optional(),
+    mono: z.boolean().optional(),
     input: text,
     status: z.enum(['running', 'succeeded', 'failed', 'interrupted']),
     result: text.optional(),
@@ -129,6 +141,8 @@ const tool = z
     resultMessageId: text.optional(),
     elapsedMs: z.number().optional(),
     outputBytes: z.number().optional(),
+    /** 缺省表示本次调用不投影产物；失败终态与 SVG 一律缺省。 */
+    artifacts: z.array(artifact).optional(),
   })
   .strict();
 const block = z
@@ -161,6 +175,21 @@ const identity = z
   .strict();
 const result = z.enum(['completed', 'failed', 'aborted']);
 const notice = z.object({ id: text, level: z.enum(['info', 'warning', 'error']), text }).strict();
+/** 任务清单只读投影；四态包含 cancelled，宿主按历史重算后整体下发。 */
+const todoItem = z
+  .object({
+    id: text,
+    title: text,
+    status: z.enum(['pending', 'in_progress', 'completed', 'cancelled']),
+  })
+  .strict();
+const todos = z
+  .object({
+    items: z.array(todoItem),
+    updatedAt: z.number().optional(),
+    revision: z.number().int().nonnegative(),
+  })
+  .strict();
 /** 完整展示白名单校验，拒绝传入 Core 私有块与任意扩展字段。 */
 export const PresentationStateSchema = z
   .object({
@@ -179,6 +208,8 @@ export const PresentationStateSchema = z
       .optional(),
     expanded: z.record(text, z.boolean()),
     notices: z.array(notice),
+    /** 无成功 `todo_write` 历史时缺省；桌面 pill 与浮层据此隐藏。 */
+    todos: todos.optional(),
   })
   .strict();
 const change = z.discriminatedUnion('type', [
@@ -281,6 +312,14 @@ const mcpDiagnostic = z
     message: text,
   })
   .strict();
+/** 批准状态只含结论与时间戳，绝不携带配置值或密钥。 */
+const mcpApproval = z
+  .object({
+    approved: z.boolean(),
+    /** 最近一次批准时间；配置变化后仍保留，用于提示「批准已过期」。 */
+    approvedAt: text.optional(),
+  })
+  .strict();
 const mcpServer = z
   .object({
     name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -303,6 +342,11 @@ const mcpServer = z
     hasSecretSurface: z.boolean(),
     enabled: z.boolean(),
     required: z.boolean(),
+    /**
+     * 逐服务器启动批准状态；只对进入批准条目表的 server 下发。
+     * 未信任项目的声明不启动，因此不提供批准态，页面据此显示为不可操作。
+     */
+    approval: mcpApproval.optional(),
     diagnostics: z.array(mcpDiagnostic).max(64),
   })
   .strict();
@@ -311,6 +355,88 @@ const mcpSnapshot = z
     projectTrusted: z.boolean(),
     servers: z.array(mcpServer).max(200),
     diagnostics: z.array(mcpDiagnostic).max(200),
+  })
+  .strict();
+/** 外部 Harness 名单与宿主导入服务一致；新增来源必须两侧同步。 */
+const mcpImportHarness = z.enum(['claude-desktop', 'claude-code', 'cursor']);
+/**
+ * 导入候选的安全投影：宿主原对象还带完整 `config`（含 env / headers 值）与摘要，
+ * 这些字段留在宿主进程，绝不进入 renderer。
+ */
+const mcpImportCandidate = z
+  .object({
+    harness: mcpImportHarness,
+    name: z.string().min(1).max(256),
+    /** 来源文件绝对路径；执行导入时按它做 TOCTOU 比对。 */
+    sourceRef: text,
+    origin: z.enum(['global', 'project']),
+    transport: z.enum(['stdio', 'http']),
+    /** 目标摘要（命令行或端点 URL），已脱敏。 */
+    target: text,
+    hasSecretSurface: z.boolean(),
+    strippedFields: z.array(text).max(64),
+    /** 名称不合法时的原因；非空表示导入必然失败。 */
+    nameProblem: text.optional(),
+    conflict: z.enum(['none', 'exists-enabled', 'exists-disabled']),
+    previouslyImported: z
+      .object({
+        installedAt: text,
+        installedDigest: text,
+        sourceUnchanged: z.boolean(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+const mcpImportScan = z
+  .object({
+    sources: z
+      .array(
+        z
+          .object({
+            harness: mcpImportHarness,
+            label: text,
+            files: z
+              .array(
+                z
+                  .object({
+                    path: text,
+                    origin: z.enum(['global', 'project']),
+                    readable: z.boolean(),
+                    servers: z.number().int().nonnegative(),
+                  })
+                  .strict(),
+              )
+              .max(8),
+            candidates: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .max(8),
+    candidates: z.array(mcpImportCandidate).max(400),
+    diagnostics: z.array(mcpDiagnostic).max(4000),
+  })
+  .strict();
+const mcpImportOutcome = z
+  .object({
+    harness: text,
+    name: text,
+    status: z.enum(['imported', 'unchanged', 'skipped-conflict', 'failed']),
+    sourceRef: text.optional(),
+    targetPath: text.optional(),
+    message: text.optional(),
+    strippedFields: z.array(text).max(64).optional(),
+  })
+  .strict();
+const mcpImportResult = z
+  .object({
+    scope: z.enum(['global', 'project']),
+    items: z.array(mcpImportOutcome).max(400),
+    imported: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    skippedConflict: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    diagnostics: z.array(mcpDiagnostic).max(4000),
   })
   .strict();
 const skillSummary = z
@@ -344,10 +470,120 @@ const skillsSnapshot = z
       .max(2000),
   })
   .strict();
+const skillDiagnostic = z
+  .object({ code: text, level: z.enum(['warn', 'error']), path: text, message: text })
+  .strict();
+/** 外部 Harness 名单与宿主导入服务一致；新增来源必须两侧同步。 */
+const skillHarness = z.enum(['claude-code', 'codex', 'cursor', 'opencode']);
+const skillImportCandidate = z
+  .object({
+    harness: skillHarness,
+    name: z.string().min(1).max(128),
+    directoryName: z.string().min(1).max(256),
+    description: text,
+    sourceRef: text,
+    origin: z.enum(['global', 'project']),
+    files: z.number().int().nonnegative(),
+    bytes: z.number().int().nonnegative(),
+    hasScripts: z.boolean(),
+    strippedFields: z.array(text).max(64),
+    conflict: z.enum(['none', 'exists-enabled', 'exists-disabled']),
+    unpublished: text.optional(),
+    previouslyImported: z
+      .object({
+        installedAt: text,
+        installedDigest: text,
+        sourceUnchanged: z.boolean(),
+        changedFiles: z.array(text).max(4096),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+const skillImportScan = z
+  .object({
+    sources: z
+      .array(
+        z
+          .object({
+            harness: skillHarness,
+            label: text,
+            roots: z
+              .array(
+                z
+                  .object({
+                    path: text,
+                    scope: z.enum(['global', 'project']),
+                    readable: z.boolean(),
+                  })
+                  .strict(),
+              )
+              .max(8),
+            candidates: z.number().int().nonnegative(),
+            partial: z.boolean(),
+            truncated: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .max(8),
+    candidates: z.array(skillImportCandidate).max(4000),
+    diagnostics: z.array(skillDiagnostic).max(4000),
+    partial: z.boolean(),
+  })
+  .strict();
+const skillImportOutcome = z
+  .object({
+    harness: text,
+    name: text,
+    status: z.enum(['imported', 'unchanged', 'skipped-conflict', 'skipped-limit', 'failed']),
+    sourceRef: text.optional(),
+    targetPath: text.optional(),
+    message: text.optional(),
+    strippedFields: z.array(text).max(64).optional(),
+  })
+  .strict();
+const skillImportResult = z
+  .object({
+    scope: z.enum(['global', 'project']),
+    items: z.array(skillImportOutcome).max(1000),
+    imported: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    skippedConflict: z.number().int().nonnegative(),
+    skippedLimit: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    truncated: z.number().int().nonnegative(),
+    diagnostics: z.array(skillDiagnostic).max(4000),
+  })
+  .strict();
+
+/**
+ * 更新检查结果：只携带判断结论与资产地址，不含下载内容。
+ * `unknown` 表示网络或响应异常，页面静默降级，不阻断使用。
+ */
+const updateCheckResult = z
+  .object({
+    status: z.enum(['update-available', 'up-to-date', 'no-asset', 'unknown']),
+    currentVersion: text,
+    latestVersion: text.optional(),
+    releaseUrl: z.url().max(2048).optional(),
+    /** 当前平台安装包；仅在 `update-available` 时存在。 */
+    installer: z
+      .object({ name: text, url: z.url().max(2048), size: z.number().nonnegative() })
+      .strict()
+      .optional(),
+    /** 同一平台的 SHA256 清单；下载与打开前必须校验（U0.2）。 */
+    checksum: z
+      .object({ name: text, url: z.url().max(2048) })
+      .strict()
+      .optional(),
+    reason: text.optional(),
+  })
+  .strict();
 
 /** 每个业务入口独立校验；不能通过通用 channel 调用未登记方法。 */
 export const PARAMS = {
   'app.getInfo': empty,
+  'app.checkUpdate': empty,
   'app.requestQuit': empty,
   'app.reconnect': empty,
   'app.reload': empty,
@@ -406,6 +642,8 @@ export const PARAMS = {
   'resources.saveMcpServer': z
     .object({
       workspaceId: id,
+      /** 写入目标；项目级要求已信任，宿主事务内强制校验，未信任必然失败。 */
+      scope: z.enum(['global', 'project']).optional(),
       /** 编辑模式提供原名称；新增时省略。编辑保留声明中面板外的字段（env/headers/required）。 */
       editName: z
         .string()
@@ -431,14 +669,55 @@ export const PARAMS = {
   'resources.deleteMcpServer': z
     .object({
       workspaceId: id,
+      scope: z.enum(['global', 'project']).optional(),
       name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
     })
     .strict(),
   'resources.toggleMcpServer': z
     .object({
       workspaceId: id,
+      scope: z.enum(['global', 'project']).optional(),
       name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
       enabled: z.boolean(),
+    })
+    .strict(),
+  /** 逐服务器启动批准：绑定当前配置摘要，不回显任何配置值。 */
+  'resources.approveMcpServer': z
+    .object({
+      workspaceId: id,
+      name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    })
+    .strict(),
+  'resources.revokeMcpServer': z
+    .object({
+      workspaceId: id,
+      name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    })
+    .strict(),
+  /** MCP 导入预览；只扫描一次，不预热也不轮询外部配置文件。 */
+  'resources.inspectMcpImport': z
+    .object({
+      workspaceId: id,
+      scope: z.enum(['global', 'project']).optional(),
+    })
+    .strict(),
+  /** 执行 MCP 导入：只传来源身份与目标作用域，配置正文由宿主重新扫描得到。 */
+  'resources.importMcp': z
+    .object({
+      workspaceId: id,
+      scope: z.enum(['global', 'project']),
+      items: z
+        .array(
+          z
+            .object({
+              harness: mcpImportHarness,
+              name: z.string().min(1).max(256),
+              expectedSourceRef: z.string().min(1).max(4096),
+            })
+            .strict(),
+        )
+        .max(200),
+      overwrite: z.boolean().optional(),
     })
     .strict(),
   'resources.readSkills': z.object({ workspaceId: id }).strict(),
@@ -448,6 +727,26 @@ export const PARAMS = {
       workspaceId: id,
       name: z.string().min(1).max(128),
       disabled: z.boolean(),
+    })
+    .strict(),
+  'resources.inspectSkills': z.object({ workspaceId: id }).strict(),
+  /** 只传来源身份，不传正文；`items` 为空数组表示导入全部候选。 */
+  'resources.importSkills': z
+    .object({
+      workspaceId: id,
+      scope: z.enum(['global', 'project']),
+      items: z
+        .array(
+          z
+            .object({
+              harness: skillHarness,
+              name: z.string().min(1).max(128),
+              expectedSourceRef: z.string().min(1).max(4096),
+            })
+            .strict(),
+        )
+        .max(200),
+      overwrite: z.boolean().optional(),
     })
     .strict(),
   'session.list': z
@@ -527,6 +826,7 @@ export type Method = keyof typeof PARAMS;
 export type Params<M extends Method> = z.infer<(typeof PARAMS)[M]>;
 /** 每个回复同样校验白名单；不把原始历史或设置对象反传给页面。 */
 export const RESULTS = {
+  'app.checkUpdate': updateCheckResult,
   'app.getInfo': z
     .object({
       name: text,
@@ -573,9 +873,15 @@ export const RESULTS = {
   'resources.saveMcpServer': mcpSnapshot,
   'resources.deleteMcpServer': mcpSnapshot,
   'resources.toggleMcpServer': mcpSnapshot,
+  'resources.approveMcpServer': mcpSnapshot,
+  'resources.revokeMcpServer': mcpSnapshot,
+  'resources.inspectMcpImport': mcpImportScan,
+  'resources.importMcp': mcpImportResult,
   'resources.readSkills': skillsSnapshot,
   'resources.setSkillsEnabled': skillsSnapshot,
   'resources.setSkillDisabled': skillsSnapshot,
+  'resources.inspectSkills': skillImportScan,
+  'resources.importSkills': skillImportResult,
   'session.list': historyList,
   'session.archived': historyList,
   'session.runtimeSubscribe': RuntimeSnapshotSchema,
@@ -728,6 +1034,16 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
     reason: z.enum(['resolved', 'timeout', 'aborted']).optional(),
   }),
   z.object({ type: z.literal('run.changed'), receipt: runReceipt }).strict(),
+  // 监视终态只带身份与状态：目标路径与文件内容留在宿主侧，系统通知也不需要它们。
+  z
+    .object({
+      type: z.literal('watch.triggered'),
+      sessionId: id,
+      watchId: id,
+      kind: z.enum(['file_change', 'process_exit', 'port_ready']),
+      state: z.enum(['fired', 'timeout', 'cancelled', 'orphaned']),
+    })
+    .strict(),
   z
     .object({
       type: z.literal('theme.changed'),
@@ -775,6 +1091,8 @@ export type DesktopAPI = {
   ready(): Promise<void>;
   app: {
     getInfo(): Promise<Output<'app.getInfo'>>;
+    /** 用户显式触发的一次性检查；离线或响应异常返回 `unknown`，不影响启动。 */
+    checkUpdate(): Promise<Output<'app.checkUpdate'>>;
     requestQuit(): Promise<void>;
     reconnect(): Promise<void>;
     reload(): Promise<void>;
@@ -829,6 +1147,20 @@ export type DesktopAPI = {
     toggleMcpServer(
       params: Params<'resources.toggleMcpServer'>,
     ): Promise<Output<'resources.toggleMcpServer'>>;
+    /** 批准单个服务器启动；绑定当前配置摘要，配置改动后需重新批准。 */
+    approveMcpServer(
+      params: Params<'resources.approveMcpServer'>,
+    ): Promise<Output<'resources.approveMcpServer'>>;
+    /** 撤销批准；下一次启动会重新请求确认。 */
+    revokeMcpServer(
+      params: Params<'resources.revokeMcpServer'>,
+    ): Promise<Output<'resources.revokeMcpServer'>>;
+    /** 扫描外部工具的 MCP 声明；只返回脱敏投影，不返回配置正文。 */
+    inspectMcpImport(
+      params: Params<'resources.inspectMcpImport'>,
+    ): Promise<Output<'resources.inspectMcpImport'>>;
+    /** 执行 MCP 导入；冲突默认跳过，`overwrite` 才替换。 */
+    importMcp(params: Params<'resources.importMcp'>): Promise<Output<'resources.importMcp'>>;
     readSkills(workspaceId: string): Promise<Output<'resources.readSkills'>>;
     setSkillsEnabled(
       params: Params<'resources.setSkillsEnabled'>,
@@ -836,6 +1168,12 @@ export type DesktopAPI = {
     setSkillDisabled(
       params: Params<'resources.setSkillDisabled'>,
     ): Promise<Output<'resources.setSkillDisabled'>>;
+    /** 扫描外部 Harness 的可导入技能；只在打开导入抽屉时调用一次。 */
+    inspectSkills(workspaceId: string): Promise<Output<'resources.inspectSkills'>>;
+    /** 执行导入；项目作用域在未信任项目上由 host 直接拒绝。 */
+    importSkills(
+      params: Params<'resources.importSkills'>,
+    ): Promise<Output<'resources.importSkills'>>;
   };
   session: {
     runtimeSubscribe(subscriptionId: string): Promise<Output<'session.runtimeSubscribe'>>;

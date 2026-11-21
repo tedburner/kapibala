@@ -81,6 +81,8 @@ interface Slot {
   inspectionScheduled?: boolean;
   inspectionStream?: LatestSnapshot<Inspection>;
   stopInspection?: () => void;
+  /** 监视状态订阅；用于把徽标数量并入运行快照。 */
+  stopWatches?: () => void;
   cleanupFailed?: boolean;
 }
 interface PendingApproval {
@@ -206,6 +208,22 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         return this.resources.toggleMcpServer(p);
       }
+      case 'resources.approveMcpServer': {
+        const p = PARAMS[method].parse(params);
+        return this.resources.approveMcpServer(p);
+      }
+      case 'resources.revokeMcpServer': {
+        const p = PARAMS[method].parse(params);
+        return this.resources.revokeMcpServer(p);
+      }
+      case 'resources.inspectMcpImport': {
+        const p = PARAMS[method].parse(params);
+        return this.resources.inspectMcpImport(p);
+      }
+      case 'resources.importMcp': {
+        const p = PARAMS[method].parse(params);
+        return this.resources.importMcp(p);
+      }
       case 'resources.readSkills': {
         const p = PARAMS[method].parse(params);
         return await this.resources.readSkills(p.workspaceId);
@@ -217,6 +235,14 @@ export class DesktopHost {
       case 'resources.setSkillDisabled': {
         const p = PARAMS[method].parse(params);
         return await this.resources.setSkillDisabled(p);
+      }
+      case 'resources.inspectSkills': {
+        const p = PARAMS[method].parse(params);
+        return await this.resources.inspectSkills(p.workspaceId);
+      }
+      case 'resources.importSkills': {
+        const p = PARAMS[method].parse(params);
+        return await this.resources.importSkills(p);
       }
       case 'run.command':
         return await this.command(PARAMS[method].parse(params));
@@ -488,6 +514,20 @@ export class DesktopHost {
         approvalChannel,
         leaseCoordinator: this.leases,
         maxReadBytes: LIMITS.history,
+        // 监视终态通知只携带身份与状态：窗口在后台时由主进程转成系统通知。
+        onWatchEvent: (notification) => {
+          if (this.dead) return;
+          void this.notify(
+            {
+              type: 'watch.triggered',
+              sessionId: scope.sessionId,
+              watchId: notification.watchId,
+              kind: notification.kind,
+              state: notification.state,
+            },
+            'control',
+          ).catch(() => {});
+        },
       });
       if (this.dead) {
         await handle.dispose();
@@ -524,6 +564,7 @@ export class DesktopHost {
         },
       );
       slot.stopInspection = handle.subscribeInspection(() => this.inspectionChanged(owned));
+      slot.stopWatches = handle.subscribeWatches(() => this.runtimeChanged());
       this.sessions.set(scope.sessionId, slot);
       this.runtimeChanged();
       return {
@@ -544,6 +585,8 @@ export class DesktopHost {
         result: slot.run?.result,
         approvals: [...this.approvals.values()].filter((pending) => pending.slot === slot).length,
         cleanup: slot.closing ? 'closing' : slot.cleanupFailed ? 'failed' : 'none',
+        // 只统计仍在监视中的条目：终态不再需要徽标，历史可从观察面查看。
+        watches: slot.handle.watches().filter((item) => item.state === 'armed').length,
         startedAt: slot.run?.startedAt,
         settledAt: slot.run?.settledAt,
       })),
@@ -693,6 +736,7 @@ export class DesktopHost {
       slot.view?.unsubscribe();
       slot.inspectionStream?.close();
       slot.stopInspection?.();
+      slot.stopWatches?.();
       this.sessions.delete(slot.scope.sessionId);
       this.runtimeChanged();
     })().catch((error) => {

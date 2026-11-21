@@ -43,4 +43,5 @@ export * from './context/store/index.js';
 export * from './capabilities/prompt/index.js';
 export * from './runtime/loop/index.js';
 export * from './runtime/agent/index.js';
+export * from './runtime/watch/index.js';
 export * from './context/session/index.js';

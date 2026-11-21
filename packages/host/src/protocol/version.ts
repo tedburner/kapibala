@@ -1,10 +1,23 @@
 import type { NegotiatedProtocol, ProtocolOffer, ValidationResult } from './types.js';
 
-/** 首个本地 wire 协议；产品版本升级不自动改变协议主版本。 */
-export const PROTOCOL_VERSION = Object.freeze({ major: 1, minor: 0 });
+/**
+ * 本地 wire 协议代际（整数）；只在破坏性变更时 +1，新增能力走能力集合而非升版本号。
+ * 与产品版本相互独立：v0.1.4 起为 2，旧 `{major, minor}` 报价会在握手阶段被明确拒绝。
+ */
+export const PROTOCOL_VERSION = 2 as const;
 
-/** v1 服务端实际支持的能力；初始化时按客户端声明校验，未知能力不做静默降级。 */
-export const SERVER_CAPABILITIES = Object.freeze(['sessions', 'approval', 'cancel'] as const);
+/**
+ * 服务端实际支持的能力；initialize 按客户端声明取交集，未知能力不做静默降级。
+ * `watch` / `evidence` / `skill-import` 随 v0.1.4 新增，纯字段扩展不单列能力名。
+ */
+export const SERVER_CAPABILITIES = Object.freeze([
+  'sessions',
+  'approval',
+  'cancel',
+  'watch',
+  'evidence',
+  'skill-import',
+] as const);
 
 /** 协商后的能力名只能来自固定集合，避免调用方拼写差异被当作新能力接受。 */
 export type ServerCapability = (typeof SERVER_CAPABILITIES)[number];
@@ -26,6 +39,8 @@ export const DEFAULT_LIMITS = Object.freeze({
 
 /**
  * 只取本机实现支持的交集；认证和能力准入由宿主执行，不因协商而授予权限。
+ * 版本为严格相等校验：不接受区间协商，也不承诺字段级降级；旧 `{major, minMinor, maxMinor}`
+ * 报价与整数代际不兼容，统一返回 `PROTOCOL_MISMATCH`（而不是参数非法），便于调用方给出明确指引。
  * `offer.capabilities` 表示客户端本次依赖的能力：任一不被支持都明确失败，
  * 返回本次声明且受支持的去重列表，不补齐服务端支持但客户端未声明的能力。
  */
@@ -46,11 +61,9 @@ export function negotiateProtocol(offer: ProtocolOffer): ValidationResult<Negoti
     };
   }
   if (
-    ![offer.major, offer.minMinor, offer.maxMinor].every(Number.isSafeInteger) ||
-    offer.major !== PROTOCOL_VERSION.major ||
-    offer.minMinor < 0 ||
-    offer.minMinor > offer.maxMinor ||
-    offer.minMinor > PROTOCOL_VERSION.minor
+    !('protocolVersion' in offer) ||
+    !Number.isSafeInteger(offer.protocolVersion) ||
+    offer.protocolVersion !== PROTOCOL_VERSION
   ) {
     return {
       ok: false,
@@ -73,5 +86,5 @@ export function negotiateProtocol(offer: ProtocolOffer): ValidationResult<Negoti
       },
     };
   }
-  return { ok: true, value: { ...PROTOCOL_VERSION, capabilities } };
+  return { ok: true, value: { protocolVersion: PROTOCOL_VERSION, capabilities } };
 }

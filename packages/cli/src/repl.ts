@@ -6,6 +6,7 @@ import { QuoteDraft, prepareReferenceTask } from './quote-draft.js';
 import type { CliApprovalChannel } from './ui/approval.js';
 import { type EventRenderer, type OutputDetail, createEventRenderer } from './ui/events.js';
 import { CLI_VERSION } from './version.js';
+import { setActiveWatchService, setWatchResumeHook } from './watch-context.js';
 
 /**
  * REPL 启动参数。`controller` 缺省时退回裸会话（无切换能力）；
@@ -111,6 +112,11 @@ export async function startREPL(options: REPLOptions): Promise<void> {
         : session().runPreparedTask(task, prepare, { signal }),
     );
   context.onExit = requestExit;
+  // 监视触发后的自动续跑复用同一条 runTask 渲染与取消路径：
+  // 通知本身已作为背景消息落盘，这里只负责驱动模型继续一轮。
+  setWatchResumeHook(async (text, _signal) => {
+    await runTask((signal) => session().run(text, { signal }));
+  });
   input.onInterrupt(() => {
     activeRenderer?.invalidateAnchor();
     if (busy()) {
@@ -196,6 +202,9 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     if (options.controller) await options.controller.close();
     else await session().destroy();
   } finally {
+    // 会话已销毁：监视服务不得继续轮询，续跑钩子也不应再指向已关闭的会话。
+    setWatchResumeHook(undefined);
+    setActiveWatchService(undefined);
     input.close();
   }
 }

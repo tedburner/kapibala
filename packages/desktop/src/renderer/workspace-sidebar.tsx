@@ -27,6 +27,8 @@ export function runtimeLabel(item?: RuntimeItem, valid = true): string {
   if (item.approvals) return `待审批 ${item.approvals}`;
   if (item.phase !== 'idle')
     return { running: '运行中', cancelling: '正在取消', settling: '正在清理' }[item.phase];
+  // 监视不占用运行资源，但用户需要知道「这个会话在等外部条件」。
+  if (item.watches) return `监视中 ${item.watches}`;
   return item.result === 'failed' ? '失败' : item.result === 'aborted' ? '已停止' : '';
 }
 /** 相对时间只展示历史活动；异常或缺失时间不伪造最近活动。 */

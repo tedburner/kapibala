@@ -7,9 +7,12 @@ import {
   type AgentNotification,
   SessionInbox,
   SubagentOutbox,
+  WatchInbox,
   formatNotificationContent,
+  formatWatchNotificationContent,
 } from '../src/runtime/agent/outbox.js';
 import type { AgentTaskRecord } from '../src/runtime/agent/types.js';
+import type { WatchNotification } from '../src/runtime/watch/types.js';
 
 describe('SubagentOutbox and SessionInbox reliable notification delivery', () => {
   let directory: string;
@@ -280,5 +283,36 @@ describe('SubagentOutbox and SessionInbox reliable notification delivery', () =>
     expect(pendingOnRestart[0].agentId).toBe('sub-persist-2');
     expect(outbox2.isAcknowledged(notif1.eventId)).toBe(true);
     expect(outbox2.isAcknowledged(notif2.eventId)).toBe(false);
+  });
+
+  it('delivers watch notifications once and keeps watchSource metadata out of the message text', async () => {
+    const parentStore = await createParentStore();
+    const notification: WatchNotification = {
+      eventId: 'watch-1',
+      watchId: 'watch-1',
+      kind: 'file_change',
+      target: 'src/a.ts',
+      state: 'fired',
+      firedAt: 1_700_000_000_000,
+      detail: '内容摘要 12 字节',
+    };
+    const text = formatWatchNotificationContent(notification);
+    expect(text).toContain('[会话监视通知 · 已触发]');
+    expect(text).toContain('<watch-event watch="watch-1" kind="file_change" state="fired"');
+
+    const inbox = new WatchInbox(parentStore);
+    expect(await inbox.consume(notification, 'main')).toBe(true);
+    // 同一 eventId 再投递必须幂等跳过。
+    expect(await inbox.consume(notification, 'main')).toBe(false);
+
+    const records = (await parentStore.readRecords()).filter((record) => record.type === 'message');
+    expect(records).toHaveLength(1);
+    expect(records[0].payload).toMatchObject({
+      role: 'user',
+      watchSource: { eventId: 'watch-1', watchId: 'watch-1', branchId: 'main' },
+    });
+    // 恢复后新实例依靠历史回读去重，而不是依赖进程内集合。
+    const restarted = new WatchInbox(await SessionStore.open(file));
+    expect(await restarted.consume(notification, 'main')).toBe(false);
   });
 });

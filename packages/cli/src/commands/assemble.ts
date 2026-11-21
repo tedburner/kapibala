@@ -21,6 +21,7 @@ import { quoteCommand } from './quote.js';
 import { settingsCommand } from './settings.js';
 import { skillCommand, skillsCommand } from './skills.js';
 import { statusCommand } from './status.js';
+import { watchesCommand } from './watches.js';
 
 /**
  * 按 COMMAND_CATALOG 装配默认斜杠命令分发器：CLI REPL 与桌面会话命令面共用同一装配源。
@@ -61,6 +62,7 @@ export function createDefaultCommandDispatcher(): CommandDispatcher {
     agents: agentsCommand,
     delegate: delegateCommand,
     delegations: delegationsCommand,
+    watches: watchesCommand,
     exit: async (_args, context) => {
       await context.onExit();
     },

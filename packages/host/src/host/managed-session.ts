@@ -13,6 +13,7 @@ import {
   SessionManager,
   type SessionMode,
   SessionReferenceReader,
+  WatchInbox,
   type WorkspaceLeaseCoordinator,
   isSessionMode,
   sanitizeSessionTitle,
@@ -24,6 +25,7 @@ import { readDelegationRequestEntries } from './delegations.js';
 import { resolveCliMcpOptions } from './mcp.js';
 import { CliModelBindings, ROUTABLE_MODEL_ROLES } from './model-bindings.js';
 import { StreamingRedactor, redactText } from './redaction.js';
+import { McpServerApprovalStore, createApprovedStartAuthorizer } from './resource/mcp-approval.js';
 import {
   BUILTIN_PROFILES,
   type UserSettings,
@@ -46,6 +48,8 @@ import { type ReferenceSelection, readReferenceBlocks } from './reference-blocks
 import { SessionPresentation, presentationScope } from './session-presentation.js';
 import { projectStatusFacts } from './status-facts.js';
 import { TaskObservation } from './task-observation.js';
+import { WatchService, type WatchView } from './watch/service.js';
+import { createWatchTools } from './watch/tools.js';
 /** 只在加载时用一次，避免把会话级记忆写回全局默认。 */
 async function readPersistedMode(store: {
   loadState(): Promise<{ records: readonly { type: string; payload: Record<string, unknown> }[] }>;
@@ -104,6 +108,11 @@ export interface ManagedSessionOptions {
   leaseCoordinator: WorkspaceLeaseCoordinator;
   /** 未传时保持 SDK 读取行为；桌面调用方应显式设置读取预算。 */
   maxReadBytes?: number;
+  /**
+   * 监视终态回调：桌面等宿主用它发系统通知或状态增量。
+   * 通知正文已由 `WatchInbox` 落盘，这里的载荷只含展示所需事实，不含文件内容。
+   */
+  onWatchEvent?(notification: import('@kiturone/kapibala').WatchNotification): void;
 }
 
 /** 本次会话选择；仅空闲时应用，不持久化全局默认或自动提升权限。 */
@@ -169,6 +178,12 @@ export interface ManagedHostSession {
   inspection(): ManagedInspection;
   /** 观察变更不依赖页面正文订阅，退订不影响执行。 */
   subscribeInspection(listener: () => void): () => void;
+  /** 当前会话的监视视图（只读）；缺省没有监视时返回空数组。 */
+  watches(): WatchView[];
+  /** 取消一条仍在监视中的条目；终态条目明确拒绝而不是静默成功。 */
+  cancelWatch(watchId: string): Promise<void>;
+  /** 监视状态变化订阅；用于刷新徽标，退订不影响触发源。 */
+  subscribeWatches(listener: () => void): () => void;
 }
 
 /** 只在调用时装配资源；导入不探测环境、不读终端、不启动 Agent 或工具进程。 */
@@ -337,22 +352,35 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         [...mcp.servers].map(([name, entry]) => [name, entry.config]),
       );
       const mcpSession = session;
+      const mcpApprovals = new McpServerApprovalStore({
+        homeDir: homeDirectory,
+        projectRoot: root,
+      });
       mountMcp = async (runSignal) => {
         mcpPlugin = createMcpPlugin(servers, {
-          authorizer: async (descriptor, signal) => {
-            inspectionChanged();
-            const choice = await approval.requestApproval(
-              {
-                toolName: 'mcp_start',
-                rootDir: root,
-                capabilities: descriptor.type === 'stdio' ? ['exec'] : ['net:outbound'],
-                input: { ...descriptor },
-                sessionAllowed: true,
-              },
-              signal ? AbortSignal.any([signal, runSignal]) : runSignal,
-            );
-            return choice === 'cancel' ? 'deny_once' : choice;
-          },
+          authorizer: createApprovedStartAuthorizer({
+            store: mcpApprovals,
+            entries: new Map(
+              [...mcp.servers].map(([name, entry]) => [
+                name,
+                { source: entry.source, config: entry.config },
+              ]),
+            ),
+            fallback: async (descriptor, signal) => {
+              inspectionChanged();
+              const choice = await approval.requestApproval(
+                {
+                  toolName: 'mcp_start',
+                  rootDir: root,
+                  capabilities: descriptor.type === 'stdio' ? ['exec'] : ['net:outbound'],
+                  input: { ...descriptor },
+                  sessionAllowed: true,
+                },
+                signal ? AbortSignal.any([signal, runSignal]) : runSignal,
+              );
+              return choice === 'cancel' ? 'deny_once' : choice;
+            },
+          }),
         });
         try {
           await mcpSession.use(mcpPlugin);
@@ -504,6 +532,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         if (handleReleased) {
           disposed = true;
           tasks.close();
+          watches.dispose();
           stopInspectionEvents();
           inspectionListeners.clear();
           presentation.close();
@@ -617,6 +646,24 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         }
       }
     };
+    // 监视服务与运行共用同一空闲门：只有本会话没有在途运行时才投递并自动续跑，
+    // 背景通知经 WatchInbox 落回登记分支，绝不与用户输入抢写。
+    const watchInbox = new WatchInbox(ownedHandle.store);
+    const watches = new WatchService({
+      workspaceRoot: root,
+      store: ownedHandle.store,
+      deliver: (notification, branchId) => watchInbox.consume(notification, branchId),
+      isIdle: () => !activeController && !current.isBusy() && !closing && !disposed,
+      resume: async (input, signal) => {
+        for await (const _ of run(input, signal)) {
+          /* 投影已在内部完成。 */
+        }
+      },
+      onChange: inspectionChanged,
+      ...(options.onWatchEvent ? { onNotify: options.onWatchEvent } : {}),
+    });
+    for (const tool of createWatchTools(watches)) current.tools.register(tool);
+    void watches.start();
     const managed: ManagedHostSession = {
       conversationId: ownedHandle.conversationId,
       session: current,
@@ -720,6 +767,14 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           inspectionListeners.delete(listener);
         };
       },
+      watches: () => watches.list(),
+      cancelWatch: (watchId) => watches.cancel(watchId),
+      subscribeWatches: (listener) => {
+        inspectionListeners.add(listener);
+        return () => {
+          inspectionListeners.delete(listener);
+        };
+      },
       status: () =>
         projectStatusFacts(
           {
@@ -746,6 +801,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       cancelChildren,
       run,
       dispose,
+      watches: { list: () => managed.watches(), cancel: (id: string) => managed.cancelWatch(id) },
     };
   } catch (error) {
     // 创建失败时也按依赖顺序清理；上游未清理完不能释放存储锁，原始错误优先上报。

@@ -64,6 +64,9 @@ function fakeHandle(conversationId: string, run: () => Promise<void> = async () 
       truncated: false,
     }),
     subscribeInspection: () => () => {},
+    watches: () => [],
+    cancelWatch: vi.fn(async () => {}),
+    subscribeWatches: () => () => {},
   } satisfies ManagedHostSession;
 }
 /** 用 Core 在默认空间的桶里落一条真实会话，避免假句柄绕开文件系统。 */

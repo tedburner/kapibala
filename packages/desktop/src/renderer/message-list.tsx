@@ -1,5 +1,10 @@
 import { Button, Collapsible, InlineCopyText } from '@cloudflare/kumo';
-import type { ViewBlock, ViewMessage, ViewTool } from '@kiturone/kapibala-host/view-model';
+import {
+  type ViewBlock,
+  type ViewMessage,
+  type ViewTool,
+  summarizeToolGroup,
+} from '@kiturone/kapibala-host/view-model';
 import {
   ArrowDownIcon,
   BrainIcon,
@@ -78,6 +83,66 @@ function formatDuration(ms: number): string {
   return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
+/** 失败原因只取首行非空文本；完整结果仍在详情抽屉，不把整段错误铺到消息流。 */
+function firstReason(result: string | undefined): string | undefined {
+  if (!result) return undefined;
+  return result
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0)
+    ?.slice(0, 160);
+}
+
+/**
+ * 运行中耗时每秒跳动一次；超过 3 秒才显示，避免短调用闪烁。
+ * 宿主 `elapsedMs` 是进度事件快照，本地计时从该快照起算，终态固定取 `durationMs`；
+ * 连续 30 秒没有新进度时标记 stale，由调用方降低视觉权重（「无活动」不等于中断）。
+ */
+function useToolElapsed(tool: ViewTool | undefined): { text?: string; stale: boolean } {
+  const [now, setNow] = useState(() => Date.now());
+  const baseline = useRef({
+    callId: tool?.callId,
+    at: Date.now(),
+    elapsed: tool?.elapsedMs ?? 0,
+    lastActive: Date.now(),
+  });
+  if (baseline.current.callId !== tool?.callId) {
+    baseline.current = {
+      callId: tool?.callId,
+      at: Date.now(),
+      elapsed: tool?.elapsedMs ?? 0,
+      lastActive: Date.now(),
+    };
+  } else if ((tool?.elapsedMs ?? 0) > baseline.current.elapsed) {
+    baseline.current = {
+      callId: tool?.callId,
+      at: now,
+      elapsed: tool?.elapsedMs ?? 0,
+      lastActive: now,
+    };
+  }
+  const running = tool?.status === 'running';
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  if (!tool) return { stale: false };
+  if (!running)
+    return {
+      text: tool.durationMs === undefined ? undefined : formatDuration(tool.durationMs),
+      stale: false,
+    };
+  const elapsed = Math.max(
+    tool.elapsedMs ?? 0,
+    baseline.current.elapsed + now - baseline.current.at,
+  );
+  return {
+    text: elapsed >= 3000 ? formatDuration(elapsed) : undefined,
+    stale: now - baseline.current.lastActive >= 30_000,
+  };
+}
+
 function ToolRow({
   tool,
   onTool,
@@ -95,21 +160,30 @@ function ToolRow({
   );
   const [showPreview, setShowPreview] = useState(false);
   const state = TOOL_STATES[tool?.status ?? 'running'];
+  const elapsed = useToolElapsed(tool);
   // 限制单行预览长度与行数，完整的已脱敏内容仍由详情抽屉展示。
   const lines = tool?.result?.slice(0, 1201).split('\n') ?? [];
   const preview = lines.slice(0, 8).join('\n').slice(0, 1200);
   const truncated = lines.length > 8 || (tool?.result?.length ?? 0) > preview.length;
   const diff = lines.some((line) => /^(diff --git |@@ |--- |\+\+\+ )/.test(line));
-  // 主行只放显示名与结果摘要；参数降为次要行，避免固定列宽把 mcp__ 名称截断。
-  const resultSummary = tool?.result
-    ? tool.result.split('\n')[0]?.slice(0, 120)
-    : tool?.status === 'running'
-      ? '执行中…'
-      : undefined;
+  const failureReason = tool?.status === 'failed' ? firstReason(tool.result) : undefined;
+  // 主行只放显示名与结果摘要；失败原因单独一行，避免和次要行重复。
+  const resultSummary =
+    tool?.status === 'failed'
+      ? undefined
+      : tool?.result
+        ? tool.result.split('\n')[0]?.slice(0, 120)
+        : tool?.status === 'running'
+          ? '执行中…'
+          : undefined;
   return (
     <div className="min-w-0 rounded-md hover:bg-kumo-tint">
       <div className="flex min-w-0 items-center gap-2 px-2 pt-1">
-        <state.icon size={14} className={`shrink-0 ${state.tone}`} aria-hidden="true" />
+        <state.icon
+          size={14}
+          className={`shrink-0 ${elapsed.stale ? 'text-kumo-faint' : state.tone}`}
+          aria-hidden="true"
+        />
         <span className="sr-only">{state.label}</span>
         <span className="shrink-0 text-xs font-medium text-kumo-default">
           {tool?.displayName ?? '工具'}
@@ -117,6 +191,11 @@ function ToolRow({
         <span className="min-w-0 flex-1 truncate text-xs text-kumo-subtle">
           {resultSummary ?? tool?.invocation}
         </span>
+        {elapsed.text && (
+          <span className="shrink-0 font-mono text-2xs text-kumo-faint" aria-label="耗时">
+            {elapsed.text}
+          </span>
+        )}
         {previewDoc && (
           <HtmlPreviewButton
             open={showPreview}
@@ -136,12 +215,31 @@ function ToolRow({
           <CaretRightIcon size={14} />
         </Button>
       </div>
-      {tool?.invocation && (
+      {(tool?.verb || tool?.chip) && (
+        <div className="truncate px-2 pb-1 pl-[30px] text-2xs text-kumo-faint">
+          {tool.verb}
+          {tool.chip && (
+            <>
+              {tool.verb ? ' · ' : ''}
+              <span className={tool.mono ? 'font-mono' : undefined}>{tool.chip}</span>
+            </>
+          )}
+        </div>
+      )}
+      {!tool?.verb && !tool?.chip && tool?.invocation && (
         <div
           className="truncate px-2 pb-1 pl-[30px] font-mono text-2xs text-kumo-faint"
           title={tool.invocation}
         >
           {tool.invocation}
+        </div>
+      )}
+      {failureReason && (
+        <div
+          className="truncate px-2 pb-1 pl-[30px] text-2xs text-kumo-danger"
+          title={failureReason}
+        >
+          {failureReason}
         </div>
       )}
       {preview && (
@@ -154,7 +252,8 @@ function ToolRow({
             <CaretRightIcon size={12} /> {diff ? '查看差异预览' : '查看结果预览'}
           </Collapsible.Trigger>
           <Collapsible.Panel>
-            <pre className="max-h-40 overflow-auto rounded-md bg-kumo-base px-3 py-2 font-mono text-xs leading-5 whitespace-pre-wrap break-all">
+            {/* 保留缩进并允许横向滚动：break-all 会把多级缩进后的 diff 揉成一段。 */}
+            <pre className="max-h-40 overflow-x-auto overflow-y-auto rounded-md bg-kumo-base px-3 py-2 font-mono text-xs leading-5 whitespace-pre">
               {preview.split('\n').map((line, index) => (
                 <span
                   key={`${index}:${line}`}
@@ -195,6 +294,8 @@ function ToolGroup({
 }) {
   const tools = blocks.flatMap((block) => (block.tool ? [block.tool] : []));
   const summary = summarize(tools);
+  // U1.8：连续同类调用合并为「已读取 3 个文件」「运行 20 次，1 次失败」；混合时退回「执行 N 步」。
+  const group = summarizeToolGroup(tools);
   const totalMs = tools.reduce((sum, tool) => sum + (tool.durationMs ?? 0), 0);
   return (
     <Collapsible.Root defaultOpen className="kapibala-tool-group my-1">
@@ -209,7 +310,7 @@ function ToolGroup({
       >
         <summary.icon size={14} className={`shrink-0 ${summary.tone}`} aria-hidden="true" />
         <span className="shrink-0 text-xs font-medium text-kumo-default">
-          执行 {tools.length} 步
+          {group?.text ?? `执行 ${tools.length} 步`}
         </span>
         <span className="min-w-0 truncate text-xs text-kumo-subtle">
           {summary.label}

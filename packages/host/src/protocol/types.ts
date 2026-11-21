@@ -7,20 +7,31 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
-/** 初始化报价；凭证只用于本地认证，不得进入日志或历史。 */
-export interface ProtocolOffer {
-  major: number;
-  minMinor: number;
-  maxMinor: number;
-  clientName: string;
-  capabilities: string[];
-  token?: string;
-}
+/**
+ * 初始化报价；凭证只用于本地认证，不得进入日志或历史。
+ * `protocolVersion` 为整数代际，服务端严格相等校验；新增能力通过 `capabilities` 协商。
+ * 旧 `{major, minMinor, maxMinor}` 形状仍列入联合类型，只为让 v0.1.3 及更早客户端
+ * 通过参数校验后得到明确的 `PROTOCOL_MISMATCH`，而不是被当成普通参数错误。
+ */
+export type ProtocolOffer =
+  | {
+      protocolVersion: number;
+      clientName: string;
+      capabilities: string[];
+      token?: string;
+    }
+  | {
+      major: number;
+      minMinor: number;
+      maxMinor: number;
+      clientName: string;
+      capabilities: string[];
+      token?: string;
+    };
 
 /** 协议版本不跟随产品版本；只公布本次真正支持的能力。 */
 export interface NegotiatedProtocol {
-  major: number;
-  minor: number;
+  protocolVersion: number;
   capabilities: string[];
 }
 
@@ -57,6 +68,18 @@ export type PendingApproval = {
   expiresAt: number;
 };
 
+/** 监视列表项：只暴露展示所需字段，不携带轮询句柄或文件内容。 */
+export interface WatchWireItem {
+  watchId: string;
+  kind: 'file_change' | 'process_exit' | 'port_ready';
+  target: string;
+  state: 'armed' | 'fired' | 'timeout' | 'cancelled' | 'orphaned';
+  armedAt: number;
+  deadlineAt: number;
+  closedAt: number | null;
+  detail: string | null;
+}
+
 /** 请求参数目录；连接角色、会话权限和实际执行参数仍须由服务端复核。 */
 export interface RequestParams {
   initialize: ProtocolOffer;
@@ -75,6 +98,8 @@ export interface RequestParams {
   'run/start': SessionControl & { clientOperationId: string; input: string };
   'run/cancel': SessionControl & { runId: string };
   'approval/request': ApprovalPrompt;
+  'watch/list': { sessionId: string };
+  'watch/cancel': SessionControl & { watchId: string };
   'host/shutdown': Record<string, never>;
 }
 

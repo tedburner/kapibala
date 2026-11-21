@@ -70,6 +70,8 @@ export interface RequestResults {
   'run/start': { runId: string; accepted: true };
   'run/cancel': { cancellationRequested: true };
   'approval/request': { choice: import('./types.js').ApprovalChoice };
+  'watch/list': { items: import('./types.js').WatchWireItem[] };
+  'watch/cancel': { cancelled: true };
   'host/shutdown': { stopped: true };
 }
 /** 根据原请求参数区分首块与续块，不能只凭方法或响应形状判断。 */
@@ -126,6 +128,20 @@ const metadata = {
   maxOpenSessions: positive,
 } as const;
 const page = { chunk: text, cursor: nullable(id) } as const;
+/** 监视项与 wire 类型逐字段对齐：可选事实统一用 null 表达，避免 optional 与 Schema 结构不一致。 */
+const watchItem = object({
+  watchId: id,
+  kind: { type: 'string', enum: ['file_change', 'process_exit', 'port_ready'] },
+  target: text,
+  state: {
+    type: 'string',
+    enum: ['armed', 'fired', 'timeout', 'cancelled', 'orphaned'],
+  },
+  armedAt: integer,
+  deadlineAt: integer,
+  closedAt: nullable(integer),
+  detail: nullable(text),
+});
 const limits = object(
   Object.fromEntries(Object.keys(DEFAULT_LIMITS).map((key) => [key, positive])) as {
     [K in keyof ProtocolLimits]: typeof positive;
@@ -135,8 +151,7 @@ const limits = object(
 /** 结果变体目录保留现有 wire 字段，首块和续块不能互相代替。 */
 export const RESULT_SCHEMAS = {
   initialize: object({
-    major: integer,
-    minor: integer,
+    protocolVersion: integer,
     capabilities: array(id),
     serverInstanceId: id,
     clientId: id,
@@ -156,6 +171,8 @@ export const RESULT_SCHEMAS = {
   'run/start': object({ runId: id, accepted: yes }),
   'run/cancel': object({ cancellationRequested: yes }),
   'approval/request': APPROVAL_RESPONSE_SCHEMA,
+  'watch/list': object({ items: array(watchItem) }),
+  'watch/cancel': object({ cancelled: yes }),
   'host/shutdown': object({ stopped: yes }),
 } as const satisfies Record<string, WireSchema>;
 const fixed =
@@ -177,6 +194,8 @@ export const RESULT_SELECTORS = {
   'run/start': fixed('run/start'),
   'run/cancel': fixed('run/cancel'),
   'approval/request': fixed('approval/request'),
+  'watch/list': fixed('watch/list'),
+  'watch/cancel': fixed('watch/cancel'),
   'host/shutdown': fixed('host/shutdown'),
 } satisfies { [M in WireMethod]: (params: RequestParams[M]) => keyof typeof RESULT_SCHEMAS };
 

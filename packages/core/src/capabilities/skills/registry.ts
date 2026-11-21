@@ -10,17 +10,21 @@ import {
   skillPathKey,
 } from './scanner.js';
 import {
+  SKILL_LIFECYCLE_LIMIT,
   SKILL_LIMITS,
   type SkillDefinition,
   type SkillDiagnostic,
+  type SkillLifecycleEvent,
   type SkillMetadata,
   type SkillOptions,
+  type SkillRoot,
 } from './types.js';
 
 /** 确定性技能注册表；刷新原子替换快照，运行中加载必须与发现指纹一致。 */
 export class SkillRegistry {
   private definitions = new Map<string, SkillMetadata>();
   private warnings: SkillDiagnostic[] = [];
+  private lifecycleEvents: SkillLifecycleEvent[] = [];
   private revisionValue = '';
   /** 固定宿主配置副本，外部对象变更不能静默改变本轮发现或信任。 */
   constructor(private readonly options: SkillOptions) {
@@ -30,6 +34,23 @@ export class SkillRegistry {
   /** 获取独立诊断副本，调用方不能修改生效候选或权限。 */
   get diagnostics(): SkillDiagnostic[] {
     return structuredClone(this.warnings);
+  }
+  /**
+   * 生命周期事件副本：每次 `refresh` 清空重建，`load` 追加；只用于宿主诊断展示，
+   * 不参与优先级、预算或权限判定。超过上限时丢最旧事件，避免长会话无界增长。
+   */
+  get lifecycle(): SkillLifecycleEvent[] {
+    return structuredClone(this.lifecycleEvents);
+  }
+  /** 扫描根副本（含信任与物理边界声明）；调用方只用于展示发现环境，不能改写。 */
+  get roots(): SkillRoot[] {
+    return structuredClone([...this.options.roots]);
+  }
+  /** 记录一条生命周期事件；不做去重，按刷新/加载顺序保留有界历史。 */
+  private record(event: SkillLifecycleEvent): void {
+    this.lifecycleEvents.push(event);
+    if (this.lifecycleEvents.length > SKILL_LIFECYCLE_LIMIT)
+      this.lifecycleEvents.splice(0, this.lifecycleEvents.length - SKILL_LIFECYCLE_LIMIT);
   }
   /** 快照游标身份随正文、来源、可用性变化而失效。 */
   get revision(): string {
@@ -42,6 +63,7 @@ export class SkillRegistry {
 
   /** 每轮开始重新发现；取消不发布半个快照，非法单文件只产生诊断。 */
   async refresh(signal?: AbortSignal): Promise<void> {
+    this.lifecycleEvents = [];
     const candidates: SkillMetadata[] = [];
     const diagnostics: SkillDiagnostic[] = [];
     for (const root of this.options.roots) {
@@ -65,13 +87,55 @@ export class SkillRegistry {
           winnerPath: existing.filePath,
           loserPath: candidate.filePath,
         });
+        this.record({
+          phase: 'skipped',
+          name: candidate.name,
+          scope: candidate.scope,
+          sourceRoot: candidate.sourceRoot,
+          filePath: candidate.filePath,
+          code: 'SKILL_SHADOWED',
+          message: `同名技能被更高优先级来源覆盖：${existing.filePath}`,
+        });
         continue;
       }
-      if (!candidate.available && existing) continue;
+      if (!candidate.available && existing) {
+        this.record({
+          phase: 'skipped',
+          name: candidate.name,
+          scope: candidate.scope,
+          sourceRoot: candidate.sourceRoot,
+          filePath: candidate.filePath,
+          code: 'SKILL_DUPLICATE_NAME',
+          message: '同名技能已存在记录，低优先级副本不再进入候选',
+        });
+        continue;
+      }
       const identity = skillPathKey(candidate.filePath);
-      if (physical.has(identity)) continue;
+      if (physical.has(identity)) {
+        this.record({
+          phase: 'skipped',
+          name: candidate.name,
+          scope: candidate.scope,
+          sourceRoot: candidate.sourceRoot,
+          filePath: candidate.filePath,
+          code: 'SKILL_DUPLICATE_PATH',
+          message: '同一物理技能文件已由更高优先级根登记',
+        });
+        continue;
+      }
       if (candidate.available) physical.add(identity);
       definitions.set(candidate.name, candidate);
+      this.record({
+        phase: 'discovered',
+        name: candidate.name,
+        scope: candidate.scope,
+        sourceRoot: candidate.sourceRoot,
+        filePath: candidate.filePath,
+        ...(candidate.disabled ? { code: 'SKILL_DISABLED', message: '已由宿主禁用' } : {}),
+        ...(!candidate.disabled && candidate.unavailableReason
+          ? { code: 'SKILL_UNAVAILABLE', message: candidate.unavailableReason }
+          : {}),
+      });
     }
     signal?.throwIfAborted();
     this.definitions = definitions;
@@ -123,17 +187,44 @@ export class SkillRegistry {
     signal?: AbortSignal,
   ): Promise<SkillDefinition> {
     const skill = this.get(name);
-    if (!skill) throw skillFailure('SKILL_NOT_FOUND', '技能不存在，请查询当前技能列表');
-    if (skill.disabled) throw skillFailure('SKILL_INVOCATION_FORBIDDEN', '技能已由宿主禁用');
-    if (!skill.available)
-      throw skillFailure(
-        skill.unavailableReason?.includes('信任') ? 'SKILL_UNTRUSTED' : 'SKILL_UNSUPPORTED',
-        skill.unavailableReason ?? '技能不可执行',
-      );
-    if (!(caller === 'model' ? skill.modelInvocable : skill.userInvocable))
-      throw skillFailure('SKILL_INVOCATION_FORBIDDEN', '当前调用方不能激活此技能');
-    const raw = await this.verify(skill, signal);
-    return { ...skill, body: parseSkillDocument(raw, skill.filePath).body };
+    try {
+      if (!skill) throw skillFailure('SKILL_NOT_FOUND', '技能不存在，请查询当前技能列表');
+      if (skill.disabled) throw skillFailure('SKILL_INVOCATION_FORBIDDEN', '技能已由宿主禁用');
+      if (!skill.available)
+        throw skillFailure(
+          skill.unavailableReason?.includes('信任') ? 'SKILL_UNTRUSTED' : 'SKILL_UNSUPPORTED',
+          skill.unavailableReason ?? '技能不可执行',
+        );
+      if (!(caller === 'model' ? skill.modelInvocable : skill.userInvocable))
+        throw skillFailure('SKILL_INVOCATION_FORBIDDEN', '当前调用方不能激活此技能');
+      const raw = await this.verify(skill, signal);
+      this.record({
+        phase: 'loaded',
+        name: skill.name,
+        scope: skill.scope,
+        sourceRoot: skill.sourceRoot,
+        filePath: skill.filePath,
+      });
+      return { ...skill, body: parseSkillDocument(raw, skill.filePath).body };
+    } catch (error) {
+      // 用户主动取消不是技能事实；不写诊断，避免中断把生命周期日志刷满。
+      if (skill && !signal?.aborted) {
+        const code =
+          error instanceof Error && 'code' in error && typeof error.code === 'string'
+            ? error.code
+            : undefined;
+        this.record({
+          phase: 'skipped',
+          name: skill.name,
+          scope: skill.scope,
+          sourceRoot: skill.sourceRoot,
+          filePath: skill.filePath,
+          ...(code ? { code } : {}),
+          message: error instanceof Error ? error.message : '技能加载失败',
+        });
+      }
+      throw error;
+    }
   }
 
   /** 查询可信模型集合；过期游标可修正，预算不足不返回不前进的分页。 */

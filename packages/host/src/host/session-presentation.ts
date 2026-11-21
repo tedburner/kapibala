@@ -19,6 +19,7 @@ import { formatModelError } from './ui/model-errors.js';
 import { describeRuntimeError } from './ui/runtime-errors.js';
 import { sanitizeUntrustedOutput } from './ui/text-safety.js';
 import {
+  describeToolActivity,
   formatToolDetail,
   formatToolInvocation,
   resolveToolDisplay,
@@ -121,11 +122,15 @@ export class SessionPresentation {
       }
       case 'tool_start': {
         this.textId = undefined;
+        const activity = describeToolActivity(event.name, event.input);
         const tool: ViewTool = {
           callId: event.id,
           name: sanitizeToolName(event.name),
           displayName: resolveToolDisplay(event.name).label,
           invocation: sanitizeUntrustedOutput(formatToolInvocation(event.name, event.input)),
+          ...(activity.verb ? { verb: activity.verb } : {}),
+          ...(activity.chip ? { chip: sanitizeUntrustedOutput(activity.chip) } : {}),
+          ...(activity.mono ? { mono: true } : {}),
           input: sanitizeUntrustedOutput(formatToolDetail(event.input)),
           status: 'running',
         };

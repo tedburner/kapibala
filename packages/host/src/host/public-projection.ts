@@ -27,6 +27,7 @@ export function redactViewBlock(block: ViewBlock, redact: PublicTextRedactor): V
       name: redact(block.tool.name),
       invocation: redact(block.tool.invocation),
       input: redact(block.tool.input),
+      ...(block.tool.chip === undefined ? {} : { chip: redact(block.tool.chip) }),
       result: block.tool.result === undefined ? undefined : redact(block.tool.result),
     },
   };

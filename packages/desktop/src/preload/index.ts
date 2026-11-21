@@ -97,6 +97,7 @@ const api: DesktopAPI = {
   ready: () => ready,
   app: {
     getInfo: () => call('app.getInfo', {}),
+    checkUpdate: () => call('app.checkUpdate', {}),
     requestQuit: () => done('app.requestQuit', {}),
     reconnect: () => done('app.reconnect', {}),
     reload: () => done('app.reload', {}),
@@ -136,9 +137,15 @@ const api: DesktopAPI = {
     saveMcpServer: (params) => call('resources.saveMcpServer', params),
     deleteMcpServer: (params) => call('resources.deleteMcpServer', params),
     toggleMcpServer: (params) => call('resources.toggleMcpServer', params),
+    approveMcpServer: (params) => call('resources.approveMcpServer', params),
+    revokeMcpServer: (params) => call('resources.revokeMcpServer', params),
+    inspectMcpImport: (params) => call('resources.inspectMcpImport', params),
+    importMcp: (params) => call('resources.importMcp', params),
     readSkills: (workspaceId) => call('resources.readSkills', { workspaceId }),
     setSkillsEnabled: (params) => call('resources.setSkillsEnabled', params),
     setSkillDisabled: (params) => call('resources.setSkillDisabled', params),
+    inspectSkills: (workspaceId) => call('resources.inspectSkills', { workspaceId }),
+    importSkills: (params) => call('resources.importSkills', params),
   },
   session: {
     runtimeSubscribe: (subscriptionId) => call('session.runtimeSubscribe', { subscriptionId }),

@@ -1,5 +1,21 @@
 /** 技能知识来源；层级决定覆盖顺序，不授予文件或执行权限。 */
 export type SkillScope = 'builtin' | 'global' | 'project';
+/** 技能生命周期阶段：进入目录、发现期排除、正文成功加载。 */
+export type SkillLifecyclePhase = 'discovered' | 'skipped' | 'loaded';
+/** 生命周期事件；只记录发现事实与受控原因码，不携带正文、凭据或模型可见承诺。 */
+export interface SkillLifecycleEvent {
+  phase: SkillLifecyclePhase;
+  name: string;
+  scope: SkillScope;
+  sourceRoot: string;
+  filePath: string;
+  /** 跳过或加载失败的受控原因码；`discovered` / `loaded` 缺省。 */
+  code?: string;
+  /** 人类可读说明，来自既有诊断或调用控制，不含技能正文。 */
+  message?: string;
+}
+/** 生命周期日志上限；长会话反复刷新与加载时丢最旧事件，避免无界增长。 */
+export const SKILL_LIFECYCLE_LIMIT = 200;
 /** 结构化技能诊断；路径及文案需由宿主安全展示，不包含正文或凭据。 */
 export interface SkillDiagnostic {
   code: string;

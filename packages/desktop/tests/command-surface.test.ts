@@ -62,6 +62,9 @@ function handle() {
       truncated: false,
     }),
     subscribeInspection: () => () => {},
+    watches: () => [],
+    cancelWatch: vi.fn(async () => {}),
+    subscribeWatches: () => () => {},
   } satisfies ManagedHostSession;
 }
 

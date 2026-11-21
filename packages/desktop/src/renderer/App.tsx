@@ -1420,6 +1420,7 @@ export function App() {
         hostDown={facts.error !== undefined || facts.runtimeValid === false}
         spaces={spaces}
         workspaceId={opened?.workspaceId ?? spaces[0]?.id}
+        inspection={facts.inspection}
         archiveRevision={archiveRevision}
         onArchivedChanged={() => void refreshSpaces().catch((reason) => report(failure(reason)))}
         onRequestDelete={setPendingDelete}

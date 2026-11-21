@@ -14,6 +14,7 @@ import {
 } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Output, ProfileDraft, Workspace } from '../shared/contracts.js';
+import type { Inspection } from '../shared/observations.js';
 import type { SessionTarget } from './session-actions.js';
 
 type Catalog = Output<'settings.read'>;
@@ -21,9 +22,19 @@ type Model = Catalog['profiles'][number];
 type McpCatalog = Output<'resources.readMcp'>;
 type McpServerView = McpCatalog['servers'][number];
 type SkillsCatalog = Output<'resources.readSkills'>;
+type SkillImportScanView = Output<'resources.inspectSkills'>;
+type SkillImportResultView = Output<'resources.importSkills'>;
+type McpImportScanView = Output<'resources.inspectMcpImport'>;
+type McpImportResultView = Output<'resources.importMcp'>;
+/** 候选唯一键：同名条目可来自多个 Harness，必须带来源才不串选（技能与 MCP 共用）。 */
+function importKey(item: { harness: string; name: string }): string {
+  return `${item.harness}:${item.name}`;
+}
 /** MCP 编辑表单的草稿形态；args 以空白分隔输入，提交时按空白切分。 */
 type McpFormDraft = {
   editName?: string;
+  /** 写入目标；编辑时沿用原声明来源，新增时由用户选择（未受信项目只有全局）。 */
+  scope: 'global' | 'project';
   name: string;
   type: 'stdio' | 'http';
   command: string;
@@ -199,6 +210,7 @@ export function SettingsDialog({
   onArchivedChanged,
   onRequestDelete,
   hostDown = false,
+  inspection,
 }: {
   open: boolean;
   onOpenChange(open: boolean): void;
@@ -217,8 +229,14 @@ export function SettingsDialog({
   onRequestDelete?(target: SessionTarget): void;
   /** 执行 Host 断开或被阻断时，读取与保存都无法完成；表单明示原因而不是呈现空表单。 */
   hostDown?: boolean;
+  /** 当前会话的运行时观察；MCP 连接状态与 `/mcp` 同源，未打开会话时缺省。 */
+  inspection?: Inspection;
 }) {
   const [info, setInfo] = useState<Output<'app.getInfo'>>();
+  /** 更新检查只在用户点按钮时发生；结果只保留最近一次，不做轮询或缓存。 */
+  const [updateCheck, setUpdateCheck] = useState<Output<'app.checkUpdate'>>();
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState('');
   const [tab, setTab] = useState('models');
   const [resMcp, setResMcp] = useState<McpCatalog>();
   const [resSkills, setResSkills] = useState<SkillsCatalog>();
@@ -255,6 +273,171 @@ export function SettingsDialog({
         report(error.message);
       })
       .finally(() => setResBusy(false));
+  }
+  /**
+   * 技能导入抽屉：只在打开时扫描一次（设计 009 §10.1），不预热、不轮询外部目录。
+   * 全部写操作经 host 的导入服务完成，渲染层不直接落盘。
+   */
+  const [importOpen, setImportOpen] = useState(false);
+  const [importScan, setImportScan] = useState<SkillImportScanView>();
+  const [importSelected, setImportSelected] = useState<ReadonlySet<string>>(new Set());
+  const [importScope, setImportScope] = useState<'global' | 'project'>('global');
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [importResult, setImportResult] = useState<SkillImportResultView>();
+  /** 打开导入抽屉并扫描来源；默认全选，冲突项仍可勾选但执行时会被跳过。 */
+  const openImportDrawer = useCallback(() => {
+    if (!workspaceId) return;
+    setImportOpen(true);
+    setImportScan(undefined);
+    setImportResult(undefined);
+    setImportError('');
+    setImportBusy(true);
+    void withWatchdog(
+      window.kapibala.resources.inspectSkills(workspaceId),
+      '技能来源扫描超时',
+      30_000,
+    )
+      .then((scan) => {
+        setImportScan(scan);
+        setImportSelected(new Set(scan.candidates.map(importKey)));
+      })
+      .catch((error) => setImportError((error as Error).message))
+      .finally(() => setImportBusy(false));
+  }, [workspaceId]);
+  function toggleImportCandidate(key: string): void {
+    setImportSelected((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  /** 执行导入：只传来源身份；失败项保留在列表里可调整后重试。 */
+  function runImport(): void {
+    if (!workspaceId || !importScan || importBusy) return;
+    const items = importScan.candidates
+      .filter((item) => importSelected.has(importKey(item)))
+      .map((item) => ({
+        harness: item.harness,
+        name: item.name,
+        expectedSourceRef: item.sourceRef,
+      }));
+    if (!items.length) {
+      setImportError('请至少选择一个候选技能。');
+      return;
+    }
+    setImportBusy(true);
+    setImportError('');
+    void withWatchdog(
+      window.kapibala.resources.importSkills({ workspaceId, scope: importScope, items }),
+      '技能导入超时',
+      30_000,
+    )
+      .then((result) => {
+        setImportResult(result);
+        loadResources();
+      })
+      .catch((error) => setImportError((error as Error).message))
+      .finally(() => setImportBusy(false));
+  }
+  /**
+   * MCP 导入抽屉：打开时扫描一次；切换目标作用域要重新扫描，因为冲突判定取决于目标配置。
+   * 与技能导入同理，写操作全部经宿主服务，页面不直接落盘。
+   */
+  const [mcpImportOpen, setMcpImportOpen] = useState(false);
+  const [mcpImportScan, setMcpImportScan] = useState<McpImportScanView>();
+  const [mcpImportSelected, setMcpImportSelected] = useState<ReadonlySet<string>>(new Set());
+  const [mcpImportScope, setMcpImportScope] = useState<'global' | 'project'>('global');
+  const [mcpImportOverwrite, setMcpImportOverwrite] = useState(false);
+  const [mcpImportBusy, setMcpImportBusy] = useState(false);
+  const [mcpImportError, setMcpImportError] = useState('');
+  const [mcpImportResult, setMcpImportResult] = useState<McpImportResultView>();
+  /** 扫描外部 MCP 声明；默认全选，冲突项仍可勾选但执行时按 overwrite 决定是否跳过。 */
+  const scanMcpImport = useCallback(
+    (scope: 'global' | 'project') => {
+      if (!workspaceId) return;
+      setMcpImportScan(undefined);
+      setMcpImportResult(undefined);
+      setMcpImportError('');
+      setMcpImportBusy(true);
+      void withWatchdog(
+        window.kapibala.resources.inspectMcpImport({ workspaceId, scope }),
+        'MCP 来源扫描超时',
+        30_000,
+      )
+        .then((scan) => {
+          setMcpImportScan(scan);
+          setMcpImportSelected(new Set(scan.candidates.map(importKey)));
+        })
+        .catch((error) => setMcpImportError((error as Error).message))
+        .finally(() => setMcpImportBusy(false));
+    },
+    [workspaceId],
+  );
+  function openMcpImportDrawer(): void {
+    setMcpImportOpen(true);
+    setMcpImportScope('global');
+    setMcpImportOverwrite(false);
+    scanMcpImport('global');
+  }
+  function toggleMcpImportCandidate(key: string): void {
+    setMcpImportSelected((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  /** 执行导入：只传来源身份；失败项保留在列表里可调整后重试。 */
+  function runMcpImport(): void {
+    if (!workspaceId || !mcpImportScan || mcpImportBusy) return;
+    const items = mcpImportScan.candidates
+      .filter((item) => mcpImportSelected.has(importKey(item)))
+      .map((item) => ({
+        harness: item.harness,
+        name: item.name,
+        expectedSourceRef: item.sourceRef,
+      }));
+    if (!items.length) {
+      setMcpImportError('请至少选择一个候选服务器。');
+      return;
+    }
+    setMcpImportBusy(true);
+    setMcpImportError('');
+    void withWatchdog(
+      window.kapibala.resources.importMcp({
+        workspaceId,
+        scope: mcpImportScope,
+        items,
+        ...(mcpImportOverwrite ? { overwrite: true } : {}),
+      }),
+      'MCP 导入超时',
+      30_000,
+    )
+      .then((result) => {
+        setMcpImportResult(result);
+        loadResources();
+      })
+      .catch((error) => setMcpImportError((error as Error).message))
+      .finally(() => setMcpImportBusy(false));
+  }
+  /**
+   * 检查更新：只在用户点按钮时调用一次网络，不轮询、不在启动时自动联网。
+   * 网络 / 解析异常由主进程降级为 `unknown`；这里只兜住控制通路超时。
+   */
+  function checkUpdate(): void {
+    if (updateBusy) return;
+    setUpdateBusy(true);
+    setUpdateError('');
+    void withWatchdog(window.kapibala.app.checkUpdate(), '检查更新超时', 20_000)
+      .then(setUpdateCheck)
+      .catch((error) => setUpdateError((error as Error).message))
+      .finally(() => setUpdateBusy(false));
+  }
+  /** 发布页链接交给主进程校验协议后打开；空值直接忽略。 */
+  function openReleasePage(url: string | undefined): void {
+    if (url) void window.kapibala.app.openExternal(url);
   }
   /** 左侧选中的厂商分组键（providers[].key）；详情面板展示该厂商的模型与编辑表单。 */
   const [providerSel, setProviderSel] = useState('custom');
@@ -1279,118 +1462,191 @@ export function SettingsDialog({
                   <section className="space-y-3" aria-label="MCP 服务器">
                     <h3 className="text-sm font-medium">MCP 服务器</h3>
                     <p className="text-sm text-kumo-subtle">
-                      全局配置：~/.kapibala/mcp.json；项目级声明只读展示。
+                      全局配置：~/.kapibala/mcp.json；项目级声明在受信项目上可编辑，未受信只读。
                       启停与增删对新建会话生效，运行中的会话不受影响。
                     </p>
+                    {!inspection && (
+                      <p className="text-xs text-kumo-subtle">连接状态在打开会话后可见。</p>
+                    )}
                     {(resMcp?.servers ?? []).length === 0 && (
                       <p className="text-sm text-kumo-subtle">未配置任何 MCP 服务器。</p>
                     )}
-                    {(resMcp?.servers ?? []).map((server: McpServerView) => (
-                      <div
-                        key={`${server.source}:${server.name}`}
-                        className="space-y-1 rounded-lg border border-kumo-line p-3"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium">
-                              {server.name}
-                              <span className="ml-2 text-xs text-kumo-subtle">
-                                {server.source === 'project'
-                                  ? '项目级（只读）'
-                                  : server.enabled
-                                    ? '已启用'
-                                    : '已禁用'}
-                              </span>
+                    {(resMcp?.servers ?? []).map((server: McpServerView) => {
+                      const editable =
+                        server.source === 'global' || Boolean(resMcp?.projectTrusted);
+                      const runtime = inspection?.mcp.servers.find(
+                        (item) => item.name === server.name,
+                      );
+                      return (
+                        <div
+                          key={`${server.source}:${server.name}`}
+                          className="space-y-1 rounded-lg border border-kumo-line p-3"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium">
+                                {server.name}
+                                <span className="ml-2 text-xs text-kumo-subtle">
+                                  {server.source === 'project'
+                                    ? editable
+                                      ? '项目级'
+                                      : '项目级（只读）'
+                                    : server.enabled
+                                      ? '已启用'
+                                      : '已禁用'}
+                                </span>
+                              </div>
+                              <div className="truncate text-xs text-kumo-subtle">
+                                {server.type === 'http' ? 'HTTP' : 'stdio'} ·{' '}
+                                {server.target || '（无目标）'}
+                              </div>
+                              {runtime && (
+                                <div className="truncate text-xs text-kumo-subtle">
+                                  连接: {runtime.state} · 工具: {runtime.toolsState ?? '未知'}（
+                                  {runtime.toolCount ?? 0} 个）
+                                  {runtime.error ? ` · ${runtime.error}` : ''}
+                                </div>
+                              )}
                             </div>
-                            <div className="truncate text-xs text-kumo-subtle">
-                              {server.type === 'http' ? 'HTTP' : 'stdio'} ·{' '}
-                              {server.target || '（无目标）'}
-                            </div>
-                          </div>
-                          {server.source === 'global' && (
-                            <div className="flex shrink-0 items-center gap-2">
-                              <Switch
-                                label={`启用 ${server.name}`}
-                                checked={server.enabled}
-                                disabled={resBusy}
-                                onCheckedChange={(checked) =>
-                                  resourceAction((activeWorkspaceId) =>
-                                    window.kapibala.resources.toggleMcpServer({
-                                      workspaceId: activeWorkspaceId,
-                                      name: server.name,
-                                      enabled: checked,
-                                    }),
-                                  )
-                                }
-                              />
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() =>
-                                  setResDraft({
-                                    editName: server.name,
-                                    name: server.name,
-                                    type: server.type === 'http' ? 'http' : 'stdio',
-                                    // 回填必须用未脱敏的编辑面：target 是脱敏摘要
-                                    //（command+args 合并、密钥成掩码），回写会损坏声明。
-                                    command: server.edit?.command ?? '',
-                                    args: server.edit?.args?.join(' ') ?? '',
-                                    url: server.edit?.url ?? '',
-                                    keepTransport: !server.edit,
-                                  })
-                                }
-                              >
-                                编辑
-                              </Button>
-                              {resConfirmDelete === server.name ? (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => {
-                                    setResConfirmDelete(undefined);
+                            {editable && (
+                              <div className="flex shrink-0 items-center gap-2">
+                                <Switch
+                                  label={`启用 ${server.name}`}
+                                  checked={server.enabled}
+                                  disabled={resBusy}
+                                  onCheckedChange={(checked) =>
                                     resourceAction((activeWorkspaceId) =>
-                                      window.kapibala.resources.deleteMcpServer({
+                                      window.kapibala.resources.toggleMcpServer({
                                         workspaceId: activeWorkspaceId,
+                                        scope: server.source,
                                         name: server.name,
+                                        enabled: checked,
                                       }),
-                                    );
-                                  }}
-                                >
-                                  确认删除
-                                </Button>
-                              ) : (
+                                    )
+                                  }
+                                />
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => setResConfirmDelete(server.name)}
+                                  aria-label={`编辑 ${server.name}`}
+                                  onClick={() =>
+                                    setResDraft({
+                                      editName: server.name,
+                                      scope: server.source,
+                                      name: server.name,
+                                      type: server.type === 'http' ? 'http' : 'stdio',
+                                      // 回填必须用未脱敏的编辑面：target 是脱敏摘要
+                                      //（command+args 合并、密钥成掩码），回写会损坏声明。
+                                      command: server.edit?.command ?? '',
+                                      args: server.edit?.args?.join(' ') ?? '',
+                                      url: server.edit?.url ?? '',
+                                      keepTransport: !server.edit,
+                                    })
+                                  }
                                 >
-                                  删除
+                                  编辑
+                                </Button>
+                                {resConfirmDelete === server.name ? (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                      setResConfirmDelete(undefined);
+                                      resourceAction((activeWorkspaceId) =>
+                                        window.kapibala.resources.deleteMcpServer({
+                                          workspaceId: activeWorkspaceId,
+                                          scope: server.source,
+                                          name: server.name,
+                                        }),
+                                      );
+                                    }}
+                                  >
+                                    确认删除
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    aria-label={`删除 ${server.name}`}
+                                    onClick={() => setResConfirmDelete(server.name)}
+                                  >
+                                    删除
+                                  </Button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          {server.approval && (
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span
+                                className={
+                                  server.approval.approved ? 'text-kumo-subtle' : 'text-kumo-danger'
+                                }
+                              >
+                                批准: {server.approval.approved ? '已批准' : '待批准'}
+                                {!server.approval.approved && server.approval.approvedAt
+                                  ? '（配置已变化，需重新批准）'
+                                  : ''}
+                              </span>
+                              {server.approval.approved ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={`撤销批准 ${server.name}`}
+                                  disabled={resBusy}
+                                  onClick={() =>
+                                    resourceAction((activeWorkspaceId) =>
+                                      window.kapibala.resources.revokeMcpServer({
+                                        workspaceId: activeWorkspaceId,
+                                        name: server.name,
+                                      }),
+                                    )
+                                  }
+                                >
+                                  撤销批准
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  aria-label={`批准 ${server.name}`}
+                                  disabled={resBusy}
+                                  onClick={() =>
+                                    resourceAction((activeWorkspaceId) =>
+                                      window.kapibala.resources.approveMcpServer({
+                                        workspaceId: activeWorkspaceId,
+                                        name: server.name,
+                                      }),
+                                    )
+                                  }
+                                >
+                                  批准
                                 </Button>
                               )}
                             </div>
                           )}
+                          {server.hasSecretSurface && (
+                            <p className="text-xs text-kumo-subtle">
+                              该声明包含环境变量或请求头（值不在界面回显，编辑会保留原文）。
+                            </p>
+                          )}
+                          {server.diagnostics.map((diagnostic) => (
+                            <p
+                              key={`${diagnostic.code}:${diagnostic.message}`}
+                              className="text-xs text-kumo-subtle"
+                            >
+                              [{diagnostic.severity}] [{diagnostic.code}] {diagnostic.message}
+                            </p>
+                          ))}
                         </div>
-                        {server.hasSecretSurface && (
-                          <p className="text-xs text-kumo-subtle">
-                            该声明包含环境变量或请求头（值不在界面回显，编辑会保留原文）。
-                          </p>
-                        )}
-                        {server.diagnostics.map((diagnostic) => (
-                          <p
-                            key={`${diagnostic.code}:${diagnostic.message}`}
-                            className="text-xs text-kumo-subtle"
-                          >
-                            [{diagnostic.code}] {diagnostic.message}
-                          </p>
-                        ))}
-                      </div>
-                    ))}
+                      );
+                    })}
                     {resMcp?.diagnostics.map((diagnostic) => (
                       <p
                         key={`${diagnostic.code}:${diagnostic.message}`}
                         className="text-xs text-kumo-subtle"
                       >
-                        [{diagnostic.code}] {diagnostic.message}
+                        [{diagnostic.severity}] [{diagnostic.code}] {diagnostic.message}
                       </p>
                     ))}
                     {resDraft && (
@@ -1399,6 +1655,23 @@ export function SettingsDialog({
                           label="名称"
                           value={resDraft.name}
                           onValueChange={(value) => setResDraft({ ...resDraft, name: value })}
+                        />
+                        <Select
+                          label="写入位置"
+                          value={resDraft.scope}
+                          items={
+                            resMcp?.projectTrusted
+                              ? {
+                                  global: '全局（~/.kapibala/mcp.json）',
+                                  project: '项目（需已信任）',
+                                }
+                              : { global: '全局（~/.kapibala/mcp.json）' }
+                          }
+                          disabled={Boolean(resDraft.editName)}
+                          onValueChange={(value) => {
+                            if (value === 'global' || value === 'project')
+                              setResDraft({ ...resDraft, scope: value });
+                          }}
                         />
                         <Select
                           label="传输类型"
@@ -1442,7 +1715,11 @@ export function SettingsDialog({
                         )}
                         <p className="text-xs text-kumo-subtle">
                           {resDraft.keepTransport
-                            ? '该声明包含敏感内容，面板编辑只保留传输配置原文（可改名）；如需修改传输配置请手工编辑 ~/.kapibala/mcp.json。'
+                            ? `该声明包含敏感内容，面板编辑只保留传输配置原文（可改名）；如需修改传输配置请手工编辑 ${
+                                resDraft.scope === 'project'
+                                  ? '<项目>/.kapibala/mcp.json'
+                                  : '~/.kapibala/mcp.json'
+                              }。`
                             : '环境变量与请求头请在 mcp.json 中手工维护；编辑会保留这些字段原文。'}
                         </p>
                         <div className="flex gap-2">
@@ -1481,6 +1758,7 @@ export function SettingsDialog({
                                 window.kapibala.resources
                                   .saveMcpServer({
                                     workspaceId: activeWorkspaceId,
+                                    scope: resDraft.scope,
                                     editName: resDraft.editName,
                                     ...(resDraft.keepTransport ? { keepTransport: true } : {}),
                                     draft,
@@ -1504,6 +1782,7 @@ export function SettingsDialog({
                         disabled={!workspaceId}
                         onClick={() =>
                           setResDraft({
+                            scope: 'global',
                             name: '',
                             type: 'stdio',
                             command: '',
@@ -1514,6 +1793,210 @@ export function SettingsDialog({
                       >
                         新增服务器
                       </Button>
+                    )}
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs text-kumo-subtle">
+                        外部工具的 MCP 声明只在此处一次性拷贝，不会长期读取或自动同步。
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-label="从其它工具导入 MCP"
+                        disabled={!workspaceId || resBusy}
+                        onClick={openMcpImportDrawer}
+                      >
+                        从其它工具导入
+                      </Button>
+                    </div>
+                    {mcpImportOpen && (
+                      <section
+                        aria-label="从其它工具导入 MCP 服务器"
+                        className="space-y-3 rounded-lg border border-kumo-line p-3"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <h4 className="text-sm font-medium">从其它工具导入 MCP 服务器</h4>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={mcpImportBusy}
+                            onClick={() => setMcpImportOpen(false)}
+                          >
+                            关闭导入
+                          </Button>
+                        </div>
+                        <Select
+                          label="导入到"
+                          value={mcpImportScope}
+                          items={
+                            resMcp?.projectTrusted
+                              ? { global: '全局', project: '项目（需信任）' }
+                              : { global: '全局' }
+                          }
+                          disabled={mcpImportBusy}
+                          onValueChange={(value) => {
+                            if (value !== 'global' && value !== 'project') return;
+                            setMcpImportScope(value);
+                            // 冲突与目标配置有关：换作用域必须重新扫描，不能复用旧预览。
+                            scanMcpImport(value);
+                          }}
+                        />
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium">覆盖同名服务器</div>
+                            <p className="text-xs text-kumo-subtle">
+                              默认跳过已存在的同名声明；开启后会用来源配置替换目标条目。
+                            </p>
+                          </div>
+                          <Switch
+                            label="覆盖同名 MCP 服务器"
+                            checked={mcpImportOverwrite}
+                            disabled={mcpImportBusy}
+                            onCheckedChange={setMcpImportOverwrite}
+                          />
+                        </div>
+                        {mcpImportError && (
+                          <p role="alert" className="text-xs text-kumo-danger">
+                            {mcpImportError}
+                          </p>
+                        )}
+                        {mcpImportBusy && !mcpImportScan && (
+                          <p className="text-sm text-kumo-subtle">正在扫描来源…</p>
+                        )}
+                        {mcpImportScan && (
+                          <>
+                            <div className="space-y-1">
+                              {mcpImportScan.sources.map((source) => (
+                                <p key={source.harness} className="text-xs text-kumo-subtle">
+                                  {source.label}：
+                                  {source.files.length === 0
+                                    ? '未发现配置文件'
+                                    : source.files
+                                        .map(
+                                          (file) =>
+                                            `${file.origin}:${file.path}${file.readable ? '' : '（不可读）'}（${file.servers} 个）`,
+                                        )
+                                        .join(' · ')}
+                                </p>
+                              ))}
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-xs text-kumo-subtle">
+                                候选 {mcpImportScan.candidates.length} 个
+                              </span>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={mcpImportBusy}
+                                  onClick={() =>
+                                    setMcpImportSelected(
+                                      new Set(mcpImportScan.candidates.map(importKey)),
+                                    )
+                                  }
+                                >
+                                  全选
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={mcpImportBusy}
+                                  onClick={() => setMcpImportSelected(new Set())}
+                                >
+                                  全不选
+                                </Button>
+                              </div>
+                            </div>
+                            {mcpImportScan.candidates.length === 0 && (
+                              <p className="text-sm text-kumo-subtle">
+                                未发现可导入的 MCP 服务器（来源文件不存在或为空）。
+                              </p>
+                            )}
+                            <ul className="space-y-1">
+                              {mcpImportScan.candidates.map((candidate) => (
+                                <li
+                                  key={importKey(candidate)}
+                                  className="rounded-lg border border-kumo-line p-2"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <span className="min-w-0">
+                                      <span className="text-sm font-medium">{candidate.name}</span>
+                                      <span className="ml-2 text-xs text-kumo-subtle">
+                                        [{candidate.harness}] {candidate.transport} ·{' '}
+                                        {candidate.origin === 'project' ? '项目来源' : '用户来源'}
+                                        {candidate.conflict === 'none'
+                                          ? ''
+                                          : candidate.conflict === 'exists-disabled'
+                                            ? ' · 目标已存在（已停用）'
+                                            : ' · 目标已存在（将跳过）'}
+                                      </span>
+                                      <span className="block truncate text-xs text-kumo-subtle">
+                                        {candidate.target || '（无传输摘要）'}
+                                      </span>
+                                      {candidate.nameProblem && (
+                                        <span className="block text-xs text-kumo-danger">
+                                          名称不合法：{candidate.nameProblem}
+                                        </span>
+                                      )}
+                                      {candidate.hasSecretSurface && (
+                                        <span className="block text-xs text-kumo-subtle">
+                                          含环境变量或请求头（值不回显）
+                                        </span>
+                                      )}
+                                      {candidate.strippedFields.length > 0 && (
+                                        <span className="block text-xs text-kumo-subtle">
+                                          将剥离：{candidate.strippedFields.join(', ')}
+                                        </span>
+                                      )}
+                                    </span>
+                                    <Switch
+                                      label={`选择导入 ${candidate.name}`}
+                                      checked={mcpImportSelected.has(importKey(candidate))}
+                                      disabled={mcpImportBusy}
+                                      onCheckedChange={() =>
+                                        toggleMcpImportCandidate(importKey(candidate))
+                                      }
+                                    />
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                            {mcpImportScan.diagnostics.slice(0, 20).map((diagnostic) => (
+                              <p
+                                key={`${diagnostic.code}:${diagnostic.message}`}
+                                className="text-xs text-kumo-subtle"
+                              >
+                                [{diagnostic.severity}] [{diagnostic.code}] {diagnostic.message}
+                              </p>
+                            ))}
+                            <Button
+                              size="sm"
+                              aria-label="开始导入 MCP 服务器"
+                              disabled={mcpImportBusy || mcpImportSelected.size === 0}
+                              onClick={runMcpImport}
+                            >
+                              开始导入
+                            </Button>
+                          </>
+                        )}
+                        {mcpImportResult && (
+                          <div className="space-y-1 text-xs">
+                            <p className="font-medium">
+                              导入结果：导入 {mcpImportResult.imported} · 未变{' '}
+                              {mcpImportResult.unchanged} · 跳过 {mcpImportResult.skippedConflict} ·
+                              失败 {mcpImportResult.failed}
+                            </p>
+                            {mcpImportResult.items.map((item) => (
+                              <p
+                                key={`${item.harness}:${item.name}:${item.status}`}
+                                className="text-kumo-subtle"
+                              >
+                                {item.name} [{item.harness}] {item.status}
+                                {item.message ? ` · ${item.message}` : ''}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </section>
                     )}
                   </section>
                   <section className="space-y-3" aria-label="技能">
@@ -1585,6 +2068,172 @@ export function SettingsDialog({
                         [{diagnostic.code}] {diagnostic.path} · {diagnostic.message}
                       </p>
                     ))}
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs text-kumo-subtle">
+                        外部工具的技能只在此处一次性拷贝，不会长期读取或自动同步。
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!workspaceId || resBusy}
+                        onClick={openImportDrawer}
+                      >
+                        从其它工具导入
+                      </Button>
+                    </div>
+                    {importOpen && (
+                      <section
+                        aria-label="从其它工具导入技能"
+                        className="space-y-3 rounded-lg border border-kumo-line p-3"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <h4 className="text-sm font-medium">从其它工具导入</h4>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={importBusy}
+                            onClick={() => setImportOpen(false)}
+                          >
+                            关闭导入
+                          </Button>
+                        </div>
+                        <Select
+                          label="目标作用域"
+                          value={importScope}
+                          items={{ global: '全局', project: '项目（需信任）' }}
+                          disabled={importBusy || !resMcp?.projectTrusted}
+                          onValueChange={(value) => {
+                            if (value === 'global' || value === 'project') setImportScope(value);
+                          }}
+                        />
+                        {importError && (
+                          <p role="alert" className="text-xs text-kumo-danger">
+                            {importError}
+                          </p>
+                        )}
+                        {importBusy && !importScan && (
+                          <p className="text-sm text-kumo-subtle">正在扫描来源…</p>
+                        )}
+                        {importScan && (
+                          <>
+                            <div className="space-y-1">
+                              {importScan.sources.map((source) => (
+                                <p key={source.harness} className="text-xs text-kumo-subtle">
+                                  {source.label}：
+                                  {source.roots.length === 0
+                                    ? '未提供可用目录'
+                                    : source.roots
+                                        .map(
+                                          (root) =>
+                                            `${root.scope}:${root.path}${root.readable ? '' : '（不可读）'}`,
+                                        )
+                                        .join(' · ')}
+                                  {source.partial ? ` · 已截断 ${source.truncated}` : ''}
+                                </p>
+                              ))}
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-xs text-kumo-subtle">
+                                候选 {importScan.candidates.length} 个
+                              </span>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={importBusy}
+                                  onClick={() =>
+                                    setImportSelected(new Set(importScan.candidates.map(importKey)))
+                                  }
+                                >
+                                  全选
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={importBusy}
+                                  onClick={() => setImportSelected(new Set())}
+                                >
+                                  全不选
+                                </Button>
+                              </div>
+                            </div>
+                            {importScan.candidates.length === 0 && (
+                              <p className="text-sm text-kumo-subtle">
+                                未发现可导入技能（来源目录不存在或为空）。
+                              </p>
+                            )}
+                            <ul className="space-y-1">
+                              {importScan.candidates.map((candidate) => (
+                                <li
+                                  key={importKey(candidate)}
+                                  className="rounded-lg border border-kumo-line p-2"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <span className="min-w-0">
+                                      <span className="text-sm font-medium">{candidate.name}</span>
+                                      <span className="ml-2 text-xs text-kumo-subtle">
+                                        [{candidate.harness}] {candidate.files} 文件
+                                        {candidate.hasScripts ? ' · 含 scripts' : ''}
+                                        {candidate.conflict === 'none' ? '' : ' · 已存在（将跳过）'}
+                                      </span>
+                                      <span className="block truncate text-xs text-kumo-subtle">
+                                        {candidate.description || candidate.sourceRef}
+                                      </span>
+                                      {candidate.strippedFields.length > 0 && (
+                                        <span className="block text-xs text-kumo-subtle">
+                                          将剥离：{candidate.strippedFields.join(', ')}
+                                        </span>
+                                      )}
+                                    </span>
+                                    <Switch
+                                      label={`选择导入 ${candidate.name}`}
+                                      checked={importSelected.has(importKey(candidate))}
+                                      disabled={importBusy}
+                                      onCheckedChange={() =>
+                                        toggleImportCandidate(importKey(candidate))
+                                      }
+                                    />
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                            {importScan.diagnostics.slice(0, 20).map((diagnostic) => (
+                              <p
+                                key={`${diagnostic.code}:${diagnostic.path}:${diagnostic.message}`}
+                                className="text-xs text-kumo-subtle"
+                              >
+                                [{diagnostic.code}] {diagnostic.path} · {diagnostic.message}
+                              </p>
+                            ))}
+                            <Button
+                              size="sm"
+                              disabled={importBusy || importSelected.size === 0}
+                              onClick={runImport}
+                            >
+                              开始导入
+                            </Button>
+                          </>
+                        )}
+                        {importResult && (
+                          <div className="space-y-1 text-xs">
+                            <p className="font-medium">
+                              导入结果：导入 {importResult.imported} · 未变 {importResult.unchanged}{' '}
+                              · 跳过 {importResult.skippedConflict + importResult.skippedLimit} ·
+                              失败 {importResult.failed}
+                            </p>
+                            {importResult.items.map((item) => (
+                              <p
+                                key={`${item.harness}:${item.name}:${item.status}`}
+                                className="text-kumo-subtle"
+                              >
+                                {item.name} [{item.harness}] {item.status}
+                                {item.message ? ` · ${item.message}` : ''}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    )}
                   </section>
                 </Tabs.Panel>
                 <Tabs.Panel value="appearance" className="kapibala-settings-panel space-y-4">
@@ -1675,6 +2324,66 @@ export function SettingsDialog({
                     Kapibala {info?.version ?? '读取中'}
                     {info?.testBuild ? ' · 内部测试构建' : ''}
                   </p>
+                  <section aria-label="关于与更新" className="space-y-2">
+                    <h3 className="text-sm font-medium">关于与更新</h3>
+                    <p className="text-xs text-kumo-subtle">
+                      未签名个人自用版；检查与安装都由你手动触发，不自动下载或静默安装。
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={updateBusy || !info}
+                        onClick={checkUpdate}
+                      >
+                        {updateBusy ? '检查中…' : '检查更新'}
+                      </Button>
+                      {updateCheck?.releaseUrl && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openReleasePage(updateCheck.releaseUrl)}
+                        >
+                          打开发布页
+                        </Button>
+                      )}
+                    </div>
+                    {updateError && (
+                      <p role="alert" className="text-xs text-kumo-danger">
+                        {updateError}
+                      </p>
+                    )}
+                    {updateCheck?.status === 'up-to-date' && (
+                      <p className="text-xs text-kumo-subtle">
+                        已是最新版本（{updateCheck.latestVersion}）。
+                      </p>
+                    )}
+                    {updateCheck?.status === 'update-available' && (
+                      <div className="space-y-1 text-xs">
+                        <p className="text-sm">
+                          发现新版本 {updateCheck.latestVersion}（当前 {updateCheck.currentVersion}
+                          ）。
+                        </p>
+                        {updateCheck.installer && (
+                          <p className="text-kumo-subtle">安装包：{updateCheck.installer.name}</p>
+                        )}
+                        <p className="text-kumo-subtle">
+                          本版只提供发布页链接；下载与手动安装尚未启用。
+                        </p>
+                      </div>
+                    )}
+                    {updateCheck?.status === 'no-asset' && (
+                      <p className="text-xs text-kumo-subtle">
+                        最新版本 {updateCheck.latestVersion}{' '}
+                        没有匹配当前平台的安装包，请到发布页查看。
+                      </p>
+                    )}
+                    {updateCheck?.status === 'unknown' && (
+                      <p className="text-xs text-kumo-subtle">
+                        暂时无法检查更新（{updateCheck.reason ?? 'UNKNOWN'}），不影响继续使用。
+                      </p>
+                    )}
+                  </section>
                   {info && (
                     <>
                       <p className="text-sm text-kumo-subtle">

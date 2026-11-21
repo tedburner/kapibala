@@ -188,6 +188,19 @@ export interface SubagentSourceMetadata {
 }
 
 /**
+ * 会话级监视背景消息的来源元数据；仅用于去重与审计，不发送到 Provider wire。
+ * `eventId` 与 `watchId` 相同（一条监视至多产生一条通知），`kind` 与 `state` 保持字符串，
+ * 让旧宿主读取新记录时不因未知枚举值拒绝整条历史。
+ */
+export interface WatchSourceMetadata {
+  readonly eventId: string;
+  readonly watchId: string;
+  readonly kind: string;
+  readonly state: string;
+  readonly branchId: string;
+}
+
+/**
  * 协议无关的历史真源；wire 格式只在请求投影时出现。
  * 不变量：assistant 消息中的 tool_use 进入历史后，对应 tool_result 消息必须紧跟其后。
  */
@@ -205,6 +218,8 @@ export interface CanonicalMessage {
   timestamp?: number;
   /** 子代理通知背景消息来源元数据（仅用于审计与收件箱幂等去重）。 */
   subagentSource?: SubagentSourceMetadata;
+  /** 会话级监视背景消息来源元数据（仅用于审计与收件箱幂等去重）。 */
+  watchSource?: WatchSourceMetadata;
 }
 
 /** 判别并收窄为文本块。 */

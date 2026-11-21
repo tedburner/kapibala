@@ -251,6 +251,8 @@ export class ViewClient {
       });
       return;
     }
+    // 监视通知只用于系统级提醒，不改变当前视图的展示事实。
+    if (event.type === 'watch.triggered') return;
     const scope = this.scope;
     if (
       !scope ||

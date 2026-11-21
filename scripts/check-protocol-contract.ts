@@ -17,7 +17,7 @@ const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const contractPath = path.join(
   repositoryRoot,
   'scripts/fixtures/protocol',
-  `v${PROTOCOL_VERSION.major}.${PROTOCOL_VERSION.minor}/contract.json`,
+  `v${PROTOCOL_VERSION}/contract.json`,
 );
 
 /** wire 契约的固定快照；类型由 typecheck 保证，这里冻结运行时可观察目录。 */
@@ -125,7 +125,7 @@ function main(): void {
     process.exitCode = 1;
     return;
   }
-  console.log(`Protocol v${PROTOCOL_VERSION.major}.${PROTOCOL_VERSION.minor} contract is frozen.`);
+  console.log(`Protocol v${PROTOCOL_VERSION} contract is frozen.`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

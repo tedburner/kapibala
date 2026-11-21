@@ -1298,6 +1298,9 @@ export class SessionManager {
     } else if (record.type === 'mode_state') {
       // 模式只随显式切换写入；未知值忽略，避免损坏文件把会话推进未定义的权限档位。
       if (isSessionMode(record.payload.mode)) meta.mode = record.payload.mode;
+    } else if (record.type === 'watch_state') {
+      // 监视状态不进列表元数据：它只由持会话写租约的宿主回放恢复，sidecar 重建无需保留。
+      // 此分支必须存在，否则后续新增字段时容易把 watch_state 当成未知记录静默丢弃。
     }
 
     if (branchLeaves && !isGlobalControlRecordType(record.type)) {

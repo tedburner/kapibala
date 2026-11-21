@@ -59,9 +59,7 @@ fs.writeFileSync(
 );
 
 const OFFER = Object.freeze({
-  major: 1,
-  minMinor: 0,
-  maxMinor: 0,
+  protocolVersion: 2,
   clientName: 'platform-probe',
   capabilities: [],
 });

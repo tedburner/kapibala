@@ -478,7 +478,7 @@ export class AgentSession {
     return this.context.project(this.history);
   }
 
-  /** 查询技能元数据、诊断与本轮活动状态；只读，不加载正文或改变权限。 */
+  /** 查询技能元数据、诊断、发现环境与本轮活动状态；只读，不加载正文或改变权限。 */
   getSkills(query = '') {
     const skills = this.skillRegistry?.list('host', query) ?? [];
     const catalog = this.createPromptAssembler(
@@ -486,8 +486,11 @@ export class AgentSession {
       this.context.project(this.history),
     ).getSkillCatalog();
     return {
+      enabled: this.skillRegistry?.enabled ?? false,
       skills,
       diagnostics: this.skillRegistry?.diagnostics ?? [],
+      roots: this.skillRegistry?.roots ?? [],
+      lifecycle: this.skillRegistry?.lifecycle ?? [],
       activations: this.skillRuntime?.activations ?? [],
       content: inspectSkillContent(this.history, this.context.project(this.history)),
       catalog: { included: catalog.included, omitted: catalog.omitted },

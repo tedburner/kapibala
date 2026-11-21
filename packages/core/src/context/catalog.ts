@@ -823,6 +823,9 @@ export class CrossProjectSessionCatalog {
             pinned = Boolean(rec.payload.pinned);
           } else if (rec.type === 'mode_state') {
             if (isSessionMode(rec.payload.mode)) mode = rec.payload.mode;
+          } else if (rec.type === 'watch_state') {
+            // 监视状态属于正文控制记录，不参与列表元数据；显式分支保证重建扫描不会把它
+            // 当成分支记录推进叶子，也避免未来扩展时静默漏处理。
           } else if (rec.type === 'branch_selected') {
             activeBranchId = String(rec.payload.branchId);
           }
