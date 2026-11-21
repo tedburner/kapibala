@@ -36,6 +36,7 @@ import { readImageDataUrl, resolveLocalImagePath } from './preview-file.js';
 import { installPreviewProtocol, previewUrl, registerPreviewScheme } from './preview-protocol.js';
 import { HostSupervisor } from './supervisor.js';
 import { checkForDesktopUpdate } from './update-check.js';
+import { downloadUpdate, isTrustedReleaseUrl } from './update-download.js';
 import { normalizeUrl } from './url.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -100,6 +101,18 @@ let quitting = false;
 let quitTask: Promise<void> | undefined;
 let cleanup = Promise.resolve();
 let blocked = false;
+/**
+ * 最近一次检查到的可下载资产：只保存在主进程，页面无法注入 URL。
+ * 每次检查都会整体替换（不再有新版本时清空），下载入口以它为准。
+ */
+let updateCandidate:
+  | {
+      installer: { name: string; url: string; size: number };
+      checksum: { name: string; url: string };
+    }
+  | undefined;
+/** 在途下载的取消句柄；同一时刻只允许一个下载，避免并发写同一临时文件。 */
+let updateDownload: AbortController | undefined;
 const registry = new Map<string, Workspace>();
 const surfaces = { light: '#FFFFFF', dark: '#181818' } as const;
 const displayMode = () =>
@@ -155,6 +168,8 @@ async function recover(): Promise<void> {
 async function requestQuit(): Promise<void> {
   if (quitTask) return quitTask;
   quitTask = (async () => {
+    // 退出时中止在途下载，避免进程结束留下未完成的临时文件。
+    updateDownload?.abort();
     // blocked 且 Host 已退出 = 既有清理未知场景；shutdown 超时或失败会另行置位。
     let unconfirmed = supervisor ? blocked && supervisor.hasExited() : false;
     if (supervisor && !supervisor.hasExited()) {
@@ -209,13 +224,62 @@ async function handle(
   switch (method) {
     // 更新检查只由用户动作触发：不做启动时自动联网，也不进入宿主子进程。
     // 任何网络 / 响应异常都在 update-check 内降级为 unknown，不抛出到这里。
-    case 'app.checkUpdate':
-      return checkForDesktopUpdate({
+    case 'app.checkUpdate': {
+      const result = await checkForDesktopUpdate({
         currentVersion: app.getVersion(),
         platform: process.platform,
         arch: process.arch,
         fetch: (url, init) => net.fetch(url, init),
       });
+      // 只有安装包与摘要清单齐全时才登记下载候选；其余状态清空旧候选，
+      // 避免页面拿着过期的「有新版本」结果去下载已被撤下的资产。
+      updateCandidate =
+        result.status === 'update-available' && result.installer && result.checksum
+          ? { installer: result.installer, checksum: result.checksum }
+          : undefined;
+      return result;
+    }
+    // 下载入口不带参数：URL 只来自主进程登记的检查结果，渲染层无法指定下载地址。
+    case 'app.downloadUpdate': {
+      if (!updateCandidate) return { status: 'failed', reason: 'NO_UPDATE_STATE' };
+      if (updateDownload) return { status: 'failed', reason: 'DOWNLOAD_IN_PROGRESS' };
+      const candidate = updateCandidate;
+      if (
+        !isTrustedReleaseUrl(candidate.installer.url) ||
+        !isTrustedReleaseUrl(candidate.checksum.url)
+      )
+        return { status: 'failed', reason: 'UNTRUSTED_SOURCE' };
+      const controller = new AbortController();
+      updateDownload = controller;
+      let lastProgress = 0;
+      try {
+        const result = await downloadUpdate({
+          installer: candidate.installer,
+          checksum: candidate.checksum,
+          directory: app.getPath('downloads'),
+          fetch: (url, init) => net.fetch(url, init),
+          signal: controller.signal,
+          onProgress: (downloaded, total) => {
+            // 进度只是展示反馈：节流到 5 次/秒；最后一帧（downloaded === total）必定发送。
+            const now = Date.now();
+            if (now - lastProgress < 200 && downloaded !== total) return;
+            lastProgress = now;
+            void source
+              .sendEvent({ type: 'update.downloadProgress', downloaded, total }, 'control')
+              .catch(() => {});
+          },
+        });
+        if (result.status !== 'downloaded') return result;
+        // 只有摘要严格一致才会走到这里：打开安装包，由安装程序提示手动安装。
+        const openError = await shell.openPath(result.filePath);
+        return { status: 'downloaded', filePath: result.filePath, opened: openError === '' };
+      } finally {
+        if (updateDownload === controller) updateDownload = undefined;
+      }
+    }
+    case 'app.cancelUpdateDownload':
+      updateDownload?.abort();
+      return {};
     case 'app.getInfo':
       return {
         name: 'Kapibala',

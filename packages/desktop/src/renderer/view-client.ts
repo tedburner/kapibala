@@ -253,6 +253,8 @@ export class ViewClient {
     }
     // 监视通知只用于系统级提醒，不改变当前视图的展示事实。
     if (event.type === 'watch.triggered') return;
+    // 更新下载进度只服务设置页的独立订阅，不进入会话展示投影。
+    if (event.type === 'update.downloadProgress') return;
     const scope = this.scope;
     if (
       !scope ||

@@ -580,10 +580,22 @@ const updateCheckResult = z
   })
   .strict();
 
+/**
+ * 下载结果：下载完成只代表文件已通过 SHA256 校验，`opened` 表示系统是否成功
+ * 唤起安装包；失败只返回稳定原因码与可选细节，页面负责转成中文提示。
+ */
+const updateDownloadResult = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('downloaded'), filePath: text, opened: z.boolean() }).strict(),
+  z.object({ status: z.literal('cancelled') }).strict(),
+  z.object({ status: z.literal('failed'), reason: text, detail: text.optional() }).strict(),
+]);
+
 /** 每个业务入口独立校验；不能通过通用 channel 调用未登记方法。 */
 export const PARAMS = {
   'app.getInfo': empty,
   'app.checkUpdate': empty,
+  'app.downloadUpdate': empty,
+  'app.cancelUpdateDownload': empty,
   'app.requestQuit': empty,
   'app.reconnect': empty,
   'app.reload': empty,
@@ -827,6 +839,8 @@ export type Params<M extends Method> = z.infer<(typeof PARAMS)[M]>;
 /** 每个回复同样校验白名单；不把原始历史或设置对象反传给页面。 */
 export const RESULTS = {
   'app.checkUpdate': updateCheckResult,
+  'app.downloadUpdate': updateDownloadResult,
+  'app.cancelUpdateDownload': empty,
   'app.getInfo': z
     .object({
       name: text,
@@ -1050,6 +1064,15 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
       mode: z.enum(['light', 'dark']),
     })
     .strict(),
+  // 下载进度只用于界面反馈：主进程节流后发送，丢一帧不影响最终结果（结果走 RPC 回复）。
+  z
+    .object({
+      type: z.literal('update.downloadProgress'),
+      downloaded: z.number().int().nonnegative(),
+      /** 未知总大小时为 0，页面不得据此计算百分比。 */
+      total: z.number().int().nonnegative(),
+    })
+    .strict(),
   z.object({ type: z.literal('host.unavailable'), error }).strict(),
 ]);
 /** 页面只能收到这些安全通知，不暴露 MessagePort 或原始 SessionEvent。 */
@@ -1093,6 +1116,10 @@ export type DesktopAPI = {
     getInfo(): Promise<Output<'app.getInfo'>>;
     /** 用户显式触发的一次性检查；离线或响应异常返回 `unknown`，不影响启动。 */
     checkUpdate(): Promise<Output<'app.checkUpdate'>>;
+    /** 下载最近一次检查到的安装包（无参数，URL 只保存在主进程），校验通过后才打开。 */
+    downloadUpdate(): Promise<Output<'app.downloadUpdate'>>;
+    /** 取消在途下载；没有下载时是空操作。 */
+    cancelUpdateDownload(): Promise<void>;
     requestQuit(): Promise<void>;
     reconnect(): Promise<void>;
     reload(): Promise<void>;

@@ -98,6 +98,8 @@ const api: DesktopAPI = {
   app: {
     getInfo: () => call('app.getInfo', {}),
     checkUpdate: () => call('app.checkUpdate', {}),
+    downloadUpdate: () => call('app.downloadUpdate', {}),
+    cancelUpdateDownload: () => done('app.cancelUpdateDownload', {}),
     requestQuit: () => done('app.requestQuit', {}),
     reconnect: () => done('app.reconnect', {}),
     reload: () => done('app.reload', {}),

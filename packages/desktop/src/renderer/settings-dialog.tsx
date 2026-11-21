@@ -60,6 +60,24 @@ function withWatchdog<T>(task: Promise<T>, message: string, ms = 10_000): Promis
     }),
   ]);
 }
+/** 下载失败原因码转成可执行中文；未知原因保留原始码与细节，便于排查。 */
+function describeDownloadFailure(reason: string, detail?: string): string {
+  if (reason === 'NO_UPDATE_STATE') return '请先重新检查更新，再下载。';
+  if (reason === 'DOWNLOAD_IN_PROGRESS') return '已有下载正在进行。';
+  if (reason === 'UNTRUSTED_SOURCE') return '下载地址不是受信任的发布源，已拒绝。';
+  if (reason === 'CHECKSUM_FETCH_FAILED')
+    return `无法获取 SHA256 校验清单，已取消下载${detail ? `（${detail}）` : ''}。`;
+  if (reason === 'CHECKSUM_MISSING') return '发布包缺少该安装包的 SHA256 摘要，已拒绝下载。';
+  if (reason === 'CHECKSUM_MISMATCH') return '安装包 SHA256 校验不一致，已删除下载文件，请重试。';
+  if (reason === 'INVALID_ASSET_NAME') return '安装包文件名不合法，已拒绝下载。';
+  return `下载失败${detail ? `（${detail}）` : ''}，可重试或到发布页手动下载。`;
+}
+/** 下载进度只做粗粒度展示，KB/MB 足够；总大小未知时由调用方换文案。 */
+function formatSize(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
 /** 左导航只负责切换内容；诊断与产品设置同级但独立，避免版本信息混进日常配置。 */
 const SETTINGS_TABS = [
   {
@@ -237,6 +255,10 @@ export function SettingsDialog({
   const [updateCheck, setUpdateCheck] = useState<Output<'app.checkUpdate'>>();
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState('');
+  /** 下载进度与最终结果只服务「关于与更新」区块；关闭弹窗不保留，重开需重新检查。 */
+  const [updateProgress, setUpdateProgress] = useState<{ downloaded: number; total: number }>();
+  const [updateDownload, setUpdateDownload] = useState<Output<'app.downloadUpdate'>>();
+  const [downloading, setDownloading] = useState(false);
   const [tab, setTab] = useState('models');
   const [resMcp, setResMcp] = useState<McpCatalog>();
   const [resSkills, setResSkills] = useState<SkillsCatalog>();
@@ -261,6 +283,15 @@ export function SettingsDialog({
     if (!open || tab !== 'resources') return;
     loadResources();
   }, [open, tab, loadResources]);
+  /** 下载进度由主进程节流推送；只更新进度展示，不改变检查结果与按钮状态。 */
+  useEffect(
+    () =>
+      window.kapibala.onEvent((event) => {
+        if (event.type === 'update.downloadProgress')
+          setUpdateProgress({ downloaded: event.downloaded, total: event.total });
+      }),
+    [],
+  );
   /** 资源写操作统一入口：串行防抖 + 回读 + 失败上报，不静默吞错。 */
   function resourceAction(action: (activeWorkspaceId: string) => Promise<unknown>): void {
     if (!workspaceId || resBusy) return;
@@ -438,6 +469,29 @@ export function SettingsDialog({
   /** 发布页链接交给主进程校验协议后打开；空值直接忽略。 */
   function openReleasePage(url: string | undefined): void {
     if (url) void window.kapibala.app.openExternal(url);
+  }
+  /**
+   * 下载安装包：主进程按上次检查结果流式下载、比对 SHA256，通过后才打开。
+   * 不做自动重试；失败后用户可以再次点击，重新走完整下载与校验。
+   */
+  function startDownload(): void {
+    if (downloading) return;
+    setDownloading(true);
+    setUpdateError('');
+    setUpdateDownload(undefined);
+    setUpdateProgress(undefined);
+    void window.kapibala.app
+      .downloadUpdate()
+      .then(setUpdateDownload)
+      .catch((error) => setUpdateError((error as Error).message))
+      .finally(() => {
+        setDownloading(false);
+        setUpdateProgress(undefined);
+      });
+  }
+  /** 取消在途下载：主进程删除临时文件并让下载请求返回 cancelled。 */
+  function cancelDownload(): void {
+    void window.kapibala.app.cancelUpdateDownload().catch(() => {});
   }
   /** 左侧选中的厂商分组键（providers[].key）；详情面板展示该厂商的模型与编辑表单。 */
   const [providerSel, setProviderSel] = useState('custom');
@@ -2367,9 +2421,47 @@ export function SettingsDialog({
                         {updateCheck.installer && (
                           <p className="text-kumo-subtle">安装包：{updateCheck.installer.name}</p>
                         )}
+                        <div className="flex flex-wrap items-center gap-2">
+                          {downloading ? (
+                            <>
+                              <span className="text-kumo-subtle">
+                                {updateProgress
+                                  ? `下载中 ${formatSize(updateProgress.downloaded)}${
+                                      updateProgress.total > 0
+                                        ? ` / ${formatSize(updateProgress.total)}`
+                                        : ''
+                                    }`
+                                  : '下载中…'}
+                              </span>
+                              <Button variant="ghost" size="sm" onClick={cancelDownload}>
+                                取消下载
+                              </Button>
+                            </>
+                          ) : (
+                            <Button variant="outline" size="sm" onClick={startDownload}>
+                              {updateDownload?.status === 'failed' ? '重试下载' : '下载安装包'}
+                            </Button>
+                          )}
+                        </div>
                         <p className="text-kumo-subtle">
-                          本版只提供发布页链接；下载与手动安装尚未启用。
+                          下载到系统下载目录；SHA256
+                          与发布包摘要严格一致才会打开。未签名，需手动完成安装。
                         </p>
+                        {updateDownload?.status === 'downloaded' && (
+                          <p className="text-kumo-subtle">
+                            已通过 SHA256 校验，
+                            {updateDownload.opened ? '已打开安装包' : '请到下载目录手动打开'}：
+                            {updateDownload.filePath}
+                          </p>
+                        )}
+                        {updateDownload?.status === 'cancelled' && (
+                          <p className="text-kumo-subtle">已取消下载，未保留临时文件。</p>
+                        )}
+                        {updateDownload?.status === 'failed' && (
+                          <p role="alert" className="text-kumo-danger">
+                            {describeDownloadFailure(updateDownload.reason, updateDownload.detail)}
+                          </p>
+                        )}
                       </div>
                     )}
                     {updateCheck?.status === 'no-asset' && (
