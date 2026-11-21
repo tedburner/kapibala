@@ -11,7 +11,7 @@ function scope(command: string, overrides: Partial<ShellScope> = {}): ShellScope
   return { command, interpreter: 'bash', cwd: ROOT, ...overrides };
 }
 
-const cases: [string, ShellCommandSafety][] = [
+const cases: [string, ShellCommandSafety, Partial<ShellScope>?][] = [
   // 无条件只读
   ['ls -la', 'safe'],
   ['pwd', 'safe'],
@@ -53,7 +53,8 @@ const cases: [string, ShellCommandSafety][] = [
   ['sudo ls', 'unsafe'],
   ['curl https://example.com', 'unsafe'],
   ['bash -c "ls"', 'unknown'],
-  ['python3 script.py', 'safe'],
+  ['python3 script.py', 'safe', { scriptTrust: 'clean' }],
+  ['python3 script.py', 'unknown'],
   ['chmod 777 file', 'unsafe'],
   // 重定向：工作区内目标不降级，越界仍询问
   ['echo hi > out.txt', 'safe'],
@@ -69,9 +70,9 @@ const cases: [string, ShellCommandSafety][] = [
 ];
 
 describe('classifyShellCommandSafety', () => {
-  for (const [command, expected] of cases) {
+  for (const [command, expected, overrides] of cases) {
     it(`classifies ${JSON.stringify(command)} as ${expected}`, () => {
-      expect(classifyShellCommandSafety(scope(command), ROOT)).toBe(expected);
+      expect(classifyShellCommandSafety(scope(command, overrides), ROOT)).toBe(expected);
     });
   }
 
@@ -79,13 +80,25 @@ describe('classifyShellCommandSafety', () => {
     expect(classifyShellCommandSafety(scope('ls', { cwd: '/tmp' }), ROOT)).toBe('unsafe');
   });
 
-  it('treats a digest-bound workspace script as safe', () => {
+  it('treats a digest-bound workspace script as safe only when git-clean', () => {
+    expect(
+      classifyShellCommandSafety(
+        scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64), scriptTrust: 'clean' }),
+        ROOT,
+      ),
+    ).toBe('safe');
+    expect(
+      classifyShellCommandSafety(
+        scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64), scriptTrust: 'dirty' }),
+        ROOT,
+      ),
+    ).toBe('unknown');
     expect(
       classifyShellCommandSafety(
         scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64) }),
         ROOT,
       ),
-    ).toBe('safe');
+    ).toBe('unknown');
   });
 
   it('classifies PowerShell cmdlets by table', () => {

@@ -40,7 +40,7 @@ export const DEFAULT_LIMITS = Object.freeze({
 /**
  * 只取本机实现支持的交集；认证和能力准入由宿主执行，不因协商而授予权限。
  * 版本为严格相等校验：不接受区间协商，也不承诺字段级降级；旧 `{major, minMinor, maxMinor}`
- * 报价与整数代际不兼容，统一返回 `PROTOCOL_MISMATCH`（而不是参数非法），便于调用方给出明确指引。
+ * 报价在初始化参数校验阶段即被拒绝（`INVALID_PARAMS`），不会再走到这里。
  * `offer.capabilities` 表示客户端本次依赖的能力：任一不被支持都明确失败，
  * 返回本次声明且受支持的去重列表，不补齐服务端支持但客户端未声明的能力。
  */

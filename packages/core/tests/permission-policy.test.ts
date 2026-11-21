@@ -219,6 +219,8 @@ describe('PermissionPolicy', () => {
         command,
         interpreter: 'bash' as const,
         cwd: '/workspace',
+        // 本组回归聚焦「类别 × 模式」两轴，脚本清洁度另行断言；统一给出用户已审阅的 clean。
+        scriptTrust: 'clean' as const,
         ...(command === './scripts/dev.sh' ? { scriptDigest: 'a'.repeat(64) } : {}),
       };
       return policy27.decide({
@@ -247,6 +249,32 @@ describe('PermissionPolicy', () => {
       'xargs echo',
     ]) {
       expect(decide(command, 'Auto').decision, command).toBe('ask');
+    }
+  });
+
+  it('never auto-allows scripts that are not git-clean', () => {
+    const policyStrict = new PermissionPolicy();
+    for (const scriptTrust of ['dirty', 'unknown'] as const) {
+      for (const command of ['node scripts/dev.mjs', 'pnpm test', './scripts/dev.sh']) {
+        const shell = {
+          command,
+          interpreter: 'bash' as const,
+          cwd: '/workspace',
+          scriptTrust,
+          ...(command === './scripts/dev.sh' ? { scriptDigest: 'a'.repeat(64) } : {}),
+        };
+        expect(
+          policyStrict.decide({
+            mode: 'Auto',
+            toolName: 'run_command',
+            capabilities: ['exec'],
+            dangerous: true,
+            shell,
+            commandClass: classifyShellCommandClass(shell, '/workspace'),
+          }).decision,
+          `${command}/${scriptTrust}`,
+        ).toBe('ask');
+      }
     }
   });
 

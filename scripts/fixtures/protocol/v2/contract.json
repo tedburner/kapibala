@@ -288,80 +288,35 @@
       "type": "object"
     },
     "initialize": {
-      "anyOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "capabilities": {
-              "items": {
-                "maxLength": 256,
-                "minLength": 1,
-                "type": "string"
-              },
-              "maxItems": 64,
-              "type": "array"
-            },
-            "clientName": {
-              "maxLength": 256,
-              "minLength": 1,
-              "type": "string"
-            },
-            "protocolVersion": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "token": {
-              "maxLength": 512,
-              "minLength": 1,
-              "type": "string"
-            }
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
           },
-          "required": ["protocolVersion", "clientName", "capabilities"],
-          "type": "object"
+          "maxItems": 64,
+          "type": "array"
         },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "capabilities": {
-              "items": {
-                "maxLength": 256,
-                "minLength": 1,
-                "type": "string"
-              },
-              "maxItems": 64,
-              "type": "array"
-            },
-            "clientName": {
-              "maxLength": 256,
-              "minLength": 1,
-              "type": "string"
-            },
-            "major": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "maxMinor": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "minMinor": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "token": {
-              "maxLength": 512,
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "required": ["major", "minMinor", "maxMinor", "clientName", "capabilities"],
-          "type": "object"
+        "clientName": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "token": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
         }
-      ]
+      },
+      "required": ["protocolVersion", "clientName", "capabilities"],
+      "type": "object"
     },
     "ping": {
       "additionalProperties": false,

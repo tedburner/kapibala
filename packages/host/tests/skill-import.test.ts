@@ -137,7 +137,8 @@ describe('importSkills', () => {
 
     const provenance = await readImportedSkillProvenance(targetDir);
     expect(provenance?.harness).toBe('claude-code');
-    expect(provenance?.sourceRef).toBe(sourceDir);
+    // 来源身份按 native realpath 归一：Windows 8.3 短名与 macOS /var 软链都必须与预览一致。
+    expect(provenance?.sourceRef).toBe(fs.realpathSync.native(sourceDir));
     expect(provenance?.strippedFields).toEqual(['context', 'model']);
     expect(provenance?.installedDigest.startsWith('sha256:')).toBe(true);
     expect(fs.existsSync(path.join(targetDir, SKILL_PROVENANCE_FILE))).toBe(true);

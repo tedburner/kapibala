@@ -31,6 +31,8 @@ const home = path.resolve(option('home'));
 const resultPath = path.resolve(option('result'));
 const transportKind = optionalOption('transport') ?? 'stdio';
 const clientVersion = optionalOption('client-version') ?? 'candidate';
+/** 与 compat-harness 同源：报价形状必须来自被测客户端的代际，不能由脚本写死旧格式。 */
+const offerTemplate = JSON.parse(option('offer'));
 const runtimeDir = optionalOption('runtime-dir')
   ? path.resolve(optionalOption('runtime-dir'))
   : undefined;
@@ -118,10 +120,7 @@ try {
   const bad = await host.connect();
   try {
     const rejected = await clientModule.LocalClient.connect(bad.transport, {
-      major: 1,
-      minMinor: 0,
-      maxMinor: 0,
-      clientName: 'compat-cursor',
+      ...offerTemplate,
       capabilities: ['compat-unsupported'],
       ...(bad.token ? { token: bad.token } : {}),
     });
@@ -133,13 +132,7 @@ try {
 
   const raw = await host.connect();
   const transport = captureTransport(raw.transport);
-  const offer = {
-    major: 1,
-    minMinor: 0,
-    maxMinor: 0,
-    clientName: 'compat-cursor',
-    capabilities: [],
-  };
+  const offer = { ...offerTemplate, capabilities: [] };
   if (raw.token) offer.token = raw.token;
   client = await clientModule.LocalClient.connect(transport, offer, {
     approval: async () => 'allow_once',

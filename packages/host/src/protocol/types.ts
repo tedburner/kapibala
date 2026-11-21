@@ -10,24 +10,15 @@ export type JsonValue =
 /**
  * 初始化报价；凭证只用于本地认证，不得进入日志或历史。
  * `protocolVersion` 为整数代际，服务端严格相等校验；新增能力通过 `capabilities` 协商。
- * 旧 `{major, minMinor, maxMinor}` 形状仍列入联合类型，只为让 v0.1.3 及更早客户端
- * 通过参数校验后得到明确的 `PROTOCOL_MISMATCH`，而不是被当成普通参数错误。
+ * 旧 `{major, minMinor, maxMinor}` 形状已废弃：初始化参数白名单不接受它，
+ * 旧客户端会在参数校验阶段得到 `INVALID_PARAMS`，必须升级客户端而不是降级协商。
  */
-export type ProtocolOffer =
-  | {
-      protocolVersion: number;
-      clientName: string;
-      capabilities: string[];
-      token?: string;
-    }
-  | {
-      major: number;
-      minMinor: number;
-      maxMinor: number;
-      clientName: string;
-      capabilities: string[];
-      token?: string;
-    };
+export type ProtocolOffer = {
+  protocolVersion: number;
+  clientName: string;
+  capabilities: string[];
+  token?: string;
+};
 
 /** 协议版本不跟随产品版本；只公布本次真正支持的能力。 */
 export interface NegotiatedProtocol {

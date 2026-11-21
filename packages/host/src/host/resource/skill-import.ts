@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -212,6 +213,21 @@ const KNOWN_FIELD_SET = new Set<string>(KNOWN_FIELDS);
 const DYNAMIC_SHELL = /!\x60[^\x60]+\x60|^\s*\x60{3}!/m;
 
 /**
+ * 来源身份归一：统一用 native realpath 展开符号链接与 Windows 8.3 短名。
+ *
+ * 为什么必须 native：JS 实现保留 8.3 短名、且 macOS 上 `/var` 与 `/private/var` 会得到不同字面量，
+ * 预览记录与导入校验若按未归一形式比较，会出现「同一目录被判为已变化」的假 TOCTOU。
+ * 目录已不存在时退回 `path.resolve`，保证只影响身份字符串、不阻断后续失败诊断。
+ */
+function normalizeSourceIdentity(target: string): string {
+  try {
+    return realpathSync.native(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/**
  * 把源技能目录或整批来源扫描成可导入候选。
  *
  * 保证与边界：
@@ -315,23 +331,18 @@ export async function scanImportableSkills(options: {
             skill.filePath,
           );
           diagnostics.push(...normalized.diagnostics);
+          const sourceRef = normalizeSourceIdentity(path.dirname(skill.filePath));
           const previous = await readImportedSkillProvenance(targetDir);
           const previouslyImported =
             previous && skill.available
-              ? await describeReimport(
-                  targetDir,
-                  path.dirname(skill.filePath),
-                  previous,
-                  normalized,
-                  options.signal,
-                )
+              ? await describeReimport(targetDir, sourceRef, previous, normalized, options.signal)
               : undefined;
           candidates.push({
             harness: source.harness,
             name: skill.name,
             directoryName,
             description: skill.description,
-            sourceRef: path.dirname(skill.filePath),
+            sourceRef,
             origin: scope,
             files: measured.files,
             bytes: measured.bytes,

@@ -18,7 +18,7 @@ const request = (method: string, params: unknown) => ({
   params,
 });
 const offer = { protocolVersion: 2, clientName: 'test', capabilities: [] };
-/** v0.1.3 及更早的区间报价；放行到协商层后必须得到明确的 PROTOCOL_MISMATCH。 */
+/** v0.1.3 及更早的区间报价已废弃：初始化白名单直接判定参数非法。 */
 const legacyOffer = { major: 1, minMinor: 0, maxMinor: 0, clientName: 'test', capabilities: [] };
 const control = { sessionId: 'session', streamEpoch: 'stream', controlEpoch: 'control' };
 
@@ -55,8 +55,9 @@ describe('local wire protocol', () => {
         error: { data: { code: 'PROTOCOL_MISMATCH' } },
       });
     }
-    // 旧形状先通过参数校验，再由协商层明确拒绝为版本不兼容，而不是笼统的参数错误。
-    expect(validateRequest(request('initialize', legacyOffer)).ok).toBe(true);
+    // 旧形状在初始化参数白名单阶段就被拒绝，不再保留兼容分支。
+    expect(validateRequest(request('initialize', legacyOffer)).ok).toBe(false);
+    expect(validateRequest(request('initialize', offer)).ok).toBe(true);
   });
 
   it('accepts only implemented capabilities and echoes the required set', () => {

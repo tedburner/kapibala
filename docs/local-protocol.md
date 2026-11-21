@@ -8,7 +8,7 @@
 
 1. 服务端接受连接后分配 `clientId`；客户端**第一条**请求必须是 `initialize`，5 秒内未完成握手即关闭连接。重复 `initialize` 直接 `UNAUTHORIZED`。
 2. 服务端配置了 token 时，`initialize.params.token` 必须等长且时序安全比较通过；token 不进 argv、日志、历史或错误响应，凭证文件模式为 POSIX 0600、运行目录 0700。
-3. 版本协商：整数 `protocolVersion` 必须严格等于 2，不接受区间协商，也不承诺字段级降级。v0.1.3 及更早的 `{major, minMinor, maxMinor}` 报价会先通过参数校验，再被协商层明确拒绝为 `PROTOCOL_MISMATCH`。
+3. 版本协商：整数 `protocolVersion` 必须严格等于 2，不接受区间协商，也不承诺字段级降级。v0.1.3 及更早的 `{major, minMinor, maxMinor}` 报价已废弃，初始化参数白名单直接判定 `INVALID_PARAMS`（不再有“放行到协商层”的兼容分支）。
 4. 能力协商：`capabilities` 声明本次真正依赖的能力，当前集合为 `sessions`、`approval`、`cancel`、`watch`、`evidence`、`skill-import`。任一项不被支持都返回 `PROTOCOL_MISMATCH`，不做静默降级；未知能力拼写一律拒绝而不是忽略；客户端未声明使用的能力，服务端不推送对应事件。
 5. 服务端返回 `limits`（全部正值整数）。客户端校验任何字段都不得大于自身硬上限，随后调用 `LocalTransport.setLimits()` 在握手后同步收紧帧大小与发送队列；现存缓冲超限时传输关闭并抛错。缺少 `setLimits` 能力的自定义传输在连接期失败，不静默使用默认值。
 

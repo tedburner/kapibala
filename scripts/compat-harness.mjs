@@ -31,6 +31,11 @@ const home = path.resolve(option('home'));
 const resultPath = path.resolve(option('result'));
 const transportKind = optionalOption('transport') ?? 'stdio';
 const clientVersion = optionalOption('client-version') ?? 'candidate';
+/**
+ * 握手报价由调用方给出：旧端（wire 1）与新端（wire 2 起的 protocolVersion 形状）必须各用
+ * 自己代际的报价，否则组合矩阵测到的不是「真实老客户端连新宿主」，而是脚本自身的旧格式。
+ */
+const offerTemplate = JSON.parse(option('offer'));
 const runtimeDir = optionalOption('runtime-dir')
   ? path.resolve(optionalOption('runtime-dir'))
   : undefined;
@@ -86,13 +91,7 @@ try {
     clientModule,
   });
   raw = await host.connect();
-  const offer = {
-    major: 1,
-    minMinor: 0,
-    maxMinor: 0,
-    clientName: 'compat-matrix',
-    capabilities: [],
-  };
+  const offer = { ...offerTemplate };
   if (raw.token) offer.token = raw.token;
   client = await clientModule.LocalClient.connect(raw.transport, offer, {
     approval: async (prompt) => {

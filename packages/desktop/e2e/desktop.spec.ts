@@ -376,18 +376,18 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     // 图片产物：write_file 写出 .png 后右侧 dock 自动打开预览；不可读取时显示占位而不阻塞对话。
     await send('image-proof');
     await approve();
+    const artifactDock = page.getByRole('dialog', { name: '产物预览', exact: true });
+    await expect(artifactDock).toBeVisible();
+    await expect(artifactDock.getByText('preview-demo.png', { exact: true })).toBeVisible();
+    await expect(artifactDock.getByText(/无法读取该图片/)).toBeVisible();
+    // 窄窗口下抽屉是模态的：先关闭，再断言 chip 常驻并可用于重开（宽窄布局同一口径）。
+    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    await expect(artifactDock).toBeHidden();
     const artifactChip = page.getByRole('button', {
       name: '预览图片 preview-demo.png',
       exact: true,
     });
     await expect(artifactChip).toBeVisible();
-    const artifactDock = page.getByRole('dialog', { name: '产物预览', exact: true });
-    await expect(artifactDock).toBeVisible();
-    await expect(artifactDock.getByText('preview-demo.png', { exact: true })).toBeVisible();
-    await expect(artifactDock.getByText(/无法读取该图片/)).toBeVisible();
-    // 关闭后同一产物不再自动弹；常驻 chip 仍可重开。
-    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
-    await expect(artifactDock).toBeHidden();
     await artifactChip.click();
     await expect(artifactDock).toBeVisible();
     await page.getByRole('button', { name: '关闭详情', exact: true }).click();
@@ -909,15 +909,16 @@ test('项目工作区写入图片后自动预览并保留 chip 入口', async ()
     await expect(queue).toBeVisible();
     await queue.getByRole('button', { name: '批准一次', exact: true }).click();
     await expect(queue).toBeHidden();
-    const chip = page.getByRole('button', { name: '预览图片 preview-demo.png', exact: true });
-    await expect(chip).toBeVisible();
     const dock = page.getByRole('dialog', { name: '产物预览', exact: true });
     await expect(dock).toBeVisible();
     await expect(dock.getByText('preview-demo.png', { exact: true })).toBeVisible();
     await expect(dock.getByText(/无法读取该图片/)).toBeVisible();
-    // 关闭后同一产物不再自动弹，常驻 chip 仍可重开。
+    // 窄窗口下产物抽屉是模态的，背景消息列表按设计不可达；chip 是关闭后的常驻重开入口，
+    // 因此先验证自动弹出，再关闭并断言 chip 仍存在、点击可重开（宽窄布局同一口径）。
     await page.getByRole('button', { name: '关闭详情', exact: true }).click();
     await expect(dock).toBeHidden();
+    const chip = page.getByRole('button', { name: '预览图片 preview-demo.png', exact: true });
+    await expect(chip).toBeVisible();
     await chip.click();
     await expect(dock).toBeVisible();
     await stop(app);

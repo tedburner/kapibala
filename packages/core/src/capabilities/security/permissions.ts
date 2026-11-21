@@ -18,6 +18,13 @@ export interface ShellScope {
   executableDigest?: string;
   /** 命令直接引用的工作目录内脚本的内容摘要；仅单脚本命令可计算，组合命令缺省。 */
   scriptDigest?: string;
+  /**
+   * 命令将执行的脚本来源可信度：`clean` 表示直引脚本 / 解释器脚本参数 / `package.json`
+   * 在 git 工作区中无未提交改动，`dirty` 表示有改动（含模型刚写入的未跟踪文件），
+   * `unknown` 表示无 git、超时或无法解析。分类器只有 `clean` 才把脚本类命令判为
+   * `workspace-write`；其余情况归 `unknown`，Auto 不自动放行。缺省（未计算）同样按不可信处理。
+   */
+  scriptTrust?: 'clean' | 'dirty' | 'unknown';
   /** 执行前复核用指纹；审批后重新推导不一致时按目标漂移拒绝执行。 */
   executionFingerprint?: string;
 }

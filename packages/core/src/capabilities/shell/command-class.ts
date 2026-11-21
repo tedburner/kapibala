@@ -296,16 +296,21 @@ const POWERSHELL_UNKNOWN = new Set(['iex', 'invoke-expression']);
  * 判定顺序：cwd 越界 → 单脚本摘要 → 逐段分类（escape → destructive → network →
  * workspace-write / vcs-write → read → unknown），多段取最严。含变量、命令替换、
  * heredoc 与未闭合引号时返回 `unknown`，由上层询问；不读取文件系统，也不修改任何状态。
+ *
+ * 脚本类命令（直引脚本 / 解释器脚本参数 / package.json 脚本）额外受 `shell.scriptTrust`
+ * 约束：只有 `clean` 才保持 `workspace-write`，`dirty` / `unknown` / 缺省一律降为 `unknown`，
+ * 以免 Auto 自动执行模型刚写出、用户尚未审阅的脚本。
  */
 export function classifyShellCommandClass(shell: ShellScope, rootDir: string): ShellCommandClass {
   if (!isWithinRoot(shell.cwd, rootDir)) return 'escape';
-  if (shell.scriptDigest !== undefined) return 'workspace-write';
+  if (shell.scriptDigest !== undefined)
+    return shell.scriptTrust === 'clean' ? 'workspace-write' : 'unknown';
   const segments = splitSegments(shell.command);
   if (segments === undefined || segments.length === 0) return 'unknown';
   const classes = segments.map((segment) =>
     shell.interpreter === 'pwsh' || shell.interpreter === 'powershell'
       ? classifyPowerShellSegment(segment, shell.cwd, rootDir)
-      : classifyPosixSegment(segment, shell.cwd, rootDir),
+      : classifyPosixSegment(segment, shell.cwd, rootDir, shell.scriptTrust),
   );
   return aggregate(classes);
 }
@@ -555,14 +560,19 @@ function classifyRedirectTargets(
 }
 
 /** POSIX 段分级：先校验重定向边界，文件输出至少升到 `workspace-write`。 */
-function classifyPosixSegment(segment: Segment, cwd: string, rootDir: string): ShellCommandClass {
+function classifyPosixSegment(
+  segment: Segment,
+  cwd: string,
+  rootDir: string,
+  scriptTrust: ShellScope['scriptTrust'],
+): ShellCommandClass {
   const scan = scanRedirections(segment.text);
   const redirect = classifyRedirectTargets(scan, cwd, rootDir);
   if (redirect !== undefined) return redirect;
   if (segment.hadDollar) return 'unknown';
   const words = splitWords(scan.command);
   if (words === undefined || words.length === 0) return 'unknown';
-  const result = classifyPosixWords(words, cwd, rootDir);
+  const result = classifyPosixWords(words, cwd, rootDir, scriptTrust);
   return scan.hasOutput && result === 'read' ? 'workspace-write' : result;
 }
 
@@ -571,6 +581,7 @@ function classifyPosixWords(
   words: readonly string[],
   cwd: string,
   rootDir: string,
+  scriptTrust: ShellScope['scriptTrust'],
 ): ShellCommandClass {
   let index = 0;
   while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) index++;
@@ -588,12 +599,13 @@ function classifyPosixWords(
   if (program === 'tee') return classifyWriteTargets(rest, cwd, rootDir);
   if (program === 'cp') return classifyCopy(rest, cwd, rootDir);
   if (program === 'pnpm' || program === 'npm' || program === 'yarn')
-    return classifyPackageManager(rest);
+    return classifyPackageManager(rest, scriptTrust);
   if (program === 'npx') return 'network';
   if (program === 'docker') return classifyDocker(rest);
   if (program === 'gh') return 'network';
   if (program === 'eval' || program === 'exec' || program === 'xargs') return 'unknown';
-  if (INTERPRETER_PROGRAMS.has(program)) return classifyInterpreter(program, rest, cwd, rootDir);
+  if (INTERPRETER_PROGRAMS.has(program))
+    return classifyInterpreter(program, rest, cwd, rootDir, scriptTrust);
   if (WORKSPACE_PROGRAMS.has(program)) return 'workspace-write';
   if (DESTRUCTIVE_PROGRAMS.has(program)) return 'destructive';
   if (NETWORK_PROGRAMS.has(program)) return 'network';
@@ -714,13 +726,17 @@ function classifyChangeDirectory(
 }
 
 /** 包管理器：只认第一个子命令；选项值不会被误当子命令。 */
-function classifyPackageManager(rest: readonly string[]): ShellCommandClass {
+function classifyPackageManager(
+  rest: readonly string[],
+  scriptTrust: ShellScope['scriptTrust'],
+): ShellCommandClass {
   const subcommand = firstSubcommand(rest);
   if (subcommand === undefined) return 'unknown';
   if (subcommand === 'dlx') return 'network';
   if (subcommand === 'exec') return 'workspace-write';
   if (PACKAGE_NETWORK_SUBCOMMANDS.has(subcommand)) return 'network';
-  if (PACKAGE_WORKSPACE_SUBCOMMANDS.has(subcommand)) return 'workspace-write';
+  if (PACKAGE_WORKSPACE_SUBCOMMANDS.has(subcommand))
+    return scriptTrust === 'clean' ? 'workspace-write' : 'unknown';
   return 'unknown';
 }
 
@@ -754,12 +770,13 @@ function classifyDocker(rest: readonly string[]): ShellCommandClass {
   return 'unknown';
 }
 
-/** 解释器：`-c` / `-e` / 标准输入不可判读；脚本路径越界按 `escape`。 */
+/** 解释器：`-c` / `-e` / 标准输入不可判读；脚本路径越界按 `escape`，脚本不受信按 `unknown`。 */
 function classifyInterpreter(
   program: string,
   rest: readonly string[],
   cwd: string,
   rootDir: string,
+  scriptTrust: ShellScope['scriptTrust'],
 ): ShellCommandClass {
   if (program === 'node' || program === 'deno' || program === 'python' || program === 'python3') {
     if (rest.some((word) => word === '-e' || word === '--eval' || word === '-c' || word === '-p'))
@@ -772,7 +789,7 @@ function classifyInterpreter(
   if (script === undefined) return 'unknown';
   if (script.includes('$') || script.includes('`') || script.startsWith('~')) return 'unknown';
   if (!isWithinRoot(path.resolve(cwd, script), rootDir)) return 'escape';
-  return 'workspace-write';
+  return scriptTrust === 'clean' ? 'workspace-write' : 'unknown';
 }
 
 /** git 子命令分级；破坏性写法优先于普通写操作。 */

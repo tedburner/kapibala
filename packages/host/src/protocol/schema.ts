@@ -43,19 +43,14 @@ const capabilities = { type: 'array', items: id, maxItems: 64 } as const;
 const token = { ...id, maxLength: 512 } as const;
 
 /**
- * 初始化参数同时接受整数代际与 v0.1.3 的 `{major,minMinor,maxMinor}` 形状。
- * 旧形状放行到 `negotiateProtocol` 后再以 `PROTOCOL_MISMATCH` 明确拒绝，
- * 避免旧客户端只看到笼统的参数错误而无从判断需要升级。
+ * 初始化参数只接受整数代际报价。
+ *
+ * v0.1.3 的 `{major,minMinor,maxMinor}` 形状已从白名单移除：旧客户端会在参数校验阶段得到
+ * `INVALID_PARAMS`（明确失败、连接不再继续），不再保留“放行到协商层再拒绝”的兼容分支。
  */
-const initialize = {
-  anyOf: [
-    object({ protocolVersion: integer, clientName: id, capabilities, token }, ['token']),
-    object(
-      { major: integer, minMinor: integer, maxMinor: integer, clientName: id, capabilities, token },
-      ['token'],
-    ),
-  ],
-} as const;
+const initialize = object({ protocolVersion: integer, clientName: id, capabilities, token }, [
+  'token',
+]);
 
 /** 初始化和方法参数 Schema 为协议单一白名单；额外参数不作隐式忽略。 */
 export const REQUEST_SCHEMAS = {

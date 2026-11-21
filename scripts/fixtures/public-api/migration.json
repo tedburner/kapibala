@@ -239,6 +239,7 @@
       "core:SessionMetadata",
       "core:SessionRecordType",
       "core:SessionStore",
+      "core:ShellScope",
       "core:SkillRegistry",
       "core:SpawnAgentParams",
       "core:SpawnAgentReceipt",

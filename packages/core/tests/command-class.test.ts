@@ -19,15 +19,15 @@ const cases: [string, ShellCommandClass, Partial<ShellScope>?][] = [
   ['rg TODO src', 'read'],
   ['cat package.json', 'read'],
   ['find . -name "*.ts"', 'read'],
-  // workspace-write
-  ['pnpm build', 'workspace-write'],
+  // workspace-write（脚本类命令要求 git clean，见下方 scriptTrust 用例）
+  ['pnpm build', 'workspace-write', { scriptTrust: 'clean' }],
   ['echo hi > out.txt', 'workspace-write'],
-  ['pnpm --filter @scope/pkg test', 'workspace-write'],
+  ['pnpm --filter @scope/pkg test', 'workspace-write', { scriptTrust: 'clean' }],
   ['tsc --noEmit', 'workspace-write'],
-  ['node scripts/dev.mjs', 'workspace-write'],
+  ['node scripts/dev.mjs', 'workspace-write', { scriptTrust: 'clean' }],
   ['npx biome check', 'network'],
   ['./scripts/dev.sh', 'unknown'],
-  ['./scripts/dev.sh', 'workspace-write', { scriptDigest: 'a'.repeat(64) }],
+  ['./scripts/dev.sh', 'workspace-write', { scriptDigest: 'a'.repeat(64), scriptTrust: 'clean' }],
   // vcs-write
   ['git add .', 'vcs-write'],
   ['git commit -m x', 'vcs-write'],
@@ -60,6 +60,12 @@ const cases: [string, ShellCommandClass, Partial<ShellScope>?][] = [
   ['find . -exec rm {} +', 'unknown'],
   ['eval x', 'unknown'],
   ['xargs rm', 'unknown'],
+  // 脚本类命令在脚本不受信时不放行
+  ['pnpm test', 'unknown'],
+  ['node scripts/dev.mjs', 'unknown', { scriptTrust: 'dirty' }],
+  ['node scripts/dev.mjs', 'unknown', { scriptTrust: 'unknown' }],
+  ['./scripts/dev.sh', 'unknown', { scriptDigest: 'a'.repeat(64) }],
+  ['./scripts/dev.sh', 'unknown', { scriptDigest: 'a'.repeat(64), scriptTrust: 'dirty' }],
 ];
 
 describe('classifyShellCommandClass', () => {
@@ -73,13 +79,25 @@ describe('classifyShellCommandClass', () => {
     expect(classifyShellCommandClass(scope('ls', { cwd: '/tmp' }), ROOT)).toBe('escape');
   });
 
-  it('uses the digest only as a workspace-script signal', () => {
+  it('uses the digest only as a clean workspace-script signal', () => {
+    expect(
+      classifyShellCommandClass(
+        scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64), scriptTrust: 'clean' }),
+        ROOT,
+      ),
+    ).toBe('workspace-write');
     expect(
       classifyShellCommandClass(
         scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64) }),
         ROOT,
       ),
-    ).toBe('workspace-write');
+    ).toBe('unknown');
+    expect(
+      classifyShellCommandClass(
+        scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64), scriptTrust: 'dirty' }),
+        ROOT,
+      ),
+    ).toBe('unknown');
   });
 
   it('aggregates segments by the strictest class', () => {
@@ -89,7 +107,9 @@ describe('classifyShellCommandClass', () => {
   });
 
   it('keeps in-workspace redirection attached to the command class', () => {
-    expect(classifyShellCommandClass(scope('pnpm test > log'), ROOT)).toBe('workspace-write');
+    expect(
+      classifyShellCommandClass(scope('pnpm test > log', { scriptTrust: 'clean' }), ROOT),
+    ).toBe('workspace-write');
   });
 
   it('classifies PowerShell write cmdlets by target boundary', () => {
