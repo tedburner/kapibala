@@ -23,6 +23,11 @@ export interface SandboxConfig {
    * 豁免根按 realpath 比对物理路径，符号链接穿透依然 fail-closed。
    */
   readOnlyExemptions?: () => readonly string[];
+  /**
+   * 额外的硬禁区（workspace 相对路径或目录前缀），与内置清单取并集，只能收紧不能放宽。
+   * 仅对 write/edit 生效；命中时直接抛 `PERMISSION_DENIED`，不进入审批。
+   */
+  protectedPaths?: readonly string[];
 }
 
 function tryNativeRealpath(target: string): string | undefined {
@@ -31,6 +36,42 @@ function tryNativeRealpath(target: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** 把路径分隔符统一为 `/` 并去掉前导 `./`，用于硬禁区匹配。 */
+function normalizeRelative(relativePath: string): string {
+  return relativePath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+}
+
+/**
+ * 内置硬禁区判定（workspace 相对路径）：写入这些位置会让后续操作获得代码执行或规则扩权能力。
+ *
+ * 边界：
+ * - `.git/hooks`、`.git/config`、`.git/modules` 写入可劫持下一次 git 操作；
+ * - `.env` / `.env.*` 是密钥载体，但 `.env.example` / `.env.sample` / `.env.template` 不含密钥，明确豁免；
+ * - `.kapibala/**` 含规则与 MCP 配置，写入等于自我提权；
+ * - 比较时统一小写并按 `/` 归一，Windows 大小写变体同样命中。
+ */
+export function isProtectedWorkspacePath(relativePath: string): boolean {
+  const normalized = normalizeRelative(relativePath).toLowerCase();
+  // 嵌套仓库（子模块、vendor 目录）同样可以被 `cd sub && git commit` 触发，按路径段匹配。
+  const matches = (segment: string): boolean =>
+    normalized === segment ||
+    normalized.startsWith(`${segment}/`) ||
+    normalized.includes(`/${segment}/`);
+  if (matches('.git/hooks')) return true;
+  if (normalized === '.git/config' || normalized.endsWith('/.git/config')) return true;
+  if (matches('.git/modules')) return true;
+  if (
+    normalized === '.kapibala' ||
+    normalized.startsWith('.kapibala/') ||
+    normalized.includes('/.kapibala/')
+  )
+    return true;
+  const base = normalized.slice(normalized.lastIndexOf('/') + 1);
+  if (base === '.env') return true;
+  if (base.startsWith('.env.') && !/^\.env\.(example|sample|template)$/.test(base)) return true;
+  return false;
 }
 
 /**
@@ -44,6 +85,7 @@ export class PathSandbox {
   readonly rootDir: string;
   readonly allowSymlinks: boolean;
   private readonly readOnlyExemptions?: () => readonly string[];
+  private readonly protectedPaths: readonly string[];
   private cachedRealRootDir?: string;
 
   constructor(config: SandboxConfig) {
@@ -55,6 +97,7 @@ export class PathSandbox {
     this.rootDir = this.workspaceRoot;
     this.allowSymlinks = config.allowSymlinks ?? false;
     this.readOnlyExemptions = config.readOnlyExemptions;
+    this.protectedPaths = (config.protectedPaths ?? []).map((entry) => normalizeRelative(entry));
   }
 
   /**
@@ -110,7 +153,28 @@ export class PathSandbox {
       );
     }
 
+    // 硬禁区：write/edit 命中直接拒绝，不进入审批；read 保持可读（诊断需要）。
+    if (options?.mode !== 'read') {
+      const relative = normalizeRelative(path.relative(this.realRootDir, physicalPath));
+      if (this.isProtected(relative)) {
+        throw new ToolError(
+          `Access denied: protected path '${relative}' cannot be modified`,
+          'PERMISSION_DENIED',
+        );
+      }
+    }
+
     return resolvedPath;
+  }
+
+  /** 内置清单与附加前缀取并集；附加项按目录前缀匹配，不接受通配符。 */
+  private isProtected(relativePath: string): boolean {
+    if (isProtectedWorkspacePath(relativePath)) return true;
+    const normalized = relativePath.toLowerCase();
+    return this.protectedPaths.some((entry) => {
+      const prefix = entry.toLowerCase();
+      return normalized === prefix || normalized.startsWith(`${prefix}/`);
+    });
   }
 
   /**

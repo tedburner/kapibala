@@ -34,16 +34,16 @@ const cases: [string, ShellCommandSafety][] = [
   ['git remote -v', 'safe'],
   ['git tag -l', 'safe'],
   ['git stash list', 'safe'],
-  // git 非只读形式：白名单外按 unknown 询问
-  ['git push', 'unknown'],
-  ['git commit -m x', 'unknown'],
-  ['git branch -D feature', 'unknown'],
-  ['git branch new-branch', 'unknown'],
-  ['git checkout -b x', 'unknown'],
+  // git 写操作：vcs-write 映射为 safe，网络与破坏性仍询问
+  ['git push', 'unsafe'],
+  ['git commit -m x', 'safe'],
+  ['git branch -D feature', 'unsafe'],
+  ['git branch new-branch', 'safe'],
+  ['git checkout -b x', 'safe'],
   // find 参数收窄
   ['find . -name "*.ts"', 'safe'],
   ['find . -delete', 'unsafe'],
-  ['find . -exec rm {} +', 'unsafe'],
+  ['find . -exec rm {} +', 'unknown'],
   // cd 目标收窄
   ['cd sub && git status', 'safe'],
   ['cd /tmp && ls', 'unsafe'],
@@ -52,11 +52,13 @@ const cases: [string, ShellCommandSafety][] = [
   ['rm -rf build', 'unsafe'],
   ['sudo ls', 'unsafe'],
   ['curl https://example.com', 'unsafe'],
-  ['bash -c "ls"', 'unsafe'],
-  ['python3 script.py', 'unsafe'],
+  ['bash -c "ls"', 'unknown'],
+  ['python3 script.py', 'safe'],
   ['chmod 777 file', 'unsafe'],
-  // 重定向与命令替换 fail-closed
-  ['echo hi > out.txt', 'unsafe'],
+  // 重定向：工作区内目标不降级，越界仍询问
+  ['echo hi > out.txt', 'safe'],
+  ['echo hi > /tmp/out.txt', 'unsafe'],
+  // 命令替换与变量 fail-closed
   ['cat $HOME/config', 'unknown'],
   ['echo $(date)', 'unknown'],
   ['cat `which git`', 'unknown'],
@@ -77,13 +79,13 @@ describe('classifyShellCommandSafety', () => {
     expect(classifyShellCommandSafety(scope('ls', { cwd: '/tmp' }), ROOT)).toBe('unsafe');
   });
 
-  it('never auto-allows digest-bound scripts whose content is unknown', () => {
+  it('treats a digest-bound workspace script as safe', () => {
     expect(
       classifyShellCommandSafety(
         scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64) }),
         ROOT,
       ),
-    ).toBe('unknown');
+    ).toBe('safe');
   });
 
   it('classifies PowerShell cmdlets by table', () => {

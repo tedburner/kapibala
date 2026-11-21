@@ -11,6 +11,10 @@ import type {
   SessionMode,
   ShellScope,
 } from '../../capabilities/security/permissions.js';
+import {
+  classifyShellCommandClass,
+  findProtectedShellTargets,
+} from '../../capabilities/shell/command-class.js';
 import { classifyShellCommandSafety } from '../../capabilities/shell/command-safety.js';
 import type { Tool, ToolExecutionIdentity } from '../../capabilities/tools/index.js';
 import { commandAuditSummary } from '../../extensibility/logging/index.js';
@@ -142,7 +146,14 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
       cachedApproval: cached === 'allow',
       cachedDenial: cached === 'deny',
       rules: permissionRules,
-      ...(shell ? { shell, shellSafety: classifyShellCommandSafety(shell, rootDir) } : {}),
+      ...(shell
+        ? {
+            shell,
+            shellSafety: classifyShellCommandSafety(shell, rootDir),
+            commandClass: classifyShellCommandClass(shell, rootDir),
+            protectedTarget: findProtectedShellTargets(shell, rootDir)[0],
+          }
+        : {}),
     });
     let permitted = decision.decision === 'allow';
     let source: string = decision.source;

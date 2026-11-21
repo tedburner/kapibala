@@ -1829,6 +1829,13 @@
           ]
         },
         {
+          "name": "isProtectedWorkspacePath",
+          "kind": "function",
+          "declarations": [
+            "export declare function isProtectedWorkspacePath(relativePath: string): boolean;"
+          ]
+        },
+        {
           "name": "isSamePath",
           "kind": "function",
           "declarations": [
@@ -2200,7 +2207,7 @@
           "name": "PathSandbox",
           "kind": "class",
           "declarations": [
-            "export declare class PathSandbox {\n    /** 显式工作区绝对物理根路径。 */\n    readonly workspaceRoot: string;\n    /** 兼容别名：等同于 workspaceRoot。 */\n    readonly rootDir: string;\n    readonly allowSymlinks: boolean;\n    private readonly readOnlyExemptions?;\n    private cachedRealRootDir?;\n    constructor(config: SandboxConfig);\n    /**\n     * workspaceRoot 的物理路径。经过 toNativePhysicalPath 展开符号链接与 8.3 短名。\n     */\n    private get realRootDir();\n    /**\n     * 检查并解析安全路径\n     * 1. read 模式先尝试只读豁免根：物理路径落在豁免根内即放行（仅 harness 受管目录）\n     * 2. 解析相对路径为相对于 workspaceRoot 的绝对路径\n     * 3. 词法检查：`..` 归一化后必须仍在 workspaceRoot 内\n     * 4. 物理检查：解析符号链接与短名后的真实物理路径必须仍在 workspaceRoot 内\n     *\n     * @param options.mode 缺省 'write'：工作区外的路径一律拒绝；'read' 才允许豁免根放行。\n     *   只读豁免先于工作区检查执行，因此豁免根可以位于 workspaceRoot 之外。\n     */\n    resolveSafePath(targetPath: string, options?: {\n        mode?: 'read' | 'write';\n    }): string;\n    /**\n     * 把词法路径映射为物理路径。\n     *\n     * 关键点在于**向上回溯到最近一个真实存在的祖先**再取 realpath，然后把尚未存在的尾段拼回去：\n     * - 目标已存在 → 直接 realpath，符号链接立刻被展开；\n     * - 目标不存在(典型场景：write_file 新建文件) → 若只看目标本身，所有校验都会被跳过，\n     *   于是 `write_file('linkDir/new.txt')` 可以借道指向外部的 linkDir 越界写入。\n     *   回溯到 linkDir 取 realpath 即可识破这种穿透。\n     */\n    private toPhysicalPath;\n}"
+            "export declare class PathSandbox {\n    /** 显式工作区绝对物理根路径。 */\n    readonly workspaceRoot: string;\n    /** 兼容别名：等同于 workspaceRoot。 */\n    readonly rootDir: string;\n    readonly allowSymlinks: boolean;\n    private readonly readOnlyExemptions?;\n    private readonly protectedPaths;\n    private cachedRealRootDir?;\n    constructor(config: SandboxConfig);\n    /**\n     * workspaceRoot 的物理路径。经过 toNativePhysicalPath 展开符号链接与 8.3 短名。\n     */\n    private get realRootDir();\n    /**\n     * 检查并解析安全路径\n     * 1. read 模式先尝试只读豁免根：物理路径落在豁免根内即放行（仅 harness 受管目录）\n     * 2. 解析相对路径为相对于 workspaceRoot 的绝对路径\n     * 3. 词法检查：`..` 归一化后必须仍在 workspaceRoot 内\n     * 4. 物理检查：解析符号链接与短名后的真实物理路径必须仍在 workspaceRoot 内\n     *\n     * @param options.mode 缺省 'write'：工作区外的路径一律拒绝；'read' 才允许豁免根放行。\n     *   只读豁免先于工作区检查执行，因此豁免根可以位于 workspaceRoot 之外。\n     */\n    resolveSafePath(targetPath: string, options?: {\n        mode?: 'read' | 'write';\n    }): string;\n    /** 内置清单与附加前缀取并集；附加项按目录前缀匹配，不接受通配符。 */\n    private isProtected;\n    /**\n     * 把词法路径映射为物理路径。\n     *\n     * 关键点在于**向上回溯到最近一个真实存在的祖先**再取 realpath，然后把尚未存在的尾段拼回去：\n     * - 目标已存在 → 直接 realpath，符号链接立刻被展开；\n     * - 目标不存在(典型场景：write_file 新建文件) → 若只看目标本身，所有校验都会被跳过，\n     *   于是 `write_file('linkDir/new.txt')` 可以借道指向外部的 linkDir 越界写入。\n     *   回溯到 linkDir 取 realpath 即可识破这种穿透。\n     */\n    private toPhysicalPath;\n}"
           ]
         },
         {
@@ -2212,21 +2219,21 @@
           "name": "PermissionDecision",
           "kind": "interface",
           "declarations": [
-            "export interface PermissionDecision {\n    decision: PermissionAction;\n    source: 'hard_limit' | 'plan' | 'explicit_rule' | 'session_cache' | 'mode_default';\n    /** 命中规则在 rules 中的下标；仅 source 为 explicit_rule 时存在。 */\n    ruleIndex?: number;\n}"
+            "export interface PermissionDecision {\n    decision: PermissionAction;\n    source: 'hard_limit' | 'protected_path' | 'plan' | 'explicit_rule' | 'session_cache' | 'mode_default';\n    /** 命中规则在 rules 中的下标；仅 source 为 explicit_rule 时存在。 */\n    ruleIndex?: number;\n}"
           ]
         },
         {
           "name": "PermissionPolicy",
           "kind": "class",
           "declarations": [
-            "export declare class PermissionPolicy {\n    /**\n     * 裁决顺序固定：硬限制 → Plan 收窄 → deny 规则 → 会话缓存拒绝 → ask 规则 →\n     * 会话缓存允许 → allow 规则（run_command 必须带 shell 范围，工具级 allow 不能放行命令）\n     * → 模式默认。同一输入总是得到同一裁决，不读取任何外部状态。\n     */\n    decide(request: PermissionRequest): PermissionDecision;\n}"
+            "export declare class PermissionPolicy {\n    /**\n     * 裁决顺序固定：硬限制 → Plan 收窄 → deny 规则 → 会话缓存拒绝 → ask 规则 →\n     * 会话缓存允许 → allow 规则（run_command 必须带 shell 范围，工具级 allow 不能放行命令）\n     * → 两轴类别裁决（提供 `commandClass` 时）→ 模式默认。同一输入总是得到同一裁决，\n     * 不读取任何外部状态。\n     */\n    decide(request: PermissionRequest): PermissionDecision;\n}"
           ]
         },
         {
           "name": "PermissionRequest",
           "kind": "interface",
           "declarations": [
-            "export interface PermissionRequest {\n    mode: SessionMode;\n    toolName: string;\n    capabilities: readonly Capability[];\n    /** 危险性来自工具元数据；未命中 allow 规则时，非 FullAccess 模式一律降级为 ask。 */\n    dangerous?: boolean;\n    /** 宿主硬限制；命中即拒绝，优先级高于一切规则与缓存。 */\n    hardDenied?: boolean;\n    shell?: ShellScope;\n    /**\n     * Auto 模式专用：shell 命令安全分级（执行器经 classifyShellCommandSafety 对最终 ShellScope\n     * 计算）。仅参与模式默认值裁决，`safe` 允许 Auto 自动放行静态 dangerous 的 shell 工具；\n     * `unsafe`/`unknown` 与缺省（非 shell 工具）维持原有降级路径，显式规则与会话缓存仍先于此生效。\n     */\n    shellSafety?: ShellCommandSafety;\n    /** 规则表须先经 validatePermissionRules 校验；同动作规则按声明顺序取首个命中。 */\n    rules?: readonly PermissionRule[];\n    /** 会话缓存命中标志（来自 SessionApprovalCache）；仅在 deny / ask 规则都未命中时生效。 */\n    cachedApproval?: boolean;\n    /** 会话缓存拒绝标志；在 deny 规则之后、ask 规则之前生效。 */\n    cachedDenial?: boolean;\n}"
+            "export interface PermissionRequest {\n    mode: SessionMode;\n    toolName: string;\n    capabilities: readonly Capability[];\n    /** 危险性来自工具元数据；未命中 allow 规则时，非 FullAccess 模式一律降级为 ask。 */\n    dangerous?: boolean;\n    /** 宿主硬限制；命中即拒绝，优先级高于一切规则与缓存。 */\n    hardDenied?: boolean;\n    shell?: ShellScope;\n    /**\n     * Auto 模式专用：shell 命令安全分级（执行器经 classifyShellCommandSafety 对最终 ShellScope\n     * 计算）。仅参与模式默认值裁决，`safe` 允许 Auto 自动放行静态 dangerous 的 shell 工具；\n     * `unsafe`/`unknown` 与缺省（非 shell 工具）维持原有降级路径，显式规则与会话缓存仍先于此生效。\n     * 提供 `commandClass` 时本字段不参与裁决，仅用于兼容旧调用方。\n     */\n    shellSafety?: ShellCommandSafety;\n    /**\n     * Shell 命令的风险类别（执行器经 classifyShellCommandClass 计算）。提供后按类别两轴裁决：\n     * `read` 在 Approval / Auto 放行；`workspace-write` / `vcs-write` 仅 Auto 与 FullAccess 放行；\n     * `network` / `destructive` / `escape` / `unknown` 仅 FullAccess 放行。显式规则与会话缓存\n     * 仍先于此生效；未提供时回退 `shellSafety` 的旧语义。\n     */\n    commandClass?: ShellCommandClass;\n    /**\n     * shell 命令可静态识别、且命中硬禁区的写入目标（workspace 相对路径）。\n     * 提供时在硬限制之后、任何规则/缓存/模式之前直接 `deny`，FullAccess 也不能放行；\n     * 与 PathSandbox 的硬禁区共用同一份判定，避免 shell 成为绕过通道。\n     */\n    protectedTarget?: string;\n    /** 规则表须先经 validatePermissionRules 校验；同动作规则按声明顺序取首个命中。 */\n    rules?: readonly PermissionRule[];\n    /** 会话缓存命中标志（来自 SessionApprovalCache）；仅在 deny / ask 规则都未命中时生效。 */\n    cachedApproval?: boolean;\n    /** 会话缓存拒绝标志；在 deny 规则之后、ask 规则之前生效。 */\n    cachedDenial?: boolean;\n}"
           ]
         },
         {
@@ -2570,7 +2577,7 @@
           "name": "SandboxConfig",
           "kind": "interface",
           "declarations": [
-            "export interface SandboxConfig {\n    /** 显式工作区物理根路径。 */\n    workspaceRoot?: string;\n    /** 兼容别名：等同于 workspaceRoot。 */\n    rootDir?: string;\n    /**\n     * 严格模式：任何解析后落在 workspaceRoot 之外的物理路径一律拒绝，\n     * 不存在 fail-open 开关。\n     */\n    allowSymlinks?: boolean;\n    /**\n     * 只读豁免根提供者：返回 harness 受管的只读目录（如本会话的 tool-results 桶）。\n     * 仅对显式 read 模式的 resolveSafePath 生效，write/edit 永远不豁免；\n     * 每次校验时重新求值，以兼容会话恢复后 conversationId 变化的场景。\n     * 豁免根按 realpath 比对物理路径，符号链接穿透依然 fail-closed。\n     */\n    readOnlyExemptions?: () => readonly string[];\n}"
+            "export interface SandboxConfig {\n    /** 显式工作区物理根路径。 */\n    workspaceRoot?: string;\n    /** 兼容别名：等同于 workspaceRoot。 */\n    rootDir?: string;\n    /**\n     * 严格模式：任何解析后落在 workspaceRoot 之外的物理路径一律拒绝，\n     * 不存在 fail-open 开关。\n     */\n    allowSymlinks?: boolean;\n    /**\n     * 只读豁免根提供者：返回 harness 受管的只读目录（如本会话的 tool-results 桶）。\n     * 仅对显式 read 模式的 resolveSafePath 生效，write/edit 永远不豁免；\n     * 每次校验时重新求值，以兼容会话恢复后 conversationId 变化的场景。\n     * 豁免根按 realpath 比对物理路径，符号链接穿透依然 fail-closed。\n     */\n    readOnlyExemptions?: () => readonly string[];\n    /**\n     * 额外的硬禁区（workspace 相对路径或目录前缀），与内置清单取并集，只能收紧不能放宽。\n     * 仅对 write/edit 生效；命中时直接抛 `PERMISSION_DENIED`，不进入审批。\n     */\n    protectedPaths?: readonly string[];\n}"
           ]
         },
         {
@@ -3219,7 +3226,7 @@
           "name": "ToolError",
           "kind": "class",
           "declarations": [
-            "export declare class ToolError extends KapibalaError {\n    constructor(message: string);\n}"
+            "export declare class ToolError extends KapibalaError {\n    constructor(message: string, code?: string);\n}"
           ]
         },
         {

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { PathSandbox } from '../src/capabilities/security/sandbox.js';
+import { PathSandbox, isProtectedWorkspacePath } from '../src/capabilities/security/sandbox.js';
 import { writeFileTool } from '../src/capabilities/tools/builtin/fs.js';
 import { ToolError } from '../src/errors/index.js';
 
@@ -160,6 +160,77 @@ describe.skipIf(!linkSupport.dir)('PathSandbox (越界目录链接穿透)', () =
     expect(sandbox.resolveSafePath('linkReal/file.txt')).toBe(
       path.resolve(rootDir, 'linkReal/file.txt'),
     );
+  });
+});
+
+describe('PathSandbox (硬禁区)', () => {
+  let rootDir: string;
+
+  beforeEach(() => {
+    rootDir = canonicalTempDir('kpbl-sandbox-protected-');
+  });
+
+  afterEach(() => {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  const blocked = [
+    '.git/hooks/pre-commit',
+    '.git/config',
+    '.git/modules/dep/config',
+    '.kapibala/permissions.json',
+    '.kapibala/mcp.json',
+    '.env',
+    '.env.local',
+    '.env.production',
+    'nested/.env',
+  ];
+  for (const target of blocked) {
+    it(`rejects writes to ${target}`, () => {
+      const sandbox = new PathSandbox({ rootDir });
+      expect(() => sandbox.resolveSafePath(target)).toThrowError(
+        expect.objectContaining({ code: 'PERMISSION_DENIED' }),
+      );
+    });
+  }
+
+  const allowed = ['.env.example', '.env.sample', '.env.template', '.gitignore', '.envrc'];
+  for (const target of allowed) {
+    it(`allows writes to ${target}`, () => {
+      const sandbox = new PathSandbox({ rootDir });
+      expect(sandbox.resolveSafePath(target)).toBe(path.resolve(rootDir, target));
+    });
+  }
+
+  it('matches Windows case variants', () => {
+    const sandbox = new PathSandbox({ rootDir });
+    expect(() => sandbox.resolveSafePath('.GIT/HOOKS/pre-commit')).toThrowError(
+      expect.objectContaining({ code: 'PERMISSION_DENIED' }),
+    );
+  });
+
+  it('keeps protected files readable for diagnostics', () => {
+    const sandbox = new PathSandbox({ rootDir });
+    expect(sandbox.resolveSafePath('.git/config', { mode: 'read' })).toBe(
+      path.resolve(rootDir, '.git/config'),
+    );
+  });
+
+  it('extends the list with workspace-relative prefixes', () => {
+    const sandbox = new PathSandbox({ rootDir, protectedPaths: ['secrets'] });
+    expect(() => sandbox.resolveSafePath('secrets/token.txt')).toThrowError(
+      expect.objectContaining({ code: 'PERMISSION_DENIED' }),
+    );
+    expect(sandbox.resolveSafePath('secrets-notes.txt')).toBe(
+      path.resolve(rootDir, 'secrets-notes.txt'),
+    );
+  });
+
+  it('exposes the pure matcher for shell-side reuse', () => {
+    expect(isProtectedWorkspacePath('a/.git/hooks/x')).toBe(true);
+    expect(isProtectedWorkspacePath('.env.local')).toBe(true);
+    expect(isProtectedWorkspacePath('.env.example')).toBe(false);
+    expect(isProtectedWorkspacePath('src/index.ts')).toBe(false);
   });
 });
 

@@ -4,6 +4,7 @@ import {
   PermissionPolicy,
   validatePermissionRules,
 } from '../src/capabilities/security/permissions.js';
+import { classifyShellCommandClass } from '../src/capabilities/shell/command-class.js';
 
 const policy = new PermissionPolicy();
 
@@ -32,7 +33,7 @@ describe('PermissionPolicy', () => {
     ).toBe('allow');
     expect(
       policy.decide({ mode: 'FullAccess', toolName: 'opaque', capabilities: [] }).decision,
-    ).toBe('ask');
+    ).toBe('allow');
     expect(policy.decide({ mode: 'Plan', toolName: 'opaque', capabilities: [] }).decision).toBe(
       'deny',
     );
@@ -43,7 +44,7 @@ describe('PermissionPolicy', () => {
         capabilities: [],
         rules: [{ action: 'allow', tool: 'opaque' }],
       }).decision,
-    ).toBe('ask');
+    ).toBe('allow');
   });
 
   it('honors hard and explicit denial before allow, then explicit ask before cached approval', () => {
@@ -161,6 +162,146 @@ describe('PermissionPolicy', () => {
         cachedApproval: true,
       }).decision,
     ).toBe('allow');
+  });
+
+  it('denies statically detected protected shell writes in every mode', () => {
+    const base = {
+      toolName: 'run_command',
+      capabilities: ['exec'] as const,
+      dangerous: true,
+      shell: { command: 'echo x > .git/hooks/pre-commit', interpreter: 'bash', cwd: '/repo' },
+      protectedTarget: '.git/hooks/pre-commit',
+    };
+    for (const mode of ['Approval', 'Auto', 'FullAccess'] as const) {
+      const decision = policy.decide({
+        ...base,
+        mode,
+        rules: [{ action: 'allow', tool: 'run_command' }],
+      });
+      expect(decision.decision).toBe('deny');
+      expect(decision.source).toBe('protected_path');
+    }
+  });
+
+  it('meets the 27-command Auto allowance floor without dangerous false positives', () => {
+    const policy27 = new PermissionPolicy();
+    const commands = [
+      'git status',
+      'git diff',
+      'git log --oneline -5',
+      'rg TODO src',
+      'ls -la',
+      'cat package.json',
+      'find . -name "*.ts"',
+      'pwd',
+      'pnpm build',
+      'pnpm verify',
+      'pnpm test',
+      'npx biome check',
+      'tsc --noEmit',
+      './scripts/dev.sh',
+      'cd packages/core && pnpm build',
+      'node scripts/dev.mjs',
+      'pnpm test > test.log',
+      'git add .',
+      'git commit -m x',
+      'pnpm install',
+      'docker compose up',
+      'gh pr list',
+      'curl https://example.com',
+      'rm -rf build',
+      'echo $PATH',
+      'terraform plan',
+      'xargs echo',
+    ];
+    const decide = (command: string, mode: 'Approval' | 'Auto') => {
+      const shell = {
+        command,
+        interpreter: 'bash' as const,
+        cwd: '/workspace',
+        ...(command === './scripts/dev.sh' ? { scriptDigest: 'a'.repeat(64) } : {}),
+      };
+      return policy27.decide({
+        mode,
+        toolName: 'run_command',
+        capabilities: ['exec'],
+        dangerous: true,
+        shell,
+        commandClass: classifyShellCommandClass(shell, '/workspace'),
+      });
+    };
+    const autoAllowed = commands.filter((command) => decide(command, 'Auto').decision === 'allow');
+    expect(autoAllowed.length).toBeGreaterThanOrEqual(17);
+    // Approval 只放行 read；workspace-write / vcs-write 都必须询问。
+    expect(
+      commands.filter((command) => decide(command, 'Approval').decision === 'allow'),
+    ).toHaveLength(8);
+    for (const command of [
+      'pnpm install',
+      'docker compose up',
+      'gh pr list',
+      'curl https://example.com',
+      'rm -rf build',
+      'echo $PATH',
+      'terraform plan',
+      'xargs echo',
+    ]) {
+      expect(decide(command, 'Auto').decision, command).toBe('ask');
+    }
+  });
+
+  it('allows opaque tools in FullAccess but not in Approval or Plan', () => {
+    const base = { toolName: 'custom_tool', capabilities: [] as const, dangerous: false };
+    expect(policy.decide({ ...base, mode: 'FullAccess' }).decision).toBe('allow');
+    expect(policy.decide({ ...base, mode: 'Approval' }).decision).toBe('ask');
+    expect(policy.decide({ ...base, mode: 'Plan' }).decision).toBe('deny');
+    // 硬限制仍然优先。
+    expect(policy.decide({ ...base, mode: 'FullAccess', hardDenied: true }).decision).toBe('deny');
+  });
+
+  it('decides shell commands by command class across the three presets', () => {
+    const shell = { command: 'pnpm build', interpreter: 'bash', cwd: '/repo' };
+    const base = {
+      toolName: 'run_command',
+      capabilities: ['exec'] as const,
+      dangerous: true,
+      shell,
+    };
+    // read：Approval 与 Auto 都放行。
+    for (const mode of ['Approval', 'Auto', 'FullAccess'] as const) {
+      expect(policy.decide({ ...base, mode, commandClass: 'read' }).decision).toBe('allow');
+    }
+    // workspace-write / vcs-write：仅 Auto 与 FullAccess 放行。
+    for (const commandClass of ['workspace-write', 'vcs-write'] as const) {
+      expect(policy.decide({ ...base, mode: 'Approval', commandClass }).decision).toBe('ask');
+      expect(policy.decide({ ...base, mode: 'Auto', commandClass }).decision).toBe('allow');
+      expect(policy.decide({ ...base, mode: 'FullAccess', commandClass }).decision).toBe('allow');
+    }
+    // network / destructive / escape / unknown：仅 FullAccess 放行。
+    for (const commandClass of ['network', 'destructive', 'escape', 'unknown'] as const) {
+      expect(policy.decide({ ...base, mode: 'Approval', commandClass }).decision).toBe('ask');
+      expect(policy.decide({ ...base, mode: 'Auto', commandClass }).decision).toBe('ask');
+      expect(policy.decide({ ...base, mode: 'FullAccess', commandClass }).decision).toBe('allow');
+    }
+    // Plan 仍在最前面整项拒绝。
+    expect(policy.decide({ ...base, mode: 'Plan', commandClass: 'read' }).decision).toBe('deny');
+    // 类别优先于旧的 shellSafety；显式 ask 规则仍先于类别生效。
+    expect(
+      policy.decide({
+        ...base,
+        mode: 'Auto',
+        commandClass: 'workspace-write',
+        shellSafety: 'unsafe',
+      }).decision,
+    ).toBe('allow');
+    expect(
+      policy.decide({
+        ...base,
+        mode: 'Auto',
+        commandClass: 'workspace-write',
+        rules: [{ action: 'ask', shell }],
+      }).decision,
+    ).toBe('ask');
   });
 
   it('rejects unsupported shell prefix and wildcard rules at load time', () => {

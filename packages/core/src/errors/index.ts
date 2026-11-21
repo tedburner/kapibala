@@ -376,11 +376,11 @@ export class TransportError extends KapibalaError {
   }
 }
 
-/** 工具执行失败的通用错误；retryPolicy 固定 never，后续处理由调用方决定。 */
+/** 工具执行失败；默认码 `TOOL_ERROR`，安全拒绝可传入 `PERMISSION_DENIED` 以便上层区分。 */
 export class ToolError extends KapibalaError {
-  constructor(message: string) {
+  constructor(message: string, code = 'TOOL_ERROR') {
     super(message, {
-      code: 'TOOL_ERROR',
+      code,
       retryPolicy: 'never',
       safeMessage: 'Tool execution failed',
     });
