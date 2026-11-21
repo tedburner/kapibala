@@ -11,6 +11,9 @@ import { resolveCommandOutput } from '../command-output.js';
  *    严禁用户通过 `/mcp enable` 绕过宿主启动限制；
  * 4. 纯内存临时变更约定：`enable` 与 `disable` 只改变当前会话内的服务可用性，
  *    严禁写回磁盘 `mcp.json` 配置文件，保证磁盘配置的声明性与只读完整性。
+ * 5. 配置级命令（add/remove/edit）对无法安全落盘的输入一律显式报错、不做猜测：
+ *    参数按空白切分导致含空格的值必成未知 token（只引导换编辑通道）、
+ *    与目标传输无关的字段拒绝静默丢弃、跨传输改写必须在成功输出中明示；批准输出不打印密文。
  */
 
 import os from 'node:os';
@@ -271,7 +274,8 @@ export interface McpConfigCliOptions {
  * 解析配置级子命令参数：第一个位置参数是服务器名，其余是 `--flag value` 选项。
  *
  * 边界：只接受下方列出的选项；`--arg` / `--env` / `--header` 可重复；
- * 缺失值、未知选项、非法 KEY=VALUE 一律报错，不做猜测。
+ * 缺失值、未知选项、非法 KEY=VALUE、`--enabled` 与 `--disabled` 并用一律报错，不做猜测。
+ * 分发器已按空白切分参数，含空格的值在这里必然碎成未知 token，只能引导用户换编辑通道。
  */
 export function parseMcpConfigArgs(args: string[]): {
   name?: string;
@@ -321,8 +325,12 @@ export function parseMcpConfigArgs(args: string[]): {
         return { error: `非法请求头名: ${key}` };
       if (token === '--env') options.env[key] = item;
       else options.headers[key] = item;
-    } else return { error: `未知选项: ${token}` };
+    } else
+      return {
+        error: `未知选项: ${token}；/mcp 参数按空白切分，含空格的值请用桌面设置页编辑或直接编辑 mcp.json`,
+      };
   }
+  if (options.enabled && options.disabled) return { error: '--enabled 与 --disabled 不能同时使用' };
   return { name, options };
 }
 
@@ -351,6 +359,8 @@ function mutateMcpConfigCommand(
     projectTrusted: Boolean(projectRoot && isProjectTrusted(ctx.settings, projectRoot)),
   };
   let file: string;
+  // 跨传输改写（如 stdio 改 http）会丢弃旧传输专属字段，必须在成功输出中明示，绝不静默变更。
+  let transportChangedNotice: string | undefined;
   try {
     file = mutateMcpConfig((draft) => {
       if (!draft.mcpServers) draft.mcpServers = {};
@@ -365,7 +375,12 @@ function mutateMcpConfigCommand(
       if (kind === 'edit' && !servers[name])
         throw new Error(`MCP 服务 '${name}' 不存在；如需新增请用 /mcp add`);
       const next = buildServerConfig(name, options, servers[name]);
-      servers[name] = next;
+      servers[name] = next.config;
+      transportChangedNotice = next.convertedFromTransport
+        ? next.convertedFromTransport === 'stdio'
+          ? '已从 stdio 转为 http，原 command/args/env 已移除'
+          : '已从 http 转为 stdio，原 url/headers 已移除'
+        : undefined;
     }, target);
   } catch (error) {
     output.error(
@@ -374,6 +389,7 @@ function mutateMcpConfigCommand(
     return;
   }
   output.log(`✔ 已写入${options.scope === 'project' ? '项目' : '全局'} MCP 配置: ${file}`);
+  if (transportChangedNotice) output.log(`⚠ ${transportChangedNotice}。`);
   output.log('新配置在新建会话后生效；当前会话可用 /mcp reconnect <server> 重连已存在的服务。');
 }
 
@@ -424,7 +440,9 @@ function approvalCommand(kind: 'approve' | 'revoke', args: string[], ctx: Comman
     try {
       const record = store.approve({ name, ...entry });
       const prefix = record.digest.replace('sha256:', '').slice(0, 12);
-      output.log(`批准目标: ${redactCommonSecrets(describeApprovalTarget(entry.config))}`);
+      output.log(
+        `批准目标: ${redactCommonSecrets(redactFlagValueSecrets(describeApprovalTarget(entry.config)))}`,
+      );
       const secretKeys = Object.keys(describeApprovalSecretKeys(entry.config));
       if (secretKeys.length) output.log(`配置键（值不回显）: ${secretKeys.join(', ')}`);
       output.log(
@@ -453,6 +471,22 @@ function describeApprovalTarget(config: ServerConfig): string {
   return [config.command, ...(config.args ?? [])].filter(Boolean).join(' ');
 }
 
+/**
+ * 空格分隔的凭据 flag 后继值脱敏：`--token abc123` 这类传参不属于 KEY=VALUE 形态，
+ * redactCommonSecrets 的键值 / Bearer / 已知前缀规则都拦不住。设计 011 D4 要求批准界面不打印密文，
+ * 因此批准输出在通用脱敏之前先对凭据语义 flag 的后继独立参数整值替换为 [REDACTED]；
+ * 只保留 flag 名供用户定位凭据位置，`=` 连接形态交给 redactCommonSecrets 处理。
+ */
+const FLAG_VALUE_SECRET =
+  /(^|\s)(--(?:api[_-]?key|access[_-]?key|client[_-]?secret|token|password|passwd|secret)\s+)(?:"[^"]*"|'[^']*'|[^\s]+)/gi;
+
+function redactFlagValueSecrets(text: string): string {
+  return text.replace(
+    FLAG_VALUE_SECRET,
+    (_match, lead: string, flag: string) => `${lead}${flag}[REDACTED]`,
+  );
+}
+
 /** 需要提示「存在但值不回显」的配置键名（env / headers），仅返回键。 */
 function describeApprovalSecretKeys(config: ServerConfig): Record<string, true> {
   const record = config as {
@@ -477,17 +511,47 @@ const BASE_SERVER_FIELDS = [
   'requestTimeoutMs',
 ] as const;
 
-/** 按 transport 组装/更新单条声明；保留既有基础字段，只替换传输相关字段。 */
+/**
+ * 按 transport 组装/更新单条声明；保留既有基础字段，只替换传输相关字段。
+ *
+ * 边界（与 parseMcpConfigArgs「一律报错不猜测」对齐）：
+ * - 用户显式传入与目标 transport 无关的字段（stdio 的 --command/--arg/--env、http 的 --url/--header）
+ *   时直接报错并列出被拒字段，绝不静默丢弃；
+ * - 既有声明跨传输改写（如 stdio 改 http）允许就地执行，但旧传输专属字段会被丢弃，
+ *   返回值携带 `convertedFromTransport`，调用方必须在成功输出中明示这一事实。
+ */
 function buildServerConfig(
   name: string,
   options: McpConfigCliOptions,
   existing: RawServerConfig | undefined,
-): RawServerConfig {
+): { config: RawServerConfig; convertedFromTransport?: 'stdio' | 'http' } {
   const nameCheck = validateServerName(name);
   if (!nameCheck.valid) throw new Error(`服务器名非法: ${nameCheck.reason}`);
   const current = (existing ?? {}) as Record<string, unknown>;
+  // 既有声明的传输身份：优先取显式 type；无 type 的宽松条目按字段形状推断（mcp.json 允许仅含 enabled 的条目）。
+  const currentTransport: 'stdio' | 'http' | undefined =
+    current.type === 'http' || (current.type === undefined && current.url !== undefined)
+      ? 'http'
+      : current.type === 'stdio' || current.command !== undefined
+        ? 'stdio'
+        : undefined;
   const transport =
     options.transport ?? (current.type === 'http' ? 'http' : options.url ? 'http' : 'stdio');
+  // 与目标 transport 无关的显式传入字段：报错而非丢弃，防止 env / headers 凭据被静默吞掉。
+  const rejected: string[] = [];
+  if (transport === 'http') {
+    if (options.command !== undefined) rejected.push('--command');
+    if (options.args?.length) rejected.push('--arg');
+    if (Object.keys(options.env).length) rejected.push('--env');
+  } else {
+    if (options.url !== undefined) rejected.push('--url');
+    if (Object.keys(options.headers).length) rejected.push('--header');
+  }
+  if (rejected.length)
+    throw new Error(
+      `${transport} 传输不接受 ${rejected.join('、')}；` +
+        `请去掉与目标传输无关的字段，或先 /mcp remove '${name}' 再 /mcp add 重建声明`,
+    );
   const next: Record<string, unknown> = {};
   for (const key of BASE_SERVER_FIELDS) {
     if (current[key] !== undefined) next[key] = current[key];
@@ -522,5 +586,8 @@ function buildServerConfig(
   const errors = diagnostics.filter((item) => item.severity === 'error');
   if (errors.length) throw new Error(errors.map((item) => item.message).join('; '));
   if (!config) throw new Error('配置校验未产出可用声明');
-  return config;
+  // 仅当既有声明已具备明确传输身份且目标不同才算改写；纯元数据条目（如仅 enabled）没有可丢弃字段。
+  const convertedFromTransport =
+    currentTransport !== undefined && currentTransport !== transport ? currentTransport : undefined;
+  return { config, convertedFromTransport };
 }

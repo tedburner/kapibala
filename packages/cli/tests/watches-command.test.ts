@@ -67,7 +67,7 @@ describe('/watches', () => {
           target: '8787',
           detail: '端口已就绪',
         }),
-        view({ watchId: 'w3', state: 'timeout', kind: 'process_exit', target: '4242' }),
+        view({ watchId: 'w3', state: 'timeout', kind: 'file_change', target: '4242' }),
         view({ watchId: 'w4', state: 'cancelled' }),
         view({ watchId: 'w5', state: 'orphaned' }),
       ]),

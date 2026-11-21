@@ -131,6 +131,7 @@ export function DetailsDrawer({
   target,
   tool,
   evidence,
+  onReloadEvidence,
   inspection,
   runtime,
   title,
@@ -145,6 +146,8 @@ export function DetailsDrawer({
   tool?: ViewTool;
   /** 会话看板分区数据；未加载完成时 undefined，面板显示加载占位而不是空摘要。 */
   evidence?: ViewEvidence;
+  /** 证据未加载或拉取失败时的手动重拉入口；缺省时抽屉只保留占位文案不提供动作。 */
+  onReloadEvidence?: () => void;
   inspection?: Inspection;
   runtime?: RuntimeSnapshot['items'][number];
   title: string;
@@ -253,7 +256,18 @@ export function DetailsDrawer({
               evidence ? (
                 <EvidenceSections evidence={evidence} />
               ) : (
-                <p>证据尚未加载，请稍后重试。</p>
+                <div className="space-y-3">
+                  <p>证据尚未加载，请稍后重试。</p>
+                  {/* 「尚未加载」与「拉取失败」共用这个占位分支，重拉走 App 的同一条防抖管线；
+                      没有它，失败后的抽屉就只剩一句提示，没有任何恢复动作。 */}
+                  {onReloadEvidence && (
+                    <div>
+                      <Button variant="secondary" size="sm" onClick={onReloadEvidence}>
+                        重新加载
+                      </Button>
+                    </div>
+                  )}
+                </div>
               )
             ) : inspection ? (
               <>

@@ -8,7 +8,7 @@
  *    崩溃后只要没确认过就仍欠一次投递，确认过就自然不欠；布尔标记表达不了「错过多次」。
  * 3. 先落盘再推进水位：`fire()` 先把终态写进 `watch_state`，等背景消息真正落盘成功后才回写
  *    `lastSeenAt` / `lastNotifiedAt`。中途崩溃会重投，但 `eventId = watchId` 让收件箱幂等去重。
- * 4. 所有依赖（时钟、文件系统、端口探测、进程归属、续跑）都注入，便于单测与宿主替换；
+ * 4. 所有依赖（时钟、文件系统、端口探测、续跑）都注入，便于单测与宿主替换；
  *    默认实现只使用 Node 内置模块，不读取 cwd，也不访问工作区之外的路径。
  */
 
@@ -51,6 +51,10 @@ const MAX_HASH_BYTES = 10 * 1024 * 1024;
 const PORT_PROBE_TIMEOUT_MS = 500;
 /** file_change 明确忽略的目录段：这三类变化不构成「外部条件」。 */
 const IGNORED_SEGMENTS = new Set(['.git', 'node_modules', 'dist']);
+/** 同一通知的最大连续投递尝试；达到上限即放弃并转 orphaned，防止每秒无限重试回读历史。 */
+const MAX_DELIVERY_ATTEMPTS = 5;
+/** 进程内保留的终态条目上限；超过后按关闭时间淘汰最旧，只清内存，不影响落盘记录。 */
+const MAX_TERMINAL_ENTRIES = 50;
 
 /** 列出监视时展示的只读视图；不包含任何可回写的执行句柄。 */
 export interface WatchView {
@@ -63,7 +67,7 @@ export interface WatchView {
   readonly lastSeenAt: number;
   readonly lastNotifiedAt?: number;
   readonly closedAt?: number;
-  /** 人类可读的终态事实摘要（退出码 / 内容摘要 / 连接耗时）；仅进程内保留。 */
+  /** 人类可读的终态事实摘要（内容摘要 / 连接耗时）；仅进程内保留。 */
   readonly detail?: string;
 }
 
@@ -102,8 +106,6 @@ export interface WatchServiceOptions {
   now?(): number;
   fileSystem?: WatchFileSystem;
   probePort?(port: number): Promise<boolean>;
-  /** 判断 pid 是否属于本会话启动的子进程；缺省一律视为不属于。 */
-  isOwnedProcess?(pid: number): boolean;
   resumeInput?: string;
 }
 
@@ -176,12 +178,16 @@ function brief(value: string, limit = 120): string {
 export class WatchService {
   private readonly entries = new Map<string, ArmedEntry>();
   private readonly queue: PendingDelivery[] = [];
+  /** 同一通知（按 `eventId = watchId`）的连续投递失败计数；成功或放弃后清除。 */
+  private readonly deliveryFailures = new Map<string, number>();
   private readonly fileSystem: WatchFileSystem;
   private readonly now: () => number;
   private readonly resumeInput: string;
   private flushTimer?: NodeJS.Timeout;
   private lastResumeAt = 0;
   private resuming?: Promise<void>;
+  /** 在途续跑的中止控制器；`dispose()` 必须 abort，否则关闭后仍可能拉起一轮运行。 */
+  private resumeController?: AbortController;
   private started = false;
   private disposed = false;
 
@@ -231,10 +237,11 @@ export class WatchService {
       }
     }
     if (this.queue.length) this.scheduleFlush(0);
+    this.pruneTerminalEntries();
     this.options.onChange?.();
   }
 
-  /** 当前视图列表；按登记顺序返回，终态条目保留到会话关闭。 */
+  /** 当前视图列表；按登记顺序返回，终态条目在内存中按关闭时间保留最近若干条。 */
   list(): WatchView[] {
     return [...this.entries.values()].map((entry) => ({
       watchId: entry.state.watchId,
@@ -255,7 +262,7 @@ export class WatchService {
   /**
    * 登记一条监视。
    *
-   * 校验顺序固定：规格合法性 → 目标归属（工作区 / 本会话进程 / localhost）→ 数量上限。
+   * 校验顺序固定：规格合法性 → 目标归属（工作区 / localhost）→ 数量上限。
    * 任何一步失败都抛出稳定错误码且不写 `watch_state`，杜绝「登记成功但没人轮询」的假象。
    */
   async register(spec: WatchSpec): Promise<WatchView> {
@@ -265,6 +272,12 @@ export class WatchService {
       throw new KapibalaError('Watch deadline must be in the future', {
         code: 'WATCH_DEADLINE_INVALID',
         safeMessage: '监视必须给出未来的截止时间',
+      });
+    // NaN 会让 Math.max 退化为 NaN，setTimeout(fn, NaN) 按 1ms 忙轮询，必须在入口拦截。
+    if (spec.intervalMs !== undefined && !Number.isFinite(spec.intervalMs))
+      throw new KapibalaError('Watch interval must be a finite number', {
+        code: 'WATCH_INTERVAL_INVALID',
+        safeMessage: '轮询间隔必须是有效数字',
       });
     const intervalMs = Math.max(MIN_INTERVAL_MS, spec.intervalMs ?? DEFAULT_INTERVAL_MS);
     const target = spec.target.trim();
@@ -282,12 +295,14 @@ export class WatchService {
           safeMessage: '端口必须是 1–65535 的整数',
         });
     }
-    if (spec.kind === 'process_exit' && !this.ownsProcess(Number(target)))
-      throw new KapibalaError('Watch process is not owned by this session', {
-        code: 'WATCH_PROCESS_NOT_OWNED',
-        safeMessage: '只能监视本会话工具启动的子进程',
+    // v0.1.4 摘除 process_exit（本版未接线，宿主没有子进程 PID 注册表）：
+    // wire 与模型输入仍可能带来该遗留值，按字符串比较显式拒绝并说明支持范围。
+    if ((spec.kind as string) === 'process_exit')
+      throw new KapibalaError('process_exit watches are not supported in this version', {
+        code: 'WATCH_KIND_UNSUPPORTED',
+        safeMessage: '本版本仅支持 file_change 与 port_ready 监视',
       });
-    if (!['file_change', 'process_exit', 'port_ready'].includes(spec.kind))
+    if (!['file_change', 'port_ready'].includes(spec.kind))
       throw new KapibalaError('Unknown watch kind', {
         code: 'WATCH_KIND_INVALID',
         safeMessage: '不支持的监视类型',
@@ -316,14 +331,20 @@ export class WatchService {
     };
     const entry: ArmedEntry = { state };
     if (spec.kind === 'file_change') {
-      const signature = this.signatureOf(this.resolveFileTarget(target));
-      if (signature) {
-        entry.signature = signature.signature;
-        entry.hash = signature.hash;
+      const initial = this.initialFileSignature(this.resolveFileTarget(target));
+      if (initial) {
+        entry.signature = initial.signature;
+        entry.hash = initial.hash;
       }
     }
     this.entries.set(state.watchId, entry);
-    await this.options.store.appendWatchState(state);
+    try {
+      await this.options.store.appendWatchState(state);
+    } catch (error) {
+      // 持久化失败必须回滚内存登记，否则条目在轮询却不在落盘，重启后凭空消失。
+      this.entries.delete(state.watchId);
+      throw error;
+    }
     this.arm(entry);
     this.options.onChange?.();
     return this.viewOf(entry);
@@ -345,19 +366,25 @@ export class WatchService {
     await this.close(entry, 'cancelled', '由用户取消');
   }
 
-  /** 停止全部定时器；不写 `watch_state`，未触发的监视在下次宿主启动时继续恢复。 */
+  /**
+   * 停止全部定时器并中止在途续跑；不写 `watch_state`，未触发的监视在下次宿主启动时继续恢复。
+   * 续跑若已进入宿主运行管线，由其自行响应 abort 信号收尾，本方法不等待。
+   */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     liveServices.delete(this);
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = undefined;
+    this.resumeController?.abort();
+    this.resumeController = undefined;
     for (const entry of this.entries.values()) this.clearTimers(entry);
     this.entries.clear();
     this.queue.length = 0;
+    this.deliveryFailures.clear();
   }
 
-  /** 把相对/绝对目标解析为工作区内的真实路径；越界与不存在都明确拒绝。 */
+  /** 把相对/绝对目标解析为工作区内的真实路径；越界与被忽略目录明确拒绝，目标可以尚未创建。 */
   private resolveFileTarget(target: string): string {
     const absolute = path.resolve(this.options.workspaceRoot, target);
     if (!isInside(this.options.workspaceRoot, absolute))
@@ -379,12 +406,6 @@ export class WatchService {
         safeMessage: '监视目标必须位于当前工作区内',
       });
     return real ?? absolute;
-  }
-
-  /** 端口与进程目标只允许本机；进程归属缺省一律拒绝，避免监视任意 pid。 */
-  private ownsProcess(pid: number): boolean {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
-    return this.options.isOwnedProcess?.(pid) ?? false;
   }
 
   /** 跨实例统计仍在监视中的条目；只用于全局上限，不参与单会话判定。 */
@@ -410,12 +431,21 @@ export class WatchService {
     const delay = Math.max(0, Math.min(interval, untilDeadline));
     entry.timer = setTimeout(() => {
       entry.timer = undefined;
-      void this.tick(entry).catch(() => {});
+      // tick 自身已处理已知错误并重新布置轮询；能到达这里的只剩关闭路径的意外崩溃，记诊断即可。
+      void this.tick(entry).catch((error: unknown) => {
+        console.warn(`[watch] tick crashed for ${entry.state.watchId}`, error);
+      });
     }, delay);
     entry.timer.unref?.();
   }
 
-  /** 单次轮询：先判截止，再按类型判定触发；未触发则续排下一次。 */
+  /**
+   * 单次轮询：先判截止，再按类型判定触发；未触发则续排下一次。
+   *
+   * tick 内的已知失败不允许把条目留在 `armed` 变成僵尸：目标被替换为工作区外的
+   * 符号链接（realpath 复检失败）时直接转 orphaned；其余意外异常记录诊断后继续
+   * 重新布置轮询，等待下一轮自愈或自然到期。
+   */
   private async tick(entry: ArmedEntry): Promise<void> {
     if (this.disposed || entry.state.state !== 'armed') return;
     const now = this.now();
@@ -424,63 +454,80 @@ export class WatchService {
       return;
     }
     const { kind, target } = entry.state.spec;
-    if (kind === 'port_ready') {
-      const started = this.now();
-      const ready = await (this.options.probePort ?? probeLocalPort)(Number(target));
-      if (ready) {
-        await this.close(entry, 'fired', `端口已就绪（连接耗时 ${this.now() - started}ms）`);
+    try {
+      if (kind === 'port_ready') {
+        const started = this.now();
+        const ready = await (this.options.probePort ?? probeLocalPort)(Number(target));
+        if (ready) {
+          await this.close(entry, 'fired', `端口已就绪（连接耗时 ${this.now() - started}ms）`);
+          return;
+        }
+      } else {
+        this.inspectFile(entry);
+        if (entry.state.state !== 'armed') return;
+      }
+    } catch (error) {
+      // 目标物理身份已脱离工作区（如被替换为外链符号链接），继续轮询没有意义。
+      if (error instanceof KapibalaError && error.code === 'WATCH_TARGET_OUTSIDE') {
+        await this.close(entry, 'orphaned', '监视目标已变为工作区外的链接');
         return;
       }
-    } else if (kind === 'process_exit') {
-      if (!this.ownsProcess(Number(target))) {
-        await this.close(entry, 'orphaned', '进程句柄已失效，无法继续监视');
-        return;
-      }
-    } else {
-      this.inspectFile(entry);
-      if (entry.state.state !== 'armed') return;
+      // 意外异常不能让条目永久停留在 armed：记录诊断后仍尝试重新布置轮询。
+      console.warn(`[watch] tick failed for ${entry.state.watchId}, will retry`, error);
     }
     this.arm(entry);
   }
 
   /**
-   * 文件变化检测：`size + mtimeMs` 初筛，变化后算内容哈希确认，再进 300ms 去抖窗口。
-   * 同内容只更新签名不触发；窗口内重复变化只保留最后一次。
+   * 文件变化检测：先比对 `size + mtimeMs` 签名，签名未变时复用条目上的缓存哈希、零读盘；
+   * 签名变化才读内容算哈希确认（设计 008 §5：变化后才计算内容哈希）。
+   * 同内容只更新缓存不触发；窗口内重复变化只保留最后一次。
    */
   private inspectFile(entry: ArmedEntry): void {
     const file = this.resolveFileTarget(entry.state.spec.target);
-    const signature = this.signatureOf(file);
-    if (!signature) return;
-    if (entry.signature === signature.signature) return;
-    entry.signature = signature.signature;
-    if (entry.hash !== undefined && entry.hash === signature.hash) return;
-    entry.hash = signature.hash;
+    const stat = this.fileSystem.stat(file);
+    if (!stat) return;
+    const signature = `${stat.size}:${Math.round(stat.mtimeMs)}`;
+    if (entry.signature === signature) return;
+    entry.signature = signature;
+    // 超过哈希上限或暂时不可读的文件降级为仅签名判定，不把内容整体读进内存。
+    if (stat.size > MAX_HASH_BYTES) {
+      this.scheduleFileFire(entry, `${stat.size} 字节`);
+      return;
+    }
+    const content = this.fileSystem.read(file);
+    if (!content) {
+      this.scheduleFileFire(entry, `${stat.size} 字节`);
+      return;
+    }
+    const hash = createHash('sha256').update(content).digest('hex');
+    if (entry.hash !== undefined && entry.hash === hash) return;
+    entry.hash = hash;
+    this.scheduleFileFire(entry, `${content.length} 字节，摘要 ${hash.slice(0, 12)}`);
+  }
+
+  /** 进入去抖窗口后投递 fired；窗口内同路径重复变化只保留最后一次。 */
+  private scheduleFileFire(entry: ArmedEntry, summary: string): void {
     if (entry.debounce) clearTimeout(entry.debounce);
     entry.debounce = setTimeout(() => {
       entry.debounce = undefined;
-      void this.close(entry, 'fired', `文件内容已变化：${brief(signature.summary)}`).catch(
-        () => {},
-      );
+      void this.close(entry, 'fired', `文件内容已变化：${brief(summary)}`).catch(() => {});
     }, DEBOUNCE_MS);
     entry.debounce.unref?.();
   }
 
-  /** 读取当前签名与内容哈希；超过哈希上限时降级为仅签名比较。 */
-  private signatureOf(
-    file: string,
-  ): { signature: string; hash?: string; summary: string } | undefined {
+  /**
+   * 登记时的初始签名与内容哈希；之后 tick 只在签名变化时才重新读盘。
+   * 超过哈希上限或不可读时降级为仅签名比较（hash 缺省）。
+   */
+  private initialFileSignature(file: string): { signature: string; hash?: string } | undefined {
     const stat = this.fileSystem.stat(file);
     if (!stat) return undefined;
     const signature = `${stat.size}:${Math.round(stat.mtimeMs)}`;
-    if (stat.size > MAX_HASH_BYTES) return { signature, summary: `${stat.size} 字节` };
+    if (stat.size > MAX_HASH_BYTES) return { signature };
     const content = this.fileSystem.read(file);
-    if (!content) return { signature, summary: `${stat.size} 字节` };
-    const hash = createHash('sha256').update(content).digest('hex');
-    return {
-      signature,
-      hash,
-      summary: `${content.length} 字节，摘要 ${hash.slice(0, 12)}`,
-    };
+    if (!content) return { signature };
+    return { signature, hash: createHash('sha256').update(content).digest('hex') };
   }
 
   /**
@@ -488,6 +535,7 @@ export class WatchService {
    *
    * 顺序固定：先持久化终态（列表立刻正确）→ 入队投递 → 空闲时落盘背景消息 → 回写水位。
    * 因此崩溃后最多重投一次，且收件箱按 `eventId = watchId` 幂等。
+   * 终态条目超过内存上限时按关闭时间淘汰最旧，落盘的 `watch_state` 记录不受影响。
    */
   private async close(
     entry: ArmedEntry,
@@ -516,8 +564,23 @@ export class WatchService {
     };
     this.queue.push({ notification, branchId: terminal.branchId });
     this.options.onNotify?.(notification);
+    this.pruneTerminalEntries();
     this.options.onChange?.();
     this.scheduleFlush(0);
+  }
+
+  /**
+   * 淘汰内存中最早的终态条目，保证长会话的 `entries` 不会无界增长。
+   * 只清内存视图：落盘的 `watch_state` 记录保持完整，重启后仍按水位恢复。
+   */
+  private pruneTerminalEntries(): void {
+    const terminal = [...this.entries.values()].filter(
+      (candidate) => candidate.state.state !== 'armed',
+    );
+    const excess = terminal.length - MAX_TERMINAL_ENTRIES;
+    if (excess <= 0) return;
+    terminal.sort((a, b) => (a.state.closedAt ?? 0) - (b.state.closedAt ?? 0));
+    for (const stale of terminal.slice(0, excess)) this.entries.delete(stale.state.watchId);
   }
 
   /** 排一次投递；已有的定时器优先，避免窗口被无限推迟。 */
@@ -535,6 +598,8 @@ export class WatchService {
    *
    * 只有空闲且没有在途续跑时才真正落盘；忙时按 {@link IDLE_RETRY_MS} 重试，
    * 期间新到达的通知自然合并进同一批，从而坍缩成一次续跑。
+   * 同一通知连续失败达到 {@link MAX_DELIVERY_ATTEMPTS} 即放弃：条目转 orphaned
+   * （带原因），输出诊断，不再每秒全量重试回读历史。
    */
   private async flush(): Promise<void> {
     if (this.disposed || this.queue.length === 0) return;
@@ -544,18 +609,53 @@ export class WatchService {
     }
     const batch = this.queue.splice(0, this.queue.length);
     let delivered = 0;
+    // 只有真实条件命中（fired / timeout / orphaned）才值得唤醒续跑；
+    // 用户主动取消不产生新信息，续跑只会空烧一轮。
+    let resumable = 0;
     for (const item of batch) {
       try {
         const written = await this.options.deliver(item.notification, item.branchId);
         if (written) delivered++;
+        this.deliveryFailures.delete(item.notification.eventId);
         await this.advanceWater(item);
-      } catch {
+        if (written && item.notification.state !== 'cancelled') resumable++;
+      } catch (error) {
+        const attempts = (this.deliveryFailures.get(item.notification.eventId) ?? 0) + 1;
+        this.deliveryFailures.set(item.notification.eventId, attempts);
+        if (attempts >= MAX_DELIVERY_ATTEMPTS) {
+          this.abandonDelivery(item, attempts, error);
+          continue;
+        }
         // 投递失败：保留原文等待空闲重试，绝不在未落盘时推进水位。
         this.queue.push(item);
       }
     }
-    if (delivered > 0 && this.queue.length === 0) await this.resumeOnce();
+    if (resumable > 0 && this.queue.length === 0) await this.resumeOnce();
     if (this.queue.length) this.scheduleFlush(IDLE_RETRY_MS);
+  }
+
+  /**
+   * 放弃一条反复投递失败的通知。
+   *
+   * 条目若仍在内存且保持该通知对应的终态，则改判为 `orphaned` 并落盘（带原因），
+   * 让 `/watches` 与恢复路径都能看到「投递从未确认」的事实；水位不动，
+   * 下次重启按水位补投时由收件箱按 `eventId` 幂等去重。
+   */
+  private abandonDelivery(item: PendingDelivery, attempts: number, cause: unknown): void {
+    this.deliveryFailures.delete(item.notification.eventId);
+    const entry = this.entries.get(item.notification.watchId);
+    if (entry && entry.state.state === item.notification.state) {
+      entry.state = { ...entry.state, state: 'orphaned' };
+      entry.detail = `投递连续 ${attempts} 次失败，已放弃投递`;
+      void this.options.store.appendWatchState(entry.state).catch(() => {
+        /* 落盘失败只影响下一次恢复时的展示，不影响本次放弃决策。 */
+      });
+    }
+    console.warn(
+      `[watch] delivery of ${item.notification.watchId} failed ${attempts} times, giving up`,
+      cause,
+    );
+    this.options.onChange?.();
   }
 
   /** 回写「已确认投递」的水位；失败不重试，下次恢复会按落后水位补投。 */
@@ -582,12 +682,14 @@ export class WatchService {
     if (now - this.lastResumeAt < MIN_RESUME_INTERVAL_MS) return;
     this.lastResumeAt = now;
     const controller = new AbortController();
+    this.resumeController = controller;
     this.resuming = (async () => {
       try {
         await this.options.resume(this.resumeInput, controller.signal);
       } catch {
         /* 续跑失败不影响已落盘的通知；用户下次输入即可继续。 */
       } finally {
+        if (this.resumeController === controller) this.resumeController = undefined;
         this.resuming = undefined;
         if (this.queue.length) this.scheduleFlush(IDLE_RETRY_MS);
       }

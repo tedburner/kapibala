@@ -62,6 +62,44 @@ describe('versioned session store', () => {
     ]);
   });
 
+  it('skips malformed watch_state records with a diagnostic instead of blocking recovery', async () => {
+    const store = await open();
+    const diagnostics: string[] = [];
+    store.setAppendObserver(
+      () => {},
+      (message) => diagnostics.push(message),
+    );
+    const armed = {
+      watchId: 'watch-ok',
+      spec: { kind: 'file_change' as const, target: 'src/a.ts', deadlineAt: 1 },
+      state: 'armed' as const,
+      lastSeenAt: 0,
+      branchId: 'main',
+      armedAt: 10,
+    };
+    // 残缺载荷若放行，宿主恢复路径读取 spec.deadlineAt 等字段会抛 TypeError；
+    // 这里覆盖缺 spec、数值非法与已摘除的触发源类型三类。
+    await store.appendWatchState(armed);
+    await store.appendWatchState({ watchId: 'watch-no-spec' } as unknown as typeof armed);
+    await store.appendWatchState({
+      ...armed,
+      watchId: 'watch-bad-deadline',
+      spec: { kind: 'file_change' as const, target: 'src/a.ts', deadlineAt: Number.NaN },
+    });
+    await store.appendWatchState({
+      ...armed,
+      watchId: 'watch-legacy-kind',
+      spec: { kind: 'process_exit', target: '4242', deadlineAt: 1 },
+    } as unknown as typeof armed);
+
+    const states = await store.readWatchStates();
+    expect(states).toHaveLength(1);
+    expect(states[0].watchId).toBe('watch-ok');
+    expect(diagnostics).toHaveLength(3);
+    expect(diagnostics.join('\n')).toContain('watch-legacy-kind');
+    expect(diagnostics.join('\n')).toContain('process_exit');
+  });
+
   it('persists stable IDs, causal envelopes and a durable reset boundary', async () => {
     const store = await open();
     await store.append({ role: 'user', content: [{ type: 'text', text: 'hello' }] });

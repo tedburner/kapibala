@@ -1112,12 +1112,14 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('run.changed'), receipt: runReceipt }).strict(),
   // 监视终态只带身份与状态：目标路径与文件内容留在宿主侧，系统通知也不需要它们。
+  // kind 与宿主协议同源收窄：process_exit 自 v0.1.4 摘除、不再出现在 wire 上，
+  // 通知面保留它会放宽出宿主永远不会发送的死枚举值。
   z
     .object({
       type: z.literal('watch.triggered'),
       sessionId: id,
       watchId: id,
-      kind: z.enum(['file_change', 'process_exit', 'port_ready']),
+      kind: z.enum(['file_change', 'port_ready']),
       state: z.enum(['fired', 'timeout', 'cancelled', 'orphaned']),
     })
     .strict(),

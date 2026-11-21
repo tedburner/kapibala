@@ -127,6 +127,7 @@ pnpm build && node packages/cli/dist/bin.js
 | `/quote`、`/quote <id\|id#record>`、`/quote --search <query>`、`/quote --list [--remove n]` | 引用其它会话历史：菜单选择、`会话ID#记录ID` 精确引用、项目桶内检索、查看并删除本轮已挂载引用；草稿在下一条输入发送时冻结注入 | `/quote --search 并发调度` |
 | `/delegate <任务> [--role\|--model\|--name]` | 用户级派发 detached 委派会话（复用当前会话写租约），终态保留可续聊 | `/delegate 整理 docs/ 链接 --name 文档巡检` |
 | `/delegations [list\|show\|open\|cancel\|delete] <id>` | 委派会话面板：元数据跨进程可见，按 ID 或唯一前缀操作；delete 物理删除释放保留名额 | `/delegations open a1b2` |
+| `/watches [cancel <watchId>]` | 查看当前会话的外部条件监视（文件变化 / 端口就绪）或取消其中一条 | `/watches cancel w1` |
 | `/rename <title>` | 修改当前会话标题 | `/rename 上下文设计` |
 | `/context` | 查看保护范围、预算、剪裁与有效检查点 | `/context` |
 | `/compact` | 空闲时手动摘要旧完整交互 | `/compact` |
@@ -135,12 +136,16 @@ pnpm build && node packages/cli/dist/bin.js
 | `/logs [count]` | 最近 1–100 条运行与审批日志，默认 20 条 | `/logs 20` |
 | `/instructions` | 查看当前加载的项目指令来源 | `/instructions` |
 | `/skills [query]` | 检索已发现且已信任的技能清单（不加载正文） | `/skills pdf` |
+| `/skills inspect [--json]` | 输出技能发现环境、扫描根、逐技能来源、生命周期事件与扫描诊断 | `/skills inspect --json` |
 | `/skill <name> [task...]` | 按技能名加载其说明并提交任务；省略任务时直接以默认启动语运行 | `/skill pdf-review 检查这份设计` |
+| `/skill import [<name>\|--all] [--from <harness>] [--project] [--force]` | 从 Claude Code / Codex / Cursor / opencode 一次性拷贝技能；候选徽标标注来源差异与冲突，边界见 [skills 说明](skills.md) | `/skill import --all --from claude-code` |
 | `/plugins [name]` | 查看已挂载插件及其能力贡献；指定名字看明细 | `/plugins mcp` |
 | `/mcp` | 查看已配置服务清单、连接状态与能力统计 | `/mcp` |
 | `/mcp tools <server>` | 列出该服务导出的工具及只读安全标记 | `/mcp tools git-tools` |
 | `/mcp reconnect <server>` | 沿用当前已解析配置安全重连（代次单调递增） | `/mcp reconnect git-tools` |
 | `/mcp enable\|disable <server>` | 会话内启停该服务的工具，纯内存生效、忙碌时拦截 | `/mcp disable git-tools` |
+| `/mcp add\|remove\|edit <name> ...` | 配置级增删改，直接写 `mcp.json` 事务（`--project` 需已信任项目）；参数按空白切分，含空格的值请用桌面设置页或手编配置；边界见 [MCP 说明](mcp.md) §5 | `/mcp add demo --command npx` |
+| `/mcp approve\|revoke <server>` | 逐服务器启动批准：批准绑定完整配置摘要，任一字段变化后需重新批准；见 [MCP 说明](mcp.md) §6 | `/mcp approve demo` |
 | `/prompts [query]` | 检索已就绪服务的 Prompt 模板元数据（不预取正文） | `/prompts review` |
 | `/prompt <server/name> [arguments-json]` | 受控获取模板并作为单条 user 消息进入任务执行流 | `/prompt git-tools/commit "topic=docs"` |
 | `/help [command]` | 与注册共用命令目录、别名和参数规则 | `/help resume` |

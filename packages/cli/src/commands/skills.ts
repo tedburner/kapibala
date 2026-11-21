@@ -2,6 +2,7 @@ import { isSkillName } from '@kiturone/kapibala';
 import {
   EXPLICIT_SKILL_KICKOFF,
   SKILL_IMPORT_HARNESS_NAMES,
+  type SkillImportResult,
   type SkillImportScan,
   sanitizeToolName,
 } from '@kiturone/kapibala-host/internal';
@@ -189,7 +190,12 @@ const CONFLICT_LABELS = {
   'exists-disabled': '已存在（禁用）',
 } as const;
 
-/** 把候选列表打印成表格；非 TTY 与交互终端使用同一份文本，不做分页交互。 */
+/**
+ * 把候选列表打印成表格；非 TTY 与交互终端使用同一份文本，不做分页交互。
+ *
+ * 已导入候选追加来源差异徽标（来源未变 / 来源已改 N 文件，对齐设计 009 §5.5 的重导入口径），
+ * 用户据此决定是否需要 `--force` 覆盖，而不是盲目导入后才发现内容没变或漏掉改动。
+ */
 function renderImportScan(scan: SkillImportScan, ctx: CommandContext): void {
   const output = resolveCommandOutput(ctx);
   output.log('可导入来源:');
@@ -217,8 +223,17 @@ function renderImportScan(scan: SkillImportScan, ctx: CommandContext): void {
       candidate.bytes >= 1024 * 1024
         ? `${(candidate.bytes / (1024 * 1024)).toFixed(1)} MiB`
         : `${Math.max(1, Math.round(candidate.bytes / 1024))} KiB`;
+    // previouslyImported 是宿主按溯源文件比对出的差异事实；未导入过则没有徽标。
+    const previously = candidate.previouslyImported;
+    const importState = previously
+      ? previously.sourceUnchanged
+        ? ' · 来源未变'
+        : previously.changedFiles.length
+          ? ` · 来源已改（${previously.changedFiles.length} 文件）`
+          : ' · 来源已改'
+      : '';
     output.log(
-      `  ${sanitizeToolName(candidate.name)} [${candidate.harness}/${candidate.origin}] ${candidate.files} 文件 · ${size}${candidate.hasScripts ? ' · 含 scripts' : ''} · 冲突: ${CONFLICT_LABELS[candidate.conflict]}${candidate.strippedFields.length ? ` · 将剥离: ${candidate.strippedFields.join(', ')}` : ''}`,
+      `  ${sanitizeToolName(candidate.name)} [${candidate.harness}/${candidate.origin}] ${candidate.files} 文件 · ${size}${candidate.hasScripts ? ' · 含 scripts' : ''} · 冲突: ${CONFLICT_LABELS[candidate.conflict]}${candidate.strippedFields.length ? ` · 将剥离: ${candidate.strippedFields.join(', ')}` : ''}${importState}`,
     );
     if (candidate.description) output.log(`    ${sanitizeToolName(candidate.description)}`);
   }
@@ -231,6 +246,8 @@ function renderImportScan(scan: SkillImportScan, ctx: CommandContext): void {
  *
  * 边界：
  * - 宿主未注入扫描/导入能力时明确报告不支持，不返回空表冒充「没有可导入项」；
+ * - 宿主扫描/导入抛错按 output.error（stderr 通道）报告，与 mcp/watches 命令的失败口径一致，
+ *   不冒泡到 dispatcher 的统一捕获（那里走 stdout，失败会混进正常输出）；
  * - 同名候选跨来源出现时必须用 `--from` 指定，不按目录顺序猜一个；
  * - 导入后提示「重新打开会话后生效」，因为当前会话的注册表是启动时快照。
  */
@@ -246,7 +263,13 @@ async function importSkillCommand(tail: string, ctx: CommandContext): Promise<vo
     output.log('当前宿主不支持跨工具导入技能。');
     return;
   }
-  const scan = await ctx.scanImportableSkills();
+  let scan: SkillImportScan;
+  try {
+    scan = await ctx.scanImportableSkills();
+  } catch (error) {
+    output.error(`扫描可导入技能失败: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
   if (!options.all && !options.name) {
     renderImportScan(scan, ctx);
     return;
@@ -270,15 +293,21 @@ async function importSkillCommand(tail: string, ctx: CommandContext): Promise<vo
     );
     return;
   }
-  const result = await ctx.importSkills({
-    scope: options.scope,
-    overwrite: options.overwrite,
-    items: matches.map((candidate) => ({
-      harness: candidate.harness,
-      name: candidate.name,
-      expectedSourceRef: candidate.sourceRef,
-    })),
-  });
+  let result: SkillImportResult;
+  try {
+    result = await ctx.importSkills({
+      scope: options.scope,
+      overwrite: options.overwrite,
+      items: matches.map((candidate) => ({
+        harness: candidate.harness,
+        name: candidate.name,
+        expectedSourceRef: candidate.sourceRef,
+      })),
+    });
+  } catch (error) {
+    output.error(`导入失败: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
   output.log(
     `导入完成（作用域: ${result.scope}）: 导入 ${result.imported} · 未变 ${result.unchanged} · 跳过 ${result.skippedConflict + result.skippedLimit}（冲突 ${result.skippedConflict}、超限 ${result.skippedLimit}）· 失败 ${result.failed}`,
   );

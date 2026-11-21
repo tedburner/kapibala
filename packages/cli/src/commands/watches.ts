@@ -23,9 +23,9 @@ const STATE_LABELS: Record<WatchView['state'], string> = {
   orphaned: '已失联',
 };
 
+// WatchKind 已收窄为 'file_change' | 'port_ready'；process_exit 触发源摘除后不再出现在标签表。
 const KIND_LABELS: Record<WatchView['kind'], string> = {
   file_change: '文件变化',
-  process_exit: '进程退出',
   port_ready: '端口就绪',
 };
 

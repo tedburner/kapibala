@@ -153,6 +153,9 @@ const failure = (error: unknown) =>
 /** 首页示例只填入草稿，不创建会话、不自动发送；用户仍可改写后再提交。 */
 const STARTERS = ['梳理当前仓库的目录结构', '为这个项目补一份 README', '检查最近的改动有没有风险'];
 
+/** 证据防抖的 max-wait：流式事件持续重排 trailing 计时器时，看板至少每 3s 放行一次拉取。 */
+const EVIDENCE_MAX_WAIT_MS = 3000;
+
 /** 桌面应用只组合投影事实与临时 UI 状态；运行和审批的最终决定由 Host 校验。 */
 export function App() {
   const ui = useUI();
@@ -197,6 +200,10 @@ export function App() {
   const artifactScope = useRef('');
   /** 当前会话的证据聚合；随快照序号防抖刷新，切换会话即清空。 */
   const [evidence, setEvidence] = useState<Output<'session.evidence'>>();
+  /** 证据拉取失败标记：与「尚未加载」（undefined）区分，失败时界面保留「证据不可用」入口。 */
+  const [evidenceUnavailable, setEvidenceUnavailable] = useState(false);
+  /** 证据手动重拉代数：抽屉「重新加载」按钮自增，复用同一条防抖拉取管线与竞态防护。 */
+  const [evidenceReloadTick, setEvidenceReloadTick] = useState(0);
   const [wide, setWide] = useState(() => matchMedia('(min-width: 1200px)').matches);
   const current = useRef<Workspace | undefined>(undefined);
   const run =
@@ -237,35 +244,48 @@ export function App() {
   const messages = useMemo(() => (facts.state ? selectMessages(facts.state) : []), [facts.state]);
   const report = setError;
   // 证据聚合是只读历史扫描：在快照连续变化时防抖，避免流式输出期间每个事件都重算。
+  // 纯 trailing 防抖在流式期间（事件间隔 < 800ms）会让看板整场运行停在旧聚合，
+  // 因此叠加 max-wait：距上次实际拉取超过 3s 就强制放行一次。
   const evidenceWorkspaceId = opened?.workspaceId;
   const evidenceSessionId = opened?.sessionId;
+  const evidenceFlushedAt = useRef(0);
   // facts.state 每次变化都是新的投影对象，用它触发防抖刷新；运行中放宽间隔减少历史扫描。
   const projection = facts.state;
   const runPhase = run?.phase;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: evidenceReloadTick 是抽屉「重新加载」的触发信号，effect 有意只消费其变化而不读取其值；移除该依赖手动重拉即失效。
   useEffect(() => {
     if (!evidenceWorkspaceId || !evidenceSessionId || !projection) {
       setEvidence(undefined);
+      setEvidenceUnavailable(false);
       return;
     }
     let cancelled = false;
-    const timer = setTimeout(
-      () => {
-        void api.session
-          .evidence({ workspaceId: evidenceWorkspaceId, sessionId: evidenceSessionId })
-          .then((value) => {
-            if (!cancelled) setEvidence(value);
-          })
-          .catch(() => {
-            if (!cancelled) setEvidence(undefined);
-          });
-      },
-      runPhase === 'running' ? 800 : 300,
-    );
+    // max-wait 窗口：距上次实际拉取不足 3s 时取「基础间隔」与「窗口剩余」的较小者，
+    // 事件持续重排会让剩余时间单调收敛到 0，保证流式期间每 3s 至少刷新一次看板。
+    const elapsed = evidenceFlushedAt.current ? Date.now() - evidenceFlushedAt.current : 0;
+    const base = runPhase === 'running' ? 800 : 300;
+    const delay =
+      elapsed >= EVIDENCE_MAX_WAIT_MS ? 0 : Math.min(base, EVIDENCE_MAX_WAIT_MS - elapsed);
+    const timer = setTimeout(() => {
+      evidenceFlushedAt.current = Date.now();
+      void api.session
+        .evidence({ workspaceId: evidenceWorkspaceId, sessionId: evidenceSessionId })
+        .then((value) => {
+          if (cancelled) return;
+          setEvidence(value);
+          setEvidenceUnavailable(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setEvidence(undefined);
+          setEvidenceUnavailable(true);
+        });
+    }, delay);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [evidenceWorkspaceId, evidenceSessionId, projection, runPhase]);
+  }, [evidenceWorkspaceId, evidenceSessionId, projection, runPhase, evidenceReloadTick]);
   // 审批请求到达时立即弹出审批面板：队列没有常驻入口，错过弹窗就只能等超时被拒，
   // 用户最终只会看到莫名其妙的 PERMISSION_DENIED。
   // 只在「新增」审批时弹出（对比上次已见数量），用户手动关闭后不被反复打断。
@@ -821,18 +841,28 @@ export function App() {
   }
 
   const statusFacts = facts.inspection?.status;
-  const contextPercent = statusFacts?.contextUsage
-    ? (statusFacts.contextUsage.percent ??
-      (statusFacts.contextUsage.usedTokens !== undefined
-        ? Math.round(
-            (statusFacts.contextUsage.usedTokens / statusFacts.contextUsage.limitTokens) * 100,
-          )
-        : undefined))
-    : undefined;
+  // 上下文百分比统一在这里定稿：宿主的 percent 是未取整浮点（会出现「29.428125%」），
+  // 展示值一律取整并夹取 0-100；回退估算在 limitTokens 缺失或为 0 时视为不可用（隐藏该段），
+  // 不渲染除零产生的 NaN。
+  const contextPercent = (() => {
+    const usage = statusFacts?.contextUsage;
+    if (!usage) return undefined;
+    const percent =
+      usage.percent ??
+      (usage.usedTokens !== undefined && usage.limitTokens > 0
+        ? (usage.usedTokens / usage.limitTokens) * 100
+        : undefined);
+    return percent === undefined ? undefined : Math.min(100, Math.max(0, Math.round(percent)));
+  })();
 
   const composer = (
     <div ref={composerShell} className="relative w-full space-y-2">
-      <TaskPanel todos={facts.state?.todos} />
+      {/* key 随会话身份变化重挂 TaskPanel：浮层展开态是会话内状态，切换会话必须收起，
+          不能把上一个会话的浮层直接展示给新会话的任务清单。 */}
+      <TaskPanel
+        key={opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new'}
+        todos={facts.state?.todos}
+      />
       {completion && (
         // 浮层与输入卡同宽并居中对齐：宿主外壳是整列宽度，直接 left-3/right-3 会横跨阅读列。
         <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
@@ -1425,6 +1455,7 @@ export function App() {
                 root={workspace?.root}
                 scrollRef={scrollRef}
                 evidence={evidence}
+                evidenceUnavailable={evidenceUnavailable}
                 onTool={(callId, trigger) => {
                   detailTrigger.current = trigger;
                   setDetails({ kind: 'tool', callId });
@@ -1503,6 +1534,7 @@ export function App() {
           target={details}
           tool={detailTool}
           evidence={evidence}
+          onReloadEvidence={() => setEvidenceReloadTick((value) => value + 1)}
           inspection={facts.inspection}
           runtime={runtimeItem}
           title={`${workspace?.name ?? ''} / ${currentTitle}`}

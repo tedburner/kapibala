@@ -87,7 +87,11 @@ function formatDuration(ms: number): string {
   return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
-/** 摘要行只展示非零分区；全空时不渲染，避免新会话出现一排 +0 −0。 */
+/**
+ * 摘要行只展示非零分区；全空时不渲染，避免新会话出现一排 +0 −0。
+ * 行数超限截断或旧记录缺失 facts 时没有可信数字，按设计 010 §2 显示「未记录」而不估算：
+ * 这是会话唯一的分区事实时必须独立撑起 chip（其他分区全零），否则证据面板失去唯一入口。
+ */
 function evidenceSummary(evidence: ViewEvidence | undefined): string | null {
   if (!evidence) return null;
   const { summary } = evidence;
@@ -97,6 +101,8 @@ function evidenceSummary(evidence: ViewEvidence | undefined): string | null {
   if (summary.references) parts.push(`引用 ${summary.references} 条`);
   if (summary.mcpCalls) parts.push(`MCP 调用 ${summary.mcpCalls} 次`);
   if (summary.runningDelegations) parts.push(`委派 ${summary.runningDelegations} 个运行中`);
+  const unrecorded = summary.truncatedFiles + summary.missingFiles;
+  if (unrecorded > 0) parts.push(`变更 未记录 ${unrecorded} 项`);
   return parts.length ? parts.join(' · ') : null;
 }
 
@@ -381,6 +387,7 @@ export function MessageList({
   root,
   scrollRef,
   evidence,
+  evidenceUnavailable,
   onTool,
   onArtifact,
   onEvidence,
@@ -394,6 +401,8 @@ export function MessageList({
   scrollRef: RefObject<HTMLDivElement | null>;
   /** 会话看板摘要；为空或全零时不渲染 chip，避免新会话出现无意义入口。 */
   evidence?: ViewEvidence;
+  /** 证据拉取失败标记：与「尚未加载」区分，此时保留最小 chip 让证据面板入口不消失。 */
+  evidenceUnavailable?: boolean;
   onTool(callId: string, trigger: HTMLElement): void;
   /** 打开产物预览；chip 是工具调用常驻的重开入口。 */
   onArtifact(callId: string, artifact: ViewArtifact, trigger: HTMLElement): void;
@@ -428,6 +437,15 @@ export function MessageList({
     if (!messages.length) return;
     if (following.current) virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
   }, [messages.length, virtualizer]);
+  // 证据 chip 挂载会把滚动容器压矮一行：跟随底部时立即补一次对齐，否则底部行被裁切，
+  // 之后的滚动事件还会因 nearBottom 误判弹出「返回底部」。只补偿挂载瞬间，不追持续高度变化。
+  const hadChip = useRef(false);
+  useLayoutEffect(() => {
+    const mounted = Boolean(summary) || Boolean(evidenceUnavailable);
+    if (mounted && !hadChip.current && following.current && messages.length)
+      virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+    hadChip.current = mounted;
+  }, [summary, evidenceUnavailable, messages.length, virtualizer]);
   useEffect(() => {
     const element = scrollRef.current;
     return () => {
@@ -443,16 +461,17 @@ export function MessageList({
   };
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {summary && (
+      {(summary || evidenceUnavailable) && (
         <div className="shrink-0 px-6 pt-3">
           <Button
             className="kapibala-action"
             variant="ghost"
             size="sm"
+            // 可访问名保持稳定，作为证据面板唯一入口的 e2e 契约；失败态只换可见文案。
             aria-label="会话证据摘要"
             onClick={(event) => onEvidence(event.currentTarget)}
           >
-            {summary}
+            {summary ?? '证据不可用'}
           </Button>
         </div>
       )}

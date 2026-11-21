@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { SessionMode } from '../capabilities/security/permissions.js';
 import { KapibalaError } from '../errors/index.js';
 import { validateProtocolContent } from '../models/protocol-state.js';
-import type { WatchState } from '../runtime/watch/types.js';
+import type { WatchKind, WatchState, WatchStatus } from '../runtime/watch/types.js';
 import type { CanonicalMessage, ContentBlock } from '../types/index.js';
 import { type HistoryRepair, createMessageId, normalizeHistory } from './history.js';
 import {
@@ -67,6 +67,62 @@ export function isGlobalControlRecordType(type: SessionRecordType): boolean {
     type === 'usage' ||
     type === 'legacy_import'
   );
+}
+
+/** 当前实现支持的触发源集合；与 `WatchKind` 联合保持同步，已摘除的遗留类型按残缺数据处理。 */
+const WATCH_STATE_KINDS: readonly WatchKind[] = ['file_change', 'port_ready'];
+
+/** 监视生命周期全集；回放 `watch_state` 时用于校验状态字段。 */
+const WATCH_STATE_STATUSES: readonly WatchStatus[] = [
+  'armed',
+  'fired',
+  'timeout',
+  'cancelled',
+  'orphaned',
+];
+
+/**
+ * 判断回读的 `watch_state` 载荷是否具备宿主恢复所需的完整形状。
+ *
+ * 保证：watchId / branchId / spec.target 为非空字符串，spec.kind 属于当前支持的
+ * 触发源集合，deadlineAt / armedAt / lastSeenAt 与可选的 intervalMs / closedAt /
+ * lastNotifiedAt 均为有限数值，state 属于生命周期全集。
+ * 任一项不满足即视为残缺：宿主恢复路径会直接读取这些字段，放行会在会话启动时抛 TypeError。
+ */
+function isWellFormedWatchState(value: unknown): value is WatchState {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as WatchState;
+  const spec = candidate.spec;
+  return (
+    typeof candidate.watchId === 'string' &&
+    candidate.watchId !== '' &&
+    !!spec &&
+    typeof spec === 'object' &&
+    WATCH_STATE_KINDS.includes(spec.kind) &&
+    typeof spec.target === 'string' &&
+    spec.target !== '' &&
+    Number.isFinite(spec.deadlineAt) &&
+    (spec.intervalMs === undefined || Number.isFinite(spec.intervalMs)) &&
+    WATCH_STATE_STATUSES.includes(candidate.state) &&
+    typeof candidate.branchId === 'string' &&
+    candidate.branchId !== '' &&
+    Number.isFinite(candidate.armedAt) &&
+    Number.isFinite(candidate.lastSeenAt) &&
+    (candidate.closedAt === undefined || Number.isFinite(candidate.closedAt)) &&
+    (candidate.lastNotifiedAt === undefined || Number.isFinite(candidate.lastNotifiedAt))
+  );
+}
+
+/** 生成残缺监视记录的单行诊断摘要；只暴露可定位的身份字段，不序列化整份载荷。 */
+function describeWatchRecord(value: unknown): string {
+  if (!value || typeof value !== 'object') return '<non-object payload>';
+  const candidate = value as Partial<WatchState>;
+  const kind =
+    candidate.spec && typeof candidate.spec === 'object'
+      ? String((candidate.spec as { kind?: unknown }).kind)
+      : '<missing>';
+  const watchId = typeof candidate.watchId === 'string' ? candidate.watchId : '<missing>';
+  return `watchId=${watchId}, kind=${kind}`;
 }
 
 /** 会话文件首条记录：身份与创建环境快照；conversationId 与文件名强绑定。 */
@@ -590,7 +646,8 @@ export class SessionStore implements StatefulMessageStore {
   /**
    * 读取每个 `watchId` 的最新监视状态。
    *
-   * 只回放控制记录、按出现顺序覆盖同 id 的旧状态；损坏或缺少 watchId 的记录跳过，
+   * 只回放控制记录、按出现顺序覆盖同 id 的旧状态；残缺记录（缺 watchId、缺 spec、
+   * 数值字段非法或携带已摘除的触发源类型）整条跳过并输出一条诊断，
    * 不让单条残缺记录阻断整个会话的恢复。返回顺序为各监视首次出现的顺序。
    */
   async readWatchStates(): Promise<WatchState[]> {
@@ -599,7 +656,12 @@ export class SessionStore implements StatefulMessageStore {
     for (const record of all) {
       if (record.type !== 'watch_state') continue;
       const payload = record.payload as unknown as WatchState;
-      if (!payload || typeof payload.watchId !== 'string') continue;
+      if (!isWellFormedWatchState(payload)) {
+        this.onDiagnostic?.(
+          `Ignored malformed watch_state record: ${describeWatchRecord(payload)}`,
+        );
+        continue;
+      }
       latest.set(payload.watchId, payload);
     }
     return [...latest.values()];

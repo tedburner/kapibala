@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { digestServerConfig } from '../src/host/resource/mcp-approval.js';
 import {
   MCP_PROVENANCE_FILE,
   importMcpServers,
@@ -305,5 +306,47 @@ describe('importMcpServers', () => {
     expect(scan.candidates).toHaveLength(1);
     expect(result.failed).toBe(1);
     expect(fs.existsSync(path.join(home, '.kapibala', 'mcp.json'))).toBe(false);
+  });
+
+  it('导入成功后溯源文件与 mcp.json 一致（每条记录都能对上落盘配置）', () => {
+    const home = temp('kpbl-mcp-import-consistency-');
+    const project = temp('kpbl-mcp-import-consistency-proj-');
+    writeJson(claudeDesktopConfig(home), {
+      mcpServers: {
+        alpha: { command: 'node', args: ['a.js'], env: { TOKEN: 'x' } },
+        beta: { url: 'https://example.test/mcp' },
+      },
+    });
+    const result = importMcpServers({ homeDir: home, projectRoot: project, ...base });
+    expect(result.imported).toBe(2);
+    const config = readJson(path.join(home, '.kapibala', 'mcp.json')) as {
+      mcpServers: Record<string, Record<string, unknown>>;
+    };
+    const provenance = readImportedMcpProvenance({ homeDir: home, scope: 'global' });
+    for (const [name, raw] of Object.entries(config.mcpServers)) {
+      // 溯源摘要与落盘配置同源计算：两者逐条对得上，并发导入才不会溯源漂移。
+      expect(provenance[name]?.installedDigest).toBe(digestServerConfig(raw as never));
+    }
+    expect(Object.keys(provenance).sort()).toEqual(Object.keys(config.mcpServers).sort());
+  });
+
+  it('配置锁被占用时整批失败，溯源文件不被触碰', () => {
+    const home = temp('kpbl-mcp-import-busy-');
+    const project = temp('kpbl-mcp-import-busy-proj-');
+    const target = path.join(home, '.kapibala', 'mcp.json');
+    const lock = path.join(home, '.kapibala', 'mcp.json.lock');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`, 'utf8');
+    // 模拟另一宿主正在事务中持锁：导入必须整批失败且不产生任何伴生写入。
+    fs.writeFileSync(lock, JSON.stringify({ owner: 'other-host', pid: 999999 }));
+    writeJson(claudeDesktopConfig(home), { mcpServers: { fs: { command: 'npx' } } });
+    const result = importMcpServers({ homeDir: home, projectRoot: project, ...base });
+    expect(result.failed).toBe(1);
+    expect(result.items[0]?.message).toContain('MCP_CONFIG_BUSY');
+    expect(fs.readFileSync(target, 'utf8')).toBe(
+      `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`,
+    );
+    expect(fs.existsSync(path.join(home, '.kapibala', MCP_PROVENANCE_FILE))).toBe(false);
+    expect(fs.existsSync(lock)).toBe(true);
   });
 });

@@ -255,7 +255,10 @@ export function SettingsDialog({
   const [updateCheck, setUpdateCheck] = useState<Output<'app.checkUpdate'>>();
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState('');
-  /** 下载进度与最终结果只服务「关于与更新」区块；关闭弹窗不保留，重开需重新检查。 */
+  /**
+   * 下载进度与最终结果跨弹窗开关保留，直到下次检查/下载被替换；组件常驻渲染，状态不随弹窗
+   * 卸载丢失。刻意不重置：关闭再打开时用户仍能看到在途下载的进度与结果，不会丢视图。
+   */
   const [updateProgress, setUpdateProgress] = useState<{ downloaded: number; total: number }>();
   const [updateDownload, setUpdateDownload] = useState<Output<'app.downloadUpdate'>>();
   const [downloading, setDownloading] = useState(false);
@@ -283,15 +286,18 @@ export function SettingsDialog({
     if (!open || tab !== 'resources') return;
     loadResources();
   }, [open, tab, loadResources]);
-  /** 下载进度由主进程节流推送；只更新进度展示，不改变检查结果与按钮状态。 */
-  useEffect(
-    () =>
-      window.kapibala.onEvent((event) => {
-        if (event.type === 'update.downloadProgress')
-          setUpdateProgress({ downloaded: event.downloaded, total: event.total });
-      }),
-    [],
-  );
+  /**
+   * 下载进度由主进程节流推送；只更新进度展示，不改变检查结果与按钮状态。
+   * 订阅按 open 门控：弹窗关闭期间摘除订阅，推送不落状态、不触发整页重渲染；
+   * 进度状态本身跨开关保留，重开弹窗后由下一次推送（最迟 200ms）续上。
+   */
+  useEffect(() => {
+    if (!open) return;
+    return window.kapibala.onEvent((event) => {
+      if (event.type === 'update.downloadProgress')
+        setUpdateProgress({ downloaded: event.downloaded, total: event.total });
+    });
+  }, [open]);
   /** 资源写操作统一入口：串行防抖 + 回读 + 失败上报，不静默吞错。 */
   function resourceAction(action: (activeWorkspaceId: string) => Promise<unknown>): void {
     if (!workspaceId || resBusy) return;

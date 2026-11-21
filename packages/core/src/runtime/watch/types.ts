@@ -3,8 +3,12 @@
  * 由持会话写租约的宿主布置触发源，命中后经背景消息通道唤醒会话。
  */
 
-/** 监视的触发源类型；v1 只支持本机文件、本会话子进程与 localhost 端口。 */
-export type WatchKind = 'file_change' | 'process_exit' | 'port_ready';
+/**
+ * 监视的触发源类型；v0.1.4 只支持本机文件与 localhost 端口。
+ * `process_exit` 在本版本被摘除（宿主未维护子进程 PID 注册表，不接线），
+ * 历史落盘中的遗留记录由读取侧按残缺数据跳过，不再布置触发源。
+ */
+export type WatchKind = 'file_change' | 'port_ready';
 
 /** 监视生命周期；`armed` 之外均为终态，终态不再产生新通知。 */
 export type WatchStatus = 'armed' | 'fired' | 'timeout' | 'cancelled' | 'orphaned';
@@ -16,7 +20,7 @@ export type WatchTerminalStatus = Exclude<WatchStatus, 'armed'>;
 export interface WatchSpec {
   readonly kind: WatchKind;
   /**
-   * 目标：`file_change` 为工作区相对路径，`process_exit` 为本会话工具启动的子进程 id，
+   * 目标：`file_change` 为工作区相对路径，
    * `port_ready` 为 1–65535 的端口号（只连 127.0.0.1）。
    */
   readonly target: string;
@@ -56,6 +60,6 @@ export interface WatchNotification {
   readonly target: string;
   readonly state: WatchTerminalStatus;
   readonly firedAt: number;
-  /** 可选的人类可读事实摘要：退出码 / 内容摘要 / 连接耗时。 */
+  /** 可选的人类可读事实摘要：内容摘要 / 连接耗时。 */
   readonly detail?: string;
 }

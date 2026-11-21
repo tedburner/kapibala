@@ -278,6 +278,38 @@ describe('session task list projection', () => {
     ]);
     expect(buildTodoState(history)?.revision).toBe(1);
   });
+
+  it('redacts todo titles through the injected public text redactor', () => {
+    const history: CanonicalMessage[] = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'todo_write',
+            input: {
+              items: [
+                { id: '1', title: '轮换 sk-abcd1234 密钥', status: 'pending' },
+                { id: '2', title: '普通标题', status: 'completed' },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        id: 'r1',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 't1', content: 'ok' }],
+      },
+    ];
+    const state = buildTodoState(history, (text) => text.replaceAll('sk-abcd1234', '[REDACTED]'));
+    expect(state?.items.map((item) => item.title)).toEqual(['轮换 [REDACTED] 密钥', '普通标题']);
+    // 脱敏不改变结构事实：revision 与状态保持原样，id/status 不经过脱敏出口。
+    expect(state?.revision).toBe(1);
+    expect(state?.items.map((item) => item.id)).toEqual(['1', '2']);
+  });
 });
 
 describe('artifact projection', () => {

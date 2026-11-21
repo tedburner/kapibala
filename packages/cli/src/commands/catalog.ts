@@ -62,11 +62,14 @@ const mcp = (args: string[]) => {
   if (['tools', 'reconnect', 'enable', 'disable'].includes(sub)) {
     return args.length === 2 && args[1].trim() ? undefined : `用法: /mcp ${sub} <server>`;
   }
+  if (['approve', 'revoke'].includes(sub)) {
+    return args.length === 2 && args[1].trim() ? undefined : `用法: /mcp ${sub} <server>`;
+  }
   if (['add', 'remove', 'edit'].includes(sub)) {
     const parsed = parseMcpConfigArgs(args.slice(1));
     return parsed.options ? undefined : parsed.error;
   }
-  return '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit ...]';
+  return '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit <name> ... | approve|revoke <server>]';
 };
 
 const history = (args: string[]) => {
@@ -161,11 +164,14 @@ const watches = (args: string[]) => {
   return '用法: /watches [cancel <watchId>]';
 };
 
+// rawTail 命令经分发器切分后 args 至多一个元素，「最多一个参数」分支恒假，不再保留死代码；
+// inspect 尾部先归一空白再判断，与 handler 内的 trim 行为对齐（容忍多余空格，不把多空格误判成查询）。
 const skills = (args: string[]) => {
-  if (args.length > 1) return '最多接受一个参数';
   const raw = args[0];
-  if (!raw || raw === 'inspect' || raw === 'inspect --json') return undefined;
-  return raw.startsWith('inspect ') ? '用法: /skills inspect [--json]' : undefined;
+  if (!raw) return undefined;
+  const normalized = raw.trim().replace(/\s+/g, ' ');
+  if (!normalized || normalized === 'inspect' || normalized === 'inspect --json') return undefined;
+  return normalized.startsWith('inspect ') ? '用法: /skills inspect [--json]' : undefined;
 };
 
 /**
@@ -203,12 +209,15 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     name: 'mcp',
     interactionLevel: 'none',
     usage:
-      '/mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit <name> ...]',
-    description: '查看 MCP 服务状态、工具；配置级增删改走 mcp.json 事务（--project 需已信任项目）',
+      '/mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit <name> ... | approve|revoke <server>]',
+    description:
+      '查看 MCP 服务状态、工具；配置级增删改走 mcp.json 事务（--project 需已信任项目）；approve/revoke 维护逐服务器启动批准',
     group: 'diagnostic',
     mutates: (args) =>
       args.length > 0 &&
-      ['reconnect', 'enable', 'disable', 'add', 'remove', 'edit'].includes(args[0]),
+      ['reconnect', 'enable', 'disable', 'add', 'remove', 'edit', 'approve', 'revoke'].includes(
+        args[0],
+      ),
     validate: mcp,
   },
   {

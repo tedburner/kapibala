@@ -34,7 +34,9 @@ function StatusIcon({ status }: { status: ViewTodoStatus }) {
  * - 无清单时不渲染，避免占位；清单消失时自动收起浮层；
  * - 进度分母为全部条目，分子为 `completed`；多条 `in_progress` 全部保留进行中样式，
  *   第一条作为 pill 的主任务标题，其余折叠为 `+N`；
- * - Esc 关闭浮层、点击外部关闭；开合按钮带 `aria-expanded` 与稳定的无障碍名。
+ * - Esc 关闭浮层、点击外部关闭；开合按钮的 aria-label 固定为「任务清单」，开合状态由
+ *   `aria-expanded` 承载：可访问名必须稳定，若随开合态切换会与浮层 region 名互相包含，
+ *   e2e 的 `getByRole` 精确名称匹配无法唯一命中。
  */
 export function TaskPanel({ todos }: { todos?: ViewTodoState }) {
   const [open, setOpen] = useState(false);
@@ -96,7 +98,8 @@ export function TaskPanel({ todos }: { todos?: ViewTodoState }) {
       <Button
         variant="ghost"
         size="sm"
-        aria-label={open ? '收起任务清单' : '展开任务清单'}
+        // 可访问名固定为「任务清单」，不随开合态切换（见组件注释）；状态只由 aria-expanded 表达。
+        aria-label="任务清单"
         aria-expanded={open}
         className="flex h-auto items-center gap-1.5 rounded-full border border-kumo-line px-3 py-1 text-xs text-kumo-subtle"
         onClick={() => setOpen((value) => !value)}

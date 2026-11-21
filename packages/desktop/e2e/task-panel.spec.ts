@@ -89,14 +89,16 @@ test('任务面板：pill 进度、浮层四态与底栏状态条', async () => 
     await page.getByRole('searchbox', { name: '搜索空间与对话' }).fill('任务面板验收');
     await page.getByRole('button', { name: '任务面板验收', exact: true }).click();
 
-    const pill = page.getByRole('button', { name: '展开任务清单' });
+    // 可访问名固定为「任务清单」：不随开合态切换，状态由 aria-expanded 表达（组件契约）。
+    const pill = page.getByRole('button', { name: '任务清单', exact: true });
     await expect(pill).toBeVisible();
+    await expect(pill).toHaveAttribute('aria-expanded', 'false');
     await expect(pill).toContainText('任务 1/5');
     await expect(pill).toContainText('写代码');
     await expect(pill).toContainText('+1');
 
     // 底栏状态条与详情抽屉同源；无 git 也要有空间/上下文段。
-    await expect(page.getByRole('button', { name: '运行事实与状态' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '运行事实与状态', exact: true })).toBeVisible();
 
     await pill.click();
     const panel = page.getByRole('region', { name: '任务清单', exact: true });
@@ -106,8 +108,9 @@ test('任务面板：pill 进度、浮层四态与底栏状态条', async () => 
     await expect(panel.getByLabel('进行中：补测试', { exact: true })).toBeVisible();
     await expect(panel.getByLabel('待办：写文档', { exact: true })).toBeVisible();
     await expect(panel.getByLabel('已取消：遗留项', { exact: true })).toBeVisible();
+    await expect(pill).toHaveAttribute('aria-expanded', 'true');
 
-    await page.getByRole('button', { name: '收起任务清单' }).press('Escape');
+    await pill.press('Escape');
     await expect(panel).toBeHidden();
   } finally {
     await app.close().catch(() => {});

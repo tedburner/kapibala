@@ -37,21 +37,21 @@ export function createWatchTools(service: WatchService): Tool[] {
   const start = defineTool<WatchStartInput, unknown>({
     name: 'watch_start',
     description:
-      'Register a session-level watch that wakes this conversation when an external condition is met (file change, owned process exit, or localhost port ready). The current turn ends normally; the host delivers a background notification and resumes one turn when the condition fires or the deadline is reached.',
+      "Register a session-level watch that wakes this conversation when an external condition is met (file change or localhost port ready). The current turn ends normally; the host delivers a background notification and resumes one turn when the condition fires or the deadline is reached. Never watch a path that this session's own tools are going to write: the watch would fire on the session's own writes and resume in a self-triggering loop (known v1 limitation, avoid it by choosing targets only the user or other processes touch).",
     metadata: { source: 'builtin', readOnlyHint: false },
     parameters: {
       type: 'object',
       properties: {
         kind: {
           type: 'string',
-          enum: ['file_change', 'process_exit', 'port_ready'],
+          enum: ['file_change', 'port_ready'],
           description:
-            'Trigger source. file_change watches a workspace-relative file; process_exit watches a child process started by this session; port_ready watches a localhost TCP port.',
+            'Trigger source. file_change watches a workspace-relative file; port_ready watches a localhost TCP port.',
         },
         target: {
           type: 'string',
           description:
-            'Watch target: workspace-relative path for file_change, child process id for process_exit, port number for port_ready.',
+            'Watch target: workspace-relative path for file_change, port number for port_ready.',
         },
         intervalMs: {
           type: 'integer',

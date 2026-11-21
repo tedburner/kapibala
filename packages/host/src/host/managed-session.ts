@@ -254,6 +254,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
   let handle: ManagedSession | undefined;
   let session: AgentSession | undefined;
   let runtime: AgentRuntime | undefined;
+  // 监视服务先于装配完成进入 liveServices；创建失败时也要停掉它，避免泄漏进全局并发统计。
+  let watches: WatchService | undefined;
   try {
     try {
       handle = conversationId
@@ -417,7 +419,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       projectHistory(current.getHistory(), presentationScope(identity), redact, {
         artifacts: artifactPolicy,
       }),
-      buildTodoState(current.getHistory()),
+      buildTodoState(current.getHistory(), redact),
     );
     const tasks = new TaskObservation(
       ownedRuntime,
@@ -545,7 +547,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         if (handleReleased) {
           disposed = true;
           tasks.close();
-          watches.dispose();
+          watches?.dispose();
           stopInspectionEvents();
           inspectionListeners.clear();
           presentation.close();
@@ -663,7 +665,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     // 监视服务与运行共用同一空闲门：只有本会话没有在途运行时才投递并自动续跑，
     // 背景通知经 WatchInbox 落回登记分支，绝不与用户输入抢写。
     const watchInbox = new WatchInbox(ownedHandle.store);
-    const watches = new WatchService({
+    const watchService = new WatchService({
       workspaceRoot: root,
       store: ownedHandle.store,
       deliver: (notification, branchId) => watchInbox.consume(notification, branchId),
@@ -676,8 +678,12 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       onChange: inspectionChanged,
       ...(options.onWatchEvent ? { onNotify: options.onWatchEvent } : {}),
     });
-    for (const tool of createWatchTools(watches)) current.tools.register(tool);
-    void watches.start();
+    watches = watchService;
+    for (const tool of createWatchTools(watchService)) current.tools.register(tool);
+    // 恢复失败只影响本会话的触发源布置，不得让未接住的 rejection 击穿宿主进程。
+    watchService.start().catch((error: unknown) => {
+      console.warn('[watch] failed to restore watch states for this session', error);
+    });
     const managed: ManagedHostSession = {
       conversationId: ownedHandle.conversationId,
       session: current,
@@ -796,8 +802,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           redact,
         );
       },
-      watches: () => watches.list(),
-      cancelWatch: (watchId) => watches.cancel(watchId),
+      watches: () => watchService.list(),
+      cancelWatch: (watchId) => watchService.cancel(watchId),
       subscribeWatches: (listener) => {
         inspectionListeners.add(listener);
         return () => {
@@ -837,6 +843,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
   } catch (error) {
     // 创建失败时也按依赖顺序清理；上游未清理完不能释放存储锁，原始错误优先上报。
     try {
+      watches?.dispose();
       await runtime?.close();
       await session?.destroy();
       await handle?.release();

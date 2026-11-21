@@ -11,6 +11,7 @@
 import { buildTodoState } from '@kiturone/kapibala-host/internal';
 import type { ViewTodoStatus } from '@kiturone/kapibala-host/view-model';
 import { resolveCommandOutput } from '../command-output.js';
+import { redactCommonSecrets } from '../local-host/redaction.js';
 import type { CommandHandler } from './dispatcher.js';
 
 /** 四态标记；纯 ASCII 括号，保证非 TTY 与等宽终端都可读。 */
@@ -24,7 +25,8 @@ const STATUS_MARK: Record<ViewTodoStatus, string> = {
 /** `/todos`：输出进度头行与逐项状态；不接收子命令参数。 */
 export const todosCommand: CommandHandler = async (_args, ctx) => {
   const out = resolveCommandOutput(ctx);
-  const state = buildTodoState(ctx.session.getHistory());
+  // REPL 进程内没有宿主凭证闭包，标题按公共模式脱敏兜底（与批准描述同口径）。
+  const state = buildTodoState(ctx.session.getHistory(), redactCommonSecrets);
   if (!state || state.items.length === 0) {
     out.log('当前会话没有任务清单。');
     return;

@@ -132,7 +132,8 @@ const page = { chunk: text, cursor: nullable(id) } as const;
 /** 监视项与 wire 类型逐字段对齐：可选事实统一用 null 表达，避免 optional 与 Schema 结构不一致。 */
 const watchItem = object({
   watchId: id,
-  kind: { type: 'string', enum: ['file_change', 'process_exit', 'port_ready'] },
+  // process_exit 自 v0.1.4 起摘除，wire 枚举同步收窄，遗留值由客户端按未知类型拒绝。
+  kind: { type: 'string', enum: ['file_change', 'port_ready'] },
   target: text,
   state: {
     type: 'string',

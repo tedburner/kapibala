@@ -294,13 +294,24 @@ export function mutateGlobalMcpConfig(
  *
  * 与 `mutateGlobalMcpConfig` 共用同一实现：独占锁、损坏中止、全量校验、tmp + rename 原子写；
  * 项目级目标在 `resolveMcpConfigTarget` 中强制信任门，未信任项目不可能进入写入路径。
+ *
+ * `onCommitted` 在配置文件已原子替换之后、锁释放之前执行（回调仍必须同步完成）：
+ * 用于把与配置同生共死的伴生写入（如导入溯源文件）纳入同一把锁，消除
+ * 「配置经锁提交、溯源在锁外单独读写」造成的并发 last-writer-wins。
+ * 回调抛错时配置保持已提交状态，错误向调用方传播（伴生写入应自行消化可恢复失败）。
  */
 export function mutateMcpConfig(
   mutate: (file: McpConfigFile) => void,
   options: McpConfigTarget = {},
+  onCommitted?: (filePath: string) => void,
 ): string {
   const target = resolveMcpConfigTarget(options);
-  return mutateMcpConfigFile(target.file, target.scope === 'global' ? '全局' : '项目', mutate);
+  return mutateMcpConfigFile(
+    target.file,
+    target.scope === 'global' ? '全局' : '项目',
+    mutate,
+    onCommitted,
+  );
 }
 
 /** 事务主体；`label` 只影响错误文案，不改变锁或校验语义。 */
@@ -308,6 +319,7 @@ function mutateMcpConfigFile(
   file: string,
   label: string,
   mutate: (draft: McpConfigFile) => void,
+  onCommitted?: (filePath: string) => void,
 ): string {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const lock = `${file}.lock`;
@@ -380,6 +392,8 @@ function mutateMcpConfigFile(
     } catch {
       /* 平台不支持 POSIX mode 时写入仍然成功。 */
     }
+    // 配置已提交、锁尚未释放：伴生写入在此与其它进程的配置事务严格串行。
+    if (onCommitted) onCommitted(file);
     return file;
   } finally {
     fs.closeSync(descriptor);

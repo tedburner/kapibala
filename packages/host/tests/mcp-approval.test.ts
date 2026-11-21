@@ -93,6 +93,45 @@ describe('McpServerApprovalStore', () => {
     store.approve(target);
     expect(store.status(target).approved).toBe(true);
   });
+
+  it('approve/revoke 在 owner 锁内串行：锁被占时报 BUSY 且不覆盖他人更新', () => {
+    const home = temp('kpbl-mcp-approval-lock-');
+    const store = new McpServerApprovalStore({ homeDir: home });
+    const target = { name: 'demo', source: 'global' as const, config: stdioConfig() };
+    fs.mkdirSync(path.join(home, '.kapibala'), { recursive: true });
+    const lockPath = path.join(home, '.kapibala', `${MCP_APPROVAL_FILE}.lock`);
+    const file = path.join(home, '.kapibala', MCP_APPROVAL_FILE);
+    // 模拟另一进程（桌面端）正持有锁：本进程的 approve 立即失败，绝不抢锁。
+    fs.writeFileSync(lockPath, JSON.stringify({ owner: 'other-host', pid: 999999 }));
+    expect(() => store.approve(target)).toThrowError(/MCP_APPROVAL_BUSY/);
+    expect(fs.existsSync(lockPath)).toBe(true);
+    // 他人进程完成自己的写入后释放锁：本进程的批准追加在自己的键上，不丢他人的记录。
+    fs.writeFileSync(
+      file,
+      `${JSON.stringify(
+        {
+          version: 1,
+          approvals: {
+            'global:other': {
+              serverName: 'other',
+              source: 'global',
+              digest: 'sha256:other',
+              approvedAt: '2026-01-01T00:00:00.000Z',
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    fs.unlinkSync(lockPath);
+    store.approve(target);
+    const records = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+      approvals: Record<string, unknown>;
+    };
+    expect(Object.keys(records.approvals)).toContain('global:other');
+    expect(Object.keys(records.approvals)).toContain('global:demo');
+  });
 });
 
 describe('createApprovedStartAuthorizer', () => {

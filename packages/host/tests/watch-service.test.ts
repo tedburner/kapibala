@@ -6,6 +6,7 @@ import {
   type WatchFileSystem,
   WatchService,
   type WatchStateStore,
+  type WatchView,
 } from '../src/host/watch/service.js';
 
 const ROOT = path.resolve('/kapibala-watch-test');
@@ -55,7 +56,6 @@ function memoryStore(seed: WatchState[] = []): WatchStateStore & { states: Watch
 interface Harness {
   service: WatchService;
   store: ReturnType<typeof memoryStore>;
-  fileSystem: ReturnType<typeof memoryFileSystem>;
   delivered: WatchNotification[];
   resumes: string[];
   notified: WatchNotification[];
@@ -65,8 +65,7 @@ interface Harness {
 function harness(
   options: {
     store?: ReturnType<typeof memoryStore>;
-    fileSystem?: ReturnType<typeof memoryFileSystem>;
-    isOwnedProcess?: (pid: number) => boolean;
+    fileSystem?: WatchFileSystem;
     probePort?: (port: number) => Promise<boolean>;
     now?: () => number;
   } = {},
@@ -90,14 +89,12 @@ function harness(
     },
     isIdle: () => idle,
     onNotify: (notification) => notified.push(notification),
-    ...(options.isOwnedProcess ? { isOwnedProcess: options.isOwnedProcess } : {}),
     ...(options.probePort ? { probePort: options.probePort } : {}),
     ...(options.now ? { now: options.now } : {}),
   });
   return {
     service,
     store,
-    fileSystem,
     delivered,
     resumes,
     notified,
@@ -117,7 +114,8 @@ describe('WatchService', () => {
 
   it('file_change 去抖后只投递一次，并自动续跑一轮', async () => {
     let now = 1_000_000;
-    const env = harness({ now: () => now });
+    const files = memoryFileSystem();
+    const env = harness({ now: () => now, fileSystem: files });
     const view = await env.service.register({
       kind: 'file_change',
       target: 'a.txt',
@@ -126,7 +124,7 @@ describe('WatchService', () => {
     });
     expect(view.state).toBe('armed');
 
-    env.fileSystem.write('a.txt', 'changed');
+    files.write('a.txt', 'changed');
     now += 2_000;
     await vi.advanceTimersByTimeAsync(2_000);
     now += 300;
@@ -150,7 +148,8 @@ describe('WatchService', () => {
 
   it('同内容改动不触发（size + mtime 变化但摘要一致）', async () => {
     let now = 1_000_000;
-    const env = harness({ now: () => now, fileSystem: memoryFileSystem({ 'b.txt': '' }) });
+    const files = memoryFileSystem({ 'b.txt': '' });
+    const env = harness({ now: () => now, fileSystem: files });
     await env.service.register({
       kind: 'file_change',
       target: 'b.txt',
@@ -158,7 +157,7 @@ describe('WatchService', () => {
       deadlineAt: now + 60_000,
     });
     // 内容不变、mtime 前进：签名变了但哈希一致，应判为无变化。
-    env.fileSystem.write('b.txt', '');
+    files.write('b.txt', '');
     now += 2_000;
     await vi.advanceTimersByTimeAsync(2_000);
     await vi.advanceTimersByTimeAsync(400);
@@ -185,7 +184,8 @@ describe('WatchService', () => {
 
   it('取消后不再触发，且取消是终态', async () => {
     let now = 1_000_000;
-    const env = harness({ now: () => now });
+    const files = memoryFileSystem();
+    const env = harness({ now: () => now, fileSystem: files });
     const view = await env.service.register({
       kind: 'port_ready',
       target: '8787',
@@ -194,7 +194,7 @@ describe('WatchService', () => {
     });
     await env.service.cancel(view.watchId);
     expect(env.service.list()[0].state).toBe('cancelled');
-    env.fileSystem.write('anything', 'x');
+    files.write('anything', 'x');
     now += 10_000;
     await vi.advanceTimersByTimeAsync(10_000);
     await vi.advanceTimersByTimeAsync(1);
@@ -225,27 +225,21 @@ describe('WatchService', () => {
     env.service.dispose();
   });
 
-  it('process_exit 只监视本会话子进程，句柄失效标记 orphaned', async () => {
-    let now = 1_000_000;
-    let owned = true;
-    const env = harness({ now: () => now, isOwnedProcess: () => owned });
-    await env.service.register({
-      kind: 'process_exit',
-      target: '4242',
-      deadlineAt: now + 60_000,
-    });
-    now += 5_000;
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(env.delivered).toHaveLength(0);
-    owned = false;
-    now += 5_000;
-    await vi.advanceTimersByTimeAsync(5_000);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(env.delivered[0].state).toBe('orphaned');
+  it('watch_start 拒绝已摘除的 process_exit 并说明支持范围', async () => {
+    const env = harness({ now: () => 1_000_000 });
+    // 类型联合已摘除 process_exit；wire 与模型输入仍可能带来该遗留值，走字符串断言。
+    await expect(
+      env.service.register({
+        kind: 'process_exit',
+        target: '4242',
+        deadlineAt: 2_000_000,
+      } as unknown as Parameters<WatchService['register']>[0]),
+    ).rejects.toMatchObject({ code: 'WATCH_KIND_UNSUPPORTED' });
+    expect(env.service.list()).toHaveLength(0);
     env.service.dispose();
   });
 
-  it('拒绝越界路径与非本会话进程', async () => {
+  it('拒绝越界路径与被忽略目录', async () => {
     const env = harness({ now: () => 1_000_000 });
     await expect(
       env.service.register({ kind: 'file_change', target: '../escape.txt', deadlineAt: 2_000_000 }),
@@ -257,10 +251,244 @@ describe('WatchService', () => {
         deadlineAt: 2_000_000,
       }),
     ).rejects.toMatchObject({ code: 'WATCH_TARGET_IGNORED' });
-    await expect(
-      env.service.register({ kind: 'process_exit', target: '1', deadlineAt: 2_000_000 }),
-    ).rejects.toMatchObject({ code: 'WATCH_PROCESS_NOT_OWNED' });
     env.service.dispose();
+  });
+
+  it('拒绝 NaN 与 Infinity 的轮询间隔，避免退化成忙轮询', async () => {
+    const env = harness({ now: () => 1_000_000 });
+    await expect(
+      env.service.register({
+        kind: 'port_ready',
+        target: '8787',
+        intervalMs: Number.NaN,
+        deadlineAt: 2_000_000,
+      }),
+    ).rejects.toMatchObject({ code: 'WATCH_INTERVAL_INVALID' });
+    await expect(
+      env.service.register({
+        kind: 'port_ready',
+        target: '8787',
+        intervalMs: Number.POSITIVE_INFINITY,
+        deadlineAt: 2_000_000,
+      }),
+    ).rejects.toMatchObject({ code: 'WATCH_INTERVAL_INVALID' });
+    env.service.dispose();
+  });
+
+  it('目标被替换为工作区外的符号链接时转 orphaned，而不是永久停留 armed', async () => {
+    let now = 1_000_000;
+    const base = memoryFileSystem({ 'link.txt': 'content' });
+    let escapesOutside = false;
+    const env = harness({
+      now: () => now,
+      fileSystem: {
+        stat: (target) => base.stat(target),
+        read: (target) => base.read(target),
+        realpath: (target) => (escapesOutside ? '/outside/escape-target' : target),
+      },
+    });
+    await env.service.register({
+      kind: 'file_change',
+      target: 'link.txt',
+      intervalMs: 2_000,
+      deadlineAt: now + 60_000,
+    });
+    escapesOutside = true;
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(env.delivered).toHaveLength(1);
+    expect(env.delivered[0].state).toBe('orphaned');
+    expect(env.delivered[0].detail).toContain('工作区外');
+    expect(env.service.list()[0].state).toBe('orphaned');
+    env.service.dispose();
+  });
+
+  it('签名未变时零读盘：两次 tick 之间文件未变则不触发读取', async () => {
+    let now = 1_000_000;
+    const base = memoryFileSystem({ 'c.txt': 'v1' });
+    let reads = 0;
+    const env = harness({
+      now: () => now,
+      fileSystem: {
+        stat: (target) => base.stat(target),
+        read: (target) => {
+          reads++;
+          return base.read(target);
+        },
+        realpath: (target) => target,
+      },
+    });
+    await env.service.register({
+      kind: 'file_change',
+      target: 'c.txt',
+      intervalMs: 2_000,
+      deadlineAt: now + 60_000,
+    });
+    reads = 0;
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(reads).toBe(0);
+    expect(env.delivered).toHaveLength(0);
+    // 签名变化后才读内容算哈希确认，并按去抖窗口投递。
+    base.write('c.txt', 'v2');
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reads).toBe(1);
+    expect(env.delivered).toHaveLength(1);
+    expect(env.delivered[0].state).toBe('fired');
+    env.service.dispose();
+  });
+
+  it('登记持久化失败时回滚内存条目，不占用监视上限', async () => {
+    let calls = 0;
+    const store = {
+      states: [] as WatchState[],
+      async readWatchStates() {
+        return this.states;
+      },
+      async appendWatchState(state: WatchState) {
+        calls++;
+        if (calls === 1) throw new Error('disk full');
+        this.states.push(state);
+      },
+      getActiveBranchId: () => 'main',
+    };
+    const env = harness({ store, now: () => 1_000_000 });
+    await expect(
+      env.service.register({
+        kind: 'port_ready',
+        target: '8787',
+        deadlineAt: 1_060_000,
+      }),
+    ).rejects.toThrow('disk full');
+    expect(env.service.list()).toHaveLength(0);
+    // 回滚后同一会话仍能正常登记，未留下幽灵条目占用上限。
+    const view = await env.service.register({
+      kind: 'port_ready',
+      target: '8788',
+      deadlineAt: 1_060_000,
+    });
+    expect(env.service.list()).toHaveLength(1);
+    expect(env.service.list()[0].watchId).toBe(view.watchId);
+    env.service.dispose();
+  });
+
+  it('用户主动取消不触发自动续跑', async () => {
+    let now = 1_000_000;
+    const env = harness({ now: () => now });
+    const view = await env.service.register({
+      kind: 'port_ready',
+      target: '8787',
+      intervalMs: 2_000,
+      deadlineAt: now + 60_000,
+    });
+    await env.service.cancel(view.watchId);
+    now += 1_000;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(env.delivered).toHaveLength(1);
+    expect(env.delivered[0].state).toBe('cancelled');
+    expect(env.resumes).toEqual([]);
+    env.service.dispose();
+  });
+
+  it('投递连续失败达到上限后放弃并转 orphaned，不再无限重试', async () => {
+    let now = 1_000_000;
+    let attempts = 0;
+    const store = memoryStore();
+    const service = new WatchService({
+      workspaceRoot: ROOT,
+      store,
+      fileSystem: memoryFileSystem(),
+      deliver: async () => {
+        attempts++;
+        throw new Error('inbox closed');
+      },
+      resume: async () => {},
+      isIdle: () => true,
+      probePort: async () => true,
+      now: () => now,
+    });
+    await service.register({
+      kind: 'port_ready',
+      target: '8787',
+      intervalMs: 2_000,
+      deadlineAt: now + 60_000,
+    });
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(attempts).toBe(5);
+    expect(service.list()[0].state).toBe('orphaned');
+    expect(service.list()[0].detail).toContain('放弃');
+    // 放弃后不再每秒重试。
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(attempts).toBe(5);
+    service.dispose();
+  });
+
+  it('终态条目超过 50 条时按关闭时间淘汰最旧，只清内存不清落盘', async () => {
+    const now = 1_000_000;
+    const env = harness({ now: () => now });
+    const firstRoundIds: string[] = [];
+    for (let round = 0; round < 7; round++) {
+      const views: WatchView[] = [];
+      for (let index = 0; index < 8; index++) {
+        const view = await env.service.register({
+          kind: 'port_ready',
+          target: String(9000 + index),
+          deadlineAt: now + 60_000,
+        });
+        views.push(view);
+        if (round === 0) firstRoundIds.push(view.watchId);
+      }
+      for (const view of views) await env.service.cancel(view.watchId);
+    }
+    expect(env.service.list()).toHaveLength(50);
+    // 最早的终态条目已从内存淘汰，但落盘记录保持完整。
+    for (const watchId of firstRoundIds.slice(0, 6))
+      expect(env.service.list().some((item) => item.watchId === watchId)).toBe(false);
+    expect(env.store.states.some((state) => firstRoundIds.includes(state.watchId))).toBe(true);
+    env.service.dispose();
+  });
+
+  it('dispose 会 abort 在途续跑的 abort controller', async () => {
+    let now = 1_000_000;
+    let releaseResume!: () => void;
+    let resumeSignal: AbortSignal | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    const service = new WatchService({
+      workspaceRoot: ROOT,
+      store: memoryStore(),
+      fileSystem: memoryFileSystem(),
+      deliver: async () => true,
+      resume: async (_input, signal) => {
+        resumeSignal = signal;
+        await gate;
+      },
+      isIdle: () => true,
+      probePort: async () => true,
+      now: () => now,
+    });
+    await service.register({
+      kind: 'port_ready',
+      target: '8787',
+      intervalMs: 2_000,
+      deadlineAt: now + 60_000,
+    });
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1);
+    // 续跑已进入并挂在门上；dispose 必须 abort，避免关闭后拉起新运行。
+    expect(resumeSignal).toBeDefined();
+    service.dispose();
+    expect(resumeSignal?.aborted).toBe(true);
+    releaseResume();
+    await vi.advanceTimersByTimeAsync(1);
   });
 
   it('每会话最多 8 条监视', async () => {

@@ -1232,7 +1232,7 @@
                 ]
               },
               "kind": {
-                "enum": ["file_change", "process_exit", "port_ready"],
+                "enum": ["file_change", "port_ready"],
                 "type": "string"
               },
               "state": {

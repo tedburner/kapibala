@@ -216,11 +216,16 @@ function parseTodoItems(input: unknown): ViewTodoItem[] | undefined {
  *
  * 边界与用途：
  * - 纯函数，不落盘、不新增记录类型；历史重放与实时观察必然同一口径。
+ * - 标题是模型提交的不可信文本：经 `redact(sanitize(...))` 双层处理（与证据聚合同管线），
+ *   宿主注入凭证闭包脱敏，缺省恒等便于纯结构测试。
  * - `items` 保持模型提交顺序，不做二次排序；`revision` 为成功调用累计数，仅用于
  *   渲染层判断是否需要重绘，不参与权限或持久化。
  * - 从未成功调用时返回 `undefined`，桌面 pill / 浮层与 CLI 据此隐藏。
  */
-export function buildTodoState(history: readonly CanonicalMessage[]): ViewTodoState | undefined {
+export function buildTodoState(
+  history: readonly CanonicalMessage[],
+  redact: PublicTextRedactor = (text) => text,
+): ViewTodoState | undefined {
   const inputs = new Map<string, { input: unknown; timestamp?: number }>();
   let latest: ViewTodoItem[] | undefined;
   let updatedAt: number | undefined;
@@ -234,7 +239,11 @@ export function buildTodoState(history: readonly CanonicalMessage[]): ViewTodoSt
         if (!call) continue;
         const items = parseTodoItems(call.input);
         if (!items) continue;
-        latest = items;
+        // 标题来自模型 tool_use 入参，属不可信文本：先消毒再过凭证脱敏，与证据聚合同管线。
+        latest = items.map((item) => ({
+          ...item,
+          title: redact(sanitizeUntrustedOutput(item.title)),
+        }));
         updatedAt = message.timestamp ?? call.timestamp;
         revision += 1;
       }

@@ -5,7 +5,9 @@ import type { AgentSession } from '@kiturone/kapibala';
 import { createUserSettingsSkeleton } from '@kiturone/kapibala-host/internal';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CommandOutput } from '../src/command-output.js';
+import { COMMAND_CATALOG } from '../src/commands/catalog.js';
 import type { CommandContext } from '../src/commands/dispatcher.js';
+import { CommandDispatcher } from '../src/commands/dispatcher.js';
 import { mcpCommand, parseMcpConfigArgs } from '../src/commands/mcp.js';
 
 const dirs: string[] = [];
@@ -95,6 +97,17 @@ describe('parseMcpConfigArgs', () => {
     expect(parseMcpConfigArgs(['demo', '--env', 'NOVALUE']).error).toContain('KEY=VALUE');
     expect(parseMcpConfigArgs(['demo', '--transport', 'sse']).error).toContain('stdio 或 http');
   });
+  it('未知选项提示空白切分限制，--enabled 与 --disabled 互斥', () => {
+    // 分发器按空白切分，含空格的值必然碎成未知 token；错误信息必须指路其他编辑通道。
+    const unknown = parseMcpConfigArgs(['demo', '--env', 'MSG=hello', 'world']);
+    expect(unknown.error).toContain('未知选项: world');
+    expect(unknown.error).toContain('空白切分');
+    expect(unknown.error).toContain('mcp.json');
+    const both = parseMcpConfigArgs(['demo', '--enabled', '--disabled']);
+    expect(both.error).toContain('--enabled 与 --disabled 不能同时使用');
+    const single = parseMcpConfigArgs(['demo', '--disabled']);
+    expect(single.error).toBeUndefined();
+  });
 });
 
 describe('/mcp 配置命令', () => {
@@ -175,6 +188,71 @@ describe('/mcp 配置命令', () => {
     expect(fs.existsSync(path.join(homeDir(), '.kapibala', 'mcp.json'))).toBe(false);
   });
 
+  // 回归：跨传输字段曾静默丢弃（http 忽略 --env、stdio 忽略 --header），现在必须显式报错并列出被拒字段。
+  it('跨传输字段显式报错，不静默丢弃也不改写原配置', async () => {
+    const ctx = context();
+    await mcpCommand(
+      ['add', 'api', '--transport', 'http', '--url', 'https://x.test/mcp', '--env', 'A=1'],
+      ctx,
+    );
+    expect(ctx.out.join('\n')).toContain('http 传输不接受 --env');
+    expect(fs.existsSync(path.join(homeDir(), '.kapibala', 'mcp.json'))).toBe(false);
+
+    await mcpCommand(['add', 'demo', '--command', 'npx', '--arg', '-y'], context());
+    const edit = context();
+    await mcpCommand(['edit', 'demo', '--header', 'X-Key=1'], edit);
+    expect(edit.out.join('\n')).toContain('stdio 传输不接受 --header');
+    expect(edit.out.join('\n')).toContain('/mcp remove');
+    expect(readGlobalConfig().mcpServers?.demo).toMatchObject({ command: 'npx', args: ['-y'] });
+  });
+
+  // 回归：edit stdio 传 --url 曾隐式转 http 并静默丢掉 command/args/env；转换保留但必须明示。
+  it('edit stdio 传 --url 显式转为 http，成功输出明示旧字段已移除', async () => {
+    await mcpCommand(
+      ['add', 'demo', '--command', 'npx', '--arg', '-y', '--env', 'TOKEN=1'],
+      context(),
+    );
+    const ctx = context();
+    await mcpCommand(['edit', 'demo', '--url', 'https://x.test/mcp'], ctx);
+    const text = ctx.out.join('\n');
+    expect(text).toContain('已写入全局 MCP 配置');
+    expect(text).toContain('已从 stdio 转为 http，原 command/args/env 已移除');
+    const config = readGlobalConfig().mcpServers?.demo as Record<string, unknown>;
+    expect(config).toMatchObject({ type: 'http', url: 'https://x.test/mcp' });
+    expect(config.command).toBeUndefined();
+    expect(config.args).toBeUndefined();
+    expect(config.env).toBeUndefined();
+  });
+
+  // 设计 011 D4：批准界面不打印密文。redactCommonSecrets 拦不住 `--token abc123` 空格传参，
+  // 批准输出必须对凭据语义 flag 的后继参数整值替换为 [REDACTED]。
+  it('approve 输出对空格分隔的凭据 flag 脱敏', async () => {
+    await mcpCommand(
+      [
+        'add',
+        'demo',
+        '--command',
+        'node',
+        '--arg',
+        'server.js',
+        '--arg',
+        '--token',
+        '--arg',
+        'abc123',
+        '--env',
+        'TOKEN=1',
+      ],
+      context(),
+    );
+    const approved = context();
+    await mcpCommand(['approve', 'demo'], approved);
+    const text = approved.out.join('\n');
+    expect(text).toContain('--token [REDACTED]');
+    expect(text).not.toContain('abc123');
+    expect(text).not.toContain('TOKEN=1');
+    expect(text).toContain('env:TOKEN');
+  });
+
   it('approve 绑定当前配置摘要，配置变化后摘要随之改变', async () => {
     await mcpCommand(['add', 'demo', '--command', 'npx', '--env', 'TOKEN=1'], context());
     const approved = context();
@@ -210,5 +288,28 @@ describe('/mcp 配置命令', () => {
     await mcpCommand(['approve', 'missing'], ctx);
     expect(ctx.out.join('\n')).toContain('未知 MCP 服务');
     expect(fs.existsSync(path.join(homeDir(), '.kapibala', 'mcp-approvals.json'))).toBe(false);
+  });
+
+  // 回归：approve/revoke 必须经 COMMAND_CATALOG 的 validate 白名单到达 handler。
+  // 直接调用 mcpCommand 绕过了 catalog 校验，曾导致两子命令在真实分发路径不可达。
+  it('/mcp approve|revoke 经 dispatcher 真实分发路径可达', async () => {
+    const dispatcher = new CommandDispatcher();
+    dispatcher.registerDefinition(
+      COMMAND_CATALOG.find((definition) => definition.name === 'mcp')!,
+      mcpCommand,
+    );
+    const approved = context();
+    await dispatcher.dispatch('/mcp approve missing', approved);
+    expect(approved.out.join('\n')).toContain('未知 MCP 服务');
+    expect(approved.out.join('\n')).not.toContain('命令执行失败');
+
+    const revoked = context();
+    await dispatcher.dispatch('/mcp revoke missing', revoked);
+    expect(revoked.out.join('\n')).toContain('未找到');
+
+    // 参数缺失仍被 validate 拦下，给出与 handler 一致的用法提示。
+    const bare = context();
+    await dispatcher.dispatch('/mcp approve', bare);
+    expect(bare.out.join('\n')).toContain('命令执行失败: 用法: /mcp approve');
   });
 });

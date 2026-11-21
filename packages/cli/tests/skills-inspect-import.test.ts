@@ -7,12 +7,17 @@ import type { CommandContext } from '../src/commands/dispatcher.js';
 import { CommandDispatcher } from '../src/commands/dispatcher.js';
 import { parseSkillImportArgs, skillCommand, skillsCommand } from '../src/commands/skills.js';
 
-function output(): CommandOutput & { lines: string[] } {
+function output(): CommandOutput & { lines: string[]; errors: string[] } {
   const lines: string[] = [];
+  const errors: string[] = [];
   return {
     lines,
+    errors,
     log: (message) => lines.push(message),
-    error: (message) => lines.push(message),
+    error: (message) => {
+      errors.push(message);
+      lines.push(message);
+    },
     write: (text) => lines.push(text),
   };
 }
@@ -52,6 +57,12 @@ function scanFixture(): SkillImportScan {
         hasScripts: false,
         strippedFields: ['model'],
         conflict: 'none',
+        previouslyImported: {
+          installedAt: '2026-11-01T00:00:00.000Z',
+          installedDigest: 'sha256:installed-a',
+          sourceUnchanged: true,
+          changedFiles: [],
+        },
       },
       {
         harness: 'claude-code',
@@ -65,6 +76,12 @@ function scanFixture(): SkillImportScan {
         hasScripts: false,
         strippedFields: [],
         conflict: 'exists-enabled',
+        previouslyImported: {
+          installedAt: '2026-11-01T00:00:00.000Z',
+          installedDigest: 'sha256:installed-b',
+          sourceUnchanged: false,
+          changedFiles: ['SKILL.md', 'reference/a.md'],
+        },
       },
       {
         harness: 'codex',
@@ -202,6 +219,20 @@ describe('/skills inspect', () => {
     expect(payload.roots).toHaveLength(1);
     expect(payload.lifecycle).toHaveLength(1);
   });
+
+  // 回归：validate 曾用原样字符串比对 'inspect --json'，多空格被误判为查询用法错误；
+  // 现在先归一空白再判断，与 handler 内的 trim 行为对齐。
+  it('inspect 尾部容忍多余空格，validate 与 handler 行为一致', async () => {
+    const definition = COMMAND_CATALOG.find((item) => item.name === 'skills')!;
+    expect(definition.validate(['inspect  --json'])).toBeUndefined();
+    expect(definition.validate(['inspect --json '])).toBeUndefined();
+    expect(definition.validate(['inspect x'])).toContain('用法: /skills inspect [--json]');
+
+    const { dispatcher, context, out } = harness();
+    await dispatcher.dispatch('/skills inspect  --json', context);
+    const payload = JSON.parse(out.lines.join('\n')) as { enabled: boolean };
+    expect(payload.enabled).toBe(true);
+  });
 });
 
 describe('/skill import', () => {
@@ -213,6 +244,43 @@ describe('/skill import', () => {
     expect(text).toContain('可导入来源');
     expect(text).toContain('review-guide');
     expect(text).toContain('已存在（启用）');
+  });
+
+  // 设计 009 §5.5：候选行展示宿主按溯源文件比对出的来源差异，帮助判断是否需要 --force。
+  it('候选行带 previouslyImported 徽标：来源未变 / 来源已改（N 文件）', async () => {
+    const { dispatcher, context, out, importSkills } = harness();
+    await dispatcher.dispatch('/skill import', context);
+    expect(importSkills).not.toHaveBeenCalled();
+    const text = out.lines.join('\n');
+    expect(text).toContain('来源未变');
+    expect(text).toContain('来源已改（2 文件）');
+    // 未导入过的候选没有徽标：codex 的 shared-name 不出现任何来源徽标词。
+    const codexLine = out.lines.find((line) => line.includes('codex/global'));
+    expect(codexLine).toBeDefined();
+    expect(codexLine).not.toContain('来源未变');
+    expect(codexLine).not.toContain('来源已改');
+  });
+
+  // 回归：宿主扫描/导入抛错曾直接冒泡到 dispatcher 统一捕获（stdout 通道），
+  // 与 mcp/watches 失败走 output.error(stderr) 的口径不一致。
+  it('宿主扫描失败走 stderr 通道，不冒泡到 dispatcher', async () => {
+    const { context, dispatcher, out } = harness();
+    context.scanImportableSkills = async () => {
+      throw new Error('来源目录不可读');
+    };
+    await dispatcher.dispatch('/skill import', context);
+    expect(out.errors.join('\n')).toContain('扫描可导入技能失败');
+    expect(out.errors.join('\n')).toContain('来源目录不可读');
+    expect(out.lines.join('\n')).not.toContain('命令执行失败');
+  });
+
+  it('宿主导入失败走 stderr 通道', async () => {
+    const { context, dispatcher, out, importSkills } = harness();
+    importSkills.mockRejectedValueOnce(new Error('磁盘已满'));
+    await dispatcher.dispatch('/skill import --all', context);
+    expect(out.errors.join('\n')).toContain('导入失败');
+    expect(out.errors.join('\n')).toContain('磁盘已满');
+    expect(out.lines.join('\n')).not.toContain('命令执行失败');
   });
 
   it('--all 带来源身份执行，并打印五桶汇总', async () => {

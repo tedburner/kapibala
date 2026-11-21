@@ -62,7 +62,8 @@ export type PendingApproval = {
 /** 监视列表项：只暴露展示所需字段，不携带轮询句柄或文件内容。 */
 export interface WatchWireItem {
   watchId: string;
-  kind: 'file_change' | 'process_exit' | 'port_ready';
+  /** 触发源类型；`process_exit` 自 v0.1.4 起摘除，不再出现在 wire 上。 */
+  kind: 'file_change' | 'port_ready';
   target: string;
   state: 'armed' | 'fired' | 'timeout' | 'cancelled' | 'orphaned';
   armedAt: number;

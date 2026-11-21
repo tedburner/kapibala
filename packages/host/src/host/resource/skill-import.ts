@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -335,7 +335,14 @@ export async function scanImportableSkills(options: {
           const previous = await readImportedSkillProvenance(targetDir);
           const previouslyImported =
             previous && skill.available
-              ? await describeReimport(targetDir, sourceRef, previous, normalized, options.signal)
+              ? await describeReimport(
+                  targetDir,
+                  sourceRef,
+                  previous,
+                  normalized,
+                  options.signal,
+                  diagnostics,
+                )
               : undefined;
           candidates.push({
             harness: source.harness,
@@ -503,9 +510,15 @@ export async function diffImportedSkill(
   targetDir: string,
   sourceDir: string,
   signal?: AbortSignal,
-): Promise<{ changedFiles: string[]; targetDigest: string; sourceDigest: string }> {
-  const target = await collectPackageDigests(targetDir, signal);
-  const source = await collectPackageDigests(sourceDir, signal);
+): Promise<{
+  changedFiles: string[];
+  targetDigest: string;
+  sourceDigest: string;
+  diagnostics: SkillDiagnostic[];
+}> {
+  const diagnostics: SkillDiagnostic[] = [];
+  const target = await collectPackageDigests(targetDir, signal, diagnostics);
+  const source = await collectPackageDigests(sourceDir, signal, diagnostics);
   const names = new Set([...target.keys(), ...source.keys()]);
   const changedFiles = [...names]
     .filter((name) => target.get(name) !== source.get(name))
@@ -514,6 +527,7 @@ export async function diffImportedSkill(
     changedFiles,
     targetDigest: digestFromFiles(target),
     sourceDigest: digestFromFiles(source),
+    diagnostics,
   };
 }
 
@@ -702,7 +716,14 @@ async function replaceTarget(options: {
   return backupPath;
 }
 
-/** 复制技能包到临时目录；SKILL.md 用归一后内容，越界符号链接跳过并诊断。 */
+/**
+ * 复制技能包到临时目录；SKILL.md 用归一后内容，其余条目按物理字节复制。
+ *
+ * 复制期防线（TOCTOU）：扫描期测量与复制之间存在时间窗，来源条目可能被替换或膨胀，因此
+ * - 每个来源条目统一 `fs.realpath` 后校验仍在来源根物理边界内，越界（含中途换成的符号链接）跳过并诊断；
+ * - 单条目 `stat.size` 超过 `SKILL_IMPORT_LIMITS.bytes`（单文件最多不能独占整包预算）或
+ *   累计字节超过整包 64 MiB 上限时直接抛错，由调用方按失败桶回滚临时目录，不留半成品。
+ */
 async function copyPackage(
   sourceDir: string,
   targetDir: string,
@@ -710,59 +731,60 @@ async function copyPackage(
   signal?: AbortSignal,
 ): Promise<{ diagnostics: SkillDiagnostic[] }> {
   const diagnostics: SkillDiagnostic[] = [];
+  // 来源根必须按物理身份判定边界：符号链接来源根（dotfiles 管理器常见）与 macOS 的 /var 别名
+  // 都会让词法路径与物理路径失配，先解析一次再比较。
+  const physicalRoot = await fs.realpath(sourceDir).catch(() => undefined);
+  if (!physicalRoot) throw new Error(`来源包目录无法解析，已中止导入：${sourceDir}`);
   const visited = new Set<string>();
+  let totalBytes = 0;
   const walk = async (relative: string, depth: number): Promise<void> => {
     signal?.throwIfAborted();
     if (depth > SKILL_LIMITS.depth) {
       diagnostics.push({
         code: 'import_depth_skipped',
         level: 'warn',
-        path: path.join(sourceDir, relative),
+        path: path.join(physicalRoot, relative),
         message: '目录深度超过导入上限，已跳过更深层内容',
       });
       return;
     }
-    const from = path.join(sourceDir, relative);
+    const from = path.join(physicalRoot, relative);
     const physical = await fs.realpath(from).catch(() => undefined);
     if (!physical || visited.has(physical)) return;
+    if (!isInside(physicalRoot, physical)) return;
     visited.add(physical);
     const entries = await fs.opendir(from);
     for await (const entry of entries) {
       const next = relative ? path.join(relative, entry.name) : entry.name;
-      const source = path.join(sourceDir, next);
       const destination = path.join(targetDir, next);
-      const stat = await fs.lstat(source);
-      if (stat.isSymbolicLink()) {
-        // 只复制物理内容，且必须仍位于来源包内；跨根链接一律跳过，不跟随到工作区外。
-        const real = await fs.realpath(source).catch(() => undefined);
-        if (!real || !isInside(sourceDir, real)) {
-          diagnostics.push({
-            code: 'import_symlink_skipped',
-            level: 'warn',
-            path: source,
-            message: '符号链接指向来源包之外，已跳过',
-          });
-          continue;
-        }
-        const targetStat = await fs.stat(real);
-        if (targetStat.isDirectory()) {
-          await fs.mkdir(destination, { recursive: true });
-          await walk(next, depth + 1);
-          continue;
-        }
-        await fs.mkdir(path.dirname(destination), { recursive: true });
-        await fs.copyFile(real, destination);
+      // 复制瞬间条目可能已被换成符号链接（TOCTOU）：一律按物理位置复核，不信任词法路径。
+      const real = await fs.realpath(path.join(physicalRoot, next)).catch(() => undefined);
+      if (!real || !isInside(physicalRoot, real)) {
+        diagnostics.push({
+          code: 'import_symlink_skipped',
+          level: 'warn',
+          path: path.join(physicalRoot, next),
+          message: '符号链接指向来源包之外，已跳过',
+        });
         continue;
       }
+      const stat = await fs.stat(real);
       if (stat.isDirectory()) {
         await fs.mkdir(destination, { recursive: true });
         await walk(next, depth + 1);
         continue;
       }
       if (!stat.isFile()) continue;
+      if (stat.size > SKILL_IMPORT_LIMITS.bytes)
+        throw new Error(
+          `来源文件 ${next} 超过单文件上限 ${SKILL_IMPORT_LIMITS.bytes} 字节，导入已中止`,
+        );
+      totalBytes += stat.size;
+      if (totalBytes > SKILL_IMPORT_LIMITS.bytes)
+        throw new Error(`来源包超过 ${SKILL_IMPORT_LIMITS.bytes} 字节总上限，导入已中止`);
       await fs.mkdir(path.dirname(destination), { recursive: true });
       if (next === 'SKILL.md') await fs.writeFile(destination, normalizedSkill, 'utf8');
-      else await fs.copyFile(source, destination);
+      else await fs.copyFile(real, destination);
     }
   };
   await walk('', 0);
@@ -813,38 +835,61 @@ async function measurePackage(
   return result;
 }
 
-/** 收集技能包每文件的摘要（相对路径 → sha256）；跳过溯源文件，符号链接只记录物理内容。 */
+/**
+ * 收集技能包每文件的摘要（相对路径 → sha256）；跳过溯源文件，符号链接只记录物理内容。
+ *
+ * 边界与保证：
+ * - 摘要按**原始字节**计算（Buffer 哈希）：utf8 解码会把非法序列替换成 U+FFFD，
+ *   两个不同的二进制资源会得到同一摘要，导致 unchanged 误判与溯源失真；
+ * - 有界遍历：物理目录去重（循环符号链接不再无限递归）+ 深度上限对齐发现链
+ *   （`SKILL_LIMITS.depth`），超限跳过并向 `diagnostics` 记录（传入时）；
+ * - 根路径先按 realpath 归一，词法来源根（如 macOS `/var` 别名）与物理边界保持同一口径。
+ */
 async function collectPackageDigests(
   directory: string,
   signal?: AbortSignal,
+  diagnostics?: SkillDiagnostic[],
 ): Promise<Map<string, string>> {
   const digests = new Map<string, string>();
-  const walk = async (relative: string): Promise<void> => {
+  const physicalRoot = (await fs.realpath(directory).catch(() => undefined)) ?? directory;
+  const visited = new Set<string>();
+  const walk = async (relative: string, depth: number): Promise<void> => {
     signal?.throwIfAborted();
-    const entries = await fs.opendir(path.join(directory, relative));
+    if (depth > SKILL_LIMITS.depth) {
+      diagnostics?.push({
+        code: 'import_depth_skipped',
+        level: 'warn',
+        path: path.join(physicalRoot, relative),
+        message: '目录深度超过导入上限，摘要收集已跳过更深层内容',
+      });
+      return;
+    }
+    const from = path.join(physicalRoot, relative);
+    const physical = await fs.realpath(from).catch(() => undefined);
+    if (!physical || visited.has(physical)) return;
+    if (!isInside(physicalRoot, physical)) return;
+    visited.add(physical);
+    const entries = await fs.opendir(from);
     for await (const entry of entries) {
       const next = relative ? path.join(relative, entry.name) : entry.name;
       if (next === SKILL_PROVENANCE_FILE) continue;
-      const source = path.join(directory, next);
-      const stat = await fs.lstat(source);
-      if (stat.isSymbolicLink()) {
-        const real = await fs.realpath(source).catch(() => undefined);
-        if (!real || !isInside(directory, real)) continue;
-        const targetStat = await fs.stat(real);
-        if (targetStat.isDirectory()) await walk(next);
-        else if (targetStat.isFile())
-          digests.set(next, skillDigest(await fs.readFile(real, 'utf8')));
-        continue;
-      }
+      const real = await fs.realpath(path.join(physicalRoot, next)).catch(() => undefined);
+      if (!real || !isInside(physicalRoot, real)) continue;
+      const stat = await fs.stat(real);
       if (stat.isDirectory()) {
-        await walk(next);
+        await walk(next, depth + 1);
         continue;
       }
-      if (stat.isFile()) digests.set(next, skillDigest(await fs.readFile(source, 'utf8')));
+      if (stat.isFile()) digests.set(next, digestBuffer(await fs.readFile(real)));
     }
   };
-  await walk('');
+  await walk('', 0);
   return digests;
+}
+
+/** 原始字节摘要；文本文件的合法 UTF-8 重编码与逐字节结果一致，二进制不再被 U+FFFD 折叠。 */
+function digestBuffer(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex');
 }
 
 /** 对排序后的「相对路径 + 摘要」取总摘要，作为落地副本身份。 */
@@ -860,11 +905,12 @@ async function describeReimport(
   previous: ImportedSkillProvenance,
   normalized: NormalizedImportedSkill,
   signal?: AbortSignal,
+  diagnostics?: SkillDiagnostic[],
 ): Promise<NonNullable<SkillImportCandidate['previouslyImported']>> {
-  const target = await collectPackageDigests(targetDir, signal).catch(
+  const target = await collectPackageDigests(targetDir, signal, diagnostics).catch(
     () => new Map<string, string>(),
   );
-  const source = await collectPackageDigests(sourceDir, signal).catch(
+  const source = await collectPackageDigests(sourceDir, signal, diagnostics).catch(
     () => new Map<string, string>(),
   );
   const sourceWithNormalized = new Map(source);
@@ -908,16 +954,36 @@ function enableImportedSkills(
   }
 }
 
-/** 检查来源根：不存在返回 exists=false；存在但无法 realpath 时标记不可读。 */
+/**
+ * 检查来源根：不存在返回 exists=false；存在但无法按目录读取时标记不可读。
+ *
+ * 符号链接来源根（dotfiles 管理器把 `~/.claude/skills` 做成软链很常见）按物理目标判定：
+ * 能解析为目录即按可读来源正常处理；悬空链接或最终不是目录才给 `import_source_unreadable`，
+ * 绝不把链接形态的来源静默当成「不存在」跳过。
+ */
 async function checkSourceRoot(
   root: string,
 ): Promise<{ exists: boolean; readable: boolean; message?: string }> {
   try {
-    const stat = await fs.lstat(root);
-    if (!stat.isDirectory()) return { exists: false, readable: false };
+    // fs.stat 跟随符号链接：普通目录与链接目录统一按物理目标判断。
+    const target = await fs.stat(root);
+    if (!target.isDirectory())
+      return { exists: true, readable: false, message: '导入来源根不是目录，已按不可读处理' };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      // 悬空符号链接：链接本体存在但目标缺失（lstat 能确认），必须告警而不是静默跳过。
+      const dangling = await fs
+        .lstat(root)
+        .then((stat) => stat.isSymbolicLink())
+        .catch(() => false);
+      if (dangling)
+        return {
+          exists: true,
+          readable: false,
+          message: '导入来源根是指向不存在目标的符号链接',
+        };
       return { exists: false, readable: false };
+    }
     return { exists: true, readable: false, message: errorMessage(error) };
   }
   try {

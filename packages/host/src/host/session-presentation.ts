@@ -324,7 +324,7 @@ export class SessionPresentation {
       }
     }
     // 任务清单只认最近一次成功 todo_write；revision 不变时不重复下发，避免每帧抖动。
-    const todos = buildTodoState(history);
+    const todos = buildTodoState(history, this.redact);
     const revision = todos?.revision ?? 0;
     if (revision !== this.todosRevision) {
       this.todosRevision = revision;

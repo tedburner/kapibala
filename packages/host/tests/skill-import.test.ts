@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  SKILL_IMPORT_LIMITS,
   SKILL_PROVENANCE_FILE,
   diffImportedSkill,
   importSkills,
@@ -310,5 +311,225 @@ describe('importSkills', () => {
     const targetDir = path.join(home, '.kapibala', 'skills', 'review-guide');
     const diff = await diffImportedSkill(targetDir, path.join(sourceRoot, 'review-guide'));
     expect(diff.changedFiles).toContain('extra.md');
+  });
+});
+
+describe('导入链路边界回归', () => {
+  it('二进制资源按原始字节哈希：utf8 解码相同但字节不同判为 changed', async () => {
+    const home = temp('kpbl-import-binary-');
+    const project = temp('kpbl-import-binary-proj-');
+    const sourceRoot = path.join(home, '.claude', 'skills');
+    writeSourceSkill(sourceRoot, 'bin-guide');
+    // 0xC3 0x28 是非法 UTF-8 序列（解码为 U+FFFD + "("）；0xEF 0xBF 0xBD 是合法 U+FFFD 编码：
+    // 两个文件 utf8 解码结果完全相同、字节内容不同，utf8 摘要会把它们折叠成同一份。
+    const invalidUtf8 = Buffer.from([0xc3, 0x28]);
+    const replacementUtf8 = Buffer.from([0xef, 0xbf, 0xbd, 0x28]);
+    expect(invalidUtf8.toString('utf8')).toBe(replacementUtf8.toString('utf8'));
+    fs.writeFileSync(path.join(sourceRoot, 'bin-guide', 'resource.bin'), invalidUtf8);
+    const options = {
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: true,
+      settings: settingsWith(),
+      scope: 'global' as const,
+      items: [],
+    };
+    await importSkills(options);
+    const targetDir = path.join(home, '.kapibala', 'skills', 'bin-guide');
+    const provenance = await readImportedSkillProvenance(targetDir);
+    expect(provenance?.installedDigest.startsWith('sha256:')).toBe(true);
+
+    fs.writeFileSync(path.join(sourceRoot, 'bin-guide', 'resource.bin'), replacementUtf8);
+    const scan = await scanImportableSkills(options);
+    const candidate = scan.candidates.find((item) => item.name === 'bin-guide');
+    // 字节级摘要必须区分两个不同的二进制文件：来源判为变化而不是 unchanged。
+    expect(candidate?.previouslyImported?.sourceUnchanged).toBe(false);
+    expect(candidate?.previouslyImported?.changedFiles).toContain('resource.bin');
+    const diff = await diffImportedSkill(targetDir, path.join(sourceRoot, 'bin-guide'));
+    expect(diff.changedFiles).toContain('resource.bin');
+  });
+
+  it('来源根是指向真实目录的符号链接时按可读来源正常扫描', async (context) => {
+    const home = temp('kpbl-import-linkroot-');
+    const project = temp('kpbl-import-linkroot-proj-');
+    const realRoot = path.join(home, 'data', 'skills');
+    writeSourceSkill(realRoot, 'linked-guide');
+    try {
+      fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+      fs.symlinkSync(realRoot, path.join(home, '.claude', 'skills'), 'dir');
+    } catch {
+      // Windows 未开开发者模式时创建符号链接需要特权；此环境无法构造该用例。
+      context.skip();
+      return;
+    }
+    const scan = await scanImportableSkills({
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: false,
+      settings: settingsWith(),
+    });
+    const source = scan.sources.find((item) => item.harness === 'claude-code');
+    expect(source?.roots[0]?.readable).toBe(true);
+    expect(scan.candidates.find((item) => item.name === 'linked-guide')).toBeDefined();
+    expect(scan.diagnostics.some((item) => item.code === 'import_source_unreadable')).toBe(false);
+  });
+
+  it('悬空符号链接来源根产生告警而不是静默跳过', async (context) => {
+    const home = temp('kpbl-import-dangling-');
+    const project = temp('kpbl-import-dangling-proj-');
+    const danglingRoot = path.join(home, '.codex', 'skills');
+    try {
+      fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+      fs.symlinkSync(path.join(home, 'missing-target'), danglingRoot, 'dir');
+    } catch {
+      context.skip();
+      return;
+    }
+    const scan = await scanImportableSkills({
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: false,
+      settings: settingsWith(),
+    });
+    const source = scan.sources.find((item) => item.harness === 'codex');
+    expect(source?.roots[0]?.readable).toBe(false);
+    expect(
+      scan.diagnostics.some(
+        (item) => item.code === 'import_source_unreadable' && item.path === danglingRoot,
+      ),
+    ).toBe(true);
+    expect(scan.candidates).toHaveLength(0);
+  });
+
+  it('复制期条目被换成越界符号链接时跳过并诊断（TOCTOU 防护）', async (context) => {
+    const home = temp('kpbl-import-copyguard-');
+    const project = temp('kpbl-import-copyguard-proj-');
+    const sourceRoot = path.join(home, '.claude', 'skills');
+    writeSourceSkill(sourceRoot, 'guard-guide');
+    fs.writeFileSync(path.join(sourceRoot, 'guard-guide', 'resource.md'), 'resource');
+    const preview = await scanImportableSkills({
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: true,
+      settings: settingsWith(),
+    });
+    const candidate = preview.candidates.find((item) => item.name === 'guard-guide');
+    expect(candidate).toBeDefined();
+    // 预览后把普通文件换成指向包外的符号链接：来源身份（包目录）不变，复制期必须按物理位置拦截。
+    try {
+      fs.rmSync(path.join(sourceRoot, 'guard-guide', 'resource.md'));
+      fs.symlinkSync(
+        path.join(home, 'outside.txt'),
+        path.join(sourceRoot, 'guard-guide', 'resource.md'),
+      );
+    } catch {
+      context.skip();
+      return;
+    }
+    fs.writeFileSync(path.join(home, 'outside.txt'), 'outside');
+    const result = await importSkills({
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: true,
+      settings: settingsWith(),
+      scope: 'global',
+      items: [
+        {
+          harness: 'claude-code',
+          name: 'guard-guide',
+          expectedSourceRef: candidate?.sourceRef ?? '',
+        },
+      ],
+    });
+    expect(result.imported).toBe(1);
+    expect(result.diagnostics.some((item) => item.code === 'import_symlink_skipped')).toBe(true);
+    expect(
+      fs.existsSync(path.join(home, '.kapibala', 'skills', 'guard-guide', 'resource.md')),
+    ).toBe(false);
+  });
+
+  it('来源包含超过整包字节预算的文件时不进入候选，导入不落地', async () => {
+    const home = temp('kpbl-import-bytes-');
+    const project = temp('kpbl-import-bytes-proj-');
+    const sourceRoot = path.join(home, '.claude', 'skills');
+    writeSourceSkill(sourceRoot, 'big-guide');
+    fs.writeFileSync(
+      path.join(sourceRoot, 'big-guide', 'huge.bin'),
+      Buffer.alloc(SKILL_IMPORT_LIMITS.bytes + 1, 0x41),
+    );
+    const options = {
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: true,
+      settings: settingsWith(),
+      scope: 'global' as const,
+      items: [],
+    };
+    const scan = await scanImportableSkills(options);
+    expect(scan.partial).toBe(true);
+    expect(scan.candidates.find((item) => item.name === 'big-guide')).toBeUndefined();
+    await importSkills(options);
+    expect(fs.existsSync(path.join(home, '.kapibala', 'skills', 'big-guide'))).toBe(false);
+  });
+
+  it('目标目录出现循环符号链接时摘要收集终止且结论不漂移', async (context) => {
+    const home = temp('kpbl-import-cycle-');
+    const project = temp('kpbl-import-cycle-proj-');
+    const sourceRoot = path.join(home, '.claude', 'skills');
+    writeSourceSkill(sourceRoot, 'cycle-guide');
+    const options = {
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: true,
+      settings: settingsWith(),
+      scope: 'global' as const,
+      items: [],
+    };
+    await importSkills(options);
+    const targetDir = path.join(home, '.kapibala', 'skills', 'cycle-guide');
+    // 指向祖先目录的循环链接：摘要收集必须靠物理去重终止，不能无限递归。
+    try {
+      fs.symlinkSync(targetDir, path.join(targetDir, 'assets'), 'dir');
+    } catch {
+      context.skip();
+      return;
+    }
+    const scan = await scanImportableSkills(options);
+    const candidate = scan.candidates.find((item) => item.name === 'cycle-guide');
+    expect(candidate?.previouslyImported).toBeDefined();
+    expect(candidate?.previouslyImported?.sourceUnchanged).toBe(true);
+    expect(candidate?.previouslyImported?.changedFiles).toEqual([]);
+  });
+
+  it('摘要收集超过深度上限时跳过深层内容并诊断', async () => {
+    const home = temp('kpbl-import-deepdigest-');
+    const project = temp('kpbl-import-deepdigest-proj-');
+    const sourceRoot = path.join(home, '.claude', 'skills');
+    writeSourceSkill(sourceRoot, 'deep-guide');
+    const options = {
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: true,
+      settings: settingsWith(),
+      scope: 'global' as const,
+      items: [],
+    };
+    await importSkills(options);
+    // 目标侧手工构造超过 6 层的目录链：第 7 层的文件不再参与摘要，且给出诊断。
+    let deep = path.join(home, '.kapibala', 'skills', 'deep-guide');
+    for (let i = 1; i <= 7; i++) {
+      deep = path.join(deep, `d${i}`);
+      fs.mkdirSync(deep, { recursive: true });
+    }
+    fs.writeFileSync(path.join(deep, 'leaf.md'), 'deep leaf');
+    const scan = await scanImportableSkills(options);
+    expect(
+      scan.diagnostics.some(
+        (item) => item.code === 'import_depth_skipped' && item.path.includes('d7'),
+      ),
+    ).toBe(true);
+    const candidate = scan.candidates.find((item) => item.name === 'deep-guide');
+    // 深层文件被跳过后不进入差异清单：来源与目标的可见层仍然一致。
+    expect(candidate?.previouslyImported?.changedFiles).toEqual([]);
   });
 });

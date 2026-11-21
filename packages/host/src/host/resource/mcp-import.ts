@@ -17,10 +17,14 @@ import { getGlobalMcpConfigPath, getProjectMcpConfigPath, mutateMcpConfig } from
  * 定位与边界：
  * - 只承诺三种可核实的来源格式（Claude Desktop / Claude Code / Cursor），不猜测未核实来源；
  * - 外部配置**只作为一次性快照**读取：不进入运行时配置解析链、不建立同步或监听；
- * - 导入是显式 mutation：预览 → 校验 → 走 `mutateMcpConfig` 配置事务原子写入 → 写溯源；
- *   整个过程不执行来源中的任何命令，也不联网；
+ * - 导入是显式 mutation：预览 → 校验 → `mutateMcpConfig` 配置事务原子写入（溯源在同一把锁内
+ *   随 `onCommitted` 落盘）；整个过程不执行来源中的任何命令，也不联网；
  * - 目标只允许自有配置文件（全局 `~/.kapibala/mcp.json` / 项目 `<project>/.kapibala/mcp.json`），
- *   项目作用域要求项目已信任；未信任项目既不扫描项目级来源，也不允许写入。
+ *   项目作用域要求项目已信任；未信任项目既不扫描项目级来源，也不允许写入；
+ * - 已知限制：扫描与导入是**同步函数**（`readFileSync` + `JSON.parse`），来源文件很大时
+ *   （如数十 MB 的 `~/.claude.json`）会阻塞宿主事件循环；桌面侧
+ *   `resources.inspectMcpImport` / `resources.importMcp` 契约目前按同步返回值定义，
+ *   改造为 async 需要同步修改桌面契约与 resource-service，留给下一版随契约一起迁移。
  */
 
 /** 可导入的外部 Harness 名单；只承诺这三种可验证格式，未知名称明确失败。 */
@@ -342,7 +346,8 @@ interface PlannedImport {
  * - `expectedSourceRef` 与本次扫描不一致即 `failed`（预览的是 A、导入的不能是 B）；
  * - 同名默认跳过，只有 `overwrite` 才替换；目标配置已存在且内容一致返回 `unchanged` 不写盘；
  * - 所有候选在同一次配置事务内提交，事务失败整批 `failed`，绝不留下半批写入；
- * - 溯源写失败只记诊断，不回滚已成功的配置写入。
+ * - 溯源在同一把配置锁内随事务提交写入（`onCommitted`），与并发导入串行；
+ *   溯源写失败只记诊断，不回滚已成功的配置写入。
  */
 export function importMcpServers(options: McpImportOptions): McpImportResult {
   const scope = options.scope ?? 'global';
@@ -467,11 +472,22 @@ export function importMcpServers(options: McpImportOptions): McpImportResult {
       item.write && item.candidate !== undefined,
   );
   if (writes.length) {
+    // 溯源更新放进同一把配置锁：事务提交后、锁释放前写入（onCommitted），
+    // 并发导入不再各自「锁外读改写」溯源文件，避免 last-writer-wins 丢记录。
+    const provenanceCandidates = writes
+      .filter((item) => item.outcome.status === 'imported')
+      .map((item) => item.candidate);
     try {
-      mutateMcpConfig((file) => {
-        file.mcpServers ??= {};
-        for (const item of writes) file.mcpServers[item.candidate.name] = item.candidate.config;
-      }, targetOptions);
+      mutateMcpConfig(
+        (file) => {
+          file.mcpServers ??= {};
+          for (const item of writes) file.mcpServers[item.candidate.name] = item.candidate.config;
+        },
+        targetOptions,
+        provenanceCandidates.length
+          ? () => writeProvenance(options, scope, provenanceCandidates, diagnostics)
+          : undefined,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       for (const item of writes) {
@@ -484,14 +500,6 @@ export function importMcpServers(options: McpImportOptions): McpImportResult {
         };
       }
     }
-    // 配置已提交后才写溯源：溯源失败不回滚配置，只记诊断。
-    if (writes.some((item) => item.outcome.status === 'imported'))
-      writeProvenance(
-        options,
-        scope,
-        writes.filter((item) => item.outcome.status === 'imported').map((item) => item.candidate),
-        diagnostics,
-      );
   }
   const items = planned.map((item) => item.outcome);
   return {
@@ -773,8 +781,12 @@ function provenancePath(options: {
 /**
  * 写入溯源映射：只更新本次导入的服务，保留其它记录。
  *
+ * 调用时机：必须在 `mutateMcpConfig` 的 `onCommitted` 回调内执行（仍持有配置锁），
+ * 与并发导入的溯源更新严格串行；单独调用会退化为无锁读改写。
+ *
  * 边界：既有溯源文件损坏时**不覆盖**（那是用户/他人写的现场），只记诊断；
- * 临时文件与目标同目录，tmp + rename 保证不会读到半份 JSON。
+ * 临时文件与目标同目录，tmp + rename 保证不会读到半份 JSON；
+ * 溯源写失败不回滚已提交的配置，只记诊断。
  */
 function writeProvenance(
   options: McpImportOptions,

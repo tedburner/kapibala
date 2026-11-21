@@ -74,7 +74,9 @@ export function digestServerConfig(config: ServerConfig): string {
  *
  * 保证与边界：
  * - 读取时对每条记录做结构校验，损坏或旧格式记录按「未批准」处理，绝不猜测；
- * - 写入使用 tmp + rename 原子替换，模式 0600；并发写入以最后一次完整写入为准；
+ * - 写入（approve / revoke）在 owner 锁内完成读→改→原子替换：与 mcp.json 配置事务同一锁语义，
+ *   竞争立即报 `MCP_APPROVAL_BUSY`，不按 PID/时间抢占遗留锁，避免多进程并发批准互相丢更新；
+ * - 写入使用 tmp + rename 原子替换，模式 0600；释放锁时核验随机所有者，绝不删除他人的锁；
  * - 项目级 server 的键包含规范化后的项目根（Windows 下折叠大小写并用 native realpath），
  *   因此两个项目各自的同名 server 批准互不影响；
  * - 内存不缓存批准结果：每次查询都读取磁盘，配置文件在外部被改动后立即反映。
@@ -111,7 +113,7 @@ export class McpServerApprovalStore {
     };
   }
 
-  /** 写入批准：以当前配置摘要为准，覆盖同键旧记录。 */
+  /** 写入批准：以当前配置摘要为准，覆盖同键旧记录；锁被占用时报 `MCP_APPROVAL_BUSY`。 */
   approve(target: McpApprovalTarget): McpApprovalRecord {
     const record: McpApprovalRecord = {
       serverName: target.name,
@@ -119,20 +121,20 @@ export class McpServerApprovalStore {
       digest: digestServerConfig(target.config),
       approvedAt: new Date().toISOString(),
     };
-    const records = this.read();
-    records[this.keyOf(target.name, target.source)] = record;
-    this.write(records);
-    return record;
+    return this.mutateRecords((records) => {
+      records[this.keyOf(target.name, target.source)] = record;
+      return record;
+    });
   }
 
-  /** 撤销批准；返回是否确有记录被移除。 */
+  /** 撤销批准；返回是否确有记录被移除。锁被占用时报 `MCP_APPROVAL_BUSY`。 */
   revoke(name: string, source: McpApprovalSource): boolean {
-    const records = this.read();
     const key = this.keyOf(name, source);
-    if (!records[key]) return false;
-    delete records[key];
-    this.write(records);
-    return true;
+    return this.mutateRecords((records) => {
+      if (!records[key]) return false;
+      delete records[key];
+      return true;
+    });
   }
 
   /** 列出当前作用域可见的批准记录（项目级只列本项目的）。 */
@@ -186,6 +188,46 @@ export class McpServerApprovalStore {
       };
     }
     return result;
+  }
+
+  /**
+   * 批准文件短事务：owner 锁内重读、同步修改、原子替换。
+   *
+   * 与 `mutateMcpConfig` 的配置事务同一锁模式：竞争立即失败（`MCP_APPROVAL_BUSY`），
+   * 绝不自动抢锁；释放时核验随机所有者，锁被他人替换或损坏时保留现场。
+   * 没有这层锁，CLI 与桌面并发批准是读→改→整体覆盖，last-writer-wins 会丢掉另一方的更新。
+   */
+  private mutateRecords<T>(mutate: (records: Record<string, McpApprovalRecord>) => T): T {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
+    const lock = `${this.file}.lock`;
+    const owner = randomUUID();
+    let descriptor: number;
+    try {
+      descriptor = fs.openSync(lock, 'wx', 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST')
+        throw Object.assign(
+          new Error(
+            `MCP_APPROVAL_BUSY: 批准记录锁 ${lock} 已存在；请确认所有写入进程退出后人工核验，不能自动抢锁。`,
+          ),
+          { code: 'MCP_APPROVAL_BUSY' },
+        );
+      throw error;
+    }
+    try {
+      fs.writeFileSync(descriptor, JSON.stringify({ owner, pid: process.pid }));
+      const records = this.read();
+      const result = mutate(records);
+      this.write(records);
+      return result;
+    } finally {
+      fs.closeSync(descriptor);
+      try {
+        if (JSON.parse(fs.readFileSync(lock, 'utf8')).owner === owner) fs.unlinkSync(lock);
+      } catch {
+        /* 锁被移除、替换或损坏时保留现场。 */
+      }
+    }
   }
 
   /** 原子写入；临时文件与目标同目录，失败时保留原文件。 */
