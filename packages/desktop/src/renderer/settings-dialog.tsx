@@ -687,11 +687,13 @@ export function SettingsDialog({
     setManualModel(false);
     setTestState(undefined);
   }
-  /** 切换厂商时优先带入已配置密钥的模型；自定义分组为空时直接进入新建表单。 */
+  /** 切换厂商时优先带入已配置密钥的模型；项目级模型不能在本页编辑，自动选中只考虑全局条目。 */
   function selectProvider(key: string) {
     setProviderSel(key);
     const list = groupedModels.get(key) ?? [];
-    const model = list.find((item) => item.credential.configured) ?? list[0];
+    const model =
+      list.find((item) => item.scope === 'global' && item.credential.configured) ??
+      list.find((item) => item.scope === 'global');
     const meta = (catalog?.providers ?? []).find((item) => item.key === key);
     setSelected(model);
     setDraft(model ? draftOf(model) : meta?.custom ? blankCustomDraft() : undefined);
@@ -821,6 +823,8 @@ export function SettingsDialog({
           baseURL: draft.baseURL.trim(),
           apiKey: key.trim() || undefined,
           profileId: selected?.id,
+          // 协议族随表单走：anthropic 端点必须用 x-api-key 探测，纯 Bearer 会被官方 API 拒绝。
+          provider: draft.provider,
         }),
         new Promise<never>((_, reject) => {
           watchdog = setTimeout(() => reject(new Error('MODEL_LIST_TIMEOUT')), 12_000);
@@ -1123,6 +1127,12 @@ export function SettingsDialog({
                                 variant="ghost"
                                 aria-pressed={selected?.id === item.id}
                                 className="kapibala-models-row-select"
+                                disabled={item.scope === 'project'}
+                                title={
+                                  item.scope === 'project'
+                                    ? '项目级配置由项目内的 settings.json 管理，本页只读展示'
+                                    : undefined
+                                }
                                 onClick={() => {
                                   setSelected(item);
                                   setDraft(draftOf(item));
@@ -1134,6 +1144,9 @@ export function SettingsDialog({
                                 {!item.credential.configured && (
                                   <em className="kapibala-models-row-tag">未配置密钥</em>
                                 )}
+                                {item.scope === 'project' && (
+                                  <em className="kapibala-models-row-tag">项目级</em>
+                                )}
                                 {catalog?.defaultModel === item.id && (
                                   <em className="kapibala-models-row-tag">默认</em>
                                 )}
@@ -1141,35 +1154,37 @@ export function SettingsDialog({
                                   <em className="kapibala-models-row-tag">已停用</em>
                                 )}
                               </Button>
-                              <div className="kapibala-models-row-actions">
-                                <Button
-                                  variant="ghost"
-                                  className="kapibala-models-row-icon"
-                                  aria-label={`测试连接 ${item.name}`}
-                                  title="测试连接"
-                                  disabled={busy || testingId === item.id}
-                                  onClick={() => void testModel(item)}
-                                >
-                                  <PlugsConnectedIcon size={16} aria-hidden="true" />
-                                </Button>
-                                <Switch
-                                  variant="neutral"
-                                  checked={!item.disabled}
-                                  disabled={busy}
-                                  aria-label={`${item.disabled ? '启用' : '停用'}模型 ${item.name}`}
-                                  onCheckedChange={(checked) => void toggleModel(item, checked)}
-                                />
-                                <Button
-                                  variant="ghost"
-                                  className="kapibala-models-row-icon"
-                                  aria-label={`删除模型 ${item.name}`}
-                                  title="删除"
-                                  disabled={busy}
-                                  onClick={() => void removeModel(item)}
-                                >
-                                  <TrashIcon size={16} aria-hidden="true" />
-                                </Button>
-                              </div>
+                              {item.scope !== 'project' && (
+                                <div className="kapibala-models-row-actions">
+                                  <Button
+                                    variant="ghost"
+                                    className="kapibala-models-row-icon"
+                                    aria-label={`测试连接 ${item.name}`}
+                                    title="测试连接"
+                                    disabled={busy || testingId === item.id}
+                                    onClick={() => void testModel(item)}
+                                  >
+                                    <PlugsConnectedIcon size={16} aria-hidden="true" />
+                                  </Button>
+                                  <Switch
+                                    variant="neutral"
+                                    checked={!item.disabled}
+                                    disabled={busy}
+                                    aria-label={`${item.disabled ? '启用' : '停用'}模型 ${item.name}`}
+                                    onCheckedChange={(checked) => void toggleModel(item, checked)}
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    className="kapibala-models-row-icon"
+                                    aria-label={`删除模型 ${item.name}`}
+                                    title="删除"
+                                    disabled={busy}
+                                    onClick={() => void removeModel(item)}
+                                  >
+                                    <TrashIcon size={16} aria-hidden="true" />
+                                  </Button>
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -1433,7 +1448,10 @@ export function SettingsDialog({
                     value={catalog?.defaultModel}
                     items={Object.fromEntries(
                       (catalog?.profiles ?? [])
-                        .filter((item) => item.credential.configured && !item.disabled)
+                        .filter(
+                          (item) =>
+                            item.scope === 'global' && item.credential.configured && !item.disabled,
+                        )
                         .map((item) => [item.id, item.name]),
                     )}
                     onValueChange={(value) => {
@@ -1459,7 +1477,12 @@ export function SettingsDialog({
                         __default__: '使用默认模型',
                         ...Object.fromEntries(
                           (catalog?.profiles ?? [])
-                            .filter((item) => item.credential.configured && !item.disabled)
+                            .filter(
+                              (item) =>
+                                item.scope === 'global' &&
+                                item.credential.configured &&
+                                !item.disabled,
+                            )
                             .map((item) => [item.id, item.name]),
                         ),
                       }}

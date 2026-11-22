@@ -22,9 +22,17 @@ import type { Workspaces } from './workspaces.js';
 /** 全局配置服务只通过短事务提交字段；保存即写盘，不保留预览态或秘密副本。 */
 export class SettingsService {
   constructor(private readonly workspaces: Workspaces) {}
+  /** 全局可管理模型的 id 集合：内置 + 用户级 profile；不在其中的条目来自项目级配置。 */
+  private globalProfileIds(): Set<string> {
+    return new Set(
+      this.merge(loadGlobalSettingsForWrite({ homeDir: this.workspaces.home })).profiles.map(
+        (item) => item.id,
+      ),
+    );
+  }
   /** 白名单目录与凭证来源；项目未信任时只读全局，不回显已有密钥。 */
   read(workspaceId?: string): Output<'settings.read'> {
-    loadGlobalSettingsForWrite({ homeDir: this.workspaces.home });
+    const globalIds = this.globalProfileIds();
     const workspace = workspaceId ? this.workspaces.get(workspaceId) : undefined;
     const loaded = loadSettings({
       homeDir: this.workspaces.home,
@@ -33,7 +41,9 @@ export class SettingsService {
     });
     return {
       noAuthEnv: API_KEY_ENV_NONE,
-      profiles: loaded.settings.profiles.map((item) => this.publicProfile(item, loaded.settings)),
+      profiles: loaded.settings.profiles.map((item) =>
+        this.publicProfile(item, loaded.settings, globalIds),
+      ),
       defaultModel: loaded.settings.defaultModel,
       routing: { ...loaded.settings.modelRouting },
       // loadSettings 已把全局 FullAccess 降级为 Approval；这里只做投影，不再二次裁决。
@@ -128,7 +138,9 @@ export class SettingsService {
     const saved = this.global();
     const profile = saved.profiles.find((item) => item.id === draft.id);
     if (!profile) throw new Error('PROFILE_UNAVAILABLE');
-    return { profile: this.publicProfile(profile, saved) };
+    return {
+      profile: this.publicProfile(profile, saved, new Set(saved.profiles.map((item) => item.id))),
+    };
   }
   /**
    * 按 Base URL 只读探测模型目录，供自定义端点直接选模型。
@@ -136,8 +148,16 @@ export class SettingsService {
    * 只发一次 GET {baseURL}/models：8 秒超时、1MB 响应上限、500 条结果上限，失败以固定错误码
    * 交给页面翻译；本次输入的密钥只用于这一次请求，不落盘、不进预览令牌。留空时用 profileId
    * 指向的已存凭证（同组复用），避免用户重复输入。
+   * 鉴权头按协议分支：anthropic 端点必须同时携带 x-api-key 与 anthropic-version
+   * （官方 API 不认纯 Bearer），与 Core Provider、probeModelCatalog 同源；
+   * 缺省协议时依次回退 profileId 已存 Profile 与 openai-compatible。
    */
-  async listModels(baseURL: string, apiKey?: string, profileId?: string): Promise<string[]> {
+  async listModels(
+    baseURL: string,
+    apiKey?: string,
+    profileId?: string,
+    provider?: 'openai-compatible' | 'anthropic' | 'openai-responses',
+  ): Promise<string[]> {
     const endpoint = new URL(baseURL);
     if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error('MODEL_LIST_INVALID');
     endpoint.search = '';
@@ -147,6 +167,19 @@ export class SettingsService {
     const profile = profileId ? settings.profiles.find((item) => item.id === profileId) : undefined;
     const stored = profile ? resolveApiKeyDetailed(profile, settings) : undefined;
     const credential = apiKey ?? (stored && stored.source !== 'none' ? stored.key : undefined);
+    const protocol = provider ?? profile?.provider ?? 'openai-compatible';
+    const headers: Record<string, string> = { accept: 'application/json' };
+    if (credential) {
+      if (protocol === 'anthropic') {
+        headers['x-api-key'] = credential;
+        headers.Authorization = `Bearer ${credential}`;
+        headers['anthropic-version'] = '2023-06-01';
+        if (profile?.anthropicWorkspaceId)
+          headers['anthropic-workspace-id'] = profile.anthropicWorkspaceId;
+      } else {
+        headers.Authorization = `Bearer ${credential}`;
+      }
+    }
     // 用显式 AbortController 而不是 AbortSignal.timeout：超时必须同时覆盖建连与响应体读取，
     // 否则网关先回响应头再拖住正文时，探测会一直挂在 response.text() 上。
     const controller = new AbortController();
@@ -155,13 +188,7 @@ export class SettingsService {
     try {
       let response: Response;
       try {
-        response = await fetch(url, {
-          headers: {
-            accept: 'application/json',
-            ...(credential ? { authorization: `Bearer ${credential}` } : {}),
-          },
-          signal: controller.signal,
-        });
+        response = await fetch(url, { headers, signal: controller.signal });
       } catch {
         throw new Error(
           controller.signal.aborted ? 'MODEL_LIST_TIMEOUT' : 'MODEL_LIST_UNAVAILABLE',
@@ -214,13 +241,12 @@ export class SettingsService {
     if (entries.length > 0 && models.length === 0) throw new Error('MODEL_LIST_INVALID');
     return models;
   }
-  /** 默认模型仅影响未来装配，不替换已打开会话的临时选择。 */
+  /** 默认模型仅影响未来装配，不替换已打开会话的临时选择；内置模型由代码清单提供，只写引用不物化条目。 */
   setDefault(id: string): void {
     mutateGlobalSettings(
       (raw) => {
-        const profile = this.merge(raw).profiles.find((item) => item.id === id);
-        if (!profile) throw new Error('PROFILE_UNAVAILABLE');
-        ensureProfile(raw, profile);
+        if (!this.merge(raw).profiles.some((item) => item.id === id))
+          throw new Error('PROFILE_UNAVAILABLE');
         raw.defaultModel = id;
       },
       { homeDir: this.workspaces.home },
@@ -238,15 +264,12 @@ export class SettingsService {
       { homeDir: this.workspaces.home },
     );
   }
-  /** 单角色字段提交；清除路由不删除 Profile 或复制其它模型目录。 */
+  /** 单角色字段提交；内置模型由代码清单提供只写引用，清除路由不删除 Profile 或复制其它模型目录。 */
   setRouting(role: 'planning' | 'execution' | 'fast' | 'summary', id?: string): void {
     mutateGlobalSettings(
       (raw) => {
-        if (id) {
-          const profile = this.merge(raw).profiles.find((item) => item.id === id);
-          if (!profile) throw new Error('PROFILE_UNAVAILABLE');
-          ensureProfile(raw, profile);
-        }
+        if (id && !this.merge(raw).profiles.some((item) => item.id === id))
+          throw new Error('PROFILE_UNAVAILABLE');
         raw.modelRouting = { ...raw.modelRouting };
         if (id) raw.modelRouting[role] = id;
         else delete raw.modelRouting[role];
@@ -309,7 +332,7 @@ export class SettingsService {
     const profile = this.global().profiles.find((item) => item.id === profileId);
     if (!profile) throw new Error('PROFILE_UNAVAILABLE');
     try {
-      const models = await this.listModels(profile.baseURL, undefined, profileId);
+      const models = await this.listModels(profile.baseURL, undefined, profileId, profile.provider);
       return {
         ok: true,
         message:
@@ -382,6 +405,7 @@ export class SettingsService {
   private publicProfile(
     profile: ModelProfile,
     settings: UserSettings,
+    globalIds: ReadonlySet<string>,
   ): Output<'settings.read'>['profiles'][number] {
     const resolved = resolveApiKeyDetailed(profile, settings);
     const secrets = settings.profiles.flatMap((item) => {
@@ -403,7 +427,13 @@ export class SettingsService {
       baseURL: clean(publicEndpoint),
       apiKeyEnv: profile.apiKeyEnv,
       vendorName: profile.vendorName ? clean(profile.vendorName) : undefined,
-      contextWindow: resolveContextWindow(profile.contextWindow).tokens,
+      // 保留落盘声明语义：未声明窗口（undefined）原样透出，不把运行时估算值物化回草稿，
+      // 否则一次编辑保存就会把估算值冻结成显式声明，保存前探测也从此失效；
+      // 已声明的简写形式（如 '32K'）归一为数字 tokens，供表单回显与保存。
+      contextWindow:
+        profile.contextWindow === undefined
+          ? undefined
+          : resolveContextWindow(profile.contextWindow).tokens,
       maxOutputTokens: profile.maxOutputTokens,
       supportsThinking: profile.supportsThinking,
       effectiveBaseURL: (() => {
@@ -417,6 +447,8 @@ export class SettingsService {
       builtin: BUILTIN_PROFILES.some((item) => item.id === profile.id),
       /** 停用态只影响选择入口，读投影统一给出布尔值。 */
       disabled: Boolean(profile.disabled),
+      /** 归属范围：global 可在本页管理；project 来自项目级配置，本页只读展示。 */
+      scope: globalIds.has(profile.id) ? 'global' : 'project',
       // 厂商分组复用 CLI /model 菜单的同一套推断，页面分组与菜单分组永不漂移。
       providerKey: providerCategory(profile),
       credential: {

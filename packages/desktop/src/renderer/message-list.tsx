@@ -198,8 +198,13 @@ function ToolRow({
   const diff = lines.some((line) => /^(diff --git |@@ |--- |\+\+\+ )/.test(line));
   const failureReason = tool?.status === 'failed' ? firstReason(tool.result) : undefined;
   // 主行只放显示名与结果摘要；失败原因单独一行，避免和次要行重复。
-  const resultSummary =
-    tool?.status === 'failed'
+  // write_file / edit_file 的成功结果是 core 的英文回执（如 “Successfully wrote 14 bytes to …”），
+  // 与次行「动词 · 对象」完全冗余且造成中英混排：成功态不再回显原始结果，事实仍在预览与详情里。
+  const boilerplateResult =
+    tool?.status === 'succeeded' && (tool.name === 'write_file' || tool.name === 'edit_file');
+  const resultSummary = boilerplateResult
+    ? undefined
+    : tool?.status === 'failed'
       ? undefined
       : tool?.result
         ? tool.result.split('\n')[0]?.slice(0, 120)
@@ -219,7 +224,8 @@ function ToolRow({
           {tool?.displayName ?? '工具'}
         </span>
         <span className="min-w-0 flex-1 truncate text-xs text-kumo-subtle">
-          {resultSummary ?? tool?.invocation}
+          {/* 已有「动词 · 对象」次行的工具不再回退 invocation，主行保持只放状态摘要。 */}
+          {resultSummary ?? (tool?.verb || tool?.chip ? undefined : tool?.invocation)}
         </span>
         {artifacts.map((artifact) => (
           <Button
@@ -558,7 +564,7 @@ export function MessageList({
                           <Collapsible.Trigger
                             render={
                               <Button
-                                className="kapibala-action -ml-2 text-kumo-subtle"
+                                className="kapibala-action group -ml-2 gap-2 text-kumo-subtle"
                                 variant="ghost"
                                 size="sm"
                               />
@@ -566,6 +572,12 @@ export function MessageList({
                           >
                             <BrainIcon size={15} />
                             思考过程
+                            {/* 开合箭头与工具组头同语法：data-panel-open 落在触发按钮上，箭头随之转向。 */}
+                            <CaretDownIcon
+                              size={14}
+                              className="text-kumo-subtle transition-transform group-data-[panel-open]:rotate-180"
+                              aria-hidden="true"
+                            />
                           </Collapsible.Trigger>
                           <Collapsible.Panel>
                             <p className="mt-1 mb-2 border-l-2 border-kumo-line pl-3 whitespace-pre-wrap text-xs leading-6 text-kumo-subtle">

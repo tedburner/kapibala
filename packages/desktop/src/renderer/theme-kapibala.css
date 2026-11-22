@@ -36,6 +36,8 @@
   --kapibala-titlebar-height: 46px;
   --kapibala-content-max: 760px;
   --kapibala-dock-width: 360px;
+  /* 设置页表单类面板的统一可读宽度上限；模型页是双栏复合面板，单独放开。 */
+  --kapibala-settings-form-width: 520px;
   --kapibala-tile: color-mix(in oklab, #1a1c1f 3.5%, transparent);
   --kapibala-tile-hover: color-mix(in oklab, #1a1c1f 6%, transparent);
   --kapibala-field-inset: color-mix(in oklab, #1a1c1f 5%, transparent);
@@ -79,6 +81,16 @@
   --kapibala-shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.35);
   --kapibala-signal: #f2f2f2;
   --kapibala-signal-soft: color-mix(in oklab, #ffffff 12%, transparent);
+}
+/* Kumo Button primary 硬编码 `!text-white`，假设品牌强调底恒为深色；PI 单色把深色主题的
+   品牌底翻成近白墨色后白字几乎不可读（信任确认、设置主按钮等全部深色 primary 受影响）。
+   桌面侧只在深色下把标签色覆盖为 inverse 墨色：primary 与 destructive 的强调底都经内联
+   `--kumo-button-emphasis-bg` 注入，destructive 的混色串含 kumo-danger 用 :not 排除；
+   规则放进 utilities 层，以更高特异性压过库的工具类。 */
+@layer utilities {
+  :root[data-mode="dark"] [style*="--kumo-button-emphasis-bg"]:not([style*="color-kumo-danger"]) {
+    color: var(--text-color-kumo-inverse) !important;
+  }
 }
 /* Kumo LayerDialog 使用公开 Tailwind 尺寸 token，集中收紧各类浮层，避免页面各自覆盖库内部结构。 */
 @theme {
@@ -507,6 +519,8 @@ body {
   border-radius: 16px;
   background: var(--kapibala-tile);
   padding: 16px;
+  /* 表单类面板统一收在可读宽度内，右缘形成稳定边界；模型页双栏面板单独放开。 */
+  max-width: var(--kapibala-settings-form-width);
 }
 /* 保存/校验反馈位于面板上方，滚动时也不被长表单挤出视野。 */
 .kapibala-settings-notice {
@@ -524,6 +538,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 厂商列表 + 详情双栏需要完整宽度，不受表单类面板上限约束。 */
+  max-width: none;
 }
 .kapibala-models-toolbar {
   display: flex;
@@ -602,7 +618,8 @@ body {
   border: 1px solid var(--color-kumo-line);
   border-radius: 999px;
   color: var(--text-color-kumo-subtle);
-  font-size: 10px;
+  /* 中文 10px 笔画发虚，胶囊标签最低取 11px 第三档。 */
+  font-size: var(--text-2xs);
   font-style: normal;
   font-weight: 500;
   padding: 1px 6px;
@@ -724,7 +741,8 @@ body {
   border: 1px solid var(--color-kumo-line);
   border-radius: 999px;
   color: var(--text-color-kumo-subtle);
-  font-size: 10px;
+  /* 与 item-tag 同口径：中文标签最低 11px 第三档。 */
+  font-size: var(--text-2xs);
   font-style: normal;
   font-weight: 500;
   padding: 1px 6px;
@@ -747,7 +765,7 @@ body {
 .kapibala-models-form {
   display: flex;
   /* 表单收在可读宽度内：太长的单行输入会让人误以为字段没有边界。 */
-  max-width: 520px;
+  max-width: var(--kapibala-settings-form-width);
   flex-direction: column;
   gap: 10px;
   border-top: 1px solid var(--color-kumo-hairline);

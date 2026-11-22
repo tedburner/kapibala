@@ -42,6 +42,7 @@ import type { Lane } from '../shared/transport.js';
 import { LatestSnapshot } from './latest-snapshot.js';
 import { ResourceService } from './resource-service.js';
 import { SettingsService } from './settings-service.js';
+import { enumerateWorkspaceFiles } from './workspace-files.js';
 import { Workspaces } from './workspaces.js';
 
 /**
@@ -170,7 +171,7 @@ export class DesktopHost {
       case 'settings.listModels': {
         const p = PARAMS[method].parse(params);
         return {
-          models: await this.settings.listModels(p.baseURL, p.apiKey, p.profileId),
+          models: await this.settings.listModels(p.baseURL, p.apiKey, p.profileId, p.provider),
         };
       }
       case 'settings.setDefault':
@@ -755,51 +756,10 @@ export class DesktopHost {
   }
   /** 工作区文件路径枚举（相对路径清单），供 composer @ 文件补全。
    * 保证：仅枚举受信任工作区（requireTrust），条目/深度双重预算，命中预算即截断明示；
-   * 通用忽略目录（依赖、构建产物、版本库元数据）一律跳过；只返回路径，不读文件内容。 */
+   * 枚举策略（广度优先、逐层排序、忽略目录）见 workspace-files 模块；只返回路径，不读内容。 */
   private listFiles(workspaceId: string): Output<'workspace.listFiles'> {
     const workspace = this.workspaces.get(workspaceId, true);
-    const root = workspace.root;
-    const ignored = new Set([
-      'node_modules',
-      '.git',
-      'dist',
-      'out',
-      'build',
-      'coverage',
-      'test-results',
-      'playwright-report',
-    ]);
-    const maxFiles = 5000;
-    const maxDepth = 16;
-    const files: string[] = [];
-    let truncated = false;
-    const walk = (dir: string, depth: number): void => {
-      if (files.length >= maxFiles || depth > maxDepth) {
-        truncated = true;
-        return;
-      }
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const entry of entries) {
-        if (files.length >= maxFiles || truncated) {
-          truncated = true;
-          return;
-        }
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          if (ignored.has(entry.name) || entry.name.startsWith('.')) continue;
-          walk(full, depth + 1);
-        } else if (entry.isFile()) {
-          files.push(path.relative(root, full));
-        }
-      }
-    };
-    walk(root, 0);
-    return { files, truncated };
+    return enumerateWorkspaceFiles(workspace.root, { maxFiles: 5000, maxDepth: 16 });
   }
 
   /** 斜杠命令执行：与 CLI 同一分发器；输出收集为 feedback，交互经对话框往返。 */

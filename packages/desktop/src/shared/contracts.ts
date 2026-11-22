@@ -74,6 +74,8 @@ const publicProfile = profile.extend({
   builtin: z.boolean(),
   /** 读投影恒返回布尔，页面不必再判 undefined。 */
   disabled: z.boolean(),
+  /** 归属范围：global 可在设置页管理；project 来自项目级配置，页面只读展示、不提供操作入口。 */
+  scope: z.enum(['global', 'project']),
   /** 厂商分组键，与 providers[].key 同源（detectProviderFamily / 'custom'）；页面据此把模型归入左侧厂商列表。 */
   providerKey: z.string(),
   credential,
@@ -694,6 +696,8 @@ export const PARAMS = {
       /** 本次输入的临时密钥，不落盘；留空时由 host 按 profileId 复用已存凭证。 */
       apiKey: z.string().min(1).max(32_768).optional(),
       profileId: id.optional(),
+      /** 端点协议族；决定鉴权头形状（anthropic 需 x-api-key），缺省按已存 Profile 或 openai-compatible。 */
+      provider: z.enum(['openai-compatible', 'anthropic', 'openai-responses']).optional(),
     })
     .strict(),
   'settings.setDefault': z.object({ profileId: id }).strict(),

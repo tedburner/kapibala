@@ -141,7 +141,7 @@ export function WorkspaceSidebar({
   }, []);
   const items = runtime?.items ?? [];
   const running = items.filter((item) => item.phase !== 'idle').length;
-  // 「会话」段只列仍有运行句柄的对话；空闲历史归入所属项目，避免同一对话出现两次。
+  // 「临时对话」段只列仍有运行句柄的对话；空闲历史归入所属项目，避免同一对话出现两次。
   const temporary = items.filter((item) => item.phase !== 'idle' || item.cleanup === 'failed');
   const titleOfSession = (item: RuntimeItem) =>
     histories[item.workspaceId]?.items.find((row) => row.conversationId === item.conversationId)
@@ -222,7 +222,7 @@ export function WorkspaceSidebar({
         )}
         {keyword === '' && (
           <div className="group-data-[state=collapsed]/sidebar:hidden">
-            <div className="kapibala-sidebar-section">会话</div>
+            <div className="kapibala-sidebar-section">临时对话</div>
             {temporary.length === 0 ? (
               <p className="kapibala-sidebar-empty">暂无临时对话</p>
             ) : (

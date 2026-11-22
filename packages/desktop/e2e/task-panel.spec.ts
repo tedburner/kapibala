@@ -97,9 +97,6 @@ test('任务面板：pill 进度、浮层四态与底栏状态条', async () => 
     await expect(pill).toContainText('写代码');
     await expect(pill).toContainText('+1');
 
-    // 底栏状态条与详情抽屉同源；无 git 也要有空间/上下文段。
-    await expect(page.getByRole('button', { name: '运行事实与状态', exact: true })).toBeVisible();
-
     await pill.click();
     const panel = page.getByRole('region', { name: '任务清单', exact: true });
     await expect(panel).toBeVisible();

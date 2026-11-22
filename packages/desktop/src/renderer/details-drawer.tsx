@@ -6,6 +6,7 @@ import { type RefObject, useEffect, useState } from 'react';
 import type { Inspection, RuntimeSnapshot } from '../shared/observations.js';
 import { ArtifactPreview } from './artifact-preview.js';
 import { PlainCodeBlock } from './code-display.js';
+import { modeDisplayName } from './mode-labels.js';
 
 /** 抽屉目标只存稳定定位，实际工具与诊断每次从当前 Host 投影重新选择。 */
 export type DetailsTarget =
@@ -273,11 +274,21 @@ export function DetailsDrawer({
               <>
                 <section>
                   <h3 className="mb-3 font-medium">运行事实</h3>
+                  {/* 无值的行整行隐藏而不是显示「未提供」占位：占位行把真正有值的事实往下挤，
+                      还会被误读成数据异常；耗时无值时保留「未开始运行」，它描述的是真实状态。 */}
                   <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
-                    <dt>模型</dt>
-                    <dd>{status?.model ?? '未提供'}</dd>
-                    <dt>权限模式</dt>
-                    <dd>{status?.permissionMode ?? '未提供'}</dd>
+                    {status?.model && (
+                      <>
+                        <dt>模型</dt>
+                        <dd>{status.model}</dd>
+                      </>
+                    )}
+                    {status?.permissionMode && (
+                      <>
+                        <dt>权限模式</dt>
+                        <dd>{modeDisplayName(status.permissionMode)}</dd>
+                      </>
+                    )}
                     {status?.gitBranch && (
                       <>
                         <dt>Git 分支</dt>
@@ -288,19 +299,30 @@ export function DetailsDrawer({
                     <dd className="tabular-nums">
                       {elapsed === undefined ? '未开始运行' : `${elapsed} 秒`}
                     </dd>
-                    <dt>上下文</dt>
-                    <dd className="tabular-nums">
-                      {status?.contextUsage?.usedTokens === undefined
-                        ? '未提供'
-                        : `${status.contextUsage.estimatedUsage ? '估算 ' : ''}${status.contextUsage.usedTokens} / ${status.contextUsage.limitTokens}${status.contextUsage.estimatedLimit ? '（窗口估算）' : ''}`}
-                    </dd>
-                    <dt>本轮 Token</dt>
-                    <dd className="tabular-nums">{status?.runUsage?.totalTokens ?? '未提供'}</dd>
-                    <dt>输入 / 输出</dt>
-                    <dd>
-                      {status?.runUsage?.promptTokens ?? '未提供'} /{' '}
-                      {status?.runUsage?.completionTokens ?? '未提供'}
-                    </dd>
+                    {status?.contextUsage?.usedTokens !== undefined && (
+                      <>
+                        <dt>上下文</dt>
+                        <dd className="tabular-nums">
+                          {`${status.contextUsage.estimatedUsage ? '估算 ' : ''}${status.contextUsage.usedTokens} / ${status.contextUsage.limitTokens}${status.contextUsage.estimatedLimit ? '（窗口估算）' : ''}`}
+                        </dd>
+                      </>
+                    )}
+                    {status?.runUsage?.totalTokens !== undefined && (
+                      <>
+                        <dt>本轮 Token</dt>
+                        <dd className="tabular-nums">{status.runUsage.totalTokens}</dd>
+                      </>
+                    )}
+                    {(status?.runUsage?.promptTokens !== undefined ||
+                      status?.runUsage?.completionTokens !== undefined) && (
+                      <>
+                        <dt>输入 / 输出</dt>
+                        <dd>
+                          {status?.runUsage?.promptTokens ?? '未提供'} /{' '}
+                          {status?.runUsage?.completionTokens ?? '未提供'}
+                        </dd>
+                      </>
+                    )}
                   </dl>
                   {inspection.branchDrift && (
                     <p className="mt-3 text-xs text-kumo-warning">

@@ -15,6 +15,7 @@ import {
   CheckIcon,
   FolderPlusIcon,
   FolderSimpleIcon,
+  GitBranchIcon,
   HandIcon,
   LightbulbIcon,
   ShieldCheckIcon,
@@ -36,11 +37,12 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
 import { collectViewArtifacts } from './artifact-model.js';
-import { ComposerStatusBar } from './composer-status-bar.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
+import { rankFileMatches } from './file-completion.js';
 import { HistoryListClient } from './history-list-client.js';
 import { KubaiIcon } from './icons/KubaiIcon.js';
 import { MessageList } from './message-list.js';
+import { MODE_NAMES } from './mode-labels.js';
 import { ProjectDialog } from './project-dialog.js';
 import { SessionDeleteDialog, SessionRenameDialog, type SessionTarget } from './session-actions.js';
 import { SettingsDialog } from './settings-dialog.js';
@@ -57,12 +59,6 @@ const scopeOf = (opened: Opened) => ({
   workspaceId: opened.workspaceId,
   sessionId: opened.sessionId,
 });
-const MODE_NAMES = {
-  Approval: '变更前确认',
-  Plan: '计划模式',
-  Auto: '自主模式',
-  FullAccess: '完全访问',
-} as const;
 type Mode = keyof typeof MODE_NAMES;
 /** 模式菜单的灰色副标题：用一句话说明该模式何时介入，帮助用户区分三个审批档位的强度。 */
 const MODE_HINTS = {
@@ -213,6 +209,11 @@ export function App() {
   const runtimeItem = facts.runtime?.items.find((item) => item.sessionId === opened?.sessionId);
   const readyToSend = facts.runtimeValid && runtimeItem?.cleanup === 'none';
   const running = run && run.phase !== 'idle';
+  // 首页副标题的第二句只在确有后台任务时出现：干净环境下常驻这句条件文案，会指向不存在的对象。
+  const backgroundRunning = (facts.runtime?.items ?? []).some((item) => item.phase !== 'idle');
+  // Git 分支是宿主净化后的检查快照事实（StatusFacts.gitBranch），只在已打开会话的 inspection
+  // 里出现；渲染层不自行探测 git，非 git 目录或快照未就绪时保持 undefined，chip 整体不占位。
+  const gitBranch = facts.inspection?.status?.gitBranch;
   // 未打开会话时输入框直连"新建对话"流程；草稿按目标会话或 ':new' 键暂存。
   const draft = opened
     ? (ui.drafts[`${opened.workspaceId}:${opened.conversationId}`] ?? '')
@@ -816,10 +817,8 @@ export function App() {
     const at = draft.lastIndexOf('@');
     if (at >= 0 && !/\s/.test(draft.slice(at + 1))) {
       const prefix = draft.slice(at + 1).toLowerCase();
-      const items = (fileList?.files ?? [])
-        .filter((file) => file.toLowerCase().includes(prefix))
-        .slice(0, 8)
-        .map((file) => ({ insert: `@${file}`, label: file, detail: '' }));
+      // 排序在 rankFileMatches 定稿：文件名前缀命中优先，避免清单序把目标文件挤出前 8 条。
+      const items = rankFileMatches(fileList?.files ?? [], prefix);
       setCompletion(items.length ? { kind: 'file', items, index: 0 } : undefined);
       return;
     }
@@ -839,21 +838,6 @@ export function App() {
     if (at < 0) return;
     ui.draft(draftScope, `${draft.slice(0, at)}${item.insert} `);
   }
-
-  const statusFacts = facts.inspection?.status;
-  // 上下文百分比统一在这里定稿：宿主的 percent 是未取整浮点（会出现「29.428125%」），
-  // 展示值一律取整并夹取 0-100；回退估算在 limitTokens 缺失或为 0 时视为不可用（隐藏该段），
-  // 不渲染除零产生的 NaN。
-  const contextPercent = (() => {
-    const usage = statusFacts?.contextUsage;
-    if (!usage) return undefined;
-    const percent =
-      usage.percent ??
-      (usage.usedTokens !== undefined && usage.limitTokens > 0
-        ? (usage.usedTokens / usage.limitTokens) * 100
-        : undefined);
-    return percent === undefined ? undefined : Math.min(100, Math.max(0, Math.round(percent)));
-  })();
 
   const composer = (
     <div ref={composerShell} className="relative w-full space-y-2">
@@ -1107,6 +1091,24 @@ export function App() {
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu>
+            {/* 分支 chip 与空间/模式/模型同一行，是会话运行事实的只读展示而非选择入口；
+                点击进详情抽屉「运行事实」，与头部「会话状态」同一目标；快照无分支时不渲染，
+                不在工具条常驻空 chip。 */}
+            {opened && gitBranch && (
+              <Button
+                className="kapibala-action kapibala-chip max-w-40"
+                variant="ghost"
+                size="sm"
+                aria-label={`Git 分支：${gitBranch}`}
+                onClick={(event) => {
+                  detailTrigger.current = event.currentTarget;
+                  setDetails({ kind: 'status' });
+                }}
+              >
+                <GitBranchIcon size={18} className="shrink-0 text-kumo-subtle" />
+                <span className="min-w-0 truncate">{gitBranch}</span>
+              </Button>
+            )}
             {opened && (
               <DropdownMenu>
                 <DropdownMenu.Trigger
@@ -1257,35 +1259,32 @@ export function App() {
             )}
           </div>
         </div>
+        {/* 阻断原因（空间未信任 / 没有可用模型）收进卡片底部的脚注行：给出处理入口，
+            不再悬挂在卡片外与输入坞争抢视觉；没有阻断时不占位，卡片高度不额外膨胀。 */}
+        {((!opened && workspace && !workspace.trusted) || usableModels.length === 0) && (
+          <div className="mt-2 border-t border-kumo-hairline px-2 pt-2">
+            {!opened && workspace && !workspace.trusted && (
+              <p className="kapibala-composer-hint text-kumo-warning">
+                当前空间尚未信任，确认信任后才能发送。
+              </p>
+            )}
+            {usableModels.length === 0 && (
+              <p className="kapibala-composer-hint flex flex-wrap items-center gap-1 text-kumo-warning">
+                <span>还没有可用模型，请先在</span>
+                <Button
+                  className="kapibala-action h-auto px-1 py-0 text-xs underline underline-offset-2"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => ui.settings(true)}
+                >
+                  设置
+                </Button>
+                <span>中为模型填写密钥。</span>
+              </p>
+            )}
+          </div>
+        )}
       </div>
-      {opened && (
-        <ComposerStatusBar
-          spaceName={workspace?.name}
-          branch={statusFacts?.gitBranch}
-          contextPercent={contextPercent}
-          onOpen={() => setDetails({ kind: 'status' })}
-        />
-      )}
-      {!opened && workspace && !workspace.trusted && (
-        <p className="kapibala-composer-hint px-1 text-kumo-warning">
-          当前空间尚未信任，确认信任后才能发送。
-        </p>
-      )}
-      {/* 没有密钥时直接说清阻断原因并给出入口，不让用户点了发送才发现不可用。 */}
-      {usableModels.length === 0 && (
-        <p className="kapibala-composer-hint flex flex-wrap items-center gap-1 px-1 text-kumo-warning">
-          <span>还没有可用模型，请先在</span>
-          <Button
-            className="kapibala-action h-auto px-1 py-0 text-xs underline underline-offset-2"
-            variant="ghost"
-            size="sm"
-            onClick={() => ui.settings(true)}
-          >
-            设置
-          </Button>
-          <span>中为模型填写密钥。</span>
-        </p>
-      )}
     </div>
   );
 
@@ -1499,7 +1498,8 @@ export function App() {
                   <img src={brandMark} alt="" aria-hidden="true" className="kapibala-home-mark" />
                   <h1 className="kapibala-home-title">今天想做点什么？</h1>
                   <p className="kapibala-home-subtitle">
-                    描述任务后按 Enter 发送；其它空间运行中的任务会在后台继续。
+                    描述任务后按 Enter 发送
+                    {backgroundRunning ? '；其它空间运行中的任务会在后台继续。' : '。'}
                   </p>
                   <div className="kapibala-home-starters">
                     {STARTERS.map((starter) => (
@@ -1525,7 +1525,17 @@ export function App() {
             dismissed={ui.dismissedNotices}
             onDismiss={ui.dismissNotice}
           />
-          {opened && <footer className="kapibala-composer-dock shrink-0">{composer}</footer>}
+          {opened && (
+            // 窄窗抽屉是覆盖式（modal）：主列不避让时 composer 连同发送按钮会被抽屉整段盖住。
+            // 覆盖期间给底部输入坞让出抽屉宽度，输入卡收窄但完整可见；宽窗走占位布局不受影响。
+            <footer
+              className={`kapibala-composer-dock shrink-0 ${
+                details && !wide ? 'mr-(--kapibala-dock-width)' : ''
+              }`}
+            >
+              {composer}
+            </footer>
+          )}
         </main>
         {details && wide && (
           <div className="w-(--kapibala-dock-width) shrink-0" aria-hidden="true" />

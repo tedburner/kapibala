@@ -22,6 +22,9 @@ export function MarkdownImage({
   report(message: string): void;
 }) {
   const [failed, setFailed] = useState(false);
+  // 极小图（自然尺寸 ≤8px，常为追踪像素或 1×1 占位）按正文渲染会成一个孤立杂点，
+  // 观感像渲染故障：加载后改用与占位链路一致的文案呈现，不试图放大它。
+  const [tiny, setTiny] = useState(false);
   const source = classifyImageSource(src);
   if (source.kind === 'local') return <LocalImage path={source.path} root={root} alt={alt} />;
   if (source.kind === 'placeholder')
@@ -34,6 +37,16 @@ export function MarkdownImage({
             : '[图片]'}
       </span>
     );
+  if (tiny)
+    return (
+      <span className="text-kumo-subtle">
+        {alt?.trim()
+          ? `[图片：${alt.trim()}]`
+          : source.url.startsWith('data:')
+            ? '[图片]'
+            : `[图片：${source.url.slice(0, 48)}]`}
+      </span>
+    );
   const image = (
     <img
       src={source.url}
@@ -42,6 +55,10 @@ export function MarkdownImage({
       decoding="async"
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}
+      onLoad={(event) => {
+        const element = event.currentTarget;
+        if (element.naturalWidth <= 8 && element.naturalHeight <= 8) setTiny(true);
+      }}
       className="max-h-80 w-auto max-w-full rounded-md border border-kumo-line object-contain"
     />
   );
@@ -83,10 +100,13 @@ function LocalImage({
 }) {
   const [url, setUrl] = useState<string>();
   const [error, setError] = useState('');
+  // 与 MarkdownImage 同口径：极小图不按原图渲染，退化成占位文案。
+  const [tiny, setTiny] = useState(false);
   useEffect(() => {
     let live = true;
     setUrl(undefined);
     setError('');
+    setTiny(false);
     void window.kapibala.preview
       .file({ path, root: root || undefined })
       .then((value) => {
@@ -107,12 +127,17 @@ function LocalImage({
         正在加载图片…
       </span>
     );
+  if (tiny) return <span className="text-kumo-subtle">[本地图片：{alt?.trim() || path}]</span>;
   return (
     <img
       src={url}
       alt={alt ?? ''}
       loading="lazy"
       decoding="async"
+      onLoad={(event) => {
+        const element = event.currentTarget;
+        if (element.naturalWidth <= 8 && element.naturalHeight <= 8) setTiny(true);
+      }}
       className="max-h-80 w-auto max-w-full rounded-md border border-kumo-line object-contain"
     />
   );

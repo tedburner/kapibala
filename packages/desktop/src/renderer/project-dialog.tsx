@@ -189,9 +189,10 @@ export function ProjectDialog({
                   {error}
                 </p>
               )}
-              <div className="flex flex-col-reverse gap-3">
+              {/* 按钮布局与创建弹窗同语法（横排右对齐）：同一条「创建 → 信任」流程里不出现两套排版。 */}
+              <div className="flex flex-wrap justify-end gap-3">
                 <Button
-                  className="kapibala-action w-full justify-center"
+                  className="kapibala-action"
                   variant="secondary"
                   disabled={busy}
                   onClick={() => {
@@ -202,7 +203,7 @@ export function ProjectDialog({
                   取消
                 </Button>
                 <Button
-                  className="kapibala-action w-full justify-center"
+                  className="kapibala-action"
                   variant="primary"
                   disabled={busy}
                   onClick={() => void create(true)}

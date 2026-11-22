@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   API_KEY_ENV_NONE,
   BUILTIN_PROFILES,
+  ensureProfile,
   mutateGlobalSettings,
 } from '@kiturone/kapibala-host/host';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -438,7 +439,8 @@ it('保存留空窗口的自定义模型时探测端点声明并回填，失败�
     expect(stored.profiles[0].contextWindow).toBe(1048576);
 
     // 端点未实现 /models（404）：静默跳过，落盘 JSON 不写窗口，由运行时按统一默认值估算；
-    // 公共投影展示的是解析后的生效窗口（256K 默认），不是落盘原值。
+    // 公共投影保留落盘声明语义（undefined 原样透出），不把估算值物化回草稿 ——
+    // 否则一次编辑保存就会把估算值冻结成显式声明，保存前探测也从此失效。
     const failed = await service.saveProfile(
       {
         id: 'custom-silent',
@@ -450,7 +452,7 @@ it('保存留空窗口的自定义模型时探测端点声明并回填，失败�
       },
       'probe-key',
     );
-    expect(failed.profile.contextWindow).toBe(256000);
+    expect(failed.profile.contextWindow).toBeUndefined();
     const silentStored = JSON.parse(
       fs.readFileSync(path.join(root, '.kapibala/settings.json'), 'utf8'),
     );
@@ -476,4 +478,100 @@ it('保存留空窗口的自定义模型时探测端点声明并回填，失败�
   } finally {
     server.close();
   }
+});
+
+it('anthropic 端点探测携带 x-api-key 与 anthropic-version，官方 API 不认纯 Bearer', async () => {
+  const { workspaces } = fixture();
+  const service = new SettingsService(workspaces);
+  const seen: Record<string, string | undefined> = {};
+  const server = createServer((request, response) => {
+    seen['x-api-key'] = request.headers['x-api-key'] as string | undefined;
+    seen.authorization = request.headers.authorization;
+    seen['anthropic-version'] = request.headers['anthropic-version'] as string | undefined;
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ data: [{ id: 'claude-fable-5-1' }] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    // testProfile 用已存 Profile 的 provider 分支鉴权头：内置条目的端点被目录迁移锁定为
+    // 官方值，这里落一条指向本地服务器的自定义 anthropic Profile 来驱动同一分支。
+    mutateGlobalSettings(
+      (raw) => {
+        ensureProfile(raw, {
+          id: 'custom-anthropic',
+          name: 'Custom Anthropic',
+          provider: 'anthropic',
+          baseURL: `http://127.0.0.1:${port}/v1`,
+          apiKeyEnv: 'ANTHROPIC_API_KEY',
+          modelName: 'claude-fable-5-1',
+          apiKey: 'sk-ant-test',
+        });
+      },
+      { homeDir: workspaces.home },
+    );
+    const result = await service.testProfile('custom-anthropic');
+    expect(result.ok).toBe(true);
+    expect(seen['x-api-key']).toBe('sk-ant-test');
+    expect(seen['anthropic-version']).toBe('2023-06-01');
+    expect(seen.authorization).toBe('Bearer sk-ant-test');
+
+    // 表单「获取模型列表」没有已存 Profile：协议由页面随草稿显式传入。
+    seen['x-api-key'] = undefined;
+    seen['anthropic-version'] = undefined;
+    const models = await service.listModels(
+      `http://127.0.0.1:${port}/v1`,
+      'sk-ant-draft',
+      undefined,
+      'anthropic',
+    );
+    expect(models).toEqual(['claude-fable-5-1']);
+    expect(seen['x-api-key']).toBe('sk-ant-draft');
+    expect(seen['anthropic-version']).toBe('2023-06-01');
+  } finally {
+    server.close();
+  }
+});
+
+it('设为默认与角色绑定只写引用：内置模型不物化条目进用户文件', () => {
+  const { root, workspaces } = fixture();
+  const service = new SettingsService(workspaces);
+  service.setDefault('deepseek-flash');
+  service.setRouting('planning', 'claude-opus-5');
+  const stored = JSON.parse(fs.readFileSync(path.join(root, '.kapibala/settings.json'), 'utf8'));
+  expect(stored.defaultModel).toBe('deepseek-flash');
+  expect(stored.modelRouting).toEqual({ planning: 'claude-opus-5' });
+  expect(stored.profiles).toEqual([]);
+});
+
+it('项目级模型在目录投影中标记 scope=project，供页面禁用管理操作', () => {
+  const { workspaces } = fixture();
+  const service = new SettingsService(workspaces);
+  const projectDir = fs.realpathSync.native(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-scope-project-')),
+  );
+  roots.push(projectDir);
+  const workspace = workspaces.registerProject(projectDir);
+  const trusted = workspaces.confirm(workspace.id, workspace.trustToken, true);
+  fs.mkdirSync(path.join(trusted.root, '.kapibala'), { recursive: true });
+  fs.writeFileSync(
+    path.join(trusted.root, '.kapibala/settings.json'),
+    JSON.stringify({
+      defaultModel: 'project-only-model',
+      profiles: [
+        {
+          id: 'project-only-model',
+          name: 'Project Only',
+          provider: 'openai-compatible',
+          baseURL: 'https://project.example.com/v1',
+          apiKeyEnv: 'PROJECT_API_KEY',
+          modelName: 'project-model',
+        },
+      ],
+    }),
+  );
+  const catalog = service.read(trusted.id);
+  const scopes = Object.fromEntries(catalog.profiles.map((item) => [item.id, item.scope]));
+  expect(scopes['project-only-model']).toBe('project');
+  expect(scopes['deepseek-flash']).toBe('global');
 });

@@ -995,34 +995,32 @@ export type ProviderFamily =
   | 'unknown';
 
 /**
- * 从 profile 的 id / baseURL 推断所属厂商族。
+ * 从 profile 的 baseURL 推断所属厂商族；**只有端点证据才归族**。
  *
- * 顺序敏感：先认端点 host，再认 id 前缀，最后才落到 openai 的宽泛匹配。
- * 各家 OpenAI 兼容端点里含 'openai' 字样（如 Gemini 的 `/v1beta/openai/`）但不含
- * 'openai.com'，所以 host 级判断不会被误吞。
+ * 厂商族决定三件有副作用的事：同组密钥共享与归一（credentialGroup）、同族环境变量回退
+ * （FAMILY_KEY_ENV）与端点环境变量覆盖（FAMILY_BASE_URL_ENV）。这些行为一旦落在错误端点上，
+ * 代价是把 A 厂商的密钥发给 B 端点、或更新密钥时清掉另一端的正确凭证。因此 id 前缀
+ * （gpt-* / kimi-* / deepseek-* 等命名习惯）不作为归族证据：自建网关给模型起任意名字都很
+ * 常见，凭 id 归族会让「OpenAI 的 key 发给第三方网关」变成静默行为。端点认不出时一律
+ * unknown，由调用方按端点 host 隔离（credentialGroup）。内置清单全部使用官方端点，
+ * 不受影响；协议级特例（如 DeepSeek 兼容网关的推理内容回放）改由 chatCapabilities 显式声明。
+ *
+ * 顺序敏感：先认厂商专属域，最后才落到 openai.com 的宽泛匹配。各家 OpenAI 兼容端点里
+ * 含 'openai' 字样（如 Gemini 的 `/v1beta/openai/`）但不含 'openai.com'，不会被误吞。
+ * 唯一的 id 例外是精确等于 'ollama'：那是内置条目的本名而非命名模式，且 Ollama 免密钥，
+ * 归族不产生凭证副作用，端点换端口后仍能被识别为本地 Ollama。
  */
 export function detectProviderFamily(profile: ModelProfile): ProviderFamily {
-  const id = profile.id.toLowerCase();
   const base = (profile.baseURL || '').toLowerCase();
 
-  if (base.includes('deepseek') || id.startsWith('deepseek')) return 'deepseek';
-  if (base.includes('anthropic.com') || id.startsWith('claude')) return 'anthropic';
-  if (base.includes('generativelanguage.googleapis.com') || id.startsWith('gemini')) {
-    return 'google';
-  }
-  if (base.includes('moonshot') || id.startsWith('kimi')) return 'moonshot';
-  if (base.includes('bigmodel.cn') || id.startsWith('glm')) return 'zhipu';
-  if (base.includes('aliyuncs.com') || id.startsWith('qwen')) return 'qwen';
-  if (id === 'ollama' || base.includes('11434')) return 'ollama';
-  if (
-    id.startsWith('gpt') ||
-    id.startsWith('o1') ||
-    id.startsWith('o3') ||
-    id.startsWith('openai') ||
-    base.includes('openai.com')
-  ) {
-    return 'openai';
-  }
+  if (base.includes('deepseek')) return 'deepseek';
+  if (base.includes('anthropic.com')) return 'anthropic';
+  if (base.includes('generativelanguage.googleapis.com')) return 'google';
+  if (base.includes('moonshot')) return 'moonshot';
+  if (base.includes('bigmodel.cn')) return 'zhipu';
+  if (base.includes('aliyuncs.com')) return 'qwen';
+  if (base.includes('11434') || profile.id.toLowerCase() === 'ollama') return 'ollama';
+  if (base.includes('openai.com')) return 'openai';
   return 'unknown';
 }
 

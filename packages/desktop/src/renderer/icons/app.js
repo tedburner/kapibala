@@ -1,9 +1,9 @@
+import { DUR, REDUCED, clearTone, flatTone, runtime } from './engine.js';
 // Copyright (c) 2026 Kubai087. Licensed under the Kubai Icons License; see LICENSE.
 // Kapibala 图标展示页：7 个品牌功能图标 + 色板切换 + 演示开关。
 // 自检脚本 check.mjs 会把本文件、icons.js 与 engine.js 内联进页面，因此
 // import / export 语句都会被剥掉，保持与 classic script 兼容的写法。
-import { ICONS, APP_PALETTE, mountIcon, go } from './icons.js';
-import { clearTone, flatTone, DUR, REDUCED, runtime } from './engine.js';
+import { APP_PALETTE, ICONS, go, mountIcon } from './icons.js';
 
 const ORDER = ['新建对话', '默认空间', '新建项目', '设置', '搜索', '信任空间', '项目空间'];
 const BY_NAME = Object.fromEntries(ICONS.map((icon) => [icon.name, icon]));
@@ -17,7 +17,7 @@ const PALETTES = [
   APP_PALETTE,
   clearTone('蓝灰', '#6F87B5', N),
   clearTone('薄荷', '#5FAE8A', N),
-  flatTone('黑色', '#2E3036', N)
+  flatTone('黑色', '#2E3036', N),
 ];
 runtime.palette = PALETTES[1];
 
@@ -39,10 +39,26 @@ const insts = LIST.map((icon, i) => {
 });
 
 function bind(inst, el) {
-  el.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') { inst.hover++; go(inst); } });
-  el.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') { inst.hover = Math.max(0, inst.hover - 1); go(inst); } });
-  el.addEventListener('focus', () => { inst.hover++; go(inst); });
-  el.addEventListener('blur', () => { inst.hover = Math.max(0, inst.hover - 1); go(inst); });
+  el.addEventListener('pointerenter', (e) => {
+    if (e.pointerType === 'mouse') {
+      inst.hover++;
+      go(inst);
+    }
+  });
+  el.addEventListener('pointerleave', (e) => {
+    if (e.pointerType === 'mouse') {
+      inst.hover = Math.max(0, inst.hover - 1);
+      go(inst);
+    }
+  });
+  el.addEventListener('focus', () => {
+    inst.hover++;
+    go(inst);
+  });
+  el.addEventListener('blur', () => {
+    inst.hover = Math.max(0, inst.hover - 1);
+    go(inst);
+  });
 }
 
 // ---------- Palette control ----------
@@ -66,7 +82,10 @@ const segButtons = PALETTES.map((pal, i) => {
 function choose(i) {
   const next = (i + PALETTES.length) % PALETTES.length;
   runtime.palette = PALETTES[next];
-  segButtons.forEach((b, j) => { b.setAttribute('aria-checked', String(j === next)); b.tabIndex = j === next ? 0 : -1; });
+  segButtons.forEach((b, j) => {
+    b.setAttribute('aria-checked', String(j === next));
+    b.tabIndex = j === next ? 0 : -1;
+  });
   wave(go, 12);
   return next;
 }
@@ -75,10 +94,17 @@ function choose(i) {
 const sw = document.getElementById('demo');
 let demoOn = false;
 function demoCycle() {
-  const gap = 25, span = gap * N + DUR;
-  wave((inst) => { inst.demo = true; go(inst); }, gap);
+  const gap = 25,
+    span = gap * N + DUR;
+  wave((inst) => {
+    inst.demo = true;
+    go(inst);
+  }, gap);
   later(() => {
-    wave((inst) => { inst.demo = false; go(inst); }, gap);
+    wave((inst) => {
+      inst.demo = false;
+      go(inst);
+    }, gap);
     later(demoCycle, span + 700);
   }, span + 1200);
 }
@@ -88,6 +114,12 @@ function setDemo(on) {
   timers.forEach(clearTimeout);
   timers = [];
   if (on) demoCycle();
-  else insts.forEach((inst) => { if (inst.demo) { inst.demo = false; go(inst); } });
+  else
+    insts.forEach((inst) => {
+      if (inst.demo) {
+        inst.demo = false;
+        go(inst);
+      }
+    });
 }
 sw.addEventListener('click', () => setDemo(!demoOn));
