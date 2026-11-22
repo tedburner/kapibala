@@ -532,7 +532,27 @@ function nearestPackageJson(cwd: string, root: string): string | undefined {
  */
 function gitTrust(targets: readonly string[], root: string): ScriptTrust {
   if (!fs.existsSync(path.join(root, '.git'))) return 'unknown';
-  const relatives = targets.map((target) => path.relative(root, target).replace(/\\/g, '/'));
+  // 目标进入本函数时可能携带两种路径身份：脚本/配置目标已是 native realpath 物理路径
+  // （resolveAnyFileTarget / findNearestFiles），而 nearestPackageJson 仍是词法路径；
+  // macOS（/var → /private/var）与 Windows 8.3 短名下两种身份混用会让 pathspec 指向
+  // 仓库之外、被下方越界守卫整体判为 `unknown`。统一把根与目标都按 native realpath
+  // 折到物理身份后再求相对路径；解析失败退回词法路径，由越界守卫兜底。
+  const physicalRoot = (() => {
+    try {
+      return fs.realpathSync.native(root);
+    } catch {
+      return root;
+    }
+  })();
+  const relatives = targets.map((target) => {
+    let physicalTarget = target;
+    try {
+      physicalTarget = fs.realpathSync.native(target);
+    } catch {
+      /* 目标不可解析时保留词法路径 */
+    }
+    return path.relative(physicalRoot, physicalTarget).replace(/\\/g, '/');
+  });
   if (relatives.some((relative) => relative === '' || relative.startsWith('..'))) return 'unknown';
   const cacheKey = `${root}\u0000${relatives.join('\u0000')}\u0000${statSignature(targets)}`;
   const cached = trustCache.get(cacheKey);
