@@ -79,7 +79,7 @@ homeDirectory 统一派生父子会话的 `userInstructionsPath=<homeDirectory>/
 
 原 `SessionManager` 即使收到 workspaceRoot 也会向上探测 Git 根；阶段 A 已按 004 第 3.2 节新增 `projectRootMode` 与解析函数的策略参数，共享装配使用 `exact`，本地协议适配器先保留原项目根检测。默认空间不走 Git 提升；列表、新建、打开与子会话沿用同一身份。该公开参数与 `/host` 一起纳入声明和兼容验证，不复制 projectKey 算法或迁移旧桶。
 
-不要直接把 resources.ts 中的 wire `publicHistory` 作为桌面快照。它是既有协议的简化投影，不能提供桌面工具卡片所需的完整关联字段。本地 wire 1.0 适配器保留，桌面使用展示模型和自己的 DTO。
+不要直接把 resources.ts 中的 wire `publicHistory` 作为桌面快照。它是既有协议的简化投影，不能提供桌面工具卡片所需的完整关联字段。本地协议适配器保留（协议自 v0.1.4 起为整数 `PROTOCOL_VERSION = 2`），桌面使用展示模型和自己的 DTO。
 
 配置写路径至少核对 `saveGlobalSettings`、`trustProject`、`migrateGlobalSettingsCatalog`、`persistDefaultModel`、`persistModelRole`、向导和命令处理器。检索函数的所有引用及别名调用，不能只修改桌面设置页。锁内执行短同步变更，交互、网络请求和等待全部留在锁外。
 
@@ -113,7 +113,7 @@ try {
 
 配置修改使用 `mutateGlobalSettings(draft => { ... }, { homeDir })`；回调只提交本次字段，不传旧表单整份快照。它会重读原始全局配置，且不物化整个内置模型目录。`SETTINGS_BUSY` 的错误包含锁路径：只有确认所有配置写入进程退出后才可人工处理遗留锁，不按时间或 PID 自动抢占。旧 CLI 和外部编辑器不参与新锁，勿同时编辑。
 
-本地协议适配器保留 wire 1.0 的历史格式。上例没有实现桌面 DTO、IPC 队列、快照分块或审批界面，阶段 B 的 `packages/desktop/src/agent-host` 与 `shared` 已实现桌面适配，不改变 wire 1.0。阶段 A 的命令、回归和当前平台限制见 [验收记录](verification/v0.1.0-stage-a.md)。
+本地协议适配器保留 wire 1.0 的历史格式（v0.1.0 阶段口径；协议自 v0.1.4 起为整数 `PROTOCOL_VERSION = 2`）。上例没有实现桌面 DTO、IPC 队列、快照分块或审批界面，阶段 B 的 `packages/desktop/src/agent-host` 与 `shared` 已实现桌面适配，不改变 wire 1.0。阶段 A 的命令、回归和当前平台限制见 [验收记录](verification/v0.1.0-stage-a.md)。
 
 ## 3. 目录与依赖边界
 

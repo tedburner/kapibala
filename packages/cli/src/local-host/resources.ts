@@ -11,7 +11,7 @@ export interface ResourceFactoryOptions {
   homeDir?: string;
 }
 
-/** wire 1.0 的薄适配器；按既有规则确定 Git 根后复用精确身份装配与同一宿主写租约。 */
+/** 本地协议的薄适配器（自 v0.1.4 起为整数版本 2）；按既有规则确定 Git 根后复用精确身份装配与同一宿主写租约。 */
 export function createResourceFactory(options: ResourceFactoryOptions = {}): ResourceFactory {
   const leases = new WorkspaceLeaseCoordinator();
   return {
