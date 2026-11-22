@@ -51,8 +51,8 @@ export interface McpApprovalTarget {
   config: ServerConfig;
 }
 
-/** 顶层键排序后的稳定 JSON，保证同一配置在不同字段顺序下摘要一致。 */
-function stableJson(value: unknown): string {
+/** 顶层及嵌套键排序后的稳定 JSON，保证批准摘要与导入溯源对同一配置得到完全一致的序列。 */
+export function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>;
@@ -256,8 +256,11 @@ export class McpServerApprovalStore {
   }
 }
 
-/** 项目根归一：优先 native realpath（Windows 8.3 短名），并折叠分隔符与大小写。 */
-function normalizeProjectRoot(root: string): string {
+/** 项目根归一：优先 native realpath（Windows 8.3 短名），并按平台折叠分隔符与大小写。 */
+export function normalizeProjectRoot(
+  root: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
   let resolved = path.resolve(root);
   try {
     resolved = fs.realpathSync.native(root);
@@ -265,7 +268,7 @@ function normalizeProjectRoot(root: string): string {
     /* 路径不存在时退回 resolve 结果。 */
   }
   const unified = resolved.replace(/\\/g, '/').replace(/\/+$/, '');
-  return process.platform === 'win32' ? unified.toLowerCase() : unified;
+  return platform === 'win32' ? unified.toLowerCase() : unified;
 }
 
 /**

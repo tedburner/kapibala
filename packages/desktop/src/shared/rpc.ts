@@ -73,11 +73,13 @@ export class RpcEndpoint {
       return Promise.reject(new Error('REQUEST_LIMIT'));
     const parsed = PARAMS[method].parse(params);
     const requestId = crypto.randomUUID();
+    const timeoutMs =
+      method === 'app.downloadUpdate' ? LIMITS.downloadTimeout : LIMITS.requestTimeout;
     return new Promise<Output<M>>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error('REQUEST_TIMEOUT'));
-      }, LIMITS.requestTimeout);
+      }, timeoutMs);
       this.pending.set(requestId, {
         method,
         resolve: (value) => resolve(value as Output<M>),

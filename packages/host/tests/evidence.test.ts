@@ -140,6 +140,8 @@ describe('会话证据聚合', () => {
       toolResult('w2'),
       toolUse('w3', 'write_file', { path: 'big.ts' }),
       toolResult('w3', { diff: { truncated: true } }),
+      toolUse('w3b', 'write_file', { path: 'big.ts' }),
+      toolResult('w3b', { diff: { truncated: true } }),
       toolUse('w4', 'write_file', { path: 'failed.ts' }),
       toolResult('w4', { isError: true }),
     ];
@@ -153,6 +155,7 @@ describe('会话证据聚合', () => {
     expect(evidence.changes.map((item) => [item.path, item.status])).toEqual([
       ['src/a.ts', 'recorded'],
       ['src/b.ts', 'missing'],
+      ['big.ts', 'truncated'],
       ['big.ts', 'truncated'],
     ]);
     expect(evidence.changes[1].additions).toBeNull();

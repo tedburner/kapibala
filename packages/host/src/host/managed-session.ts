@@ -680,8 +680,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     });
     watches = watchService;
     for (const tool of createWatchTools(watchService)) current.tools.register(tool);
-    // 恢复失败只影响本会话的触发源布置，不得让未接住的 rejection 击穿宿主进程。
-    watchService.start().catch((error: unknown) => {
+    // 等待持久化监视恢复完成再返回资源句柄，避免快速 dispose 与后台回读会话文件竞态。
+    await watchService.start().catch((error: unknown) => {
       console.warn('[watch] failed to restore watch states for this session', error);
     });
     const managed: ManagedHostSession = {

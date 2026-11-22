@@ -17,6 +17,8 @@ export const LIMITS = Object.freeze({
   /** 单个代码/参数/结果文本的最大展示字符数（UTF-16 单元）；只约束渲染，不截断落盘数据。 */
   displayBudget: 64 * 1024,
   requestTimeout: 30_000,
+  /** 安装包流式下载的 RPC 总预算（空闲断连另由主进程 60s 看门狗逐块拦截，不得被常规 30s RPC 超时截断）。 */
+  downloadTimeout: 30 * 60_000,
   approvalTimeout: 120_000,
 });
 const id = z.string().min(1).max(256);
@@ -356,10 +358,10 @@ const evidence = z
         runningDelegations: z.number().int().nonnegative(),
       })
       .strict(),
-    changes: z.array(evidenceChange).max(10_000),
-    references: z.array(evidenceReference).max(10_000),
-    mcp: z.array(evidenceMcp).max(1_000),
-    delegations: z.array(evidenceDelegation).max(1_000),
+    changes: z.array(evidenceChange).max(100_000),
+    references: z.array(evidenceReference).max(100_000),
+    mcp: z.array(evidenceMcp).max(100_000),
+    delegations: z.array(evidenceDelegation).max(100_000),
   })
   .strict();
 

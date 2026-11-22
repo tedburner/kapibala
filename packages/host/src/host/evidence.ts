@@ -71,8 +71,8 @@ export function buildSessionEvidence(
   const changes: ViewEvidenceChangeFile[] = [];
   let additions = 0;
   let deletions = 0;
-  let truncatedFiles = 0;
-  let missingFiles = 0;
+  const truncatedPaths = new Set<string>();
+  const missingPaths = new Set<string>();
   for (const call of calls) {
     if (!CHANGE_TOOLS.has(call.name)) continue;
     const result = results.get(call.id);
@@ -88,7 +88,7 @@ export function buildSessionEvidence(
         additions: null,
         deletions: null,
       });
-      missingFiles++;
+      missingPaths.add(path);
       continue;
     }
     if ('truncated' in diff) {
@@ -99,7 +99,7 @@ export function buildSessionEvidence(
         additions: null,
         deletions: null,
       });
-      truncatedFiles++;
+      truncatedPaths.add(path);
       continue;
     }
     changes.push({
@@ -129,8 +129,8 @@ export function buildSessionEvidence(
   const summary: ViewEvidenceSummary = {
     additions,
     deletions,
-    truncatedFiles,
-    missingFiles,
+    truncatedFiles: truncatedPaths.size,
+    missingFiles: missingPaths.size,
     references: references.length,
     mcpCalls: mcpTotals.calls,
     mcpFailures: mcpTotals.failed,

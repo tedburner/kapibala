@@ -23,7 +23,7 @@ const contractPath = path.join(
 /** wire 契约的固定快照；类型由 typecheck 保证，这里冻结运行时可观察目录。 */
 export interface ProtocolContract {
   readonly schemaVersion: 1;
-  readonly protocol: { readonly major: number; readonly minor: number };
+  readonly protocol: number;
   readonly capabilities: readonly string[];
   readonly limits: Readonly<Record<string, number>>;
   readonly errors: readonly string[];

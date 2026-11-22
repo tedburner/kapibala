@@ -6,8 +6,8 @@ import type { ViewEvidence } from '@kiturone/kapibala-host/view-model';
 /**
  * 会话级监视门面；缺省表示该宿主没有布置触发源。协议层行为（server.ts watch/*）：
  * watch/list 在宿主未提供时返回空列表（`watches?.list() ?? []`），watch/cancel 直接抛
- * INVALID_REQUEST——不存在「假装已取消」的成功路径。daemon 侧本版未布置触发源，
- * watch/list 恒空是已知分阶段状态而非故障；触发源随监视工具落地后由宿主注入本门面。
+ * INVALID_REQUEST——不存在「假装已取消」的成功路径。默认 `createResourceFactory`
+ * 经 `createManagedSessionResources` 在单写者会话锁内完整布置监视触发源并注入本门面。
  */
 export interface SessionWatchControl {
   list(): WatchView[];

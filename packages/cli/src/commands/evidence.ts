@@ -9,7 +9,11 @@
  * 4. 当前宿主没有会话管理器时不伪造空委派列表，而是明确说明该分区不可用。
  */
 
-import { buildSessionEvidence, listDelegationSessions } from '@kiturone/kapibala-host/internal';
+import {
+  buildSessionEvidence,
+  listDelegationSessions,
+  redactCommonSecrets,
+} from '@kiturone/kapibala-host/internal';
 import type { ViewEvidenceDelegationState } from '@kiturone/kapibala-host/view-model';
 import { resolveCommandOutput } from '../command-output.js';
 import type { CommandHandler } from './dispatcher.js';
@@ -28,13 +32,16 @@ export const evidenceCommand: CommandHandler = async (_args, ctx) => {
   const out = resolveCommandOutput(ctx);
   const manager = ctx.controller?.manager;
   const delegations = manager ? await listDelegationSessions(manager) : [];
-  const evidence = buildSessionEvidence({
-    conversationId: ctx.session.conversationId,
-    history: ctx.session.getHistory(),
-    delegations,
-    tasks: ctx.runtime?.listTasks() ?? [],
-    parentActive: false,
-  });
+  const evidence = buildSessionEvidence(
+    {
+      conversationId: ctx.session.conversationId,
+      history: ctx.session.getHistory(),
+      delegations,
+      tasks: ctx.runtime?.listTasks() ?? [],
+      parentActive: false,
+    },
+    redactCommonSecrets,
+  );
 
   const { summary } = evidence;
   out.log(

@@ -150,4 +150,47 @@ describe('/evidence', () => {
     expect(text).toContain('本会话没有跨会话引用。');
     expect(text).toContain('本会话没有 MCP 调用。');
   });
+
+  it('对引用来源标题与委派标题执行通用秘密脱敏', async () => {
+    const fakeKey = ['sk', 'proj', '1234567890abcdefghijklmnop'].join('-');
+    const fakeJwt = ['eyJhbGciOiJIUzI1NiJ9', 'secret', 'sig'].join('.');
+    const secretHistory: CanonicalMessage[] = [
+      {
+        id: 'u-sec',
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: '参考',
+            referenceSource: {
+              version: 1,
+              sessionId: 'src-1',
+              recordId: 'rec-1',
+              branchId: 'main',
+              role: 'user',
+              timestamp: 1_700_000_000_000,
+              contentDigest: '0123456789abcdef',
+              title: `调试 ${fakeKey} 报错`,
+            },
+          },
+        ],
+      },
+    ];
+    vi.mocked(listDelegationSessions).mockResolvedValue([
+      {
+        sessionId: 'd-sec',
+        title: `委派 Bearer ${fakeJwt}`,
+        taskName: 'password=my_super_secret_value_123456',
+        parentSessionId: 'conv-1',
+        lastActivityAt: 1_700_000_000_000,
+        archived: false,
+      },
+    ]);
+    const { ctx, lines } = context(secretHistory, { manager: {} });
+    await evidenceCommand([], ctx);
+    const text = lines.join('\n');
+    expect(text).not.toContain(fakeKey);
+    expect(text).not.toContain(fakeJwt);
+    expect(text).not.toContain('my_super_secret_value_123456');
+  });
 });

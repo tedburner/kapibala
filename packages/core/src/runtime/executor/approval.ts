@@ -5,12 +5,14 @@ import {
   type SessionApprovalCache,
   stableJsonStringify,
 } from '../../capabilities/security/approval.js';
+import { inspectFileWriteTarget } from '../../capabilities/security/escape-paths.js';
 import type {
   PermissionPolicy,
   PermissionRule,
   SessionMode,
   ShellScope,
 } from '../../capabilities/security/permissions.js';
+import type { PathSandbox } from '../../capabilities/security/sandbox.js';
 import {
   classifyShellCommandClass,
   findProtectedShellTargets,
@@ -31,6 +33,7 @@ export interface ToolApprovalDeps {
   executionIdentity: ToolExecutionIdentity | undefined;
   rootDir: string;
   executionCwd: string;
+  sandbox?: PathSandbox;
   mode: SessionMode | (() => SessionMode);
   permissionRules: readonly PermissionRule[];
   approvalChannel?: ApprovalChannel;
@@ -74,6 +77,7 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
     tool,
     rootDir,
     executionCwd,
+    sandbox,
     mode,
     permissionRules,
     approvalChannel,
@@ -137,15 +141,22 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
     }
     const hardDenied = hardDenial?.(tool, finalInput);
     const cached = approvalCache.get(request);
+    const fileWriteCheck =
+      !shell && request.capabilities.includes('fs:write') && typeof finalInput.path === 'string'
+        ? inspectFileWriteTarget(finalInput.path, rootDir, sandbox)
+        : undefined;
     const decision = policy.decide({
       hardDenied: hardDenied !== undefined,
       mode: activeMode,
       toolName: call.name,
       capabilities: request.capabilities,
-      dangerous: tool.metadata?.dangerous,
+      dangerous: Boolean(tool.metadata?.dangerous || fileWriteCheck?.requiresAsk),
       cachedApproval: cached === 'allow',
       cachedDenial: cached === 'deny',
       rules: permissionRules,
+      ...(fileWriteCheck?.protectedTarget
+        ? { protectedTarget: fileWriteCheck.protectedTarget }
+        : {}),
       ...(shell
         ? {
             shell,

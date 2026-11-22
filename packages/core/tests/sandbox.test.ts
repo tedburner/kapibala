@@ -232,6 +232,8 @@ describe('PathSandbox (硬禁区)', () => {
   it('exposes the pure matcher for shell-side reuse', () => {
     expect(isProtectedWorkspacePath('a/.git/hooks/x')).toBe(true);
     expect(isProtectedWorkspacePath('.env.local')).toBe(true);
+    expect(isProtectedWorkspacePath('.env ')).toBe(true);
+    expect(isProtectedWorkspacePath('.env...')).toBe(true);
     expect(isProtectedWorkspacePath('.env.example')).toBe(false);
     expect(isProtectedWorkspacePath('.envrc')).toBe(true);
     expect(isProtectedWorkspacePath('nested/.envrc')).toBe(true);

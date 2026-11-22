@@ -75,8 +75,14 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     fallbackAbort?.abort();
     input.close();
   };
-  const runTask = async (operation: (signal: AbortSignal) => AsyncIterable<SessionEvent>) => {
+  const runTask = async (
+    operation: (signal: AbortSignal) => AsyncIterable<SessionEvent>,
+    externalSignal?: AbortSignal,
+  ) => {
     const abort = new AbortController();
+    const combinedSignal = externalSignal
+      ? AbortSignal.any([abort.signal, externalSignal])
+      : abort.signal;
     fallbackAbort = abort;
     const renderer = createEventRenderer({
       debug,
@@ -87,9 +93,9 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     const unbindToggle = input.onDetailToggle(() => renderer.toggleDetail());
     const unbindInteraction = input.onInteraction(() => renderer.invalidateAnchor());
     try {
-      for await (const event of operation(abort.signal)) renderer.render(event);
+      for await (const event of operation(combinedSignal)) renderer.render(event);
     } catch (error) {
-      if (!(error instanceof AbortError) && !abort.signal.aborted)
+      if (!(error instanceof AbortError) && !combinedSignal.aborted)
         console.error(`执行失败: ${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       unbindToggle();
@@ -113,9 +119,16 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     );
   context.onExit = requestExit;
   // 监视触发后的自动续跑复用同一条 runTask 渲染与取消路径：
-  // 通知本身已作为背景消息落盘，这里只负责驱动模型继续一轮。
-  setWatchResumeHook(async (text, _signal) => {
-    await runTask((signal) => session().run(text, { signal }));
+  // 必须核对所属会话与 abort 信号，防止切换/关闭竞态把续跑落到新会话上。
+  setWatchResumeHook(async (targetSession, text, signal) => {
+    if (signal.aborted || session() !== targetSession) return;
+    await runTask(
+      (runSignal) =>
+        options.controller && session() === targetSession
+          ? options.controller.run(text, { signal: runSignal })
+          : targetSession.run(text, { signal: runSignal }),
+      signal,
+    );
   });
   input.onInterrupt(() => {
     activeRenderer?.invalidateAnchor();

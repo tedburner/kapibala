@@ -310,6 +310,58 @@ const POWERSHELL_WRITE = new Set(['add-content', 'new-item', 'out-file', 'set-co
 /** PowerShell 无法静态判读的 cmdlet。 */
 const POWERSHELL_UNKNOWN = new Set(['iex', 'invoke-expression']);
 
+/** 看起来像可执行脚本的扩展名；只用于直引脚本路径与 `scriptTrust` 门控对齐。 */
+const SCRIPT_EXTENSION = /\.(?:bash|cjs|cts|js|jsx|ksh|mjs|mts|php|pl|ps1|py|rb|sh|ts|tsx|zsh)$/i;
+
+/** 解释器预加载选项：取值模块先于主脚本执行，必须检查工作区越界与脚本清洁度。 */
+const INTERPRETER_PRELOAD_FLAGS = new Set([
+  '-r',
+  '--require',
+  '--import',
+  '--loader',
+  '--experimental-loader',
+  '--env-file',
+  '--import-map',
+]);
+
+/** 工作区工具自定义配置文件的选项名。 */
+const WORKSPACE_CONFIG_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  make: new Set(['-f', '--file', '--makefile']),
+  eslint: new Set(['-c', '--config']),
+  vitest: new Set(['-c', '--config']),
+  tsup: new Set(['--config']),
+  prettier: new Set(['--config']),
+  biome: new Set(['--config-path']),
+  tsc: new Set(['-p', '--project']),
+};
+
+/** 前导环境变量中可劫持搜索路径、动态链接或运行时入口的高危键名。 */
+const DANGEROUS_ENV_KEYS = new Set([
+  'PATH',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH',
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'PYTHONPATH',
+  'PYTHONSTARTUP',
+  'PYTHONHOME',
+  'RUBYOPT',
+  'RUBYLIB',
+  'PERL5OPT',
+  'PERL5LIB',
+  'BASH_ENV',
+  'ENV',
+  'ZDOTDIR',
+  'IFS',
+  'CDPATH',
+  'PROMPT_COMMAND',
+  'SHELLOPTS',
+  'BASHOPTS',
+]);
+
 /**
  * 判断命令的风险类别。
  *
@@ -327,11 +379,28 @@ export function classifyShellCommandClass(shell: ShellScope, rootDir: string): S
     return shell.scriptTrust === 'clean' ? 'workspace-write' : 'unknown';
   const segments = splitSegments(shell.command);
   if (segments === undefined || segments.length === 0) return 'unknown';
-  const classes = segments.map((segment) =>
-    shell.interpreter === 'pwsh' || shell.interpreter === 'powershell'
-      ? classifyPowerShellSegment(segment, shell.cwd, rootDir)
-      : classifyPosixSegment(segment, shell.cwd, rootDir, shell.scriptTrust),
-  );
+  if (segments.some((segment) => segment.hadSubshell)) return 'unknown';
+  const isPowerShell = shell.interpreter === 'pwsh' || shell.interpreter === 'powershell';
+  let effectiveCwd = shell.cwd;
+  let cwdUnknown = false;
+  const classes: ShellCommandClass[] = [];
+  for (const segment of segments) {
+    if (cwdUnknown) {
+      classes.push('unknown');
+      continue;
+    }
+    if (!isWithinRoot(effectiveCwd, rootDir)) {
+      classes.push('escape');
+      continue;
+    }
+    const cls = isPowerShell
+      ? classifyPowerShellSegment(segment, effectiveCwd, rootDir, shell.scriptTrust)
+      : classifyPosixSegment(segment, effectiveCwd, rootDir, shell.scriptTrust);
+    classes.push(cls);
+    const nextCwd = advanceSegmentCwd(segment.text, effectiveCwd);
+    if (nextCwd === 'unknown') cwdUnknown = true;
+    else if (nextCwd !== undefined) effectiveCwd = nextCwd;
+  }
   return aggregate(classes);
 }
 
@@ -365,32 +434,42 @@ export function findProtectedShellTargets(shell: ShellScope, rootDir: string): r
   if (segments === undefined) return [];
   const root = path.resolve(rootDir);
   const found = new Set<string>();
+  let effectiveCwd = shell.cwd;
   for (const segment of segments) {
-    const scan = scanRedirections(segment.text);
+    const cleanedSegment = segment.text.trim().replace(/^[()]+|[()]+$/g, '');
+    const scan = scanRedirections(cleanedSegment);
     // 进程替换的目标可以是任意命令，无法静态归因；分类器侧已按 unknown 询问。
     if (scan.processSubstitution) continue;
     const words = splitWords(scan.command);
     if (words === undefined) continue;
     const candidates = scan.hasOutput ? [...scan.targets] : [];
-    const program = baseName(words[0]);
-    const args = words.slice(1).filter((word) => !word.startsWith('-'));
+    let index = 0;
+    while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) index++;
+    if (words[index] === 'time') index++;
+    if (words[index] === 'command') index++;
+    const cmdWords = words.slice(index);
+    const program = baseName(cmdWords[0]);
+    const args = cmdWords.slice(1).filter((word) => !word.startsWith('-'));
     if (program === 'tee' || program === 'touch' || program === 'mkdir') candidates.push(...args);
     if (program === 'cp' || program === 'mv' || program === 'install') {
       // GNU `-t DIR` 的取值才是写入目标（位置参数是源）；无值配对无法归因，跳过该段。
-      const targetDirectory = gnuTargetDirectory(words);
+      const targetDirectory = gnuTargetDirectory(cmdWords);
       if (targetDirectory.present && targetDirectory.value === undefined) continue;
       const destination = targetDirectory.present ? targetDirectory.value! : args[args.length - 1];
       if (destination !== undefined) candidates.push(destination);
     }
+    if (program === 'git') {
+      for (const out of extractGitOutputTargets(cmdWords.slice(1)).values) candidates.push(out);
+    }
     // `-i` 必须按前缀匹配：GNU/BSD 的后缀形态 `-i.bak`（甚至 BSD 的独立 `-i ''`）同样是原地改写。
     if (
       program === 'sed' &&
-      words.some((word) => word.startsWith('-i') || word.startsWith('--in-place'))
+      cmdWords.some((word) => word.startsWith('-i') || word.startsWith('--in-place'))
     ) {
       const file = args[args.length - 1];
       if (file !== undefined) candidates.push(file);
     }
-    if (program === 'find' && words.includes('-delete')) candidates.push(...args);
+    if (program === 'find' && cmdWords.includes('-delete')) candidates.push(...args);
     if (
       program === 'set-content' ||
       program === 'add-content' ||
@@ -402,11 +481,13 @@ export function findProtectedShellTargets(shell: ShellScope, rootDir: string): r
       if (candidate.includes('$') || candidate.includes('`') || candidate.startsWith('~')) continue;
       // glob 元字符会让 bash 先展开再写入，字面路径不代表真实目标，无法静态归因（分类器侧归 unknown）。
       if (containsGlobMeta(candidate)) continue;
-      const resolved = path.resolve(shell.cwd, candidate);
+      const resolved = path.resolve(effectiveCwd, candidate);
       if (!isWithinRoot(resolved, root)) continue;
       const relative = path.relative(root, resolved).replace(/\\/g, '/');
       if (isProtectedWorkspacePath(relative)) found.add(relative);
     }
+    const nextCwd = advanceSegmentCwd(cleanedSegment, effectiveCwd);
+    if (nextCwd !== undefined && nextCwd !== 'unknown') effectiveCwd = nextCwd;
   }
   return [...found];
 }
@@ -480,20 +561,22 @@ function lastNonOptionWord(words: readonly string[]): string | undefined {
   return undefined;
 }
 
-type Segment = { text: string; hadSubstitution: boolean; hadDollar: boolean };
+type Segment = { text: string; hadSubstitution: boolean; hadDollar: boolean; hadSubshell: boolean };
 
-/** 引号感知分段：按引号外的 `&&` `||` `;` `|` `&` 拆分，并检测命令替换与变量展开。 */
+/** 引号感知分段：按引号外的 `&&` `||` `;` `|` `&` 拆分，并检测命令替换、子 shell 与变量展开。 */
 function splitSegments(command: string): Segment[] | undefined {
   const segments: Segment[] = [];
   let current = '';
   let hadDollar = false;
+  let hadSubshell = false;
   let quote: '"' | "'" | undefined;
   let hasContent = false;
   const flush = (): void => {
-    if (!hasContent && current.trim() === '' && !hadDollar) return;
-    segments.push({ text: current, hadSubstitution: false, hadDollar });
+    if (!hasContent && current.trim() === '' && !hadDollar && !hadSubshell) return;
+    segments.push({ text: current, hadSubstitution: false, hadDollar, hadSubshell });
     current = '';
     hadDollar = false;
+    hadSubshell = false;
     hasContent = false;
   };
   for (let index = 0; index < command.length; index++) {
@@ -525,6 +608,14 @@ function splitSegments(command: string): Segment[] | undefined {
       (character === '>' && command[index + 1] === '(')
     )
       return undefined;
+    // 子 shell 分组 `(` / `)` 或花括号块会改变作用域边界，分类器侧按 hadSubshell 归 unknown，
+    // 但保留分段正文供 findProtectedShellTargets 继续提取可识别的硬禁区写目标。
+    if (character === '(' || character === ')') {
+      hadSubshell = true;
+      current += character;
+      hasContent = true;
+      continue;
+    }
     if (character === '>' || character === '<') {
       current += character;
       hasContent = true;
@@ -552,6 +643,79 @@ function splitSegments(command: string): Segment[] | undefined {
   if (quote !== undefined) return undefined;
   flush();
   return segments;
+}
+
+/** 追踪段间 `cd` / `pushd` / `popd` / `Set-Location` 导致的当前目录漂移；未改变目录返回 undefined。 */
+function advanceSegmentCwd(
+  segmentText: string,
+  currentCwd: string,
+): string | 'unknown' | undefined {
+  const scan = scanRedirections(segmentText);
+  const words = splitWords(scan.command);
+  if (!words || words.length === 0) return undefined;
+  let index = 0;
+  while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) index++;
+  const raw = words[index];
+  if (!raw || raw.includes('/') || raw.includes('\\')) return undefined;
+  const program = baseName(raw);
+  if (program === 'popd') return 'unknown';
+  if (program !== 'cd' && program !== 'pushd' && program !== 'set-location' && program !== 'sl')
+    return undefined;
+  const rest = words.slice(index + 1);
+  if (rest.length !== 1) return 'unknown';
+  const target = rest[0]!;
+  if (
+    target === '' ||
+    target.startsWith('-') ||
+    target.startsWith('~') ||
+    target.includes('$') ||
+    target.includes('`') ||
+    containsGlobMeta(target)
+  ) {
+    return 'unknown';
+  }
+  return path.resolve(currentCwd, target);
+}
+
+/** 校验前导 `KEY=VALUE` 环境变量赋值：禁止加载器/PATH 劫持键与路径/脚本类取值自动放行。 */
+function isSafeEnvAssignment(assignment: string): boolean {
+  const eq = assignment.indexOf('=');
+  if (eq <= 0) return false;
+  const key = assignment.slice(0, eq);
+  const upper = key.toUpperCase();
+  const value = assignment.slice(eq + 1);
+  if (
+    DANGEROUS_ENV_KEYS.has(upper) ||
+    upper.startsWith('GIT_') ||
+    upper.startsWith('NPM_CONFIG_') ||
+    upper.startsWith('YARN_') ||
+    upper.startsWith('PNPM_')
+  ) {
+    return false;
+  }
+  if (/[\\/~$`{};:<>|&()\s]/.test(value)) return false;
+  return true;
+}
+
+/** 直引路径程序（含 `./`、`/`、`\`）分级：禁止按 basename 查只读/构建白名单，仅干净脚本归 `workspace-write`。 */
+function classifyDirectPathProgram(
+  rawProgram: string,
+  cwd: string,
+  rootDir: string,
+  scriptTrust: ShellScope['scriptTrust'],
+): ShellCommandClass {
+  if (
+    rawProgram.includes('$') ||
+    rawProgram.includes('`') ||
+    rawProgram.startsWith('~') ||
+    containsGlobMeta(rawProgram)
+  ) {
+    return 'unknown';
+  }
+  const resolved = path.resolve(cwd, rawProgram);
+  if (!isWithinRoot(resolved, rootDir)) return 'escape';
+  if (SCRIPT_EXTENSION.test(rawProgram) && scriptTrust === 'clean') return 'workspace-write';
+  return 'unknown';
 }
 
 interface RedirectScan {
@@ -683,21 +847,32 @@ function classifyPosixWords(
   scriptTrust: ShellScope['scriptTrust'],
 ): ShellCommandClass {
   let index = 0;
-  while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) index++;
+  while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) {
+    if (!isSafeEnvAssignment(words[index]!)) return 'unknown';
+    index++;
+  }
   if (words[index] === 'time') index++;
   if (words[index] === 'command') index++;
-  const program = baseName(words[index]);
+  const rawProgram = words[index];
+  if (rawProgram === undefined) return 'unknown';
+  // 含路径分隔符的直引调用禁止按 basename 查表（防御自写 `./bin/rg` 或 `./node_modules/.bin/tsc` 伪装）。
+  if (rawProgram.includes('/') || rawProgram.includes('\\')) {
+    return classifyDirectPathProgram(rawProgram, cwd, rootDir, scriptTrust);
+  }
+  const program = baseName(rawProgram);
   if (program === undefined) return 'unknown';
   const rest = words.slice(index + 1);
 
-  if (program === 'cd') return classifyChangeDirectory(rest, cwd, rootDir);
-  if (program === 'git') return classifyGit(rest);
+  if (program === 'cd' || program === 'pushd') return classifyChangeDirectory(rest, cwd, rootDir);
+  if (program === 'popd') return 'unknown';
+  if (program === 'git') return classifyGit(rest, cwd, rootDir);
   if (program === 'find') return classifyFind(rest, cwd, rootDir);
-  if (program === 'sed')
-    // `-i.bak` 这类带后缀的原地改写同样不可判读，必须按前缀识别；sed 无其它 `-i` 开头选项。
+  if (program === 'sed') {
+    // `-i.bak` 这类带后缀的原地改写同样不可判读，必须按前缀识别；纯读模式仍须做文件参数越界检查。
     return rest.some((word) => word.startsWith('-i') || word.startsWith('--in-place'))
       ? 'unknown'
-      : 'read';
+      : classifyReadArguments(rest, cwd, rootDir);
+  }
   if (program === 'tee') return classifyWriteTargets(rest, cwd, rootDir);
   if (program === 'cp') return classifyCopy(rest, cwd, rootDir);
   if (program === 'pnpm' || program === 'npm' || program === 'yarn')
@@ -708,7 +883,8 @@ function classifyPosixWords(
   if (program === 'eval' || program === 'exec' || program === 'xargs') return 'unknown';
   if (INTERPRETER_PROGRAMS.has(program))
     return classifyInterpreter(program, rest, cwd, rootDir, scriptTrust);
-  if (WORKSPACE_PROGRAMS.has(program)) return 'workspace-write';
+  if (WORKSPACE_PROGRAMS.has(program))
+    return classifyWorkspaceProgram(program, rest, cwd, rootDir, scriptTrust);
   if (DESTRUCTIVE_PROGRAMS.has(program)) return 'destructive';
   if (NETWORK_PROGRAMS.has(program)) return 'network';
   if (READ_PROGRAMS.has(program)) {
@@ -722,6 +898,7 @@ function classifyPowerShellSegment(
   segment: Segment,
   cwd: string,
   rootDir: string,
+  scriptTrust?: ShellScope['scriptTrust'],
 ): ShellCommandClass {
   const scan = scanRedirections(segment.text);
   const redirect = classifyRedirectTargets(scan, cwd, rootDir);
@@ -729,7 +906,7 @@ function classifyPowerShellSegment(
   if (segment.hadDollar) return 'unknown';
   const words = splitWords(scan.command);
   if (words === undefined || words.length === 0) return 'unknown';
-  const result = classifyPowerShellWords(words, cwd, rootDir);
+  const result = classifyPowerShellWords(words, cwd, rootDir, scriptTrust);
   return scan.hasOutput && result === 'read' ? 'workspace-write' : result;
 }
 
@@ -738,10 +915,21 @@ function classifyPowerShellWords(
   words: readonly string[],
   cwd: string,
   rootDir: string,
+  scriptTrust?: ShellScope['scriptTrust'],
 ): ShellCommandClass {
-  const program = baseName(words[0]);
+  const rawProgram = words[0];
+  if (rawProgram === undefined) return 'unknown';
+  if (rawProgram === '&' || rawProgram === '.') return 'unknown';
+  if (rawProgram.includes('/') || rawProgram.includes('\\')) {
+    return classifyDirectPathProgram(rawProgram, cwd, rootDir, scriptTrust);
+  }
+  const program = baseName(rawProgram);
   if (program === undefined) return 'unknown';
   const rest = words.slice(1);
+  if (program === 'cd' || program === 'set-location' || program === 'sl' || program === 'pushd') {
+    return classifyChangeDirectory(rest, cwd, rootDir);
+  }
+  if (program === 'popd') return 'unknown';
   if (POWERSHELL_NETWORK.has(program)) return 'network';
   if (POWERSHELL_DESTRUCTIVE.has(program)) return 'destructive';
   if (POWERSHELL_WRITE.has(program)) return classifyWriteTargets(rest, cwd, rootDir);
@@ -849,19 +1037,62 @@ function classifyChangeDirectory(
   return isWithinRoot(path.resolve(cwd, target), rootDir) ? 'read' : 'escape';
 }
 
-/** 包管理器：只认第一个子命令；选项值不会被误当子命令。 */
+/** 包管理器：只认第一个子命令；`exec` 可拉起任意程序（等价于本地命令执行器），与 `dlx`/`npx` 同判 `network`。 */
 function classifyPackageManager(
   rest: readonly string[],
   scriptTrust: ShellScope['scriptTrust'],
 ): ShellCommandClass {
   const subcommand = firstSubcommand(rest);
   if (subcommand === undefined) return 'unknown';
-  if (subcommand === 'dlx') return 'network';
-  if (subcommand === 'exec') return 'workspace-write';
+  if (subcommand === 'dlx' || subcommand === 'exec') return 'network';
   if (PACKAGE_NETWORK_SUBCOMMANDS.has(subcommand)) return 'network';
   if (PACKAGE_WORKSPACE_SUBCOMMANDS.has(subcommand))
     return scriptTrust === 'clean' ? 'workspace-write' : 'unknown';
   return 'unknown';
+}
+
+/**
+ * 构建与检查工具（`make` / `eslint` / `vitest` / `tsc` 等）：
+ * - `make` 直接执行 Makefile 脚本，必须显式拿到 `scriptTrust === 'clean'`；
+ * - 其余工具若 `scriptTrust` 为 `dirty` / `unknown`（说明对应配置文件刚被模型写入或未入库）一律归 `unknown`；
+ * - 显式配置文件选项需校验工作区边界，插件注入类选项直接归 `unknown`。
+ */
+function classifyWorkspaceProgram(
+  program: string,
+  rest: readonly string[],
+  cwd: string,
+  rootDir: string,
+  scriptTrust: ShellScope['scriptTrust'],
+): ShellCommandClass {
+  const configFlags = WORKSPACE_CONFIG_FLAGS[program];
+  let hasExplicitConfig = false;
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i]!;
+    if (!word.startsWith('-')) continue;
+    const eq = word.indexOf('=');
+    const flag = eq > 0 ? word.slice(0, eq) : word;
+    if (
+      flag === '--plugin' ||
+      flag === '--rulesdir' ||
+      flag === '--require' ||
+      flag === '-r' ||
+      flag === '--import'
+    ) {
+      return 'unknown';
+    }
+    if (configFlags?.has(flag)) {
+      hasExplicitConfig = true;
+      const val = eq > 0 ? word.slice(eq + 1) : rest[++i];
+      if (!val || val.includes('$') || val.includes('`') || val.startsWith('~')) return 'unknown';
+      if (containsGlobMeta(val)) return 'unknown';
+      if (!isWithinRoot(path.resolve(cwd, val), rootDir)) return 'escape';
+    }
+  }
+  if (program === 'make' || hasExplicitConfig) {
+    return scriptTrust === 'clean' ? 'workspace-write' : 'unknown';
+  }
+  if (scriptTrust === 'dirty' || scriptTrust === 'unknown') return 'unknown';
+  return 'workspace-write';
 }
 
 /** 跳过选项及其取值，取第一个真正的子命令（小写）。 */
@@ -894,7 +1125,7 @@ function classifyDocker(rest: readonly string[]): ShellCommandClass {
   return 'unknown';
 }
 
-/** 解释器：`-c` / `-e` / 标准输入不可判读；脚本路径越界按 `escape`，脚本不受信按 `unknown`。 */
+/** 解释器：内联求值、标准输入与未知路径选项不可判读；预加载模块与主脚本越界按 `escape`，不受信按 `unknown`。 */
 function classifyInterpreter(
   program: string,
   rest: readonly string[],
@@ -902,29 +1133,115 @@ function classifyInterpreter(
   rootDir: string,
   scriptTrust: ShellScope['scriptTrust'],
 ): ShellCommandClass {
-  if (program === 'node' || program === 'deno' || program === 'python' || program === 'python3') {
-    if (rest.some((word) => word === '-e' || word === '--eval' || word === '-c' || word === '-p'))
-      return 'unknown';
-    if (rest.some((word) => word === '-' || word === '--')) return 'unknown';
+  let effectiveRest = rest;
+  if ((program === 'deno' || program === 'bun') && effectiveRest[0] === 'run') {
+    effectiveRest = effectiveRest.slice(1);
   }
-  if ((program === 'bash' || program === 'sh' || program === 'zsh') && rest.includes('-c'))
-    return 'unknown';
-  const script = rest.find((word) => !word.startsWith('-'));
+  let script: string | undefined;
+  for (let i = 0; i < effectiveRest.length; i++) {
+    const word = effectiveRest[i]!;
+    if (word === '-' || word === '--') return 'unknown';
+    if (
+      word === '-c' ||
+      word.startsWith('-c') ||
+      word === '-e' ||
+      word.startsWith('-e') ||
+      word === '--eval' ||
+      word.startsWith('--eval=') ||
+      word === '-p' ||
+      word.startsWith('-p') ||
+      word === '--print' ||
+      word.startsWith('--print=') ||
+      word === '-m' ||
+      word.startsWith('-m')
+    ) {
+      return 'unknown';
+    }
+    if (word.startsWith('-')) {
+      const eq = word.indexOf('=');
+      const flag = eq > 0 ? word.slice(0, eq) : word;
+      if (INTERPRETER_PRELOAD_FLAGS.has(flag)) {
+        const preload = eq > 0 ? word.slice(eq + 1) : effectiveRest[++i];
+        if (!preload || preload.includes('$') || preload.includes('`') || preload.startsWith('~'))
+          return 'unknown';
+        if (containsGlobMeta(preload)) return 'unknown';
+        if (!isWithinRoot(path.resolve(cwd, preload), rootDir)) return 'escape';
+        continue;
+      }
+      if (word.startsWith('-r') && word.length > 2) {
+        const preload = word.slice(2);
+        if (preload.includes('$') || preload.includes('`') || preload.startsWith('~'))
+          return 'unknown';
+        if (containsGlobMeta(preload)) return 'unknown';
+        if (!isWithinRoot(path.resolve(cwd, preload), rootDir)) return 'escape';
+        continue;
+      }
+      if (eq > 0 && /[\\/]/.test(word.slice(eq + 1))) return 'unknown';
+      continue;
+    }
+    script = word;
+    break;
+  }
   if (script === undefined) return 'unknown';
   if (script.includes('$') || script.includes('`') || script.startsWith('~')) return 'unknown';
+  if (containsGlobMeta(script)) return 'unknown';
   if (!isWithinRoot(path.resolve(cwd, script), rootDir)) return 'escape';
   return scriptTrust === 'clean' ? 'workspace-write' : 'unknown';
 }
 
-/** git 子命令分级；破坏性写法优先于普通写操作。 */
-function classifyGit(rest: readonly string[]): ShellCommandClass {
+/** 提取 git 参数中的 `-o <file>` / `--output <file>` / `--output=<file>` 落盘目标。 */
+function extractGitOutputTargets(args: readonly string[]): {
+  present: boolean;
+  missingValue: boolean;
+  values: string[];
+} {
+  let present = false;
+  let missingValue = false;
+  const values: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i]!;
+    if (word === '-o' || word === '--output') {
+      present = true;
+      const next = args[i + 1];
+      if (!next || next.startsWith('-')) {
+        missingValue = true;
+      } else {
+        values.push(next);
+        i++;
+      }
+    } else if (word.startsWith('--output=')) {
+      present = true;
+      const val = word.slice('--output='.length);
+      if (!val) missingValue = true;
+      else values.push(val);
+    } else if (word.startsWith('-o') && word.length > 2) {
+      present = true;
+      values.push(word.slice(2));
+    }
+  }
+  return { present, missingValue, values };
+}
+
+/** git 子命令分级；破坏性写法优先于普通写操作，只读子命令带 `--output` 时与重定向同权检查边界。 */
+function classifyGit(rest: readonly string[], cwd: string, rootDir: string): ShellCommandClass {
   const subcommand = rest[0]?.toLowerCase();
   if (subcommand === undefined) return 'unknown';
   const args = rest.slice(1);
   if (GIT_READ_SUBCOMMANDS.has(subcommand)) {
-    return args.some((word) => word === '-o' || word === '--output' || word.startsWith('--output='))
-      ? 'workspace-write'
-      : 'read';
+    const outputs = extractGitOutputTargets(args);
+    if (outputs.present) {
+      if (outputs.missingValue || outputs.values.length === 0) return 'unknown';
+      for (const target of outputs.values) {
+        if (target.includes('$') || target.includes('`')) return 'unknown';
+        if (target.startsWith('~')) return 'escape';
+        if (containsGlobMeta(target)) return 'unknown';
+        const resolved = path.resolve(cwd, target);
+        if (!isWithinRoot(resolved, rootDir)) return 'escape';
+        if (isEscapeClassPath(toRelativePosix(resolved, rootDir))) return 'escape';
+      }
+      return 'workspace-write';
+    }
+    return classifyReadArguments(args, cwd, rootDir);
   }
   const readFlags = GIT_READ_FLAGS[subcommand];
   if (readFlags && args.every((word) => readFlags.has(word.toLowerCase()))) return 'read';

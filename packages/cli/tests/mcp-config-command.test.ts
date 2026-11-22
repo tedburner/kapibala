@@ -312,4 +312,57 @@ describe('/mcp 配置命令', () => {
     await dispatcher.dispatch('/mcp approve', bare);
     expect(bare.out.join('\n')).toContain('命令执行失败: 用法: /mcp approve');
   });
+
+  it('approve 对复合后缀凭据 flag（--db-password / -p）脱敏，且 /mcp import 支持扫描与导入', async () => {
+    await mcpCommand(
+      [
+        'add',
+        'db',
+        '--command',
+        'node',
+        '--arg',
+        'srv.js',
+        '--arg',
+        '--db-password',
+        '--arg',
+        'hunter2',
+        '--arg',
+        '-p',
+        '--arg',
+        'topsecret99',
+      ],
+      context(),
+    );
+    const approved = context();
+    await mcpCommand(['approve', 'db'], approved);
+    const text = approved.out.join('\n');
+    expect(text).toContain('--db-password [REDACTED]');
+    expect(text).toContain('-p [REDACTED]');
+    expect(text).not.toContain('hunter2');
+    expect(text).not.toContain('topsecret99');
+
+    // 写入外部 Cursor 配置，验证 `/mcp import` 预览与导入可达。
+    const cursorFile = path.join(homeDir(), '.cursor', 'mcp.json');
+    fs.mkdirSync(path.dirname(cursorFile), { recursive: true });
+    fs.writeFileSync(
+      cursorFile,
+      JSON.stringify({ mcpServers: { ext: { command: 'npx', args: ['-y', '@demo/mcp'] } } }),
+    );
+    const dispatcher = new CommandDispatcher();
+    dispatcher.registerDefinition(
+      COMMAND_CATALOG.find((definition) => definition.name === 'mcp')!,
+      mcpCommand,
+    );
+    const scanOut = context();
+    await dispatcher.dispatch('/mcp import', scanOut);
+    expect(scanOut.out.join('\n')).toContain('ext [cursor/global]');
+
+    const importOut = context();
+    await dispatcher.dispatch('/mcp import ext --from cursor', importOut);
+    expect(importOut.out.join('\n')).toContain('导入 1');
+    expect(readGlobalConfig().mcpServers?.ext).toMatchObject({
+      command: 'npx',
+      args: ['-y', '@demo/mcp'],
+    });
+  });
 });

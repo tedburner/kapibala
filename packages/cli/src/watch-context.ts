@@ -8,10 +8,13 @@
  *   会话切换时替换；替换时旧服务立即释放定时器，绝不留下无人认领的轮询。
  */
 
+import type { AgentSession } from '@kiturone/kapibala';
 import type { WatchService } from '@kiturone/kapibala-host/internal';
 
 let activeService: WatchService | undefined;
-let resumeHook: ((input: string, signal: AbortSignal) => Promise<void>) | undefined;
+let resumeHook:
+  | ((targetSession: AgentSession, input: string, signal: AbortSignal) => Promise<void>)
+  | undefined;
 
 /**
  * 替换当前活动会话的监视服务。
@@ -30,13 +33,19 @@ export function getActiveWatchService(): WatchService | undefined {
 
 /** 注入自动续跑实现；由 REPL 在 `runTask` 就绪后调用，保证复用同一渲染与取消语义。 */
 export function setWatchResumeHook(
-  hook: ((input: string, signal: AbortSignal) => Promise<void>) | undefined,
+  hook:
+    | ((targetSession: AgentSession, input: string, signal: AbortSignal) => Promise<void>)
+    | undefined,
 ): void {
   resumeHook = hook;
 }
 
-/** 监视服务内部调用；钩子缺席时明确失败，让服务保留待投递队列而不是假装续跑成功。 */
-export async function runWatchResume(input: string, signal: AbortSignal): Promise<void> {
+/** 监视服务内部调用；携带所属会话引用防止切换竞态串会话，钩子缺席时明确失败。 */
+export async function runWatchResume(
+  targetSession: AgentSession,
+  input: string,
+  signal: AbortSignal,
+): Promise<void> {
   if (!resumeHook) throw new Error('WATCH_RESUME_UNAVAILABLE');
-  await resumeHook(input, signal);
+  await resumeHook(targetSession, input, signal);
 }

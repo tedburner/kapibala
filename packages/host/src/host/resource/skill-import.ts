@@ -853,6 +853,7 @@ async function collectPackageDigests(
   const digests = new Map<string, string>();
   const physicalRoot = (await fs.realpath(directory).catch(() => undefined)) ?? directory;
   const visited = new Set<string>();
+  let totalBytes = 0;
   const walk = async (relative: string, depth: number): Promise<void> => {
     signal?.throwIfAborted();
     if (depth > SKILL_LIMITS.depth) {
@@ -880,7 +881,24 @@ async function collectPackageDigests(
         await walk(next, depth + 1);
         continue;
       }
-      if (stat.isFile()) digests.set(next, digestBuffer(await fs.readFile(real)));
+      if (stat.isFile()) {
+        // 目标侧可能被手工放入大文件：超上限时不整读进内存，降级为尺寸+时间戳标记并记诊断。
+        if (
+          stat.size > SKILL_IMPORT_LIMITS.bytes ||
+          totalBytes + stat.size > SKILL_IMPORT_LIMITS.bytes
+        ) {
+          digests.set(next, `oversized:${stat.size}:${Math.round(stat.mtimeMs)}`);
+          diagnostics?.push({
+            code: 'import_size_skipped',
+            level: 'warn',
+            path: real,
+            message: `文件超过 ${SKILL_IMPORT_LIMITS.bytes} 字节摘要上限，按元数据标记差异`,
+          });
+          continue;
+        }
+        totalBytes += stat.size;
+        digests.set(next, digestBuffer(await fs.readFile(real)));
+      }
     }
   };
   await walk('', 0);

@@ -321,6 +321,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           continue: args.continue,
           resume: args.resume,
         }));
+      const sessionWatches = new WeakMap<AgentSession, WatchService>();
+      const activateSessionWatches = (target: AgentSession) => {
+        const svc = sessionWatches.get(target);
+        setActiveWatchService(svc);
+        svc?.start().catch((error: unknown) => {
+          const msg = error instanceof Error ? error.message : String(error);
+          console.error(`[kapibala] 恢复会话监视状态失败: ${msg}`);
+        });
+      };
       const factory = async (handle: import('@kiturone/kapibala').ManagedSession) => {
         const created = new AgentSession({
           leaseCoordinator,
@@ -342,18 +351,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           approvalChannel,
         });
         for (const tool of builtinTools.list()) created.tools.register(tool);
-        // 监视工具与服务同生共死：登记后必须有人轮询，否则能力形同虚设。
+        // 监视服务先登记不立即启动：等会话 init 成功并正式发布为活动会话后再激活轮询，
+        // 防止 /resume 准备失败时提前销毁旧会话监视，也避免 -p 单次模式残留后台轮询。
         const watchInbox = new WatchInbox(handle.store);
         const watches = new WatchService({
           workspaceRoot: manager.project.projectRoot,
           store: handle.store,
           deliver: (notification, branchId) => watchInbox.consume(notification, branchId),
           isIdle: () => !created.isBusy(),
-          resume: (input, signal) => runWatchResume(input, signal),
+          resume: (input, signal) => runWatchResume(created, input, signal),
         });
+        sessionWatches.set(created, watches);
         for (const tool of createWatchTools(watches)) created.tools.register(tool);
-        void watches.start();
-        setActiveWatchService(watches);
         models.attach(created, controller ? models.selectedRole : requestedRole);
         try {
           await attachMcpToSession(
@@ -375,7 +384,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         factory,
         current: { session: initial, handle: initialHandle },
         onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
-        onSwitched: (event) => console.log(`活动会话: ${event.conversationId}`),
+        onSwitched: (event) => {
+          if (controller) activateSessionWatches(controller.session);
+          console.log(`活动会话: ${event.conversationId}`);
+        },
       });
       const active = controller;
       if (args.resume || args.continue) {
@@ -447,6 +459,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         if (exitCode) process.exitCode = exitCode;
         return;
       }
+      activateSessionWatches(active.session);
       await startREPL({
         session: active.session,
         controller: active,
@@ -458,6 +471,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         approvalChannel,
       });
     } finally {
+      setActiveWatchService(undefined);
       if (agentRuntime) await agentRuntime.close();
       if (controller) await controller.close();
       else await manager.close();

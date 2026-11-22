@@ -2,12 +2,16 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
+    "baseUrl": ".",
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "types": [],
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "allowJs": true
+    "allowJs": true,
+    "paths": {
+      "@kiturone/kapibala-host/view-model": ["../host/src/view-model/index.ts"]
+    }
   },
   "include": [
     "src/renderer/**/*.ts",

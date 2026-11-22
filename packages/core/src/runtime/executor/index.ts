@@ -427,6 +427,7 @@ export class ToolExecutor {
       executionIdentity,
       rootDir: this.rootDir,
       executionCwd: this.executionCwd,
+      sandbox: this.sandbox,
       mode: this.mode,
       permissionRules: this.permissionRules,
       approvalChannel: this.approvalChannel,

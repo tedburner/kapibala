@@ -109,4 +109,42 @@ describe('assessScriptTrust', () => {
     fs.writeFileSync(script, 'console.log(1);\nconsole.log(2);');
     expect(assessScriptTrust('node scripts/run.mjs', root, root)).toBe('dirty');
   });
+
+  it('rejects gitignored scripts, preload hooks, env hijacks and dirty build configs', (context) => {
+    const root = temp();
+    fs.writeFileSync(path.join(root, '.gitignore'), 'node_modules/\nignored.mjs\n');
+    fs.mkdirSync(path.join(root, 'scripts'));
+    fs.writeFileSync(path.join(root, 'scripts', 'app.mjs'), 'console.log(1)');
+    fs.writeFileSync(path.join(root, 'Makefile'), 'all:\n\t@echo ok\n');
+    if (!commitAll(root)) {
+      context.skip();
+      return;
+    }
+    // 1. gitignored 文件未入 git 索引，不得返回 clean。
+    fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'node_modules', 'evil.mjs'), 'console.log("pwn")');
+    fs.writeFileSync(path.join(root, 'ignored.mjs'), 'console.log("pwn")');
+    expect(assessScriptTrust('node node_modules/evil.mjs', root, root)).toBe('dirty');
+    expect(assessScriptTrust('node ignored.mjs', root, root)).toBe('dirty');
+
+    // 2. `--require=` 预加载钩子为未跟踪文件时，即使主脚本干净也必须返回 dirty。
+    fs.writeFileSync(path.join(root, 'scripts', 'hook.mjs'), 'console.log("hook")');
+    expect(assessScriptTrust('node --require=./scripts/hook.mjs scripts/app.mjs', root, root)).toBe(
+      'dirty',
+    );
+
+    // 3. 高危前导环境变量返回 unknown。
+    expect(
+      assessScriptTrust(
+        'NODE_OPTIONS=--require=./scripts/hook.mjs node scripts/app.mjs',
+        root,
+        root,
+      ),
+    ).toBe('unknown');
+
+    // 4. Makefile / vitest.config.ts：已提交为 clean，模型新写或改动为 dirty。
+    expect(assessScriptTrust('make', root, root)).toBe('clean');
+    fs.writeFileSync(path.join(root, 'vitest.config.ts'), 'export default {}');
+    expect(assessScriptTrust('vitest run', root, root)).toBe('dirty');
+  });
 });

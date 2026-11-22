@@ -18,13 +18,18 @@ import { resolveCommandOutput } from '../command-output.js';
 
 import os from 'node:os';
 import {
+  MCP_IMPORT_HARNESS_NAMES,
+  type McpImportConflict,
+  type McpImportHarness,
   McpServerApprovalStore,
   formatMcpToolLabel,
   getSessionMcpPlugin,
+  importMcpServers,
   isProjectTrusted,
   mutateMcpConfig,
   readMcpApprovalEntries,
   redactCommonSecrets,
+  scanImportableMcpServers,
 } from '@kiturone/kapibala-host/internal';
 import {
   type RawServerConfig,
@@ -57,6 +62,10 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
   }
   if (subCommand === 'approve' || subCommand === 'revoke') {
     approvalCommand(subCommand, args.slice(1), ctx);
+    return;
+  }
+  if (subCommand === 'import') {
+    importMcpCommand(args.slice(1), ctx);
     return;
   }
   const plugin = getSessionMcpPlugin(ctx.session);
@@ -472,19 +481,188 @@ function describeApprovalTarget(config: ServerConfig): string {
 }
 
 /**
- * 空格分隔的凭据 flag 后继值脱敏：`--token abc123` 这类传参不属于 KEY=VALUE 形态，
- * redactCommonSecrets 的键值 / Bearer / 已知前缀规则都拦不住。设计 011 D4 要求批准界面不打印密文，
- * 因此批准输出在通用脱敏之前先对凭据语义 flag 的后继独立参数整值替换为 [REDACTED]；
- * 只保留 flag 名供用户定位凭据位置，`=` 连接形态交给 redactCommonSecrets 处理。
+ * 空格分隔的凭据 flag 后继值脱敏：`--token abc123`、`--db-password hunter2`、`-p xxx` 这类传参
+ * 不属于 KEY=VALUE 形态，redactCommonSecrets 的键值 / Bearer / 已知前缀规则都拦不住。
+ * 设计 011 D4 要求批准界面不打印密文，因此对以凭据语义词结尾的长选项与 `-p` 短选项的后继参数
+ * 整值替换为 [REDACTED]；裸位置参数（无 flag 前缀）无法可靠区分路径与密文，不承诺自动脱敏。
  */
 const FLAG_VALUE_SECRET =
-  /(^|\s)(--(?:api[_-]?key|access[_-]?key|client[_-]?secret|token|password|passwd|secret)\s+)(?:"[^"]*"|'[^']*'|[^\s]+)/gi;
+  /(^|\s)((?:--(?:[a-z0-9]+[-_])*(?:api[_-]?key|access[_-]?key|client[_-]?secret|auth[_-]?token|secret|token|password|passwd|apikey)|-p)\s+)(?:"[^"]*"|'[^']*'|[^\s]+)/gi;
 
 function redactFlagValueSecrets(text: string): string {
   return text.replace(
     FLAG_VALUE_SECRET,
     (_match, lead: string, flag: string) => `${lead}${flag}[REDACTED]`,
   );
+}
+
+/** `/mcp import` 解析结果：`--all` 与单个服务名互斥，`--from` 可限定来源 Harness。 */
+export interface ParsedMcpImport {
+  all: boolean;
+  name?: string;
+  from?: McpImportHarness;
+  scope: 'global' | 'project';
+  overwrite: boolean;
+}
+
+/**
+ * 解析 `/mcp import` 选项与目标服务名。
+ *
+ * 只接受显式列出的选项；未知选项、`--all` 与服务名混用、非法服务名一律返回错误，不做猜测。
+ */
+export function parseMcpImportArgs(tokens: readonly string[]): {
+  value?: ParsedMcpImport;
+  error?: string;
+} {
+  const value: ParsedMcpImport = { all: false, scope: 'global', overwrite: false };
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token === '--all') value.all = true;
+    else if (token === '--project') value.scope = 'project';
+    else if (token === '--force') value.overwrite = true;
+    else if (token === '--from') {
+      const from = tokens[++index];
+      if (!from || !(MCP_IMPORT_HARNESS_NAMES as readonly string[]).includes(from)) {
+        return {
+          error: `未知来源: ${from ?? '（缺失）'}；可用: ${MCP_IMPORT_HARNESS_NAMES.join(', ')}`,
+        };
+      }
+      value.from = from as McpImportHarness;
+    } else if (token.startsWith('-')) {
+      return { error: `未知选项: ${token}` };
+    } else if (value.name) {
+      return { error: '一次只能导入一个服务名；全部导入请用 --all' };
+    } else {
+      value.name = token;
+    }
+  }
+  if (value.all && value.name) return { error: '--all 与服务名不能同时使用' };
+  if (value.name) {
+    const check = validateServerName(value.name);
+    if (!check.valid) return { error: `服务名不合法 '${value.name}': ${check.reason}` };
+  }
+  return { value };
+}
+
+const MCP_IMPORT_CONFLICT_LABELS: Record<McpImportConflict, string> = {
+  none: '无',
+  'exists-enabled': '已存在（启用）',
+  'exists-disabled': '已存在（停用）',
+};
+
+/** `/mcp import`：无参预览跨工具候选，带 `<name>` 或 `--all` 执行一次性配置导入。 */
+function importMcpCommand(args: string[], ctx: CommandContext): void {
+  const output = resolveCommandOutput(ctx);
+  const parsed = parseMcpImportArgs(args);
+  if (!parsed.value) {
+    output.log(
+      parsed.error ??
+        '用法: /mcp import [<server> | --all] [--from <harness>] [--project] [--force]',
+    );
+    return;
+  }
+  const options = parsed.value;
+  const homeDir = ctx.homeDir ?? os.homedir();
+  const projectTrusted = Boolean(
+    ctx.projectRoot && isProjectTrusted(ctx.settings, ctx.projectRoot),
+  );
+  const projectRoot = ctx.projectRoot ?? ctx.session?.workspaceRoot ?? homeDir;
+  if (options.scope === 'project' && (!ctx.projectRoot || !projectTrusted)) {
+    output.error('项目级导入需要当前工作区为已信任项目。');
+    return;
+  }
+  let scan: ReturnType<typeof scanImportableMcpServers>;
+  try {
+    scan = scanImportableMcpServers({
+      homeDir,
+      projectRoot,
+      projectTrusted,
+    });
+  } catch (error) {
+    output.error(
+      `扫描可导入 MCP 服务失败: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  if (!options.all && !options.name) {
+    output.log('可导入 MCP 来源:');
+    for (const source of scan.sources) {
+      output.log(`  ${source.label} (${source.harness}) · ${source.candidates} 个候选`);
+    }
+    output.log(`候选 MCP 服务: ${scan.candidates.length} 个`);
+    if (!scan.candidates.length) {
+      output.log('  未发现可导入的 MCP 服务声明。');
+      return;
+    }
+    for (const candidate of scan.candidates) {
+      const secretNote = candidate.hasSecretSurface ? ' · 含 env/headers（不回显）' : '';
+      output.log(
+        `  ${sanitizeUntrustedOutput(candidate.name)} [${candidate.harness}/${candidate.origin}] ${candidate.transport} · 冲突: ${MCP_IMPORT_CONFLICT_LABELS[candidate.conflict]}${secretNote}`,
+      );
+      if (candidate.target) {
+        output.log(
+          `    目标: ${sanitizeUntrustedOutput(redactFlagValueSecrets(candidate.target))}`,
+        );
+      }
+    }
+    output.log('用法: /mcp import <server> [--from <harness>] [--project] [--force]');
+    output.log('      /mcp import --all [--from <harness>] [--project]');
+    return;
+  }
+  const matches = scan.candidates.filter(
+    (candidate) =>
+      (!options.from || candidate.harness === options.from) &&
+      (options.all || candidate.name === options.name),
+  );
+  if (!matches.length) {
+    output.log(
+      options.name
+        ? `未找到可导入 MCP 服务: ${sanitizeUntrustedOutput(options.name)}${options.from ? `（来源 ${options.from}）` : ''}`
+        : '没有匹配的可导入 MCP 候选。',
+    );
+    return;
+  }
+  if (!options.all && matches.length > 1) {
+    output.log(
+      `同名服务来自多个来源，请用 --from 指定: ${matches.map((item) => item.harness).join(', ')}`,
+    );
+    return;
+  }
+  try {
+    const result = importMcpServers({
+      homeDir,
+      projectRoot,
+      projectTrusted,
+      scope: options.scope,
+      overwrite: options.overwrite,
+      items: matches.map((item) => ({
+        harness: item.harness,
+        name: item.name,
+        expectedSourceRef: item.sourceRef,
+      })),
+    });
+    output.log(
+      `导入完成（作用域: ${result.scope}）: 导入 ${result.imported} · 未变 ${result.unchanged} · 冲突跳过 ${result.skippedConflict} · 失败 ${result.failed}`,
+    );
+    for (const item of result.items) {
+      const mark =
+        item.status === 'imported'
+          ? '✓'
+          : item.status === 'unchanged'
+            ? '='
+            : item.status === 'failed'
+              ? '!'
+              : '-';
+      output.log(
+        `  ${mark} ${sanitizeUntrustedOutput(item.name)} [${item.harness}] ${item.status}${item.message ? ` · ${sanitizeUntrustedOutput(item.message)}` : ''}`,
+      );
+    }
+    if (result.imported > 0) {
+      output.log('导入的服务默认待批准：请用 /mcp approve <server> 核验批准，重新打开会话后生效。');
+    }
+  } catch (error) {
+    output.error(`导入 MCP 服务失败: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** 需要提示「存在但值不回显」的配置键名（env / headers），仅返回键。 */

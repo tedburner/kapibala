@@ -38,9 +38,17 @@ function tryNativeRealpath(target: string): string | undefined {
   }
 }
 
-/** 把路径分隔符统一为 `/` 并去掉前导 `./`，用于硬禁区匹配。 */
+/** 把路径分隔符统一为 `/`、去掉前导 `./`，并剥除每段尾随空白与点（防御 Windows Win32 尾随空白/点落盘归一绕过）。 */
 function normalizeRelative(relativePath: string): string {
-  return relativePath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  return relativePath
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '')
+    .split('/')
+    .map((segment) =>
+      segment === '.' || segment === '..' ? segment : segment.replace(/[ .]+$/, ''),
+    )
+    .join('/');
 }
 
 /**

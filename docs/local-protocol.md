@@ -53,7 +53,7 @@
 | `evidence/read` | `sessionId`（需先 attach；能力 `evidence`） | `ViewEvidence`：`{ summary, changes, references, mcp, delegations }` |
 | `host/shutdown` | `{}` | `{ stopped: true }` |
 
-`WatchWireItem = { watchId, kind: 'file_change' \| 'port_ready', target, state: 'armed' \| 'fired' \| 'timeout' \| 'cancelled' \| 'orphaned', armedAt, deadlineAt, closedAt: number \| null, detail: string \| null }`。`process_exit` 自 v0.1.4 起整体摘除，不再出现在 wire 上；历史落盘的遗留记录由读取侧按残缺数据跳过并输出诊断。`watch/list` 与 `session/snapshot` 同门禁：未 attach 返回 `CONTROL_REQUIRED`；宿主没有布置监视触发源时 `watch/cancel` 返回 `INVALID_REQUEST`，不返回成功。注：daemon（kpbl serve）侧本版未布置监视触发源，`watch/list` 恒返回空列表、`watch/cancel` 恒 `INVALID_REQUEST`；桌面走 in-process 会话布置触发源，不受影响。
+`WatchWireItem = { watchId, kind: 'file_change' \| 'port_ready', target, state: 'armed' \| 'fired' \| 'timeout' \| 'cancelled' \| 'orphaned', armedAt, deadlineAt, closedAt: number \| null, detail: string \| null }`。`process_exit` 自 v0.1.4 起整体摘除，不再出现在 wire 上；历史落盘的遗留记录由读取侧按残缺数据跳过并输出诊断。`watch/list` 与 `session/snapshot` 同门禁：未 attach 返回 `CONTROL_REQUIRED`；默认 `createResourceFactory`（`kpbl serve`）经 `createManagedSessionResources` 在会话单写者锁（`SessionLock`）内完整布置监视触发源，若自定义 `ResourceFactory` 未注入监视门面，则 `watch/list` 返回空列表、`watch/cancel` 返回 `INVALID_REQUEST`。
 
 `ViewEvidence` 的 `changes` 只统计成功的 `write_file` / `edit_file`：`status` 为 `recorded` 时带精确 `additions` / `deletions`，`truncated`（文件过大或超出差分预算）与 `missing`（旧历史没有落盘事实）都把数字置为 `null`，调用方必须显示「未记录」而不是 0；`run_command` 的间接改动不计入。`mcp` 按 `mcp__<server>__<tool>` 归组，失败只认工具结果的 `isError`；`delegations` 只含当前父会话派生的子会话，父会话已收尾但子任务仍在活动时 `state` 为 `ended`。该方法是只读聚合，宿主不提供证据面时返回 `INVALID_REQUEST`。
 

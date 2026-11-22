@@ -189,7 +189,7 @@ export interface DownloadUpdateOptions {
   signal?: AbortSignal;
   /** 空闲超时毫秒数；缺省 60 秒。测试注入小值模拟挂起连接，不必等待真实时长。 */
   idleTimeoutMs?: number;
-  onProgress?(downloaded: number, total: number): void;
+  onProgress?(downloaded: number, total: number, final?: boolean): void;
 }
 
 /** 空闲看门狗的注入面：包装任意一次网络等待，超时即中止连接并拒绝。 */
@@ -344,7 +344,7 @@ export async function downloadUpdate(options: DownloadUpdateOptions): Promise<Do
       throw error;
     }
     if (streamError) throw streamError;
-    options.onProgress?.(written, total || written);
+    options.onProgress?.(written, total || written, true);
   } catch (error) {
     await removeTemp();
     return cancelled()

@@ -41,9 +41,11 @@ function StatusIcon({ status }: { status: ViewTodoStatus }) {
 export function TaskPanel({ todos }: { todos?: ViewTodoState }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const activeItemRef = useRef<HTMLLIElement>(null);
 
   useEffect(() => {
     if (!open) return undefined;
+    activeItemRef.current?.scrollIntoView?.({ block: 'nearest' });
     const onPointerDown = (event: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
     };
@@ -60,6 +62,7 @@ export function TaskPanel({ todos }: { todos?: ViewTodoState }) {
   const total = todos.items.length;
   const completed = todos.items.filter((item) => item.status === 'completed').length;
   const active = todos.items.filter((item) => item.status === 'in_progress');
+  const firstActiveId = active[0]?.id;
   const suffix = completed === total ? ' · 已完成' : active[0] ? ` · ${active[0].title}` : '';
   const extra = active.length > 1 ? ` +${active.length - 1}` : '';
 
@@ -77,6 +80,7 @@ export function TaskPanel({ todos }: { todos?: ViewTodoState }) {
             {todos.items.map((item: ViewTodoItem) => (
               <li
                 key={item.id}
+                ref={item.id === firstActiveId ? activeItemRef : undefined}
                 aria-label={`${STATUS_LABEL[item.status]}：${item.title}`}
                 className="flex items-center gap-2 rounded-md px-2 py-1 text-sm"
               >

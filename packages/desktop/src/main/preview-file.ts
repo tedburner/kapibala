@@ -1,6 +1,61 @@
+import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { extname, isAbsolute, resolve } from 'node:path';
+import os from 'node:os';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { IMAGE_MIME_BY_EXTENSION, IMAGE_PREVIEW_LIMIT } from '../shared/preview.js';
+
+/** realpath 归一；目标尚不存在时回溯到最近已存在祖先展开符号链接，确保先判物理边界再判存在。 */
+function canonicalize(target: string): string {
+  try {
+    return fs.realpathSync.native(target);
+  } catch {
+    const parent = dirname(target);
+    if (parent === target) return target;
+    return join(canonicalize(parent), basename(target));
+  }
+}
+
+/** 目标是否位于根本身或根之内；Windows 下 `path.relative` 已按大小写不敏感比较。 */
+function within(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/** 本地图片预览允许根校验参数。 */
+export interface PreviewBoundaryOptions {
+  /** 主进程已登记的工作区物理根集合。 */
+  readonly workspaceRoots: readonly string[];
+  /** 用户主目录；`~/.kapibala` 除已登记的默认空间子目录外整根排除。 */
+  readonly homeDirectory: string;
+  /** OS 临时目录；仅测试可覆盖，生产缺省 `os.tmpdir()`。 */
+  readonly tempRoot?: string;
+}
+
+/**
+ * 校验本地图片目标是否落在受控允许根内（已登记工作区 + OS 临时目录），并硬排除 `~/.kapibala` 凭据区。
+ *
+ * 例外：桌面默认空间位于 `~/.kapibala/workspaces/default`，仅当主进程已显式登记该默认空间时，
+ * 允许读取其子目录内的图片；`~/.kapibala` 其余位置（如 `settings.json`、`sessions`、`mcp.json`）一律拒绝。
+ */
+export function isAllowedLocalPreviewPath(
+  target: string,
+  options: PreviewBoundaryOptions,
+): boolean {
+  const realTarget = canonicalize(resolve(target));
+  const canonicalWorkspaces = options.workspaceRoots.map((root) => canonicalize(resolve(root)));
+  const kapibalaRoot = canonicalize(join(options.homeDirectory, '.kapibala'));
+  const defaultWorkspaceRoot = canonicalize(
+    join(options.homeDirectory, '.kapibala', 'workspaces', 'default'),
+  );
+  if (within(kapibalaRoot, realTarget)) {
+    const defaultRegistered = canonicalWorkspaces.some((root) =>
+      within(defaultWorkspaceRoot, root),
+    );
+    return defaultRegistered && within(defaultWorkspaceRoot, realTarget);
+  }
+  const allowedRoots = [...canonicalWorkspaces, canonicalize(options.tempRoot ?? os.tmpdir())];
+  return allowedRoots.some((root) => within(root, realTarget));
+}
 
 /**
  * 本地图片预览的主进程读取层。

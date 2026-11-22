@@ -32,7 +32,11 @@ import { HostGuard } from './guard.js';
 import { NativeNotices } from './native-notices.js';
 import { Preferences } from './preferences.js';
 import { PreviewDocuments } from './preview-documents.js';
-import { readImageDataUrl, resolveLocalImagePath } from './preview-file.js';
+import {
+  isAllowedLocalPreviewPath,
+  readImageDataUrl,
+  resolveLocalImagePath,
+} from './preview-file.js';
 import { installPreviewProtocol, previewUrl, registerPreviewScheme } from './preview-protocol.js';
 import { HostSupervisor } from './supervisor.js';
 import { checkForDesktopUpdate } from './update-check.js';
@@ -113,6 +117,13 @@ let updateCandidate:
   | undefined;
 /** 在途下载的取消句柄；同一时刻只允许一个下载，避免并发写同一临时文件。 */
 let updateDownload: AbortController | undefined;
+/** 更新检查结果的进程内短缓存（60s），避免用户连点消耗未认证 GitHub API 的 60 次/小时配额。 */
+let cachedUpdateCheck:
+  | {
+      expiresAt: number;
+      result: Awaited<ReturnType<typeof checkForDesktopUpdate>>;
+    }
+  | undefined;
 const registry = new Map<string, Workspace>();
 const surfaces = { light: '#FFFFFF', dark: '#181818' } as const;
 const displayMode = () =>
@@ -225,12 +236,22 @@ async function handle(
     // 更新检查只由用户动作触发：不做启动时自动联网，也不进入宿主子进程。
     // 任何网络 / 响应异常都在 update-check 内降级为 unknown，不抛出到这里。
     case 'app.checkUpdate': {
-      const result = await checkForDesktopUpdate({
-        currentVersion: app.getVersion(),
-        platform: process.platform,
-        arch: process.arch,
-        fetch: (url, init) => net.fetch(url, init),
-      });
+      const now = Date.now();
+      const result =
+        cachedUpdateCheck && cachedUpdateCheck.expiresAt > now
+          ? cachedUpdateCheck.result
+          : await checkForDesktopUpdate({
+              currentVersion: app.getVersion(),
+              platform: process.platform,
+              arch: process.arch,
+              fetch: (url, init) => net.fetch(url, init),
+            });
+      if (
+        result.status !== 'unknown' &&
+        (!cachedUpdateCheck || cachedUpdateCheck.expiresAt <= now)
+      ) {
+        cachedUpdateCheck = { expiresAt: now + 60_000, result };
+      }
       // 只有安装包与摘要清单齐全时才登记下载候选；其余状态清空旧候选，
       // 避免页面拿着过期的「有新版本」结果去下载已被撤下的资产。
       updateCandidate =
@@ -259,10 +280,11 @@ async function handle(
           directory: app.getPath('downloads'),
           fetch: (url, init) => net.fetch(url, init),
           signal: controller.signal,
-          onProgress: (downloaded, total) => {
-            // 进度只是展示反馈：节流到 5 次/秒；最后一帧（downloaded === total）必定发送。
+          onProgress: (downloaded, total, final) => {
+            // 进度只是展示反馈：节流到 5 次/秒；末帧（final 或已知 total 满额）必定发送，total=0 时也不截断末帧。
             const now = Date.now();
-            if (now - lastProgress < 200 && downloaded !== total) return;
+            const isComplete = Boolean(final) || (total > 0 && downloaded === total);
+            if (!isComplete && now - lastProgress < 200) return;
             lastProgress = now;
             void source
               .sendEvent({ type: 'update.downloadProgress', downloaded, total }, 'control')
@@ -685,7 +707,7 @@ else {
         throw new Error('PREVIEW_INVALID');
       return previewUrl(previews.publish(html));
     });
-    // 本地图片预览只接受来自当前主页面的读取请求：只回 data URL，不暴露文件系统句柄。
+    // 本地图片预览只接受来自当前主页面的读取请求，且严格限制在已登记工作区与系统临时目录内（硬排除 ~/.kapibala 凭据区）。
     ipcMain.handle('kpbl:preview-file', async (event, params: unknown) => {
       if (
         !window ||
@@ -695,11 +717,20 @@ else {
       )
         throw new Error('FORBIDDEN');
       if (typeof params !== 'object' || params === null) throw new Error('PREVIEW_INVALID');
-      const { path, root } = params as { path?: unknown; root?: unknown };
-      if (typeof path !== 'string' || (root !== undefined && typeof root !== 'string'))
+      const { path: rawPath, root } = params as { path?: unknown; root?: unknown };
+      if (typeof rawPath !== 'string' || (root !== undefined && typeof root !== 'string'))
         throw new Error('PREVIEW_INVALID');
-      const target = resolveLocalImagePath(path, root);
+      const workspaceRoots = [...registry.values()].map((item) => item.root);
+      if (
+        root !== undefined &&
+        !isAllowedLocalPreviewPath(root, { workspaceRoots, homeDirectory })
+      ) {
+        throw new Error('FORBIDDEN');
+      }
+      const target = resolveLocalImagePath(rawPath, root);
       if (!target) throw new Error('PREVIEW_INVALID');
+      if (!isAllowedLocalPreviewPath(target, { workspaceRoots, homeDirectory }))
+        throw new Error('FORBIDDEN');
       return readImageDataUrl(target);
     });
     nativeTheme.on('updated', () => {

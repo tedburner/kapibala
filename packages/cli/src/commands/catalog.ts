@@ -1,6 +1,6 @@
 import { PRIMARY_MODEL_ROLES, ROUTABLE_MODEL_ROLES } from '@kiturone/kapibala-host/internal';
 import { isInteractiveTerminal } from '../input-coordinator.js';
-import { parseMcpConfigArgs } from './mcp.js';
+import { parseMcpConfigArgs, parseMcpImportArgs } from './mcp.js';
 import { parseSkillImportArgs, parseSkillTask } from './skills.js';
 
 /**
@@ -69,7 +69,11 @@ const mcp = (args: string[]) => {
     const parsed = parseMcpConfigArgs(args.slice(1));
     return parsed.options ? undefined : parsed.error;
   }
-  return '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit <name> ... | approve|revoke <server>]';
+  if (sub === 'import') {
+    const parsed = parseMcpImportArgs(args.slice(1));
+    return parsed.value ? undefined : parsed.error;
+  }
+  return '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit <name> ... | import [<server>|--all] ... | approve|revoke <server>]';
 };
 
 const history = (args: string[]) => {
@@ -209,15 +213,27 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     name: 'mcp',
     interactionLevel: 'none',
     usage:
-      '/mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit <name> ... | approve|revoke <server>]',
+      '/mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit <name> ... | import [<server>|--all] ... | approve|revoke <server>]',
     description:
-      '查看 MCP 服务状态、工具；配置级增删改走 mcp.json 事务（--project 需已信任项目）；approve/revoke 维护逐服务器启动批准',
+      '查看 MCP 服务状态、工具；配置级增删改与跨工具导入走 mcp.json 事务（--project 需已信任项目）；approve/revoke 维护逐服务器启动批准',
     group: 'diagnostic',
-    mutates: (args) =>
-      args.length > 0 &&
-      ['reconnect', 'enable', 'disable', 'add', 'remove', 'edit', 'approve', 'revoke'].includes(
-        args[0],
-      ),
+    mutates: (args) => {
+      if (args.length === 0) return false;
+      if (args[0] === 'import') {
+        const parsed = parseMcpImportArgs(args.slice(1));
+        return Boolean(parsed.value && (parsed.value.all || parsed.value.name));
+      }
+      return [
+        'reconnect',
+        'enable',
+        'disable',
+        'add',
+        'remove',
+        'edit',
+        'approve',
+        'revoke',
+      ].includes(args[0]);
+    },
     validate: mcp,
   },
   {

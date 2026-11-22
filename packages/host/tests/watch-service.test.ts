@@ -551,4 +551,78 @@ describe('WatchService', () => {
     expect(env.resumes).toEqual([WATCH_RESUME_INPUT]);
     env.service.dispose();
   });
+
+  it('重启恢复 armed 的 file_change 条目时重建签名，文件未变不假触发', async () => {
+    let now = 1_000_000;
+    const files = memoryFileSystem({ 'stable.txt': 'initial-content' });
+    const seed: WatchState = {
+      watchId: 'w-armed',
+      spec: { kind: 'file_change', target: 'stable.txt', intervalMs: 2_000, deadlineAt: 2_000_000 },
+      state: 'armed',
+      lastSeenAt: 1_000_000,
+      branchId: 'main',
+      armedAt: 1_000_000,
+    };
+    const env = harness({ store: memoryStore([seed]), fileSystem: files, now: () => now });
+    await env.service.start();
+
+    // 文件未变：多轮轮询后不得假触发。
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(env.delivered).toHaveLength(0);
+    expect(env.service.list()[0].state).toBe('armed');
+
+    // 文件真实改动后正常触发 fired。
+    files.write('stable.txt', 'updated-content');
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    now += 300;
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(env.delivered).toHaveLength(1);
+    expect(env.delivered[0].state).toBe('fired');
+    env.service.dispose();
+  });
+
+  it('60s 冷却期内触发的第二条通知不丢失唤醒，冷却结束后补发一次续跑', async () => {
+    let now = 1_000_000;
+    const files = memoryFileSystem({ 'a.txt': '1', 'b.txt': '1' });
+    const env = harness({ now: () => now, fileSystem: files });
+    await env.service.register({
+      kind: 'file_change',
+      target: 'a.txt',
+      intervalMs: 2_000,
+      deadlineAt: now + 180_000,
+    });
+    await env.service.register({
+      kind: 'file_change',
+      target: 'b.txt',
+      intervalMs: 2_000,
+      deadlineAt: now + 180_000,
+    });
+
+    // 第一条触发并立即续跑。
+    files.write('a.txt', '2');
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    now += 300;
+    await vi.advanceTimersByTimeAsync(301);
+    expect(env.resumes).toHaveLength(1);
+
+    // 10s 后（仍在 60s 冷却窗内）第二条触发：落盘但冷却期内不立即二次续跑。
+    files.write('b.txt', '2');
+    now += 10_000;
+    await vi.advanceTimersByTimeAsync(10_000);
+    now += 300;
+    await vi.advanceTimersByTimeAsync(301);
+    expect(env.delivered).toHaveLength(2);
+    expect(env.resumes).toHaveLength(1);
+
+    // 冷却窗口剩余时间走完后补发一次续跑。
+    now += 50_000;
+    await vi.advanceTimersByTimeAsync(50_000);
+    expect(env.resumes).toHaveLength(2);
+    env.service.dispose();
+  });
 });

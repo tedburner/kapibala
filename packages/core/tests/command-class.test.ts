@@ -100,6 +100,30 @@ const cases: [string, ShellCommandClass, Partial<ShellScope>?][] = [
   ['Get-ChildItem /etc', 'escape', { interpreter: 'pwsh' }],
   ['Get-FileHash /etc/passwd', 'escape', { interpreter: 'pwsh' }],
   ['Get-Process', 'read', { interpreter: 'pwsh' }],
+  // 2026-11-22 全量评审 9 条绕过回归
+  ['./bin/rg pattern', 'unknown'],
+  ['./node_modules/.bin/tsc --noEmit', 'unknown'],
+  ['./scripts/dev.sh --watch', 'workspace-write', { scriptTrust: 'clean' }],
+  ['./scripts/dev.sh --watch', 'unknown', { scriptTrust: 'dirty' }],
+  ['cd .github/workflows && echo x > ci.yml', 'escape'],
+  ['(cd .git/hooks && echo x > pre-commit)', 'unknown'],
+  ['NODE_OPTIONS=--require=./evil.js pnpm test', 'unknown', { scriptTrust: 'clean' }],
+  ['PATH=./bin pnpm test', 'unknown', { scriptTrust: 'clean' }],
+  ['CI=1 pnpm test', 'workspace-write', { scriptTrust: 'clean' }],
+  ['pnpm exec bash -c "echo hi"', 'network'],
+  ['npm exec -- tsx x.ts', 'network'],
+  ['node --require=./hook.mjs app.js', 'workspace-write', { scriptTrust: 'clean' }],
+  ['node --require=/tmp/hook.mjs app.js', 'escape', { scriptTrust: 'clean' }],
+  ['node --eval="console.log(1)"', 'unknown', { scriptTrust: 'clean' }],
+  ['make', 'unknown'],
+  ['make', 'workspace-write', { scriptTrust: 'clean' }],
+  ['vitest run', 'unknown', { scriptTrust: 'dirty' }],
+  ['eslint src', 'unknown', { scriptTrust: 'dirty' }],
+  ['git log --output=/tmp/out -1', 'escape'],
+  ['git log --output=~/.ssh/authorized_keys -1', 'escape'],
+  ['git log --output=.github/workflows/ci.yml -1', 'escape'],
+  ['git log --output=out.log -1', 'workspace-write'],
+  ['sed -n 1p /etc/passwd', 'escape'],
 ];
 
 describe('classifyShellCommandClass', () => {
@@ -228,6 +252,18 @@ describe('findProtectedShellTargets', () => {
         { ...scope('Set-Content .git/hooks/pre-commit hi'), interpreter: 'pwsh' },
         ROOT,
       ),
+    ).toEqual(['.git/hooks/pre-commit']);
+  });
+
+  it('tracks cd drift and git --output into protected targets', () => {
+    expect(findProtectedShellTargets(scope('cd .git/hooks && echo x > pre-commit'), ROOT)).toEqual([
+      '.git/hooks/pre-commit',
+    ]);
+    expect(
+      findProtectedShellTargets(scope('(cd .git/hooks && echo x > pre-commit)'), ROOT),
+    ).toEqual(['.git/hooks/pre-commit']);
+    expect(
+      findProtectedShellTargets(scope('git log --output=.git/hooks/pre-commit -1'), ROOT),
     ).toEqual(['.git/hooks/pre-commit']);
   });
 });

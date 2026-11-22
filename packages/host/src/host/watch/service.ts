@@ -35,9 +35,7 @@ const MIN_INTERVAL_MS = 2_000;
 const DEFAULT_INTERVAL_MS = 5_000;
 /** 文件变化去抖窗口；窗口内同路径只保留最后一次变化。 */
 const DEBOUNCE_MS = 300;
-/** 忙碌期间多次唤醒的合并窗口。 */
-const MERGE_WINDOW_MS = 2_000;
-/** 队列非空但会话不空闲时的重试间隔。 */
+/** 队列非空但会话不空闲时的重试间隔（忙碌期间新到达的通知在同一队列内自然合并为单次续跑）。 */
 const IDLE_RETRY_MS = 1_000;
 /** 每会话自动续跑的最小间隔（一分钟最多 1 次）。 */
 const MIN_RESUME_INTERVAL_MS = 60_000;
@@ -184,6 +182,8 @@ export class WatchService {
   private readonly now: () => number;
   private readonly resumeInput: string;
   private flushTimer?: NodeJS.Timeout;
+  private cooldownTimer?: NodeJS.Timeout;
+  private pendingCooldownResume = false;
   private lastResumeAt = 0;
   private resuming?: Promise<void>;
   /** 在途续跑的中止控制器；`dispose()` 必须 abort，否则关闭后仍可能拉起一轮运行。 */
@@ -210,13 +210,34 @@ export class WatchService {
     let states: WatchState[];
     try {
       states = await this.options.store.readWatchStates();
-    } catch {
+    } catch (error) {
+      console.warn('[watch] failed to read watch states during restore', error);
       return;
     }
+    // 异步回读期间若宿主已销毁服务，不得再布置任何定时器。
+    if (this.disposed) return;
     for (const state of states) {
       if (state.state === 'armed') {
-        this.entries.set(state.watchId, { state });
-        this.arm(this.entries.get(state.watchId)!);
+        const entry: ArmedEntry = { state };
+        if (state.spec.kind === 'file_change') {
+          try {
+            const initial = this.initialFileSignature(this.resolveFileTarget(state.spec.target));
+            if (initial) {
+              entry.signature = initial.signature;
+              entry.hash = initial.hash;
+            }
+          } catch (error) {
+            // 离线期间目标被移出工作区或落入被忽略目录：按 orphaned 收口，不让恢复整批中断。
+            if (error instanceof KapibalaError) {
+              this.entries.set(state.watchId, entry);
+              await this.close(entry, 'orphaned', '恢复时监视目标已不可用或越出工作区');
+              continue;
+            }
+            throw error;
+          }
+        }
+        this.entries.set(state.watchId, entry);
+        this.arm(entry);
         continue;
       }
       // 终态但从未确认投递：说明上次进程在落盘与水位回写之间退出，补一条简报即可。
@@ -376,6 +397,9 @@ export class WatchService {
     liveServices.delete(this);
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = undefined;
+    if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
+    this.cooldownTimer = undefined;
+    this.pendingCooldownResume = false;
     this.resumeController?.abort();
     this.resumeController = undefined;
     for (const entry of this.entries.values()) this.clearTimers(entry);
@@ -676,10 +700,24 @@ export class WatchService {
     }
   }
 
-  /** 每分钟最多一次自动续跑；超出只保留已落盘的背景消息。 */
+  /**
+   * 每分钟最多一次自动续跑；60s 冷却窗内新落盘的可续跑通知合并记账，
+   * 待冷却窗口结束且会话空闲时补发一次续跑，既抑制风暴又不永久吞掉后续唤醒。
+   */
   private async resumeOnce(): Promise<void> {
+    if (this.disposed) return;
     const now = this.now();
-    if (now - this.lastResumeAt < MIN_RESUME_INTERVAL_MS) return;
+    const elapsed = now - this.lastResumeAt;
+    if (elapsed < MIN_RESUME_INTERVAL_MS) {
+      this.pendingCooldownResume = true;
+      this.scheduleCooldownResume(MIN_RESUME_INTERVAL_MS - elapsed);
+      return;
+    }
+    this.pendingCooldownResume = false;
+    if (this.cooldownTimer) {
+      clearTimeout(this.cooldownTimer);
+      this.cooldownTimer = undefined;
+    }
     this.lastResumeAt = now;
     const controller = new AbortController();
     this.resumeController = controller;
@@ -692,9 +730,28 @@ export class WatchService {
         if (this.resumeController === controller) this.resumeController = undefined;
         this.resuming = undefined;
         if (this.queue.length) this.scheduleFlush(IDLE_RETRY_MS);
+        else if (this.pendingCooldownResume && !this.disposed) {
+          const remain = Math.max(0, MIN_RESUME_INTERVAL_MS - (this.now() - this.lastResumeAt));
+          this.scheduleCooldownResume(remain);
+        }
       }
     })();
     await this.resuming;
+  }
+
+  /** 安排冷却结束后的延迟续跑；忙碌时按 IDLE_RETRY_MS 等待空闲门放行。 */
+  private scheduleCooldownResume(delay: number): void {
+    if (this.cooldownTimer || this.disposed) return;
+    this.cooldownTimer = setTimeout(() => {
+      this.cooldownTimer = undefined;
+      if (this.disposed || !this.pendingCooldownResume) return;
+      if (this.resuming || !this.options.isIdle()) {
+        this.scheduleCooldownResume(IDLE_RETRY_MS);
+        return;
+      }
+      void this.resumeOnce().catch(() => {});
+    }, delay);
+    this.cooldownTimer.unref?.();
   }
 
   private clearTimers(entry: ArmedEntry): void {

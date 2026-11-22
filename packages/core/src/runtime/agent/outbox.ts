@@ -286,7 +286,7 @@ interface BackgroundMessageSource {
   readonly metadata: SubagentSourceMetadata | WatchSourceMetadata;
 }
 
-/** 跨实例共享的在途消费，避免 CLI / 桌面同时投递同一事件时各写一份。 */
+/** 进程内共享的在途消费（仅单进程内跨收件箱实例去重，跨进程互斥由 SessionLock 与落盘幂等回读保证）。 */
 const globalInFlightConsumes = new Map<string, Promise<boolean>>();
 
 /**

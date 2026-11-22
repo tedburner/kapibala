@@ -9,6 +9,7 @@ import {
 } from '@kiturone/kapibala-mcp';
 import { readMcpConfigFile } from '../mcp.js';
 import { redactCommonSecrets } from '../redaction.js';
+import { normalizeProjectRoot, stableJson } from './mcp-approval.js';
 import { getGlobalMcpConfigPath, getProjectMcpConfigPath, mutateMcpConfig } from './mcp-config.js';
 
 /**
@@ -363,7 +364,7 @@ export function importMcpServers(options: McpImportOptions): McpImportResult {
     scope === 'project'
       ? { scope, projectRoot: options.projectRoot, projectTrusted: true }
       : { scope, homeDir: options.homeDir };
-  // 事务内重新判定冲突，避免预览后目标被他人改动导致覆盖或误判。
+  // 预读仅用于在全员 unchanged/冲突时避免无谓建文件与抢锁；真正写入前会在配置锁内对最新草稿重判一次。
   const targetServers = readTargetServers(options, scope, diagnostics);
   const selections = options.items?.length ? options.items : scan.candidates;
   const planned: PlannedImport[] = [];
@@ -472,21 +473,49 @@ export function importMcpServers(options: McpImportOptions): McpImportResult {
       item.write && item.candidate !== undefined,
   );
   if (writes.length) {
-    // 溯源更新放进同一把配置锁：事务提交后、锁释放前写入（onCommitted），
-    // 并发导入不再各自「锁外读改写」溯源文件，避免 last-writer-wins 丢记录。
-    const provenanceCandidates = writes
-      .filter((item) => item.outcome.status === 'imported')
-      .map((item) => item.candidate);
+    // 锁内对最新配置草稿重判 unchanged / skipped-conflict：消除预读与拿锁之间的并发覆盖窗口；
+    // 溯源更新仅纳入真正落盘的条目，并在同一把配置锁的 onCommitted 内提交。
+    const committedCandidates: McpImportCandidate[] = [];
     try {
       mutateMcpConfig(
         (file) => {
           file.mcpServers ??= {};
-          for (const item of writes) file.mcpServers[item.candidate.name] = item.candidate.config;
+          for (const item of writes) {
+            const name = item.candidate.name;
+            const latestRaw = file.mcpServers[name];
+            if (
+              latestRaw !== undefined &&
+              stableJson(latestRaw) === stableJson(item.candidate.config)
+            ) {
+              item.outcome = {
+                harness: item.candidate.harness,
+                name,
+                sourceRef: item.candidate.sourceRef,
+                status: 'unchanged',
+                targetPath,
+              };
+              continue;
+            }
+            if (latestRaw !== undefined && options.overwrite !== true) {
+              item.outcome = {
+                harness: item.candidate.harness,
+                name,
+                sourceRef: item.candidate.sourceRef,
+                status: 'skipped-conflict',
+                targetPath,
+                message: '目标已存在同名服务；如需替换请显式选择覆盖',
+              };
+              continue;
+            }
+            file.mcpServers[name] = item.candidate.config;
+            committedCandidates.push(item.candidate);
+          }
         },
         targetOptions,
-        provenanceCandidates.length
-          ? () => writeProvenance(options, scope, provenanceCandidates, diagnostics)
-          : undefined,
+        () => {
+          if (committedCandidates.length)
+            writeProvenance(options, scope, committedCandidates, diagnostics);
+        },
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -747,20 +776,7 @@ function conflictOf(servers: Map<string, RawServerConfig>, name: string): McpImp
   return raw?.enabled === false ? 'exists-disabled' : 'exists-enabled';
 }
 
-/** 顶层键排序后的稳定 JSON，保证同一配置在不同字段顺序下摘要一致。 */
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
-/** 配置摘要：`sha256:` 前缀与技能溯源一致，便于两种导入结果相互解释。 */
+/** 配置摘要：`sha256:` 前缀与技能溯源一致，复用批准模块的 `stableJson` 保证两边摘要口径严格同源。 */
 function digestConfig(config: RawServerConfig): string {
   return `sha256:${createHash('sha256').update(stableJson(config)).digest('hex')}`;
 }
@@ -847,17 +863,7 @@ function writeProvenance(
   }
 }
 
-/** 项目路径物理身份比较：按平台折叠大小写与分隔符，并兼容 Windows 8.3 短名。 */
+/** 项目路径物理身份比较：与批准存储共用 `normalizeProjectRoot`，防止短名或大小写归一分叉。 */
 function sameProjectPath(a: string, b: string, platform: NodeJS.Platform): boolean {
-  const normalize = (value: string): string => {
-    let resolved = path.resolve(value);
-    try {
-      resolved = fs.realpathSync.native(value);
-    } catch {
-      /* 路径不存在时退回 resolve 结果。 */
-    }
-    const unified = resolved.replace(/\\/g, '/').replace(/\/+$/, '');
-    return platform === 'win32' ? unified.toLowerCase() : unified;
-  };
-  return normalize(a) === normalize(b);
+  return normalizeProjectRoot(a, platform) === normalizeProjectRoot(b, platform);
 }
