@@ -332,6 +332,35 @@ describe('PermissionPolicy', () => {
     ).toBe('ask');
   });
 
+  it('sends reviewed bypass payloads to ask instead of auto-allow in Auto mode', () => {
+    // 审查实测的四个绕过 + .envrc 硬禁区：分类器输出接入两轴裁决后的端到端行为。
+    const bypasses: [string, 'escape' | 'unknown'][] = [
+      ['echo x >(tee .env)', 'unknown'],
+      ['echo x > >(cat > .env)', 'unknown'],
+      ["sed -i.bak 's/a/b/' .env", 'unknown'],
+      ['echo x > .github/workflows/ci.yml', 'escape'],
+      ['tee .git-credentials', 'escape'],
+      ['echo x > .npmrc', 'escape'],
+      ['cat > .netrc', 'escape'],
+      ['echo x > .git/*/pre-commit', 'unknown'],
+    ];
+    for (const [command, expectedClass] of bypasses) {
+      const shell = { command, interpreter: 'bash', cwd: '/workspace' };
+      expect(classifyShellCommandClass(shell, '/workspace')).toBe(expectedClass);
+      // Auto 档对非 read 类一律询问，不再自动放行。
+      expect(
+        policy.decide({
+          mode: 'Auto',
+          toolName: 'run_command',
+          capabilities: ['exec'] as const,
+          dangerous: true,
+          shell,
+          commandClass: classifyShellCommandClass(shell, '/workspace'),
+        }).decision,
+      ).toBe('ask');
+    }
+  });
+
   it('rejects unsupported shell prefix and wildcard rules at load time', () => {
     expect(() =>
       validatePermissionRules([

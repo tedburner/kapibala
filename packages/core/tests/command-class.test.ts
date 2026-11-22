@@ -53,19 +53,53 @@ const cases: [string, ShellCommandClass, Partial<ShellScope>?][] = [
   ['rg secret /home', 'escape'],
   ['echo x > /tmp/y', 'escape'],
   ['node /tmp/x.js', 'escape'],
+  // escape 类敏感路径（016 §4.2：写入即询问，不硬拒）
+  ['echo x > .github/workflows/ci.yml', 'escape'],
+  ['echo x > sub/.github/workflows/ci.yml', 'escape'],
+  ['tee .git-credentials', 'escape'],
+  ['echo x > .npmrc', 'escape'],
+  ['echo x > sub/.npmrc', 'escape'],
+  ['cat > .netrc', 'escape'],
+  ['Set-Content .npmrc x', 'escape', { interpreter: 'pwsh' }],
+  // 对照：普通工作区文档写入不受 escape 清单影响
+  ['echo x > docs/a.md', 'workspace-write'],
   // unknown
   ['cat $HOME/config', 'unknown'],
   ['bash -c "ls"', 'unknown'],
   ['sed -i s/a/b/ package.json', 'unknown'],
+  ['sed -i.bak s/a/b/ .env', 'unknown'],
   ['find . -exec rm {} +', 'unknown'],
   ['eval x', 'unknown'],
   ['xargs rm', 'unknown'],
+  // 进程替换：写端可以是任意命令，无法静态判读
+  ['echo x >(tee .env)', 'unknown'],
+  ['echo x > >(cat > .env)', 'unknown'],
+  ['diff <(git status) <(git diff)', 'unknown'],
+  // 重定向 / tee / cp 目标含 glob 元字符：bash 先展开再写入，字面比对不可信
+  ['echo x > .git/*/pre-commit', 'unknown'],
+  ['tee .env.*', 'unknown'],
+  ['cp payload .git/*/pre-commit', 'unknown'],
   // 脚本类命令在脚本不受信时不放行
   ['pnpm test', 'unknown'],
   ['node scripts/dev.mjs', 'unknown', { scriptTrust: 'dirty' }],
   ['node scripts/dev.mjs', 'unknown', { scriptTrust: 'unknown' }],
   ['./scripts/dev.sh', 'unknown', { scriptDigest: 'a'.repeat(64) }],
   ['./scripts/dev.sh', 'unknown', { scriptDigest: 'a'.repeat(64), scriptTrust: 'dirty' }],
+  // sed 的原地改写按 -i 前缀识别（-i.bak 同样命中）；普通 -n 读保持 read
+  ['sed -n 1p .env', 'read'],
+  ['sed -in s/a/b/ .env', 'unknown'],
+  // GNU -t：取值才是写入目标，无值配对无法判读；写入 escape 类敏感路径升为 escape
+  ['cp -t .git/hooks/pre-commit payload', 'workspace-write'],
+  ['cp --target-directory=.npmrc payload', 'escape'],
+  ['cp -t', 'unknown'],
+  ['cp -t -x payload', 'unknown'],
+  // PowerShell 路径型读 cmdlet 与 POSIX 侧同款越界检查
+  ['Get-Content /etc/passwd', 'escape', { interpreter: 'pwsh' }],
+  ['Get-Content ./a.txt', 'read', { interpreter: 'pwsh' }],
+  ['Select-String -Path /etc/passwd -Pattern x', 'escape', { interpreter: 'pwsh' }],
+  ['Get-ChildItem /etc', 'escape', { interpreter: 'pwsh' }],
+  ['Get-FileHash /etc/passwd', 'escape', { interpreter: 'pwsh' }],
+  ['Get-Process', 'read', { interpreter: 'pwsh' }],
 ];
 
 describe('classifyShellCommandClass', () => {
@@ -141,6 +175,45 @@ describe('findProtectedShellTargets', () => {
     expect(findProtectedShellTargets(scope('sed -i s/a/b/ .env'), ROOT)).toEqual(['.env']);
     expect(findProtectedShellTargets(scope('find .git/hooks -delete'), ROOT)).toEqual([
       '.git/hooks',
+    ]);
+  });
+
+  it('matches sed -i suffix variants as in-place rewrites', () => {
+    expect(findProtectedShellTargets(scope("sed -i.bak 's/a/b/' .env"), ROOT)).toEqual(['.env']);
+    expect(findProtectedShellTargets(scope("sed -i '' s/a/b/ .env"), ROOT)).toEqual(['.env']);
+    // 普通 read 用法不产生保护目标。
+    expect(findProtectedShellTargets(scope('sed -n 1p .env'), ROOT)).toEqual([]);
+  });
+
+  it('attributes GNU -t values as the write destination', () => {
+    expect(findProtectedShellTargets(scope('cp -t .git/hooks/pre-commit payload'), ROOT)).toEqual([
+      '.git/hooks/pre-commit',
+    ]);
+    expect(findProtectedShellTargets(scope('mv -t .git/hooks payload'), ROOT)).toEqual([
+      '.git/hooks',
+    ]);
+    expect(findProtectedShellTargets(scope('cp --target-directory=.env payload'), ROOT)).toEqual([
+      '.env',
+    ]);
+    expect(findProtectedShellTargets(scope('cp --target-directory .env payload'), ROOT)).toEqual([
+      '.env',
+    ]);
+    // 惯用形态不回归：无 -t 时目标仍是最后一个位置参数。
+    expect(findProtectedShellTargets(scope('cp payload .git/hooks/pre-commit'), ROOT)).toEqual([
+      '.git/hooks/pre-commit',
+    ]);
+  });
+
+  it('does not attribute glob targets it cannot resolve statically', () => {
+    expect(findProtectedShellTargets(scope('echo x > .git/*/pre-commit'), ROOT)).toEqual([]);
+    expect(findProtectedShellTargets(scope('tee .env.*'), ROOT)).toEqual([]);
+    expect(findProtectedShellTargets(scope('cp payload .git/*?/pre-commit'), ROOT)).toEqual([]);
+  });
+
+  it('finds .envrc writes at any depth (direnv auto-executes on entry)', () => {
+    expect(findProtectedShellTargets(scope('echo x > .envrc'), ROOT)).toEqual(['.envrc']);
+    expect(findProtectedShellTargets(scope('echo x > nested/.envrc'), ROOT)).toEqual([
+      'nested/.envrc',
     ]);
   });
 

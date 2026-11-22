@@ -67,6 +67,24 @@ const cases: [string, ShellCommandSafety, Partial<ShellScope>?][] = [
   // 未收录程序
   ['terraform plan', 'unknown'],
   ['xargs echo', 'unknown'],
+  // 进程替换：写端不可判读，fail-closed
+  ['echo x >(tee .env)', 'unknown'],
+  ['echo x > >(cat > .env)', 'unknown'],
+  // sed 原地改写（含 -i.bak 后缀形态）不可按程序名放行
+  ["sed -i.bak 's/a/b/' .env", 'unknown'],
+  ['sed -n 1p .env', 'safe'],
+  // escape 类敏感路径写入：三值 unsafe，Auto/Approval 询问
+  ['echo x > .github/workflows/ci.yml', 'unsafe'],
+  ['tee .git-credentials', 'unsafe'],
+  ['echo x > .npmrc', 'unsafe'],
+  ['cat > .netrc', 'unsafe'],
+  ['echo x > docs/a.md', 'safe'],
+  // glob 目标无法静态归因
+  ['echo x > .git/*/pre-commit', 'unknown'],
+  // PowerShell 路径型读 cmdlet 的越界检查
+  ['Get-Content /etc/passwd', 'unsafe', { interpreter: 'pwsh' }],
+  ['Get-Content ./a.txt', 'safe', { interpreter: 'pwsh' }],
+  ['Select-String -Path /etc/passwd -Pattern x', 'unsafe', { interpreter: 'pwsh' }],
 ];
 
 describe('classifyShellCommandSafety', () => {

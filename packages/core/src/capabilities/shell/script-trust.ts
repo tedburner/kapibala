@@ -54,8 +54,49 @@ const PACKAGE_VALUE_FLAGS = new Set([
 /** 看起来像可执行脚本的扩展名；只用于识别 `./x.sh` 形式。 */
 const SCRIPT_EXTENSION = /\.(?:bash|cjs|cts|js|jsx|ksh|mjs|mts|php|pl|ps1|py|rb|sh|ts|tsx|zsh)$/i;
 
-/** git 状态查询上限；超时或失败一律 `unknown`，不阻塞审批。 */
-const GIT_TIMEOUT_MS = 2000;
+/**
+ * git 状态查询上限；超时或失败一律 `unknown`，不阻塞审批。
+ *
+ * 取 500ms 而非更宽裕的 2s：`assessScriptTrust` 在 `approvalScope`（同步接口）内执行，
+ * git 子进程会阻塞守护进程事件循环；配合下方 TTL 缓存，重复裁决不再重复拉起进程。
+ */
+const GIT_TIMEOUT_MS = 500;
+
+/** 信任结果缓存的存活时间；覆盖同一条命令在裁决链路里的两次同步调用即可，不追求更长。 */
+const TRUST_CACHE_TTL_MS = 1000;
+
+/** 缓存条目上限；超出时按插入序淘汰最旧条目，避免长会话无界增长。 */
+const TRUST_CACHE_LIMIT = 64;
+
+interface TrustCacheEntry {
+  /** git 判定结果（含失败时的 `unknown`——失败同样缓存，避免 git 缺失时反复拉起进程）。 */
+  readonly value: ScriptTrust;
+  /** 过期时刻（`Date.now()` 口径）。 */
+  readonly expiresAt: number;
+}
+
+/**
+ * git 判定结果的进程内 TTL 缓存。
+ *
+ * 键含目标文件的 stat 签名（size + mtimeMs）：文件被改写即缓存失效，保证「模型刚写入 → dirty」
+ * 这类安全关键状态变化不会被 TTL 窗口掩盖；仅 stat 未变的重复裁决命中缓存。向更严格方向
+ * 的漂移（如 git add 后 porcelain 输出变化）只会把 `dirty` 缓存得更久，不会把 `dirty` 漂成 `clean`。
+ */
+const trustCache = new Map<string, TrustCacheEntry>();
+
+/** 目标文件的 stat 签名；任一目标无法 stat（已被上游排除）按 missing 计。 */
+function statSignature(targets: readonly string[]): string {
+  const parts: string[] = [];
+  for (const target of targets) {
+    try {
+      const stat = fs.statSync(target);
+      parts.push(`${stat.size}:${stat.mtimeMs}`);
+    } catch {
+      parts.push('missing');
+    }
+  }
+  return parts.join('|');
+}
 
 /**
  * 计算命令将执行的脚本 / `package.json` 的 git 可信度。
@@ -178,11 +219,16 @@ function nearestPackageJson(cwd: string, root: string): string | undefined {
   }
 }
 
-/** 用 `git status --porcelain -- <paths>` 判断目标是否有未提交改动。 */
+/** 用 `git status --porcelain -- <paths>` 判断目标是否有未提交改动；TTL 内同签名直接复用上次结果。 */
 function gitTrust(targets: readonly string[], root: string): ScriptTrust {
   if (!fs.existsSync(path.join(root, '.git'))) return 'unknown';
   const relatives = targets.map((target) => path.relative(root, target).replace(/\\/g, '/'));
   if (relatives.some((relative) => relative === '' || relative.startsWith('..'))) return 'unknown';
+  const cacheKey = `${root}\u0000${relatives.join('\u0000')}\u0000${statSignature(targets)}`;
+  const cached = trustCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) return cached.value;
+  let value: ScriptTrust;
   try {
     const output = execFileSync('git', ['-C', root, 'status', '--porcelain', '--', ...relatives], {
       timeout: GIT_TIMEOUT_MS,
@@ -191,10 +237,16 @@ function gitTrust(targets: readonly string[], root: string): ScriptTrust {
       stdio: ['ignore', 'pipe', 'ignore'],
       env: gitEnvironment(),
     });
-    return output.trim() === '' ? 'clean' : 'dirty';
+    value = output.trim() === '' ? 'clean' : 'dirty';
   } catch {
-    return 'unknown';
+    value = 'unknown';
   }
+  trustCache.set(cacheKey, { value, expiresAt: now + TRUST_CACHE_TTL_MS });
+  if (trustCache.size > TRUST_CACHE_LIMIT) {
+    const oldest = trustCache.keys().next().value;
+    if (oldest !== undefined) trustCache.delete(oldest);
+  }
+  return value;
 }
 
 /** git 只需要定位可执行文件与用户配置；不继承任意业务变量或凭据。 */

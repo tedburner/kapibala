@@ -184,6 +184,9 @@ describe('PathSandbox (硬禁区)', () => {
     '.env.local',
     '.env.production',
     'nested/.env',
+    // direnv 进入目录即执行 .envrc，与 .git/hooks 同威胁级（回归：曾误列入 allowed）。
+    '.envrc',
+    'nested/.envrc',
   ];
   for (const target of blocked) {
     it(`rejects writes to ${target}`, () => {
@@ -194,7 +197,7 @@ describe('PathSandbox (硬禁区)', () => {
     });
   }
 
-  const allowed = ['.env.example', '.env.sample', '.env.template', '.gitignore', '.envrc'];
+  const allowed = ['.env.example', '.env.sample', '.env.template', '.gitignore'];
   for (const target of allowed) {
     it(`allows writes to ${target}`, () => {
       const sandbox = new PathSandbox({ rootDir });
@@ -230,6 +233,8 @@ describe('PathSandbox (硬禁区)', () => {
     expect(isProtectedWorkspacePath('a/.git/hooks/x')).toBe(true);
     expect(isProtectedWorkspacePath('.env.local')).toBe(true);
     expect(isProtectedWorkspacePath('.env.example')).toBe(false);
+    expect(isProtectedWorkspacePath('.envrc')).toBe(true);
+    expect(isProtectedWorkspacePath('nested/.envrc')).toBe(true);
     expect(isProtectedWorkspacePath('src/index.ts')).toBe(false);
   });
 });

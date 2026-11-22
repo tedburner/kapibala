@@ -456,8 +456,9 @@ function assert(condition: unknown, message: string): asserts condition {
 /**
  * 运行混合代际组合并确认它在握手阶段被明确拒绝。
  *
- * 返回拒绝证据字符串（应为 `PROTOCOL_MISMATCH`）：组合不兼容时两类失败都归一到该代码，
- * 若脚本正常退出则说明出现「半兼容成功」，必须视为门禁失败而不是可接受结果。
+ * 返回拒绝证据字符串（应为 `INVALID_PARAMS`：旧形状报价在参数白名单处被拒）；若见到
+ * `PROTOCOL_MISMATCH` 说明「放行到协商层」的兼容分支被重新引入，同样必须视为门禁失败。
+ * 脚本正常退出说明出现「半兼容成功」，也是门禁失败而不是可接受结果。
  */
 async function expectHandshakeRejection(options: {
   script: string;

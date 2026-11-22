@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isEscapeClassPath } from '../security/escape-paths.js';
 import type { ShellScope } from '../security/permissions.js';
 import { isProtectedWorkspacePath } from '../security/sandbox.js';
 import type { ShellCommandSafety } from './command-safety.js';
@@ -238,6 +239,7 @@ const POWERSHELL_READ = new Set([
   'get-command',
   'get-content',
   'get-date',
+  'get-filehash',
   'get-help',
   'get-host',
   'get-item',
@@ -260,6 +262,24 @@ const POWERSHELL_READ = new Set([
   'test-path',
   'write-host',
   'write-output',
+]);
+
+/**
+ * PowerShell 路径型读 cmdlet（小写，含常用别名）：与 POSIX 侧 `READ_PATH_PROGRAMS` 同款，
+ * 显式路径参数解析到 workspace 外时升为 `escape`（016 §13.1 决议 1 的 PowerShell 侧对齐）。
+ */
+const POWERSHELL_READ_PATH = new Set([
+  'get-content',
+  'get-childitem',
+  'get-item',
+  'get-itemproperty',
+  'select-string',
+  'get-filehash',
+  'gc',
+  'gci',
+  'gi',
+  'gp',
+  'sls',
 ]);
 
 /** PowerShell 出站网络 cmdlet 与别名。 */
@@ -347,6 +367,8 @@ export function findProtectedShellTargets(shell: ShellScope, rootDir: string): r
   const found = new Set<string>();
   for (const segment of segments) {
     const scan = scanRedirections(segment.text);
+    // 进程替换的目标可以是任意命令，无法静态归因；分类器侧已按 unknown 询问。
+    if (scan.processSubstitution) continue;
     const words = splitWords(scan.command);
     if (words === undefined) continue;
     const candidates = scan.hasOutput ? [...scan.targets] : [];
@@ -354,10 +376,17 @@ export function findProtectedShellTargets(shell: ShellScope, rootDir: string): r
     const args = words.slice(1).filter((word) => !word.startsWith('-'));
     if (program === 'tee' || program === 'touch' || program === 'mkdir') candidates.push(...args);
     if (program === 'cp' || program === 'mv' || program === 'install') {
-      const destination = args[args.length - 1];
+      // GNU `-t DIR` 的取值才是写入目标（位置参数是源）；无值配对无法归因，跳过该段。
+      const targetDirectory = gnuTargetDirectory(words);
+      if (targetDirectory.present && targetDirectory.value === undefined) continue;
+      const destination = targetDirectory.present ? targetDirectory.value! : args[args.length - 1];
       if (destination !== undefined) candidates.push(destination);
     }
-    if (program === 'sed' && words.some((word) => word === '-i' || word.startsWith('--in-place'))) {
+    // `-i` 必须按前缀匹配：GNU/BSD 的后缀形态 `-i.bak`（甚至 BSD 的独立 `-i ''`）同样是原地改写。
+    if (
+      program === 'sed' &&
+      words.some((word) => word.startsWith('-i') || word.startsWith('--in-place'))
+    ) {
       const file = args[args.length - 1];
       if (file !== undefined) candidates.push(file);
     }
@@ -371,6 +400,8 @@ export function findProtectedShellTargets(shell: ShellScope, rootDir: string): r
       candidates.push(...args);
     for (const candidate of candidates) {
       if (candidate.includes('$') || candidate.includes('`') || candidate.startsWith('~')) continue;
+      // glob 元字符会让 bash 先展开再写入，字面路径不代表真实目标，无法静态归因（分类器侧归 unknown）。
+      if (containsGlobMeta(candidate)) continue;
       const resolved = path.resolve(shell.cwd, candidate);
       if (!isWithinRoot(resolved, root)) continue;
       const relative = path.relative(root, resolved).replace(/\\/g, '/');
@@ -395,6 +426,58 @@ function aggregate(classes: readonly ShellCommandClass[]): ShellCommandClass {
 function isWithinRoot(candidate: string, rootDir: string): boolean {
   const relative = path.relative(path.resolve(rootDir), path.resolve(candidate));
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/** 解析后的绝对路径转 workspace 相对 POSIX 路径，供硬禁区与 escape 清单匹配。 */
+function toRelativePosix(resolved: string, rootDir: string): string {
+  return path.relative(path.resolve(rootDir), resolved).replace(/\\/g, '/');
+}
+
+/**
+ * 目标含 glob 元字符（`*` `?` `[`）时 bash 会先展开再重定向/写入，
+ * 字面路径比对结果不代表真实写入目标，只能视为无法静态归因。
+ */
+function containsGlobMeta(word: string): boolean {
+  return /[*?[]/.test(word);
+}
+
+interface TargetDirectoryOption {
+  /** 是否出现 `-t` / `--target-directory` 选项。 */
+  present: boolean;
+  /** 选项取值；缺省、空串或以 `-` 开头（无法与后续选项区分）视为未提供。 */
+  value?: string;
+}
+
+/**
+ * 解析 GNU `cp` / `mv` / `install` 的目标目录选项：`-t 值`、`--target-directory 值`、
+ * `--target-directory=值` 三态；重复出现取最后一次（与 GNU 语义一致）。
+ */
+function gnuTargetDirectory(words: readonly string[]): TargetDirectoryOption {
+  let result: TargetDirectoryOption = { present: false };
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index]!;
+    if (word === '-t' || word === '--target-directory') {
+      const value = words[index + 1];
+      result =
+        value === undefined || value === '' || value.startsWith('-')
+          ? { present: true }
+          : { present: true, value };
+      if (result.value !== undefined) index++;
+    } else if (word.startsWith('--target-directory=')) {
+      const value = word.slice('--target-directory='.length);
+      result = value === '' ? { present: true } : { present: true, value };
+    }
+  }
+  return result;
+}
+
+/** 取最后一个非选项词（GNU cp/mv 目标参数惯例；`-t` 存在时不适用）。 */
+function lastNonOptionWord(words: readonly string[]): string | undefined {
+  for (let index = words.length - 1; index >= 0; index--) {
+    const word = words[index]!;
+    if (!word.startsWith('-')) return word;
+  }
+  return undefined;
 }
 
 type Segment = { text: string; hadSubstitution: boolean; hadDollar: boolean };
@@ -435,7 +518,13 @@ function splitSegments(command: string): Segment[] | undefined {
       hasContent = true;
       continue;
     }
-    if (character === '`' || (character === '<' && command[index + 1] === '(')) return undefined;
+    // 进程替换 `<(` / `>(` 的内容不在本进程词法可判读范围（写端可以是任意命令），按 unknown 询问。
+    if (
+      character === '`' ||
+      (character === '<' && command[index + 1] === '(') ||
+      (character === '>' && command[index + 1] === '(')
+    )
+      return undefined;
     if (character === '>' || character === '<') {
       current += character;
       hasContent = true;
@@ -474,6 +563,8 @@ interface RedirectScan {
   readonly heredoc: boolean;
   /** 是否出现文件输出重定向；出现时该段至少是 `workspace-write`。 */
   readonly hasOutput: boolean;
+  /** 重定向目标是否为进程替换 `>(` / `<(`；写端可以是任意命令，无法静态归因。 */
+  readonly processSubstitution: boolean;
 }
 
 /**
@@ -485,6 +576,7 @@ function scanRedirections(text: string): RedirectScan {
   const targets: string[] = [];
   let heredoc = false;
   let hasOutput = false;
+  let processSubstitution = false;
   let quote: '"' | "'" | undefined;
   for (let index = 0; index < text.length; index++) {
     const character = text[index];
@@ -536,25 +628,32 @@ function scanRedirections(text: string): RedirectScan {
     }
     // `2>&1` / `>&2` 是 fd 复制，`/dev/null` 与 `$null` 是空设备，都不构成文件写入。
     const sink = /^(?:>|>>)?(?:nul|\$null|\/dev\/null)$/i.test(target);
+    if (target.startsWith('(')) processSubstitution = true;
     if (target !== '' && !target.startsWith('&') && !/^\d+$/.test(target) && !sink) {
       targets.push(target);
       if (character === '>') hasOutput = true;
     }
     command += ' ';
   }
-  return { command, targets, heredoc, hasOutput };
+  return { command, targets, heredoc, hasOutput, processSubstitution };
 }
 
-/** 校验重定向目标：变量与 `~` 不可判读；越界按 `escape`；返回 undefined 表示继续分类命令。 */
+/**
+ * 校验重定向目标：变量与 `~` 不可判读；glob 元字符与进程替换无法静态归因按 `unknown`；
+ * 越界与 escape 类敏感路径按 `escape`；返回 undefined 表示继续分类命令。
+ */
 function classifyRedirectTargets(
   scan: RedirectScan,
   cwd: string,
   rootDir: string,
 ): ShellCommandClass | undefined {
-  if (scan.heredoc) return 'unknown';
+  if (scan.heredoc || scan.processSubstitution) return 'unknown';
   for (const target of scan.targets) {
     if (target.includes('$') || target.includes('`') || target.startsWith('~')) return 'unknown';
-    if (!isWithinRoot(path.resolve(cwd, target), rootDir)) return 'escape';
+    if (containsGlobMeta(target)) return 'unknown';
+    const resolved = path.resolve(cwd, target);
+    if (!isWithinRoot(resolved, rootDir)) return 'escape';
+    if (isEscapeClassPath(toRelativePosix(resolved, rootDir))) return 'escape';
   }
   return undefined;
 }
@@ -595,7 +694,10 @@ function classifyPosixWords(
   if (program === 'git') return classifyGit(rest);
   if (program === 'find') return classifyFind(rest, cwd, rootDir);
   if (program === 'sed')
-    return rest.some((word) => word === '-i' || word.startsWith('--in-place')) ? 'unknown' : 'read';
+    // `-i.bak` 这类带后缀的原地改写同样不可判读，必须按前缀识别；sed 无其它 `-i` 开头选项。
+    return rest.some((word) => word.startsWith('-i') || word.startsWith('--in-place'))
+      ? 'unknown'
+      : 'read';
   if (program === 'tee') return classifyWriteTargets(rest, cwd, rootDir);
   if (program === 'cp') return classifyCopy(rest, cwd, rootDir);
   if (program === 'pnpm' || program === 'npm' || program === 'yarn')
@@ -645,7 +747,11 @@ function classifyPowerShellWords(
   if (POWERSHELL_WRITE.has(program)) return classifyWriteTargets(rest, cwd, rootDir);
   if (POWERSHELL_UNKNOWN.has(program)) return 'unknown';
   if (POWERSHELL_READ.has(program)) {
-    return READ_PATH_PROGRAMS.has(program) ? classifyReadArguments(rest, cwd, rootDir) : 'read';
+    // PowerShell 自有的路径型读 cmdlet 不在 POSIX 的 READ_PATH_PROGRAMS 内，需单独集合；
+    // 两者取并集保证 `cat` / `ls` 等跨解释器别名同样受路径越界检查。
+    return READ_PATH_PROGRAMS.has(program) || POWERSHELL_READ_PATH.has(program)
+      ? classifyReadArguments(rest, cwd, rootDir)
+      : 'read';
   }
   return 'unknown';
 }
@@ -674,7 +780,10 @@ function looksLikePath(word: string): boolean {
   return word.includes('/') && !/^[a-z][a-z0-9+.-]*:\/\//i.test(word);
 }
 
-/** 写目标校验：`tee` 与 PowerShell 写 cmdlet 共用；目标越界 → `escape`，否则 `workspace-write`。 */
+/**
+ * 写目标校验：`tee` 与 PowerShell 写 cmdlet 共用；目标含 glob 或变量按 `unknown` 询问，
+ * 越界与命中 escape 类敏感路径 → `escape`，否则 `workspace-write`。
+ */
 function classifyWriteTargets(
   words: readonly string[],
   cwd: string,
@@ -685,18 +794,33 @@ function classifyWriteTargets(
     if (word.startsWith('-')) continue;
     sawTarget = true;
     if (word.includes('$') || word.includes('`') || word.startsWith('~')) return 'unknown';
-    if (!isWithinRoot(path.resolve(cwd, word), rootDir)) return 'escape';
+    if (containsGlobMeta(word)) return 'unknown';
+    const resolved = path.resolve(cwd, word);
+    if (!isWithinRoot(resolved, rootDir)) return 'escape';
+    if (isEscapeClassPath(toRelativePosix(resolved, rootDir))) return 'escape';
   }
   return sawTarget ? 'workspace-write' : 'unknown';
 }
 
-/** `cp`：源或目标越界都按 `escape`，否则视为工作区内写入。 */
+/**
+ * `cp` / `mv` / `install`：源或目标越界都按 `escape`，否则视为工作区内写入。
+ * GNU `-t DIR` 的取值才是真实写入目标（最后一个位置参数是源）；选项无值配对无法判读；
+ * 目标含 glob 元字符按 `unknown`，命中 escape 类敏感路径按 `escape`。
+ */
 function classifyCopy(words: readonly string[], cwd: string, rootDir: string): ShellCommandClass {
+  const targetDirectory = gnuTargetDirectory(words);
+  if (targetDirectory.present && targetDirectory.value === undefined) return 'unknown';
   for (const word of words) {
     if (word.startsWith('-')) continue;
     if (word.includes('$') || word.includes('`') || word.startsWith('~')) return 'unknown';
     if (!isWithinRoot(path.resolve(cwd, word), rootDir)) return 'escape';
   }
+  const destination = targetDirectory.present ? targetDirectory.value! : lastNonOptionWord(words);
+  if (destination === undefined) return 'unknown';
+  if (containsGlobMeta(destination)) return 'unknown';
+  const resolved = path.resolve(cwd, destination);
+  if (!isWithinRoot(resolved, rootDir)) return 'escape';
+  if (isEscapeClassPath(toRelativePosix(resolved, rootDir))) return 'escape';
   return 'workspace-write';
 }
 

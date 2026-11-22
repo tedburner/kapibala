@@ -92,4 +92,21 @@ describe('assessScriptTrust', () => {
     expect(assessScriptTrust('node scripts/missing.mjs', root, root)).toBe('unknown');
     expect(assessScriptTrust('node /tmp/outside.mjs', root, root)).toBe('unknown');
   });
+
+  it('keeps the git result stable across repeated calls within the cache window', (context) => {
+    const root = temp();
+    fs.mkdirSync(path.join(root, 'scripts'));
+    const script = path.join(root, 'scripts', 'run.mjs');
+    fs.writeFileSync(script, 'console.log(1)');
+    if (!commitAll(root)) {
+      context.skip();
+      return;
+    }
+    // 同 stat 签名的两次裁决走 TTL 缓存：结果一致且不重复拉起 git 进程。
+    expect(assessScriptTrust('node scripts/run.mjs', root, root)).toBe('clean');
+    expect(assessScriptTrust('node scripts/run.mjs', root, root)).toBe('clean');
+    // 文件被改写后 stat 签名变化，缓存必须失效并识别为 dirty（安全关键方向不得被 TTL 掩盖）。
+    fs.writeFileSync(script, 'console.log(1);\nconsole.log(2);');
+    expect(assessScriptTrust('node scripts/run.mjs', root, root)).toBe('dirty');
+  });
 });
