@@ -593,10 +593,22 @@ describe('PermissionPolicy', () => {
   });
 
   it('normalizes PowerShell backslash and drive-letter paths under POSIX path semantics', () => {
-    const resolveSpy = vi.spyOn(path, 'resolve').mockImplementation(path.posix.resolve);
-    const relativeSpy = vi.spyOn(path, 'relative').mockImplementation(path.posix.relative);
-    const isAbsoluteSpy = vi.spyOn(path, 'isAbsolute').mockImplementation(path.posix.isAbsolute);
-    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    // Linux/macOS 上 `Object.is(path, path.posix) === true`，无需打桩且原地 spy 后再读 `path.posix.*`
+    // 会拿到 spy 自身引发自递归；仅在 win32 上先保存 POSIX 原函数再挂载模拟。
+    const spies: Array<{ mockRestore(): void }> = [];
+    if (process.platform === 'win32') {
+      const {
+        resolve: posixResolve,
+        relative: posixRelative,
+        isAbsolute: posixIsAbsolute,
+      } = path.posix;
+      spies.push(
+        vi.spyOn(path, 'resolve').mockImplementation(posixResolve),
+        vi.spyOn(path, 'relative').mockImplementation(posixRelative),
+        vi.spyOn(path, 'isAbsolute').mockImplementation(posixIsAbsolute),
+        vi.spyOn(process, 'platform', 'get').mockReturnValue('linux'),
+      );
+    }
     try {
       expect(
         classifyShellCommandClass(
@@ -631,7 +643,7 @@ describe('PermissionPolicy', () => {
       expect(
         findProtectedShellTargets(
           {
-            command: 'Copy-Item payload .git\\hooks\\pre-commit',
+            command: 'Copy-Item payload sub\\..\\.git\\hooks\\pre-commit',
             interpreter: 'pwsh',
             cwd: '/workspace',
           },
@@ -639,10 +651,7 @@ describe('PermissionPolicy', () => {
         ),
       ).toContain('.git/hooks/pre-commit');
     } finally {
-      platformSpy.mockRestore();
-      isAbsoluteSpy.mockRestore();
-      relativeSpy.mockRestore();
-      resolveSpy.mockRestore();
+      for (const spy of spies.reverse()) spy.mockRestore();
     }
   });
 });

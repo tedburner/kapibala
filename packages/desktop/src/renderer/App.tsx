@@ -38,6 +38,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
+import { flushSync } from 'react-dom';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
 import { collectViewArtifacts, latestViewArtifact } from './artifact-model.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
@@ -695,12 +696,13 @@ export function App() {
       history.index === history.entries.length
         ? (history.draft ?? '')
         : history.entries[history.index];
-    ui.draft(draftScope, value);
-    // 受控值要等 React 写回输入框后再设光标，否则会落在旧文本长度上。
-    requestAnimationFrame(() => {
-      const element = composerInput.current;
-      if (element) element.selectionStart = element.selectionEnd = element.value.length;
+    // 在离散按键事件内同步提交受控值并就地定位末尾光标：用 requestAnimationFrame 延迟到下一帧
+    // 会在后续全选替换或 Home 移光标之间插入旧的末尾定位，吞掉刚建立的选区导致文本重复拼接。
+    flushSync(() => {
+      ui.draft(draftScope, value);
     });
+    const element = composerInput.current;
+    if (element) element.selectionStart = element.selectionEnd = element.value.length;
     return true;
   }
 
