@@ -321,6 +321,47 @@ describe('OpenAICompatibleProvider', () => {
     expect(typeof stopEvent.durationMs).toBe('number');
   });
 
+  it('tolerates a usage-only choice that arrives after the terminal frame', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: createReadableStream([
+        'data: {"choices":[{"delta":{"content":"你好"}}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}\n\n',
+        'data: [DONE]\n\n',
+      ]),
+    } as Response);
+
+    const events: any[] = [];
+    for await (const event of provider.create({ messages: [] })) events.push(event);
+
+    expect(events.filter((event) => event.type === 'text_delta')).toEqual([
+      { type: 'text_delta', text: '你好' },
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: 'message_stop',
+      usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+    });
+  });
+
+  it('rejects a content-bearing choice after the terminal frame', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: createReadableStream([
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"late text"}}]}\n\n',
+      ]),
+    } as Response);
+
+    await expect(async () => {
+      for await (const _ of provider.create({ messages: [] })) {
+      }
+    }).rejects.toMatchObject({
+      code: 'MODEL_INVALID_RESPONSE',
+      message: 'Model response contained a choice after its terminal state',
+    });
+  });
+
   it('should assemble split tool call chunks properly', async () => {
     const sseData = [
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_123","function":{"name":"read_file","arguments":""}}]}}]}\n\n',

@@ -30,6 +30,7 @@ import {
   createMcpPlugin,
   resolveMcpConfig,
 } from '@kiturone/kapibala-mcp';
+import { McpServerApprovalStore, createApprovedStartAuthorizer } from './resource/mcp-approval.js';
 
 /** MCP 启动授权所需的输入能力子集；宿主输入协调器结构化满足，不反向依赖 CLI 输入模块。 */
 export interface McpServerStartInputPort {
@@ -287,24 +288,43 @@ export async function attachMcpToSession(
 
   // 1. 创建独立的会话启动审批缓存（确保会话间审批状态严格隔离）
   const startupCache = new ServerStartupApprovalCache();
-  const authorizer = createCliServerStartAuthorizer(inputCoordinator, interactive);
+  // 2. 配置级逐服务器批准：命中已批准且摘要一致时静默放行，否则交给交互授权并持久化批准。
+  //    home / projectRoot 从配置文件位置反推，保证与写入侧同一身份（含桌面隔离环境）。
+  const approvalStore = new McpServerApprovalStore({
+    homeDir: hostOptions.globalConfigPath
+      ? path.dirname(path.dirname(hostOptions.globalConfigPath))
+      : os.homedir(),
+    projectRoot: hostOptions.projectConfigPath
+      ? path.dirname(path.dirname(hostOptions.projectConfigPath))
+      : undefined,
+  });
+  const authorizer = createApprovedStartAuthorizer({
+    store: approvalStore,
+    entries: new Map(
+      [...hostOptions.servers].map(([name, entry]) => [
+        name,
+        { source: entry.source, config: entry.config },
+      ]),
+    ),
+    fallback: createCliServerStartAuthorizer(inputCoordinator, interactive),
+  });
 
-  // 2. 组装 Manager 配置格式
+  // 3. 组装 Manager 配置格式
   const serversConfig: Record<string, import('@kiturone/kapibala-mcp').ServerConfig> = {};
   for (const [name, entry] of hostOptions.servers) {
     serversConfig[name] = entry.config;
   }
 
-  // 3. 创建受管 McpPluginInstance
+  // 4. 创建受管 McpPluginInstance
   const plugin = createMcpPlugin(serversConfig, {
     authorizer,
     startupCache,
   });
 
-  // 4. 挂载到 AgentSession 并执行 setup
+  // 5. 挂载到 AgentSession 并执行 setup
   await session.use(plugin);
 
-  // 5. 绑定弱引用，供 CLI 命令交互获取
+  // 6. 绑定弱引用，供 CLI 命令交互获取
   SESSION_MCP_MAP.set(session, plugin);
 
   return plugin;

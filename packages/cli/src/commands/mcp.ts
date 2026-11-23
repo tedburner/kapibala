@@ -11,9 +11,32 @@ import { resolveCommandOutput } from '../command-output.js';
  *    严禁用户通过 `/mcp enable` 绕过宿主启动限制；
  * 4. 纯内存临时变更约定：`enable` 与 `disable` 只改变当前会话内的服务可用性，
  *    严禁写回磁盘 `mcp.json` 配置文件，保证磁盘配置的声明性与只读完整性。
+ * 5. 配置级命令（add/remove/edit）对无法安全落盘的输入一律显式报错、不做猜测：
+ *    参数按空白切分导致含空格的值必成未知 token（只引导换编辑通道）、
+ *    与目标传输无关的字段拒绝静默丢弃、跨传输改写必须在成功输出中明示；批准输出不打印密文。
  */
 
-import { formatMcpToolLabel, getSessionMcpPlugin } from '@kiturone/kapibala-host/internal';
+import os from 'node:os';
+import {
+  MCP_IMPORT_HARNESS_NAMES,
+  type McpImportConflict,
+  type McpImportHarness,
+  McpServerApprovalStore,
+  formatMcpToolLabel,
+  getSessionMcpPlugin,
+  importMcpServers,
+  isProjectTrusted,
+  mutateMcpConfig,
+  readMcpApprovalEntries,
+  redactCommonSecrets,
+  scanImportableMcpServers,
+} from '@kiturone/kapibala-host/internal';
+import {
+  type RawServerConfig,
+  type ServerConfig,
+  validateAndNormalizeServerConfig,
+  validateServerName,
+} from '@kiturone/kapibala-mcp';
 import { color, sanitizeUntrustedOutput } from '../ui/events.js';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
 
@@ -25,9 +48,26 @@ import type { CommandContext, CommandHandler } from './dispatcher.js';
  * - `/mcp tools <server>`: 查看指定服务在当前会话中成功注册并暴露的工具清单；
  * - `/mcp reconnect <server>`: 手动重连指定服务，递增代次并重新发现能力；
  * - `/mcp enable <server>`: 在当前会话内临时启用被禁用的服务（不写磁盘）；
- * - `/mcp disable <server>`: 在当前会话内临时禁用指定服务（不写磁盘）。
+ * - `/mcp disable <server>`: 在当前会话内临时禁用指定服务（不写磁盘）；
+ * - `/mcp add|remove|edit`: 配置级增删改，走宿主 MCP 配置事务（全局默认，`--project` 需已信任项目）；
+ * - `/mcp approve|revoke <server>`: 逐服务器启动批准——批准绑定当前配置摘要，
+ *   任一字段变化后自动回到待批准，未批准的服务不会启动。
  */
 export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandContext) => {
+  const subCommand = (args[0] ?? '').toLowerCase();
+  // 配置级命令与运行期状态无关：即使当前没有 MCP 插件也必须可执行。
+  if (subCommand === 'add' || subCommand === 'remove' || subCommand === 'edit') {
+    mutateMcpConfigCommand(subCommand, args.slice(1), ctx);
+    return;
+  }
+  if (subCommand === 'approve' || subCommand === 'revoke') {
+    approvalCommand(subCommand, args.slice(1), ctx);
+    return;
+  }
+  if (subCommand === 'import') {
+    importMcpCommand(args.slice(1), ctx);
+    return;
+  }
   const plugin = getSessionMcpPlugin(ctx.session);
 
   // 1. 无 MCP 插件或被宿主彻底关闭的情况
@@ -47,6 +87,7 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
     }
 
     const isTTY = Boolean(process.stdout.isTTY);
+    const approvals = readApprovalStatus(ctx);
     resolveCommandOutput(ctx).log(`\n🐾 MCP 服务状态清单（共 ${statuses.length} 个服务）：`);
     for (const s of statuses) {
       const connColorCode =
@@ -62,11 +103,14 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
 
       const title = color(sanitizeUntrustedOutput(s.name), 1, isTTY);
       const stateStr = color(s.connectionState, connColorCode, isTTY);
+      const approvalStr =
+        approvals.get(s.name) === undefined
+          ? ''
+          : ` | 批准: ${approvals.get(s.name) ? '已批准' : '待批准'}`;
 
       resolveCommandOutput(ctx).log(
-        `  · ${title}: ${stateStr}` +
-          ` | Tools: ${s.toolsState} (${toolCount} 个)` +
-          ` | Prompts: ${s.promptsState} (${promptCount} 个)`,
+        `  · ${title}: ${stateStr} | Tools: ${s.toolsState} (${toolCount} 个)` +
+          ` | Prompts: ${s.promptsState} (${promptCount} 个)${approvalStr}`,
       );
       if (s.errorMessage) {
         resolveCommandOutput(ctx).log(
@@ -75,12 +119,14 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
       }
     }
     resolveCommandOutput(ctx).log(
-      '\n提示: 使用 /mcp tools <server> 查看工具，或 /mcp reconnect|enable|disable <server> 管理服务。\n',
+      '\n提示: 使用 /mcp tools <server> 查看工具，或 /mcp reconnect|enable|disable <server> 管理服务。',
+    );
+    resolveCommandOutput(ctx).log(
+      '逐服务器启动批准: /mcp approve <server>（配置改动后需重新批准）| /mcp revoke <server>。\n',
     );
     return;
   }
 
-  const subCommand = args[0].toLowerCase();
   const serverName = args[1]?.trim();
 
   // 3. /mcp tools <server>
@@ -216,6 +262,510 @@ export const mcpCommand: CommandHandler = async (args: string[], ctx: CommandCon
   }
 
   resolveCommandOutput(ctx).log(
-    '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server>]',
+    '用法: /mcp [tools <server> | reconnect <server> | enable <server> | disable <server> | add|remove|edit ...]',
   );
 };
+
+/** `/mcp add|remove|edit` 的解析结果；值缺省时由调用方按 add/edit 语义判定。 */
+export interface McpConfigCliOptions {
+  scope: 'global' | 'project';
+  transport?: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
+  env: Record<string, string>;
+  url?: string;
+  headers: Record<string, string>;
+  disabled: boolean;
+  enabled: boolean;
+}
+
+/**
+ * 解析配置级子命令参数：第一个位置参数是服务器名，其余是 `--flag value` 选项。
+ *
+ * 边界：只接受下方列出的选项；`--arg` / `--env` / `--header` 可重复；
+ * 缺失值、未知选项、非法 KEY=VALUE、`--enabled` 与 `--disabled` 并用一律报错，不做猜测。
+ * 分发器已按空白切分参数，含空格的值在这里必然碎成未知 token，只能引导用户换编辑通道。
+ */
+export function parseMcpConfigArgs(args: string[]): {
+  name?: string;
+  options?: McpConfigCliOptions;
+  error?: string;
+} {
+  const name = args[0]?.trim();
+  if (!name) return { error: '缺少 MCP 服务器名' };
+  const options: McpConfigCliOptions = {
+    scope: 'global',
+    env: {},
+    headers: {},
+    disabled: false,
+    enabled: false,
+  };
+  for (let index = 1; index < args.length; index++) {
+    const token = args[index]!;
+    const read = (): string | undefined => args[++index];
+    if (token === '--project') options.scope = 'project';
+    else if (token === '--disabled') options.disabled = true;
+    else if (token === '--enabled') options.enabled = true;
+    else if (token === '--transport') {
+      const value = read();
+      if (value !== 'stdio' && value !== 'http')
+        return { error: '--transport 只能是 stdio 或 http' };
+      options.transport = value;
+    } else if (token === '--command') {
+      options.command = read();
+      if (!options.command) return { error: '--command 需要一个值' };
+    } else if (token === '--arg') {
+      const value = read();
+      if (value === undefined) return { error: '--arg 需要一个值' };
+      options.args = [...(options.args ?? []), value];
+    } else if (token === '--url') {
+      options.url = read();
+      if (!options.url) return { error: '--url 需要一个值' };
+    } else if (token === '--env' || token === '--header') {
+      const value = read();
+      const separator = value?.indexOf('=') ?? -1;
+      if (!value || separator <= 0)
+        return { error: `${token} 需要 KEY=VALUE 形式，且 KEY 不能为空` };
+      const key = value.slice(0, separator);
+      const item = value.slice(separator + 1);
+      if (token === '--env' && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+        return { error: `非法环境变量名: ${key}` };
+      if (token === '--header' && !/^[A-Za-z0-9-]+$/.test(key))
+        return { error: `非法请求头名: ${key}` };
+      if (token === '--env') options.env[key] = item;
+      else options.headers[key] = item;
+    } else
+      return {
+        error: `未知选项: ${token}；/mcp 参数按空白切分，含空格的值请用桌面设置页编辑或直接编辑 mcp.json`,
+      };
+  }
+  if (options.enabled && options.disabled) return { error: '--enabled 与 --disabled 不能同时使用' };
+  return { name, options };
+}
+
+/**
+ * 配置级增删改命令；写入统一走 `mutateMcpConfig` 事务（锁、校验、原子替换、信任门）。
+ *
+ * `--project` 在未信任项目上由事务层直接拒绝；本函数不做第二套判定。
+ */
+function mutateMcpConfigCommand(
+  kind: 'add' | 'remove' | 'edit',
+  args: string[],
+  ctx: CommandContext,
+): void {
+  const output = resolveCommandOutput(ctx);
+  const parsed = parseMcpConfigArgs(args);
+  if (!parsed.name || !parsed.options) {
+    output.log(parsed.error ?? '缺少参数');
+    return;
+  }
+  const { name, options } = parsed;
+  const projectRoot = ctx.projectRoot;
+  const target = {
+    scope: options.scope,
+    homeDir: ctx.homeDir ?? os.homedir(),
+    projectRoot,
+    projectTrusted: Boolean(projectRoot && isProjectTrusted(ctx.settings, projectRoot)),
+  };
+  let file: string;
+  // 跨传输改写（如 stdio 改 http）会丢弃旧传输专属字段，必须在成功输出中明示，绝不静默变更。
+  let transportChangedNotice: string | undefined;
+  try {
+    file = mutateMcpConfig((draft) => {
+      if (!draft.mcpServers) draft.mcpServers = {};
+      const servers = draft.mcpServers;
+      if (kind === 'remove') {
+        if (!servers[name]) throw new Error(`MCP 服务 '${name}' 不存在，无法移除`);
+        delete servers[name];
+        return;
+      }
+      if (kind === 'add' && servers[name])
+        throw new Error(`MCP 服务 '${name}' 已存在；如需修改请用 /mcp edit`);
+      if (kind === 'edit' && !servers[name])
+        throw new Error(`MCP 服务 '${name}' 不存在；如需新增请用 /mcp add`);
+      const next = buildServerConfig(name, options, servers[name]);
+      servers[name] = next.config;
+      transportChangedNotice = next.convertedFromTransport
+        ? next.convertedFromTransport === 'stdio'
+          ? '已从 stdio 转为 http，原 command/args/env 已移除'
+          : '已从 http 转为 stdio，原 url/headers 已移除'
+        : undefined;
+    }, target);
+  } catch (error) {
+    output.error(
+      `${kind === 'add' ? '新增' : kind === 'edit' ? '编辑' : '移除'}失败: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  output.log(`✔ 已写入${options.scope === 'project' ? '项目' : '全局'} MCP 配置: ${file}`);
+  if (transportChangedNotice) output.log(`⚠ ${transportChangedNotice}。`);
+  output.log('新配置在新建会话后生效；当前会话可用 /mcp reconnect <server> 重连已存在的服务。');
+}
+
+/** 从磁盘重读配置构造批准条目表；共用宿主实现，避免桌面与 CLI 各写一套条目推导。 */
+function readApprovalEntries(ctx: CommandContext): ReturnType<typeof readMcpApprovalEntries> {
+  return readMcpApprovalEntries({
+    homeDir: ctx.homeDir ?? os.homedir(),
+    projectRoot: ctx.projectRoot,
+    projectTrusted: Boolean(ctx.projectRoot && isProjectTrusted(ctx.settings, ctx.projectRoot)),
+  });
+}
+
+/** 当前各服务的批准状态；读取或项目根缺失都不影响主列表展示。 */
+function readApprovalStatus(ctx: CommandContext): Map<string, boolean> {
+  const result = new Map<string, boolean>();
+  const store = new McpServerApprovalStore({
+    homeDir: ctx.homeDir ?? os.homedir(),
+    projectRoot: ctx.projectRoot,
+  });
+  for (const [name, entry] of readApprovalEntries(ctx)) {
+    try {
+      result.set(name, store.status({ name, ...entry }).approved);
+    } catch {
+      /* 项目根缺失时跳过该项目服务的批准展示。 */
+    }
+  }
+  return result;
+}
+
+/** `/mcp approve|revoke`：批准绑定当前配置摘要；输出只给摘要前缀，不打印任何密钥值。 */
+function approvalCommand(kind: 'approve' | 'revoke', args: string[], ctx: CommandContext): void {
+  const output = resolveCommandOutput(ctx);
+  const name = args[0]?.trim();
+  if (!name) {
+    output.log(`用法: /mcp ${kind} <server>`);
+    return;
+  }
+  const store = new McpServerApprovalStore({
+    homeDir: ctx.homeDir ?? os.homedir(),
+    projectRoot: ctx.projectRoot,
+  });
+  const entry = readApprovalEntries(ctx).get(name);
+  if (kind === 'approve') {
+    if (!entry) {
+      output.log(`未知 MCP 服务: '${name}'（先用 /mcp add 添加或检查 mcp.json）`);
+      return;
+    }
+    try {
+      const record = store.approve({ name, ...entry });
+      const prefix = record.digest.replace('sha256:', '').slice(0, 12);
+      output.log(
+        `批准目标: ${redactCommonSecrets(redactFlagValueSecrets(describeApprovalTarget(entry.config)))}`,
+      );
+      const secretKeys = Object.keys(describeApprovalSecretKeys(entry.config));
+      if (secretKeys.length) output.log(`配置键（值不回显）: ${secretKeys.join(', ')}`);
+      output.log(
+        `✔ 已批准 MCP 服务 '${name}'（${entry.source}，配置摘要 ${prefix}…）；配置任一字段变化后需重新批准。`,
+      );
+    } catch (error) {
+      output.error(`批准失败: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return;
+  }
+  let removed = false;
+  try {
+    removed = entry
+      ? store.revoke(name, entry.source)
+      : store.revoke(name, 'global') || (ctx.projectRoot ? store.revoke(name, 'project') : false);
+  } catch (error) {
+    output.error(`撤销失败: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  output.log(removed ? `✔ 已撤销 MCP 服务 '${name}' 的批准。` : `未找到 '${name}' 的批准记录。`);
+}
+
+/** 批准目标摘要：stdio 拼命令行，http 取端点；展示前仍需脱敏。 */
+function describeApprovalTarget(config: ServerConfig): string {
+  if (config.type === 'http') return config.url ?? '';
+  return [config.command, ...(config.args ?? [])].filter(Boolean).join(' ');
+}
+
+/**
+ * 空格分隔的凭据 flag 后继值脱敏：`--token abc123`、`--db-password hunter2`、`-p xxx` 这类传参
+ * 不属于 KEY=VALUE 形态，redactCommonSecrets 的键值 / Bearer / 已知前缀规则都拦不住。
+ * 设计 011 D4 要求批准界面不打印密文，因此对以凭据语义词结尾的长选项与 `-p` 短选项的后继参数
+ * 整值替换为 [REDACTED]；裸位置参数（无 flag 前缀）无法可靠区分路径与密文，不承诺自动脱敏。
+ */
+const FLAG_VALUE_SECRET =
+  /(^|\s)((?:--(?:[a-z0-9]+[-_])*(?:api[_-]?key|access[_-]?key|client[_-]?secret|auth[_-]?token|secret|token|password|passwd|apikey)|-p)\s+)(?:"[^"]*"|'[^']*'|[^\s]+)/gi;
+
+function redactFlagValueSecrets(text: string): string {
+  return text.replace(
+    FLAG_VALUE_SECRET,
+    (_match, lead: string, flag: string) => `${lead}${flag}[REDACTED]`,
+  );
+}
+
+/** `/mcp import` 解析结果：`--all` 与单个服务名互斥，`--from` 可限定来源 Harness。 */
+export interface ParsedMcpImport {
+  all: boolean;
+  name?: string;
+  from?: McpImportHarness;
+  scope: 'global' | 'project';
+  overwrite: boolean;
+}
+
+/**
+ * 解析 `/mcp import` 选项与目标服务名。
+ *
+ * 只接受显式列出的选项；未知选项、`--all` 与服务名混用、非法服务名一律返回错误，不做猜测。
+ */
+export function parseMcpImportArgs(tokens: readonly string[]): {
+  value?: ParsedMcpImport;
+  error?: string;
+} {
+  const value: ParsedMcpImport = { all: false, scope: 'global', overwrite: false };
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token === '--all') value.all = true;
+    else if (token === '--project') value.scope = 'project';
+    else if (token === '--force') value.overwrite = true;
+    else if (token === '--from') {
+      const from = tokens[++index];
+      if (!from || !(MCP_IMPORT_HARNESS_NAMES as readonly string[]).includes(from)) {
+        return {
+          error: `未知来源: ${from ?? '（缺失）'}；可用: ${MCP_IMPORT_HARNESS_NAMES.join(', ')}`,
+        };
+      }
+      value.from = from as McpImportHarness;
+    } else if (token.startsWith('-')) {
+      return { error: `未知选项: ${token}` };
+    } else if (value.name) {
+      return { error: '一次只能导入一个服务名；全部导入请用 --all' };
+    } else {
+      value.name = token;
+    }
+  }
+  if (value.all && value.name) return { error: '--all 与服务名不能同时使用' };
+  if (value.name) {
+    const check = validateServerName(value.name);
+    if (!check.valid) return { error: `服务名不合法 '${value.name}': ${check.reason}` };
+  }
+  return { value };
+}
+
+const MCP_IMPORT_CONFLICT_LABELS: Record<McpImportConflict, string> = {
+  none: '无',
+  'exists-enabled': '已存在（启用）',
+  'exists-disabled': '已存在（停用）',
+};
+
+/** `/mcp import`：无参预览跨工具候选，带 `<name>` 或 `--all` 执行一次性配置导入。 */
+function importMcpCommand(args: string[], ctx: CommandContext): void {
+  const output = resolveCommandOutput(ctx);
+  const parsed = parseMcpImportArgs(args);
+  if (!parsed.value) {
+    output.log(
+      parsed.error ??
+        '用法: /mcp import [<server> | --all] [--from <harness>] [--project] [--force]',
+    );
+    return;
+  }
+  const options = parsed.value;
+  const homeDir = ctx.homeDir ?? os.homedir();
+  const projectTrusted = Boolean(
+    ctx.projectRoot && isProjectTrusted(ctx.settings, ctx.projectRoot),
+  );
+  const projectRoot = ctx.projectRoot ?? ctx.session?.workspaceRoot ?? homeDir;
+  if (options.scope === 'project' && (!ctx.projectRoot || !projectTrusted)) {
+    output.error('项目级导入需要当前工作区为已信任项目。');
+    return;
+  }
+  let scan: ReturnType<typeof scanImportableMcpServers>;
+  try {
+    scan = scanImportableMcpServers({
+      homeDir,
+      projectRoot,
+      projectTrusted,
+    });
+  } catch (error) {
+    output.error(
+      `扫描可导入 MCP 服务失败: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  if (!options.all && !options.name) {
+    output.log('可导入 MCP 来源:');
+    for (const source of scan.sources) {
+      output.log(`  ${source.label} (${source.harness}) · ${source.candidates} 个候选`);
+    }
+    output.log(`候选 MCP 服务: ${scan.candidates.length} 个`);
+    if (!scan.candidates.length) {
+      output.log('  未发现可导入的 MCP 服务声明。');
+      return;
+    }
+    for (const candidate of scan.candidates) {
+      const secretNote = candidate.hasSecretSurface ? ' · 含 env/headers（不回显）' : '';
+      output.log(
+        `  ${sanitizeUntrustedOutput(candidate.name)} [${candidate.harness}/${candidate.origin}] ${candidate.transport} · 冲突: ${MCP_IMPORT_CONFLICT_LABELS[candidate.conflict]}${secretNote}`,
+      );
+      if (candidate.target) {
+        output.log(
+          `    目标: ${sanitizeUntrustedOutput(redactFlagValueSecrets(candidate.target))}`,
+        );
+      }
+    }
+    output.log('用法: /mcp import <server> [--from <harness>] [--project] [--force]');
+    output.log('      /mcp import --all [--from <harness>] [--project]');
+    return;
+  }
+  const matches = scan.candidates.filter(
+    (candidate) =>
+      (!options.from || candidate.harness === options.from) &&
+      (options.all || candidate.name === options.name),
+  );
+  if (!matches.length) {
+    output.log(
+      options.name
+        ? `未找到可导入 MCP 服务: ${sanitizeUntrustedOutput(options.name)}${options.from ? `（来源 ${options.from}）` : ''}`
+        : '没有匹配的可导入 MCP 候选。',
+    );
+    return;
+  }
+  if (!options.all && matches.length > 1) {
+    output.log(
+      `同名服务来自多个来源，请用 --from 指定: ${matches.map((item) => item.harness).join(', ')}`,
+    );
+    return;
+  }
+  try {
+    const result = importMcpServers({
+      homeDir,
+      projectRoot,
+      projectTrusted,
+      scope: options.scope,
+      overwrite: options.overwrite,
+      items: matches.map((item) => ({
+        harness: item.harness,
+        name: item.name,
+        expectedSourceRef: item.sourceRef,
+      })),
+    });
+    output.log(
+      `导入完成（作用域: ${result.scope}）: 导入 ${result.imported} · 未变 ${result.unchanged} · 冲突跳过 ${result.skippedConflict} · 失败 ${result.failed}`,
+    );
+    for (const item of result.items) {
+      const mark =
+        item.status === 'imported'
+          ? '✓'
+          : item.status === 'unchanged'
+            ? '='
+            : item.status === 'failed'
+              ? '!'
+              : '-';
+      output.log(
+        `  ${mark} ${sanitizeUntrustedOutput(item.name)} [${item.harness}] ${item.status}${item.message ? ` · ${sanitizeUntrustedOutput(item.message)}` : ''}`,
+      );
+    }
+    if (result.imported > 0) {
+      output.log('导入的服务默认待批准：请用 /mcp approve <server> 核验批准，重新打开会话后生效。');
+    }
+  } catch (error) {
+    output.error(`导入 MCP 服务失败: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** 需要提示「存在但值不回显」的配置键名（env / headers），仅返回键。 */
+function describeApprovalSecretKeys(config: ServerConfig): Record<string, true> {
+  const record = config as {
+    env?: Record<string, string>;
+    headers?: Record<string, string>;
+  };
+  const keys: Record<string, true> = {};
+  for (const key of Object.keys(record.env ?? {})) keys[`env:${key}`] = true;
+  for (const key of Object.keys(record.headers ?? {})) keys[`header:${key}`] = true;
+  return keys;
+}
+
+/** 与传输无关的基础字段；编辑时原样保留，传输字段按目标 transport 重建。 */
+const BASE_SERVER_FIELDS = [
+  'enabled',
+  'required',
+  'protocol',
+  'includeTools',
+  'excludeTools',
+  'startupTimeoutMs',
+  'catalogTimeoutMs',
+  'requestTimeoutMs',
+] as const;
+
+/**
+ * 按 transport 组装/更新单条声明；保留既有基础字段，只替换传输相关字段。
+ *
+ * 边界（与 parseMcpConfigArgs「一律报错不猜测」对齐）：
+ * - 用户显式传入与目标 transport 无关的字段（stdio 的 --command/--arg/--env、http 的 --url/--header）
+ *   时直接报错并列出被拒字段，绝不静默丢弃；
+ * - 既有声明跨传输改写（如 stdio 改 http）允许就地执行，但旧传输专属字段会被丢弃，
+ *   返回值携带 `convertedFromTransport`，调用方必须在成功输出中明示这一事实。
+ */
+function buildServerConfig(
+  name: string,
+  options: McpConfigCliOptions,
+  existing: RawServerConfig | undefined,
+): { config: RawServerConfig; convertedFromTransport?: 'stdio' | 'http' } {
+  const nameCheck = validateServerName(name);
+  if (!nameCheck.valid) throw new Error(`服务器名非法: ${nameCheck.reason}`);
+  const current = (existing ?? {}) as Record<string, unknown>;
+  // 既有声明的传输身份：优先取显式 type；无 type 的宽松条目按字段形状推断（mcp.json 允许仅含 enabled 的条目）。
+  const currentTransport: 'stdio' | 'http' | undefined =
+    current.type === 'http' || (current.type === undefined && current.url !== undefined)
+      ? 'http'
+      : current.type === 'stdio' || current.command !== undefined
+        ? 'stdio'
+        : undefined;
+  const transport =
+    options.transport ?? (current.type === 'http' ? 'http' : options.url ? 'http' : 'stdio');
+  // 与目标 transport 无关的显式传入字段：报错而非丢弃，防止 env / headers 凭据被静默吞掉。
+  const rejected: string[] = [];
+  if (transport === 'http') {
+    if (options.command !== undefined) rejected.push('--command');
+    if (options.args?.length) rejected.push('--arg');
+    if (Object.keys(options.env).length) rejected.push('--env');
+  } else {
+    if (options.url !== undefined) rejected.push('--url');
+    if (Object.keys(options.headers).length) rejected.push('--header');
+  }
+  if (rejected.length)
+    throw new Error(
+      `${transport} 传输不接受 ${rejected.join('、')}；` +
+        `请去掉与目标传输无关的字段，或先 /mcp remove '${name}' 再 /mcp add 重建声明`,
+    );
+  const next: Record<string, unknown> = {};
+  for (const key of BASE_SERVER_FIELDS) {
+    if (current[key] !== undefined) next[key] = current[key];
+  }
+  if (options.disabled) next.enabled = false;
+  else if (options.enabled) next.enabled = true;
+  if (transport === 'http') {
+    const headers = {
+      ...((current.headers as Record<string, string> | undefined) ?? {}),
+      ...options.headers,
+    };
+    const url = options.url ?? (current.url as string | undefined);
+    if (!url) throw new Error('HTTP 传输需要 --url <url>');
+    next.type = 'http';
+    next.url = url;
+    if (Object.keys(headers).length) next.headers = headers;
+  } else {
+    const env = {
+      ...((current.env as Record<string, string> | undefined) ?? {}),
+      ...options.env,
+    };
+    const command = options.command ?? (current.command as string | undefined);
+    if (!command) throw new Error('stdio 传输需要 --command <命令>');
+    next.type = 'stdio';
+    next.command = command;
+    const args = options.args ?? (current.args as string[] | undefined);
+    if (args) next.args = args;
+    if (typeof current.cwd === 'string') next.cwd = current.cwd;
+    if (Object.keys(env).length) next.env = env;
+  }
+  const { config, diagnostics } = validateAndNormalizeServerConfig(name, next as RawServerConfig);
+  const errors = diagnostics.filter((item) => item.severity === 'error');
+  if (errors.length) throw new Error(errors.map((item) => item.message).join('; '));
+  if (!config) throw new Error('配置校验未产出可用声明');
+  // 仅当既有声明已具备明确传输身份且目标不同才算改写；纯元数据条目（如仅 enabled）没有可丢弃字段。
+  const convertedFromTransport =
+    currentTransport !== undefined && currentTransport !== transport ? currentTransport : undefined;
+  return { config, convertedFromTransport };
+}

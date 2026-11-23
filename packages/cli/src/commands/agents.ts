@@ -155,6 +155,7 @@ export const agentsCommand: CommandHandler = async (args, ctx) => {
     const newlyConsumed = await inbox.consume(notification);
     outbox.acknowledge(notification.eventId);
     if (newlyConsumed) {
+      await ctx.session.syncExternalHistory();
       resolveCommandOutput(ctx).log(
         `✅ 任务 ${targetId} 已在来源分支 [${currentBranchId}] 成功收集并持久化至历史。`,
       );

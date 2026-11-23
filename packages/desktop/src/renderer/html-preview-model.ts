@@ -1,3 +1,4 @@
+import type { ViewTool } from '@kiturone/kapibala-host/view-model';
 import { HTML_PREVIEW_LIMIT, PREVIEW_POLICY } from '../shared/preview.js';
 
 export { HTML_PREVIEW_LIMIT };
@@ -56,18 +57,20 @@ export function textPreviewLabel(value: string): string {
 }
 
 /**
- * 从工具调用入参里提取可预览的文档。
+ * 从已完成写入的工具调用入参里提取可预览的文档。
  *
- * 只认内置 `write_file`：其它工具的参数形状没有稳定契约，误判会把任意文本塞进 iframe。
+ * 只认成功终态（`status === 'succeeded'`）的内置 `write_file`：运行中尚未落盘、审批拒绝或执行失败
+ * 时一律不暴露预览入口；其它工具的参数形状没有稳定契约，误判会把任意文本塞进 iframe。
  * 入参是宿主已脱敏的 JSON 文本，解析失败、路径不是 html/htm/svg 或内容超过
  * {@link HTML_PREVIEW_LIMIT} 时一律返回 undefined，由调用方隐藏预览入口。
  */
 export function toolPreview(
   name: string,
   input: string,
+  status: ViewTool['status'] | undefined = 'succeeded',
   limit: number = HTML_PREVIEW_LIMIT,
 ): { html: string; label: string } | undefined {
-  if (name !== 'write_file' || !input) return undefined;
+  if (name !== 'write_file' || status !== 'succeeded' || !input) return undefined;
   // JSON 转义最坏情况约两倍于原文，先按宽松系数挡掉明显超限的入参，避免整段解析。
   if (input.length > limit * 4) return undefined;
   let parsed: unknown;

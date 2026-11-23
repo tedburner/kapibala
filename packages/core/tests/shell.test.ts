@@ -383,8 +383,12 @@ describe('cross-platform shell discovery and execution', () => {
       sessionId: 's',
       runId: 'r',
     });
+    // 用工作区内输出重定向制造 `workspace-write`：Approval 档必须走人工审批，
+    // 才能验证审批与真实进程启动使用同一执行指纹。
     const command =
-      environment.kind === 'bash' || environment.kind === 'wsl' ? 'pwd' : 'Get-Location';
+      environment.kind === 'bash' || environment.kind === 'wsl'
+        ? 'pwd > fingerprint.txt'
+        : 'Get-Location > fingerprint.txt';
     const result = await executor.executeOne({
       type: 'tool_use',
       id: 'shell-1',
@@ -414,7 +418,9 @@ describe('cross-platform shell discovery and execution', () => {
     const tools = new ToolRegistry();
     tools.register(createRunCommandTool(environment));
     const command =
-      environment.kind === 'bash' || environment.kind === 'wsl' ? 'pwd' : 'Get-Location';
+      environment.kind === 'bash' || environment.kind === 'wsl'
+        ? 'pwd > modes.txt'
+        : 'Get-Location > modes.txt';
     const call = {
       type: 'tool_use' as const,
       id: 'mode-call',
@@ -437,8 +443,9 @@ describe('cross-platform shell discovery and execution', () => {
         permissionRules: rules,
       });
     expect((await executor('Plan').executeOne(call)).errorCode).toBe('PERMISSION_DENIED');
+    // 工作区内输出重定向属 workspace-write：Approval 无审批通道时按非交互拒绝。
     expect((await executor('Approval').executeOne(call)).errorCode).toBe('PERMISSION_DENIED');
-    // Auto 模式下 pwd / Get-Location 属内置只读分级 safe，自动放行而非询问。
+    // Auto 档对 workspace-write 自动放行。
     expect((await executor('Auto').executeOne(call)).isError).toBe(false);
     expect(
       (await executor('FullAccess', [{ action: 'deny', tool: 'run_command' }]).executeOne(call))

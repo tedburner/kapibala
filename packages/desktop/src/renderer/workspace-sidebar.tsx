@@ -27,6 +27,8 @@ export function runtimeLabel(item?: RuntimeItem, valid = true): string {
   if (item.approvals) return `待审批 ${item.approvals}`;
   if (item.phase !== 'idle')
     return { running: '运行中', cancelling: '正在取消', settling: '正在清理' }[item.phase];
+  // 监视不占用运行资源，但用户需要知道「这个会话在等外部条件」。
+  if (item.watches) return `监视中 ${item.watches}`;
   return item.result === 'failed' ? '失败' : item.result === 'aborted' ? '已停止' : '';
 }
 /** 相对时间只展示历史活动；异常或缺失时间不伪造最近活动。 */
@@ -139,7 +141,7 @@ export function WorkspaceSidebar({
   }, []);
   const items = runtime?.items ?? [];
   const running = items.filter((item) => item.phase !== 'idle').length;
-  // 「会话」段只列仍有运行句柄的对话；空闲历史归入所属项目，避免同一对话出现两次。
+  // 「临时对话」段只列仍有运行句柄的对话；空闲历史归入所属项目，避免同一对话出现两次。
   const temporary = items.filter((item) => item.phase !== 'idle' || item.cleanup === 'failed');
   const titleOfSession = (item: RuntimeItem) =>
     histories[item.workspaceId]?.items.find((row) => row.conversationId === item.conversationId)
@@ -220,7 +222,7 @@ export function WorkspaceSidebar({
         )}
         {keyword === '' && (
           <div className="group-data-[state=collapsed]/sidebar:hidden">
-            <div className="kapibala-sidebar-section">会话</div>
+            <div className="kapibala-sidebar-section">临时对话</div>
             {temporary.length === 0 ? (
               <p className="kapibala-sidebar-empty">暂无临时对话</p>
             ) : (

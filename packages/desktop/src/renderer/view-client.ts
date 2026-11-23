@@ -103,9 +103,18 @@ export class ViewClient {
     if (this.scope) await this.select(this.scope);
   }
   /** 发送只尝试一次；应答不明时冻结发送，必须先查询事实并重同步。 */
-  async start(scope: { workspaceId: string; sessionId: string }, input: string): Promise<void> {
+  async start(
+    scope: { workspaceId: string; sessionId: string },
+    input: string,
+    options?: { regenerate?: boolean },
+  ): Promise<void> {
     try {
-      await this.api.run.start({ ...scope, operationId: crypto.randomUUID(), input });
+      await this.api.run.start({
+        ...scope,
+        operationId: crypto.randomUUID(),
+        input,
+        ...(options?.regenerate ? { regenerate: true } : {}),
+      });
     } catch (error) {
       this.halted = true;
       this.installation++;
@@ -251,6 +260,10 @@ export class ViewClient {
       });
       return;
     }
+    // 监视通知只用于系统级提醒，不改变当前视图的展示事实。
+    if (event.type === 'watch.triggered') return;
+    // 更新下载进度只服务设置页的独立订阅，不进入会话展示投影。
+    if (event.type === 'update.downloadProgress') return;
     const scope = this.scope;
     if (
       !scope ||

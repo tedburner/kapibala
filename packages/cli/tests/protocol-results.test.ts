@@ -12,10 +12,9 @@ import { createStdioTransport } from '@kiturone/kapibala-host/transport';
 import { describe, expect, it, vi } from 'vitest';
 import { SnapshotPager } from '../src/local-host/snapshots.js';
 
-const offer = { major: 1, minMinor: 0, maxMinor: 0, clientName: 'contract-test', capabilities: [] };
+const offer = { protocolVersion: 2, clientName: 'contract-test', capabilities: [] };
 const initialized = {
-  major: 1,
-  minor: 0,
+  protocolVersion: 2,
   capabilities: [],
   serverInstanceId: 'i',
   clientId: 'c',

@@ -15,6 +15,7 @@ import { BoundedPeer, type ControlIdentity, type Lane } from './transport.js';
 
 /** 控制请求和小型状态回复有独立额度，不能被正文或快照排队堵塞。 */
 export const CONTROL_METHODS = new Set<Method>([
+  'app.cancelUpdateDownload',
   'app.requestQuit',
   'app.reconnect',
   'app.reload',
@@ -73,11 +74,13 @@ export class RpcEndpoint {
       return Promise.reject(new Error('REQUEST_LIMIT'));
     const parsed = PARAMS[method].parse(params);
     const requestId = crypto.randomUUID();
+    const timeoutMs =
+      method === 'app.downloadUpdate' ? LIMITS.downloadTimeout : LIMITS.requestTimeout;
     return new Promise<Output<M>>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error('REQUEST_TIMEOUT'));
-      }, LIMITS.requestTimeout);
+      }, timeoutMs);
       this.pending.set(requestId, {
         method,
         resolve: (value) => resolve(value as Output<M>),
@@ -223,24 +226,33 @@ const messages: Record<string, string> = {
   REQUEST_TIMEOUT: '请求等待超时，操作可能已受理，请先查询当前状态。',
   RECOVERY_REQUIRED: '上次执行未确认完成清理，请核查残留工具进程后确认恢复。',
   SETTINGS_READ_FAILED: '无法安全读取全局配置，请修复原文件后重试。',
+  REWIND_UNAVAILABLE: '当前没有可重试的上一轮对话，或该会话不支持回退重试。',
+  INTERACTION_UNKNOWN: '该交互请求已结束或已过期，无需重复提交。',
+  INTERACTION_LIMIT: '待确认的交互过多，请先处理当前提示后再试。',
+  MCP_CONFIG_INVALID: 'MCP 配置文件格式有误，请检查并修复 mcp.json 后重试。',
+  MCP_SERVER_NOT_FOUND: '未找到目标 MCP 服务器，请刷新配置列表后重试。',
+  MCP_PROJECT_UNTRUSTED: '当前项目尚未确认信任，无法写入项目级 MCP 配置。',
   FORBIDDEN: '请求来源或资源归属不合法。',
   INTERNAL_ERROR: '操作未完成，请检查配置和目录后重试。',
 };
 /** 不传递原始异常文字、堆栈或路径中的凭据；未知错误只给固定安全说明。 */
 export function safeError(error: unknown): DesktopError {
   const candidate = error as { code?: string; message?: string; name?: string } | undefined;
+  const messagePrefix = candidate?.message?.split(':')[0]?.trim();
   const code =
     candidate?.code && messages[candidate.code]
       ? candidate.code
       : candidate?.message && messages[candidate.message]
         ? candidate.message
-        : candidate?.code === 'ENOENT' || candidate?.code === 'EACCES'
-          ? 'WORKSPACE_UNAVAILABLE'
-          : candidate?.message?.includes('全局配置存在但无法安全读取')
-            ? 'SETTINGS_READ_FAILED'
-            : candidate?.name === 'ZodError'
-              ? 'INVALID_REQUEST'
-              : 'INTERNAL_ERROR';
+        : messagePrefix && messages[messagePrefix]
+          ? messagePrefix
+          : candidate?.code === 'ENOENT' || candidate?.code === 'EACCES'
+            ? 'WORKSPACE_UNAVAILABLE'
+            : candidate?.message?.includes('全局配置存在但无法安全读取')
+              ? 'SETTINGS_READ_FAILED'
+              : candidate?.name === 'ZodError'
+                ? 'INVALID_REQUEST'
+                : 'INTERNAL_ERROR';
   // SESSION_LOCKED 附加持有者 pid（core 内部 message 已含，属可安全透出的整数）：
   // 提示里给出可核对的对象与自愈途径，避免用户面对「关闭客户端」却无客户端可关。
   const lockPid =

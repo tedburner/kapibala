@@ -18,7 +18,7 @@ import { redactCommonSecrets } from '../redaction.js';
 /** 面板可见的 MCP 服务器摘要；不含环境变量值与请求头原文。 */
 export interface McpServerSummary {
   name: string;
-  /** 声明来源；project 侧仅做只读展示，管理操作只作用于 global。 */
+  /** 声明来源；项目侧仅在项目已信任时可写，未信任只做只读展示。 */
   source: 'global' | 'project';
   type: 'stdio' | 'http' | 'disabled';
   /** 目标摘要（命令行或端点 URL），经既有脱敏管道处理。 */
@@ -63,6 +63,7 @@ function summarizeServer(
   config: ServerConfig | undefined,
   diagnostics: McpConfigDiagnostic[],
   required: boolean,
+  editable: boolean,
 ): McpServerSummary {
   const type = !config || config.enabled === false ? 'disabled' : (config.type ?? 'stdio');
   const effectiveType = config ? (config.type ?? 'stdio') : undefined;
@@ -71,13 +72,13 @@ function summarizeServer(
   if (effectiveType === 'http') {
     const url = (config as HttpServerConfig | undefined)?.url;
     target = url ?? '';
-    // 编辑面只给 global 且原始值不触发脱敏的声明：脱敏意味着目标串内嵌了密钥，
+    // 编辑面只给可写来源（全局或已信任项目）且原始值不触发脱敏的声明：脱敏意味着目标串内嵌了密钥，
     // 回填编辑框会把掩码文本写回配置文件。
-    if (url && source === 'global' && redactCommonSecrets(url) === url) edit = { url };
+    if (url && editable && redactCommonSecrets(url) === url) edit = { url };
   } else if (effectiveType === 'stdio') {
     const stdio = config as StdioServerConfig | undefined;
     target = [stdio?.command, ...(stdio?.args ?? [])].filter(Boolean).join(' ');
-    if (stdio?.command && source === 'global' && redactCommonSecrets(target) === target)
+    if (stdio?.command && editable && redactCommonSecrets(target) === target)
       edit = { command: stdio.command, args: stdio.args ?? [] };
   }
   const stdioEnv = (config as StdioServerConfig | undefined)?.env;
@@ -130,6 +131,7 @@ export function readMcpResourceSnapshot(options: {
         entry.config,
         entry.diagnostics,
         Boolean((entry.config as { required?: boolean } | undefined)?.required),
+        entry.source === 'global' || options.isProjectTrusted,
       ),
     );
     emitted.add(entry.name);
@@ -189,6 +191,7 @@ export function readMcpResourceSnapshot(options: {
               : []),
           ],
           Boolean((raw as { required?: boolean } | undefined)?.required),
+          item.source === 'global' || options.isProjectTrusted,
         ),
       );
       emitted.add(name);
@@ -203,6 +206,72 @@ export function readMcpResourceSnapshot(options: {
   };
 }
 
+/** 配置事务目标；`project` 作用域还要求项目根与「已信任」，缺失或未信任直接拒绝。 */
+export interface McpConfigTarget {
+  scope?: 'global' | 'project';
+  homeDir?: string;
+  projectRoot?: string;
+  projectTrusted?: boolean;
+}
+
+/** 解析事务目标文件；项目级写入门在此集中判定，不允许调用方绕过信任检查。 */
+export function resolveMcpConfigTarget(options: McpConfigTarget): {
+  scope: 'global' | 'project';
+  file: string;
+} {
+  const scope = options.scope ?? 'global';
+  if (scope === 'project') {
+    if (!options.projectRoot)
+      throw Object.assign(new Error('MCP_PROJECT_ROOT_REQUIRED: 项目级写入缺少项目根'), {
+        code: 'MCP_PROJECT_ROOT_REQUIRED',
+      });
+    if (!options.projectTrusted)
+      throw Object.assign(
+        new Error('MCP_PROJECT_UNTRUSTED: 项目未被信任，拒绝写入项目级 MCP 配置'),
+        { code: 'MCP_PROJECT_UNTRUSTED' },
+      );
+    return { scope, file: getProjectMcpConfigPath(options.projectRoot) };
+  }
+  return { scope, file: getGlobalMcpConfigPath(options.homeDir) };
+}
+
+/** 批准条目：来源层级 + 解析后的配置；摘要只由配置本身决定。 */
+export interface McpApprovalEntry {
+  source: 'global' | 'project';
+  config: ServerConfig;
+}
+
+/**
+ * 从磁盘重读配置构造批准条目表（全局 + 已信任项目）。
+ *
+ * 与运行期快照刻意分离：配置命令或桌面编辑之后无需重启会话就能批准新配置。
+ * 未信任项目不读取项目级声明；损坏文件跳过（批准不是修复入口）。
+ * 项目条目后写覆盖同名全局条目，与 `resolveCliMcpOptions` 的覆盖顺序一致。
+ */
+export function readMcpApprovalEntries(options: {
+  homeDir?: string;
+  projectRoot?: string;
+  projectTrusted?: boolean;
+}): Map<string, McpApprovalEntry> {
+  const entries = new Map<string, McpApprovalEntry>();
+  const load = (file: string, source: 'global' | 'project'): void => {
+    let parsed: McpConfigFile | null;
+    try {
+      parsed = readMcpConfigFile(file);
+    } catch {
+      return;
+    }
+    for (const [name, raw] of Object.entries(parsed?.mcpServers ?? {})) {
+      const { config } = validateAndNormalizeServerConfig(name, raw);
+      if (config) entries.set(name, { source, config });
+    }
+  };
+  load(getGlobalMcpConfigPath(options.homeDir), 'global');
+  if (options.projectRoot && options.projectTrusted)
+    load(getProjectMcpConfigPath(options.projectRoot), 'project');
+  return entries;
+}
+
 /**
  * 全局 MCP 配置短事务：独占锁内重读、同步修改、全量校验并原子替换。
  *
@@ -211,13 +280,47 @@ export function readMcpResourceSnapshot(options: {
  *   释放时核验随机所有者，绝不删除他人的锁；
  * - 配置文件损坏时中止写入（不静默重建），写回前对每个 server 执行名称与配置校验，
  *   任一 error 级诊断都拒绝整个事务并保留原文件；
- * - 回调必须同步完成；不校验、不写项目级文件。
+ * - 回调必须同步完成；本函数只服务全局文件，项目级请用 `mutateMcpConfig({ scope: 'project' })`。
  */
 export function mutateGlobalMcpConfig(
   mutate: (file: McpConfigFile) => void,
   options: { homeDir?: string } = {},
 ): string {
-  const file = getGlobalMcpConfigPath(options.homeDir);
+  return mutateMcpConfigFile(getGlobalMcpConfigPath(options.homeDir), '全局', mutate);
+}
+
+/**
+ * MCP 配置事务（全局或已信任项目）。
+ *
+ * 与 `mutateGlobalMcpConfig` 共用同一实现：独占锁、损坏中止、全量校验、tmp + rename 原子写；
+ * 项目级目标在 `resolveMcpConfigTarget` 中强制信任门，未信任项目不可能进入写入路径。
+ *
+ * `onCommitted` 在配置文件已原子替换之后、锁释放之前执行（回调仍必须同步完成）：
+ * 用于把与配置同生共死的伴生写入（如导入溯源文件）纳入同一把锁，消除
+ * 「配置经锁提交、溯源在锁外单独读写」造成的并发 last-writer-wins。
+ * 回调抛错时配置保持已提交状态，错误向调用方传播（伴生写入应自行消化可恢复失败）。
+ */
+export function mutateMcpConfig(
+  mutate: (file: McpConfigFile) => void,
+  options: McpConfigTarget = {},
+  onCommitted?: (filePath: string) => void,
+): string {
+  const target = resolveMcpConfigTarget(options);
+  return mutateMcpConfigFile(
+    target.file,
+    target.scope === 'global' ? '全局' : '项目',
+    mutate,
+    onCommitted,
+  );
+}
+
+/** 事务主体；`label` 只影响错误文案，不改变锁或校验语义。 */
+function mutateMcpConfigFile(
+  file: string,
+  label: string,
+  mutate: (draft: McpConfigFile) => void,
+  onCommitted?: (filePath: string) => void,
+): string {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const lock = `${file}.lock`;
   const owner = randomUUID();
@@ -241,7 +344,7 @@ export function mutateGlobalMcpConfig(
       draft = readMcpConfigFile(file) ?? {};
     } catch (error: unknown) {
       throw new Error(
-        `全局 MCP 配置损坏，拒绝写入：${error instanceof Error ? error.message : String(error)}`,
+        `${label} MCP 配置损坏，拒绝写入：${error instanceof Error ? error.message : String(error)}`,
       );
     }
     const result: unknown = mutate(draft);
@@ -289,6 +392,8 @@ export function mutateGlobalMcpConfig(
     } catch {
       /* 平台不支持 POSIX mode 时写入仍然成功。 */
     }
+    // 配置已提交、锁尚未释放：伴生写入在此与其它进程的配置事务严格串行。
+    if (onCommitted) onCommitted(file);
     return file;
   } finally {
     fs.closeSync(descriptor);

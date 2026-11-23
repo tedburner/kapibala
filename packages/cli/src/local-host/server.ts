@@ -12,6 +12,7 @@ import { RpcPeer } from '@kiturone/kapibala-host/transport';
 import type { LocalTransport } from '@kiturone/kapibala-host/transport';
 import { describeApproval } from './approval-description.js';
 import { RpcApprovalChannel } from './approval.js';
+import { LocalHostError } from './errors.js';
 import { redactText, sanitizeDisplayText } from './redaction.js';
 import { SessionRegistry } from './registry.js';
 import { loadCredentialSecrets } from './resources.js';
@@ -226,6 +227,39 @@ export class LocalHostServer {
         case 'run/cancel':
           await this.registry.cancel(request.params, clientId, request.params.runId);
           return { cancellationRequested: true };
+        case 'watch/list': {
+          // 与 session/snapshot 同门禁：先 attach 才允许读取该会话的观察面。
+          if (!subscriptions.has(request.params.sessionId)) throw new Error('CONTROL_REQUIRED');
+          const entry = this.registry.get(request.params.sessionId);
+          return {
+            items: (entry.resources.watches?.list() ?? []).map((item) => ({
+              watchId: item.watchId,
+              kind: item.kind,
+              target: item.target,
+              state: item.state,
+              armedAt: item.armedAt,
+              deadlineAt: item.deadlineAt,
+              closedAt: item.closedAt ?? null,
+              detail: item.detail ?? null,
+            })),
+          };
+        }
+        case 'watch/cancel': {
+          const entry = this.registry.control(request.params.sessionId, clientId, request.params);
+          const watches = entry.resources.watches;
+          // 未布置触发源的宿主明确拒绝，避免客户端把空操作当成已取消。
+          if (!watches) throw new LocalHostError('INVALID_REQUEST');
+          await watches.cancel(request.params.watchId);
+          return { cancelled: true };
+        }
+        case 'evidence/read': {
+          // 与 watch/list 同门禁：先 attach 才允许读取该会话的观察面。
+          if (!subscriptions.has(request.params.sessionId)) throw new Error('CONTROL_REQUIRED');
+          const entry = this.registry.get(request.params.sessionId);
+          if (!entry.resources.evidence) throw new LocalHostError('INVALID_REQUEST');
+          // ViewEvidence 全部由 JSON 原生值组成；readonly 只是编译期约束，不改变 wire 形状。
+          return (await entry.resources.evidence()) as unknown as JsonValue;
+        }
         case 'host/shutdown':
           await this.stopRegistry();
           return { stopped: true };

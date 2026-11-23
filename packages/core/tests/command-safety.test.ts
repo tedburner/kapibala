@@ -11,7 +11,7 @@ function scope(command: string, overrides: Partial<ShellScope> = {}): ShellScope
   return { command, interpreter: 'bash', cwd: ROOT, ...overrides };
 }
 
-const cases: [string, ShellCommandSafety][] = [
+const cases: [string, ShellCommandSafety, Partial<ShellScope>?][] = [
   // 无条件只读
   ['ls -la', 'safe'],
   ['pwd', 'safe'],
@@ -34,16 +34,16 @@ const cases: [string, ShellCommandSafety][] = [
   ['git remote -v', 'safe'],
   ['git tag -l', 'safe'],
   ['git stash list', 'safe'],
-  // git 非只读形式：白名单外按 unknown 询问
-  ['git push', 'unknown'],
-  ['git commit -m x', 'unknown'],
-  ['git branch -D feature', 'unknown'],
-  ['git branch new-branch', 'unknown'],
-  ['git checkout -b x', 'unknown'],
+  // git 写操作：vcs-write 映射为 safe，网络与破坏性仍询问
+  ['git push', 'unsafe'],
+  ['git commit -m x', 'safe'],
+  ['git branch -D feature', 'unsafe'],
+  ['git branch new-branch', 'safe'],
+  ['git checkout -b x', 'safe'],
   // find 参数收窄
   ['find . -name "*.ts"', 'safe'],
   ['find . -delete', 'unsafe'],
-  ['find . -exec rm {} +', 'unsafe'],
+  ['find . -exec rm {} +', 'unknown'],
   // cd 目标收窄
   ['cd sub && git status', 'safe'],
   ['cd /tmp && ls', 'unsafe'],
@@ -52,11 +52,14 @@ const cases: [string, ShellCommandSafety][] = [
   ['rm -rf build', 'unsafe'],
   ['sudo ls', 'unsafe'],
   ['curl https://example.com', 'unsafe'],
-  ['bash -c "ls"', 'unsafe'],
-  ['python3 script.py', 'unsafe'],
+  ['bash -c "ls"', 'unknown'],
+  ['python3 script.py', 'safe', { scriptTrust: 'clean' }],
+  ['python3 script.py', 'unknown'],
   ['chmod 777 file', 'unsafe'],
-  // 重定向与命令替换 fail-closed
-  ['echo hi > out.txt', 'unsafe'],
+  // 重定向：工作区内目标不降级，越界仍询问
+  ['echo hi > out.txt', 'safe'],
+  ['echo hi > /tmp/out.txt', 'unsafe'],
+  // 命令替换与变量 fail-closed
   ['cat $HOME/config', 'unknown'],
   ['echo $(date)', 'unknown'],
   ['cat `which git`', 'unknown'],
@@ -64,12 +67,30 @@ const cases: [string, ShellCommandSafety][] = [
   // 未收录程序
   ['terraform plan', 'unknown'],
   ['xargs echo', 'unknown'],
+  // 进程替换：写端不可判读，fail-closed
+  ['echo x >(tee .env)', 'unknown'],
+  ['echo x > >(cat > .env)', 'unknown'],
+  // sed 原地改写（含 -i.bak 后缀形态）不可按程序名放行
+  ["sed -i.bak 's/a/b/' .env", 'unknown'],
+  ['sed -n 1p .env', 'safe'],
+  // escape 类敏感路径写入：三值 unsafe，Auto/Approval 询问
+  ['echo x > .github/workflows/ci.yml', 'unsafe'],
+  ['tee .git-credentials', 'unsafe'],
+  ['echo x > .npmrc', 'unsafe'],
+  ['cat > .netrc', 'unsafe'],
+  ['echo x > docs/a.md', 'safe'],
+  // glob 目标无法静态归因
+  ['echo x > .git/*/pre-commit', 'unknown'],
+  // PowerShell 路径型读 cmdlet 的越界检查
+  ['Get-Content /etc/passwd', 'unsafe', { interpreter: 'pwsh' }],
+  ['Get-Content ./a.txt', 'safe', { interpreter: 'pwsh' }],
+  ['Select-String -Path /etc/passwd -Pattern x', 'unsafe', { interpreter: 'pwsh' }],
 ];
 
 describe('classifyShellCommandSafety', () => {
-  for (const [command, expected] of cases) {
+  for (const [command, expected, overrides] of cases) {
     it(`classifies ${JSON.stringify(command)} as ${expected}`, () => {
-      expect(classifyShellCommandSafety(scope(command), ROOT)).toBe(expected);
+      expect(classifyShellCommandSafety(scope(command, overrides), ROOT)).toBe(expected);
     });
   }
 
@@ -77,7 +98,19 @@ describe('classifyShellCommandSafety', () => {
     expect(classifyShellCommandSafety(scope('ls', { cwd: '/tmp' }), ROOT)).toBe('unsafe');
   });
 
-  it('never auto-allows digest-bound scripts whose content is unknown', () => {
+  it('treats a digest-bound workspace script as safe only when git-clean', () => {
+    expect(
+      classifyShellCommandSafety(
+        scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64), scriptTrust: 'clean' }),
+        ROOT,
+      ),
+    ).toBe('safe');
+    expect(
+      classifyShellCommandSafety(
+        scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64), scriptTrust: 'dirty' }),
+        ROOT,
+      ),
+    ).toBe('unknown');
     expect(
       classifyShellCommandSafety(
         scope('./scripts/build.sh', { scriptDigest: 'a'.repeat(64) }),

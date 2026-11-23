@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   AgentRuntime,
@@ -6,6 +7,7 @@ import {
   SessionManager,
   type SessionMode,
   ToolRegistry,
+  WatchInbox,
   WorkspaceLeaseCoordinator,
   resolveSessionProject,
 } from '@kiturone/kapibala';
@@ -25,7 +27,13 @@ import {
   createCliSubagentRunner,
 } from '@kiturone/kapibala-host/internal';
 import { readDelegationRequestEntries } from '@kiturone/kapibala-host/internal';
-import { registerBuiltinTools } from '@kiturone/kapibala-host/internal';
+import {
+  WatchService,
+  createWatchTools,
+  importSkills,
+  registerBuiltinTools,
+  scanImportableSkills,
+} from '@kiturone/kapibala-host/internal';
 import minimist from 'minimist';
 import { ActiveSessionController } from './active-session.js';
 import { createDefaultCommandDispatcher } from './commands/assemble.js';
@@ -39,6 +47,7 @@ import { openStartupSession, validateSessionStartup } from './session-startup.js
 import { CliApprovalChannel } from './ui/approval.js';
 import { parseOutputDetail } from './ui/events.js';
 import { CLI_VERSION } from './version.js';
+import { runWatchResume, setActiveWatchService } from './watch-context.js';
 import { runSetupWizard } from './wizard.js';
 
 /** 具名解释器或用户显式提供的解释器可执行文件全路径。 */
@@ -312,6 +321,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           continue: args.continue,
           resume: args.resume,
         }));
+      const sessionWatches = new WeakMap<AgentSession, WatchService>();
+      const activateSessionWatches = (target: AgentSession) => {
+        const svc = sessionWatches.get(target);
+        setActiveWatchService(svc);
+        svc?.start().catch((error: unknown) => {
+          const msg = error instanceof Error ? error.message : String(error);
+          console.error(`[kapibala] 恢复会话监视状态失败: ${msg}`);
+        });
+      };
       const factory = async (handle: import('@kiturone/kapibala').ManagedSession) => {
         const created = new AgentSession({
           leaseCoordinator,
@@ -333,6 +351,24 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           approvalChannel,
         });
         for (const tool of builtinTools.list()) created.tools.register(tool);
+        // 监视服务先登记不立即启动：等会话 init 成功并正式发布为活动会话后再激活轮询，
+        // 防止 /resume 准备失败时提前销毁旧会话监视，也避免 -p 单次模式残留后台轮询。
+        const watchInbox = new WatchInbox(handle.store);
+        const watches = new WatchService({
+          workspaceRoot: manager.project.projectRoot,
+          store: handle.store,
+          deliver: async (notification, branchId) => {
+            const written = await watchInbox.consume(notification, branchId);
+            if (written && branchId === handle.store.getActiveBranchId()) {
+              await created.syncExternalHistory();
+            }
+            return written;
+          },
+          isIdle: () => !created.isBusy() && !inputCoordinator.isBusy(),
+          resume: (input, signal) => runWatchResume(created, input, signal),
+        });
+        sessionWatches.set(created, watches);
+        for (const tool of createWatchTools(watches)) created.tools.register(tool);
         models.attach(created, controller ? models.selectedRole : requestedRole);
         try {
           await attachMcpToSession(
@@ -354,7 +390,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         factory,
         current: { session: initial, handle: initialHandle },
         onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
-        onSwitched: (event) => console.log(`活动会话: ${event.conversationId}`),
+        onSwitched: (event) => {
+          if (controller) activateSessionWatches(controller.session);
+          console.log(`活动会话: ${event.conversationId}`);
+        },
       });
       const active = controller;
       if (args.resume || args.continue) {
@@ -376,6 +415,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         runtime: agentRuntime,
         settings,
         settingsPath: sourcePath,
+        projectRoot: manager.project.projectRoot,
+        // 导入能力在命令显式调用时才扫描，不预热；信任状态与目标作用域每次按当前参数重算。
+        scanImportableSkills: (scope) =>
+          scanImportableSkills({
+            homeDir: os.homedir(),
+            projectRoot: manager.project.projectRoot,
+            projectTrusted: isProjectTrusted(settings, manager.project.projectRoot),
+            settings,
+            scope,
+          }),
+        importSkills: (request) =>
+          importSkills({
+            homeDir: os.homedir(),
+            projectRoot: manager.project.projectRoot,
+            projectTrusted: isProjectTrusted(settings, manager.project.projectRoot),
+            settings,
+            scope: request.scope,
+            items: request.items,
+            overwrite: request.overwrite,
+          }),
         onModelSwitched: (newProfileId) => {
           const { settings: fresh, sourcePath: freshPath } = loadSettings();
           Object.assign(settings, fresh);
@@ -407,6 +466,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         if (exitCode) process.exitCode = exitCode;
         return;
       }
+      activateSessionWatches(active.session);
       await startREPL({
         session: active.session,
         controller: active,
@@ -418,6 +478,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         approvalChannel,
       });
     } finally {
+      setActiveWatchService(undefined);
       if (agentRuntime) await agentRuntime.close();
       if (controller) await controller.close();
       else await manager.close();

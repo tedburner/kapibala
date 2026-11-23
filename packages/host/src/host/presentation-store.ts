@@ -3,6 +3,7 @@ import {
   type PresentationState,
   type ViewIdentity,
   type ViewMessage,
+  type ViewTodoState,
   createPresentation,
   reducePresentation,
 } from '../view-model/index.js';
@@ -22,8 +23,14 @@ export class PresentationStore {
   private generation = 0;
   private publishing = false;
 
-  constructor(identity: ViewIdentity, messages: readonly ViewMessage[] = []) {
-    this.state = createPresentation(identity, messages);
+  constructor(
+    identity: ViewIdentity,
+    messages: readonly ViewMessage[] = [],
+    todos?: ViewTodoState,
+  ) {
+    const base = createPresentation(identity, messages);
+    // 会话级任务清单从初始历史重算后随快照下发；运行中变化走 todos_changed 事件。
+    this.state = todos ? { ...base, todos } : base;
   }
 
   /** 读取已经按顺序更新的只读快照，不等待下一帧或微任务。 */

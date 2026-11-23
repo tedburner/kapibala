@@ -69,6 +69,29 @@ CLI `/host` 新增导出类型 `LoadedSettings`（`settings`/`sourcePath`/`pendi
 | `SessionManager.create({ delegation? })`、`SessionMetadata.mode` / `delegation`、`SessionHeader.delegation`、`AgentTaskRecord` 委派字段、`AgentSession.getLeaseCoordinator()`、`isSessionMode()` | 新增可选面与只读访问器 | 无迁移动作；不使用委派时行为不变 |
 | `ViewTool.displayName` | 显示名由宿主统一解析下发，只影响 UI | 自定义渲染可直接使用；不得用于权限判定或落盘 |
 
+## v0.1.4 增量（开发中）
+
+本版把本地 wire 从 `{major, minor}` 区间协商改为整数代际 `protocolVersion = 2` + 能力集合，属**破坏性变更**：
+v0.1.3 及更早的客户端会在初始化参数校验阶段以 `INVALID_PARAMS` 明确失败，官方不承诺旧客户端可连，
+迁移动作见 [v0.1.4 迁移说明](migration/v0.1.4.md)。
+
+`pnpm verify:compat` 的四组合口径同步调整：**old-old 与 new-new 仍跑完整业务矩阵**（工具事务、
+审批、取消、历史闭合、cursor 与长快照）；**old-new / new-old 只断言握手被明确拒绝**
+（超时、崩溃或半成功即门禁失败）。旧 `{major, minMinor, maxMinor}` 报价的兼容分支已删除，
+两个混合方向都在初始化参数校验阶段以 `INVALID_PARAMS` 失败。旧端报价继续使用
+wire 1 的 `{major, minMinor, maxMinor}`，新端报价从候选构建的 `PROTOCOL_VERSION` 读取，
+避免脚本写死版本号。
+
+| 变化 | 影响 | 迁移方式 |
+|---|---|---|
+| `PROTOCOL_VERSION` 由 `{ major: 1, minor: 0 }` 改为整数 `2`；`SERVER_CAPABILITIES` 增加 `watch` / `evidence` | 读取旧对象形状或按 minor 区间协商的客户端直接失败 | 改用整数严格相等 + 能力子集校验；依赖的新能力必须显式声明 |
+| `ProtocolOffer` 改为 `{ protocolVersion, clientName, capabilities, token? }`；`NegotiatedProtocol` 改为 `{ protocolVersion, capabilities }` | 构造 offer、读取握手结果的代码需同步 | 从 `PROTOCOL_VERSION` 取值；不要自行写死版本号 |
+| `initialize` 的结果与请求 Schema 换为 `protocolVersion` | 依赖 `major` / `minor` 字段的 wire 消费者失效 | 升级到 v0.1.4 的 protocol 子路径 |
+| ViewModel 新增 `ViewArtifact`、`ViewTodoStatus`、`ViewTodoItem`、`ViewTodoState`、`ViewEvidence`，`ViewTool` 增加可选 `artifacts`，`PresentationState` 增加可选 `todos` | 纯可选字段增补；旧渲染忽略即保持原行为 | 无迁移动作；渲染前仍需按宿主允许根校验产物路径 |
+| Core `ShellScope` 新增可选 `scriptTrust: 'clean' \| 'dirty' \| 'unknown'`；新增 `computeScriptTargetDigest` | 只影响命令类别判定与会话级批准指纹；缺省按不可信处理，脚本目标在会话批准后被修改将失效重审 | 自定义宿主需在 `approvalScope` 中给出 git 清洁度；不要把未知状态写成 `clean` |
+| Core 新增 `SkillLifecyclePhase` / `SkillLifecycleEvent` / `SKILL_LIFECYCLE_LIMIT`；`SkillRegistry` 增加 `lifecycle` / `roots` 只读访问器；`AgentSession.getSkills()` 返回值附加 `enabled` / `roots` / `lifecycle` | 纯新增导出与只读字段，既有字段语义不变 | 无迁移动作；生命周期事件只用于诊断，不参与优先级或权限判定 |
+| ViewModel 新增 `ViewUsage` 与可选 `ViewMessage.usage`、`history_replaced`（含可选 `branchId`）展示变更；Core 新增 `AgentSession.getMessageUsages()`、`rewindLastTurn()`、`restoreBranch()`、`validatePrimaryBinding()`、`syncExternalHistory()`；`ManagedSessionOptions` 新增可选 `isHostIdle` / `onAutoResume` | 纯可选字段与新增方法；不投影 usage 的宿主行为不变，重试只在宿主显式调用 `rewindLastTurn()` 时发生 | 需要回答级 token 时把 `getMessageUsages()` 按消息 ID 投影；重试后必须按 `history_replaced` 整体替换消息列表并同步 `branchId` |
+
 ## 1. 盘点口径
 
 - 覆盖范围：Core 根入口、MCP 根入口，以及 CLI 的 `protocol`、`client`、`view-model` 及 `host` 四个子路径。当前候选清单以 `scripts/fixtures/public-api/current.json` 为准，新增 `/host` 也列入声明扫描。

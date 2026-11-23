@@ -6,6 +6,7 @@ import { QuoteDraft, prepareReferenceTask } from './quote-draft.js';
 import type { CliApprovalChannel } from './ui/approval.js';
 import { type EventRenderer, type OutputDetail, createEventRenderer } from './ui/events.js';
 import { CLI_VERSION } from './version.js';
+import { setActiveWatchService, setWatchResumeHook } from './watch-context.js';
 
 /**
  * REPL 启动参数。`controller` 缺省时退回裸会话（无切换能力）；
@@ -74,8 +75,14 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     fallbackAbort?.abort();
     input.close();
   };
-  const runTask = async (operation: (signal: AbortSignal) => AsyncIterable<SessionEvent>) => {
+  const runTask = async (
+    operation: (signal: AbortSignal) => AsyncIterable<SessionEvent>,
+    externalSignal?: AbortSignal,
+  ) => {
     const abort = new AbortController();
+    const combinedSignal = externalSignal
+      ? AbortSignal.any([abort.signal, externalSignal])
+      : abort.signal;
     fallbackAbort = abort;
     const renderer = createEventRenderer({
       debug,
@@ -86,9 +93,9 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     const unbindToggle = input.onDetailToggle(() => renderer.toggleDetail());
     const unbindInteraction = input.onInteraction(() => renderer.invalidateAnchor());
     try {
-      for await (const event of operation(abort.signal)) renderer.render(event);
+      for await (const event of operation(combinedSignal)) renderer.render(event);
     } catch (error) {
-      if (!(error instanceof AbortError) && !abort.signal.aborted)
+      if (!(error instanceof AbortError) && !combinedSignal.aborted)
         console.error(`执行失败: ${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       unbindToggle();
@@ -111,6 +118,18 @@ export async function startREPL(options: REPLOptions): Promise<void> {
         : session().runPreparedTask(task, prepare, { signal }),
     );
   context.onExit = requestExit;
+  // 监视触发后的自动续跑复用同一条 runTask 渲染与取消路径：
+  // 必须核对所属会话与 abort 信号，防止切换/关闭竞态把续跑落到新会话上。
+  setWatchResumeHook(async (targetSession, text, signal) => {
+    if (signal.aborted || session() !== targetSession) return;
+    await runTask(
+      (runSignal) =>
+        options.controller && session() === targetSession
+          ? options.controller.run(text, { signal: runSignal })
+          : targetSession.run(text, { signal: runSignal }),
+      signal,
+    );
+  });
   input.onInterrupt(() => {
     activeRenderer?.invalidateAnchor();
     if (busy()) {
@@ -196,6 +215,9 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     if (options.controller) await options.controller.close();
     else await session().destroy();
   } finally {
+    // 会话已销毁：监视服务不得继续轮询，续跑钩子也不应再指向已关闭的会话。
+    setWatchResumeHook(undefined);
+    setActiveWatchService(undefined);
     input.close();
   }
 }

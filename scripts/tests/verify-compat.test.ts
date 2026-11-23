@@ -134,6 +134,29 @@ describe('compat evidence helpers', () => {
     ).toThrow(/unknown capability/);
   });
 
+  it('requires each mixed-generation direction to fail parameter validation', async () => {
+    const { assertHandshakeRejected, expectsRejection, expectedRejectionCode } = await import(
+      '../verify-compat.js'
+    );
+    const mixedOldNew: CompatCombo = { id: 'old-new', client: 'old', host: 'new' };
+    const mixedNewOld: CompatCombo = { id: 'new-old', client: 'new', host: 'old' };
+    expect(expectsRejection(legacy)).toBe(false);
+    expect(expectsRejection(candidate)).toBe(false);
+    expect(expectsRejection(mixedOldNew)).toBe(true);
+    expect(expectsRejection(mixedNewOld)).toBe(true);
+    expect(expectedRejectionCode(mixedOldNew)).toBe('INVALID_PARAMS');
+    expect(expectedRejectionCode(mixedNewOld)).toBe('INVALID_PARAMS');
+    expect(() => assertHandshakeRejected(mixedOldNew, '{"error":"INVALID_PARAMS"}')).not.toThrow();
+    expect(() => assertHandshakeRejected(mixedNewOld, '{"error":"INVALID_PARAMS"}')).not.toThrow();
+    expect(() => assertHandshakeRejected(mixedOldNew, '{"error":"PROTOCOL_MISMATCH"}')).toThrow(
+      /INVALID_PARAMS/,
+    );
+    expect(() => assertHandshakeRejected(mixedNewOld, '{"ok":true}')).toThrow(/INVALID_PARAMS/);
+    expect(() => assertHandshakeRejected(mixedNewOld, 'Timed out: node harness')).toThrow(
+      /timed out/,
+    );
+  });
+
   it('compares tarball bytes against the fixed sha256 and integrity', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-compat-test-'));
     const file = path.join(directory, 'fixture.tgz');

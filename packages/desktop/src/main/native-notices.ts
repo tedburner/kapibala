@@ -22,6 +22,7 @@ export class NativeNotices {
     this.sessions.delete(sessionId);
     this.runs.delete(sessionId);
     this.dismiss(`run:${sessionId}`);
+    this.dismiss(`watch:${sessionId}`);
     for (const [id, item] of this.pending)
       if (item.sessionId === sessionId) {
         this.pending.delete(id);
@@ -64,6 +65,23 @@ export class NativeNotices {
             : '任务已完成',
         '打开 Kapibala 查看运行结果。',
         () => this.sessions.has(run.sessionId) && this.runs.get(run.sessionId)?.runId === run.runId,
+      );
+    } else if (event.type === 'watch.triggered') {
+      // 用户主动取消不打扰；只有宿主侧判定的事件才提醒。
+      if (event.state === 'cancelled') return;
+      if (!this.sessions.has(event.sessionId)) return;
+      const title =
+        event.state === 'timeout'
+          ? '监视已超时'
+          : event.state === 'orphaned'
+            ? '监视已失联'
+            : '监视已触发';
+      this.publish(
+        `watch:${event.sessionId}`,
+        `watch:${event.sessionId}:${event.watchId}`,
+        title,
+        '打开 Kapibala 查看会话进展。',
+        () => this.sessions.has(event.sessionId),
       );
     } else if (event.type === 'approval.requested') {
       if (!this.sessions.has(event.sessionId) || event.expiresAt <= Date.now()) return;

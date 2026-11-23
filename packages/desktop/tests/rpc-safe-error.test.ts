@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { safeError } from '../src/shared/rpc.js';
+import { CONTROL_METHODS, safeError } from '../src/shared/rpc.js';
 
 describe('safeError lock diagnostics', () => {
   it('appends holder pid for session locks without leaking raw messages', () => {
@@ -22,5 +22,18 @@ describe('safeError lock diagnostics', () => {
     const other = safeError({ code: 'SESSION_IN_USE', message: 'raw internal detail' });
     expect(other.code).toBe('SESSION_IN_USE');
     expect(other.message).not.toContain('raw internal detail');
+  });
+
+  it('maps v0.1.4 error codes and colon-prefixed errors without leaking details, and keeps cancelUpdateDownload on control lane', () => {
+    expect(CONTROL_METHODS.has('app.cancelUpdateDownload')).toBe(true);
+    expect(safeError({ code: 'REWIND_UNAVAILABLE', message: 'internal detail' }).code).toBe(
+      'REWIND_UNAVAILABLE',
+    );
+    const mcpMissing = safeError(new Error("MCP_SERVER_NOT_FOUND: 'secret-srv' 不在全局配置中"));
+    expect(mcpMissing.code).toBe('MCP_SERVER_NOT_FOUND');
+    expect(mcpMissing.message).not.toContain('secret-srv');
+    const mcpUntrusted = safeError(new Error('MCP_PROJECT_UNTRUSTED: /secret/path'));
+    expect(mcpUntrusted.code).toBe('MCP_PROJECT_UNTRUSTED');
+    expect(mcpUntrusted.message).not.toContain('/secret/path');
   });
 });

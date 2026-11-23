@@ -21,9 +21,7 @@ describe('authenticated local socket', () => {
     });
     const listener = await listenLocalHost(endpoint, (transport) => host.accept(transport));
     const client = await LocalClient.connect(await connectLocal(endpoint), {
-      major: 1,
-      minMinor: 0,
-      maxMinor: 0,
+      protocolVersion: 2,
       clientName: 'socket-test',
       capabilities: [],
       token: 'fixture-token',

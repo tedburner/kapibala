@@ -59,8 +59,9 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
     const box = await dialog.boundingBox();
     expect(box!.x).toBeGreaterThanOrEqual(0);
     expect(box!.y).toBeGreaterThanOrEqual(0);
-    expect(box!.x + box!.width).toBeLessThanOrEqual(await page.evaluate(() => innerWidth));
-    expect(box!.y + box!.height).toBeLessThanOrEqual(await page.evaluate(() => innerHeight));
+    // Windows 分数缩放下 innerWidth/innerHeight 取整，而 fixed inset-0 的亚像素盒宽可能高出 <1px。
+    expect(box!.x + box!.width).toBeLessThanOrEqual((await page.evaluate(() => innerWidth)) + 1);
+    expect(box!.y + box!.height).toBeLessThanOrEqual((await page.evaluate(() => innerHeight)) + 1);
     measurements.push({
       name,
       box,
@@ -88,7 +89,8 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
         right: bounds.right - input.right,
       };
     });
-    expect(geometry.width).toBe(275);
+    // Windows 分数缩放（如 125% DPI）下 getBoundingClientRect 可能落为 274.99px，按亚像素容差断言。
+    expect(geometry.width).toBeCloseTo(275, 0);
     expect(geometry.inputWidth).toBeGreaterThan(200);
     expect(Math.abs(geometry.left - geometry.right)).toBeLessThan(3);
     await page.screenshot({
@@ -146,7 +148,7 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
         await settings
           .locator('.kapibala-settings-rail')
           .evaluate((element) => element.getBoundingClientRect().width),
-      ).toBe(275);
+      ).toBeCloseTo(275, 0);
       // 模型设置已改为一次落盘，凭证二次确认浮层不复存在；这里只保留外观页的密度测量。
       await settings.getByRole('tab', { name: '外观与应用', exact: true }).click();
       await check(settings, `appearance-${width}-${height}`, 'none');

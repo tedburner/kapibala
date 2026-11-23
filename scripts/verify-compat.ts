@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repositoryRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const manifestPath = path.join(repositoryRoot, 'scripts/fixtures/public-api/v0.0.9/manifest.json');
@@ -45,12 +45,76 @@ export interface CompatCombo {
   host: HostSide;
 }
 
+/** 旧新产物四组合完整枚举；`verify:compat` 逐项在 stdio 与本机 socket 两种传输上执行。 */
 export const COMPAT_COMBOS: readonly CompatCombo[] = [
   { id: 'old-old', client: 'old', host: 'old' },
   { id: 'old-new', client: 'old', host: 'new' },
   { id: 'new-old', client: 'new', host: 'old' },
   { id: 'new-new', client: 'new', host: 'new' },
 ];
+
+/**
+ * 混合代际组合（旧客户端×新宿主 / 新客户端×旧宿主）自 wire v2 起只验证「握手被明确拒绝」。
+ *
+ * 为什么不再跑完整矩阵：v0.1.4 已把本地 wire 升到 2 且官方只承诺同代互通（见
+ * `docs/sdk-compatibility.md`），让旧客户端在新宿主上继续跑业务，等于把真实用户不会遇到的
+ * 半兼容路径当成支持面。完整业务断言只在 old-old（历史兼容）与 new-new（当前版本）上执行。
+ */
+export function expectsRejection(combo: CompatCombo): boolean {
+  return expectedRejectionCode(combo) !== undefined;
+}
+
+/**
+ * 两个不兼容方向都在初始化参数校验阶段被拒绝：双方报价形状已互不识别，各自按
+ * `INVALID_PARAMS` 明确失败，连接不会继续。
+ *
+ * 旧期“新宿主先放行旧报价、再回 PROTOCOL_MISMATCH”的兼容分支已随 wire v2 一起移除；
+ * 门禁必须锁住这个更严格的结果，出现 `PROTOCOL_MISMATCH`、其它错误或超时都说明
+ * 兼容路径被重新引入或失败原因不是代际不兼容。
+ */
+export function expectedRejectionCode(combo: CompatCombo): string | undefined {
+  return combo.client === combo.host ? undefined : 'INVALID_PARAMS';
+}
+
+/** 混合代际必须因参数形状不匹配在握手阶段失败，而不是超时、崩溃或半成功。 */
+export function assertHandshakeRejected(combo: CompatCombo, detail: string): void {
+  const code = expectedRejectionCode(combo);
+  assert(code !== undefined, `${combo.id}: not a mixed-generation combo`);
+  const excerpt = detail.length > 400 ? `${detail.slice(0, 400)}…` : detail;
+  assert(!/Timed out/i.test(detail), `${combo.id}: mixed generations timed out: ${excerpt}`);
+  assert(
+    detail.includes(code),
+    `${combo.id}: mixed generations did not reject with ${code}: ${excerpt}`,
+  );
+}
+
+/** 按被测客户端代际生成握手报价：旧端用 wire 1 的 major/minor，新端用 protocolVersion。 */
+function offerFor(clientSide: ClientSide, protocolVersion: number): string {
+  if (clientSide === 'old')
+    return JSON.stringify({
+      major: 1,
+      minMinor: 0,
+      maxMinor: 0,
+      clientName: 'compat-matrix',
+      capabilities: [],
+    });
+  return JSON.stringify({
+    protocolVersion,
+    clientName: 'compat-matrix',
+    capabilities: [],
+  });
+}
+
+/** 从候选构建的协议子路径读取 wire 版本，避免在门禁脚本里再写死一份版本号。 */
+async function readCandidateProtocolVersion(): Promise<number> {
+  const entry = path.join(repositoryRoot, 'packages/cli/dist/protocol/index.js');
+  if (!fs.existsSync(entry)) throw new Error(`Candidate protocol entry is missing: ${entry}`);
+  const module = (await import(pathToFileURL(entry).href)) as { PROTOCOL_VERSION?: unknown };
+  const version = module.PROTOCOL_VERSION;
+  if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1)
+    throw new Error('Candidate protocol entry does not export a valid PROTOCOL_VERSION');
+  return version;
+}
 
 const EXPECTED_PACKAGES = [
   '@kiturone/kapibala',
@@ -318,6 +382,7 @@ function legacyPaths(cacheRoot: string): { client: string; host: string } {
   return { client: path.join(root, 'client/index.js'), host: path.join(root, 'bin.js') };
 }
 
+/** 单次子进程兼容套件执行输出；`ok: false` 时 `error` 携带供断言比对的拒绝分类或异常文本。 */
 export interface HarnessResult {
   ok: boolean;
   transport: TransportKind;
@@ -332,6 +397,7 @@ async function executeHarness(options: {
   transport: TransportKind;
   clientEntry: string;
   hostEntry: string;
+  offer: string;
   runDir: string;
   keepTemp: boolean;
 }): Promise<HarnessResult> {
@@ -357,6 +423,8 @@ async function executeHarness(options: {
     options.hostEntry,
     '--client-version',
     options.combo.client === 'old' ? 'old' : 'candidate',
+    '--offer',
+    options.offer,
     '--transport',
     options.transport,
     '--runtime-dir',
@@ -387,7 +455,37 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-/** 正常路径四组合共用断言；非法工作区须由宿主拒绝，错误后连接仍可复用。 */
+/**
+ * 运行混合代际组合并确认它在握手阶段被明确拒绝。
+ *
+ * 返回拒绝证据字符串（应为 `INVALID_PARAMS`：旧形状报价在参数白名单处被拒）；若见到
+ * `PROTOCOL_MISMATCH` 说明「放行到协商层」的兼容分支被重新引入，同样必须视为门禁失败。
+ * 脚本正常退出说明出现「半兼容成功」，也是门禁失败而不是可接受结果。
+ */
+async function expectHandshakeRejection(options: {
+  script: string;
+  combo: CompatCombo;
+  transport: TransportKind;
+  clientEntry: string;
+  hostEntry: string;
+  offer: string;
+  runDir: string;
+  keepTemp: boolean;
+}): Promise<string> {
+  try {
+    const result = await executeHarness(options);
+    throw new Error(
+      `[${options.combo.id}/${options.transport}] mixed generations unexpectedly completed: ${JSON.stringify(result).slice(0, 400)}`,
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (detail.includes('mixed generations unexpectedly completed')) throw error;
+    assertHandshakeRejected(options.combo, detail);
+    return expectedRejectionCode(options.combo) ?? 'UNKNOWN';
+  }
+}
+
+/** 同代组合（old-old / new-new）共用断言；非法工作区须由宿主拒绝，错误后连接仍可复用。 */
 export function assertNormalResult(result: HarnessResult, combo: CompatCombo): void {
   assert(result.ok === true, `${combo.id}: harness did not report success`);
   assert(
@@ -529,19 +627,37 @@ async function main(): Promise<void> {
   if (!skipBuild) await buildCandidate();
   const candidate = candidatePaths();
   const legacy = legacyPaths(cacheRoot);
+  const protocolVersion = await readCandidateProtocolVersion();
   const matrix: unknown[] = [];
   const startedAt = new Date().toISOString();
 
   for (const combo of COMPAT_COMBOS) {
     const clientEntry = combo.client === 'old' ? legacy.client : candidate.client;
     const hostEntry = combo.host === 'old' ? legacy.host : candidate.host;
+    const offer = offerFor(combo.client, protocolVersion);
     for (const transport of transports) {
+      if (expectsRejection(combo)) {
+        const rejection = await expectHandshakeRejection({
+          script: harnessPath,
+          combo,
+          transport,
+          clientEntry,
+          hostEntry,
+          offer,
+          runDir,
+          keepTemp,
+        });
+        matrix.push({ combo: combo.id, transport, rejected: rejection });
+        console.log(`✔ ${combo.id.padEnd(7)} ${transport.padEnd(6)} handshake rejected`);
+        continue;
+      }
       const normal = await executeHarness({
         script: harnessPath,
         combo,
         transport,
         clientEntry,
         hostEntry,
+        offer,
         runDir,
         keepTemp,
       });
@@ -552,6 +668,7 @@ async function main(): Promise<void> {
         transport,
         clientEntry,
         hostEntry,
+        offer,
         runDir,
         keepTemp,
       });

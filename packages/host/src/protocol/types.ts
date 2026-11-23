@@ -7,20 +7,22 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
-/** 初始化报价；凭证只用于本地认证，不得进入日志或历史。 */
-export interface ProtocolOffer {
-  major: number;
-  minMinor: number;
-  maxMinor: number;
+/**
+ * 初始化报价；凭证只用于本地认证，不得进入日志或历史。
+ * `protocolVersion` 为整数代际，服务端严格相等校验；新增能力通过 `capabilities` 协商。
+ * 旧 `{major, minMinor, maxMinor}` 形状已废弃：初始化参数白名单不接受它，
+ * 旧客户端会在参数校验阶段得到 `INVALID_PARAMS`，必须升级客户端而不是降级协商。
+ */
+export type ProtocolOffer = {
+  protocolVersion: number;
   clientName: string;
   capabilities: string[];
   token?: string;
-}
+};
 
 /** 协议版本不跟随产品版本；只公布本次真正支持的能力。 */
 export interface NegotiatedProtocol {
-  major: number;
-  minor: number;
+  protocolVersion: number;
   capabilities: string[];
 }
 
@@ -57,6 +59,72 @@ export type PendingApproval = {
   expiresAt: number;
 };
 
+/** 监视列表项：只暴露展示所需字段，不携带轮询句柄或文件内容。 */
+export interface WatchWireItem {
+  watchId: string;
+  /** 触发源类型；`process_exit` 自 v0.1.4 起摘除，不再出现在 wire 上。 */
+  kind: 'file_change' | 'port_ready';
+  target: string;
+  state: 'armed' | 'fired' | 'timeout' | 'cancelled' | 'orphaned';
+  armedAt: number;
+  deadlineAt: number;
+  closedAt: number | null;
+  detail: string | null;
+}
+
+/** 会话看板单次写入事实；wire 上可空字段统一用 null，避免「缺失」与「0」混淆。 */
+export interface EvidenceWireChange {
+  path: string;
+  callId: string;
+  status: 'recorded' | 'truncated' | 'missing';
+  additions: number | null;
+  deletions: number | null;
+}
+
+/** 跨会话引用溯源；只带身份字段，不复制被引用正文。 */
+export interface EvidenceWireReference {
+  sessionId: string;
+  recordId: string;
+  role: 'user' | 'assistant' | 'branch_summary';
+  timestamp: number;
+  title: string | null;
+}
+
+/** 按 MCP 服务器聚合的调用计数。 */
+export interface EvidenceWireMcpServer {
+  server: string;
+  calls: number;
+  failed: number;
+}
+
+/** 父会话视角的委派状态；`ended` 表示父会话已收尾但子任务未终结。 */
+export interface EvidenceWireDelegation {
+  sessionId: string;
+  title: string;
+  taskName: string;
+  state: 'running' | 'ended' | 'finished' | 'idle' | 'archived';
+  summary: string | null;
+  lastActivityAt: number;
+}
+
+/** `evidence/read` 的结果形状；协议层独立定义，避免依赖宿主展示类型。 */
+export interface EvidenceWire {
+  summary: {
+    additions: number;
+    deletions: number;
+    truncatedFiles: number;
+    missingFiles: number;
+    references: number;
+    mcpCalls: number;
+    mcpFailures: number;
+    runningDelegations: number;
+  };
+  changes: EvidenceWireChange[];
+  references: EvidenceWireReference[];
+  mcp: EvidenceWireMcpServer[];
+  delegations: EvidenceWireDelegation[];
+}
+
 /** 请求参数目录；连接角色、会话权限和实际执行参数仍须由服务端复核。 */
 export interface RequestParams {
   initialize: ProtocolOffer;
@@ -75,6 +143,10 @@ export interface RequestParams {
   'run/start': SessionControl & { clientOperationId: string; input: string };
   'run/cancel': SessionControl & { runId: string };
   'approval/request': ApprovalPrompt;
+  'watch/list': { sessionId: string };
+  'watch/cancel': SessionControl & { watchId: string };
+  /** 会话看板只读聚合；与 watch/list 同门禁，必须先 attach 才能读取该会话证据。 */
+  'evidence/read': { sessionId: string };
   'host/shutdown': Record<string, never>;
 }
 

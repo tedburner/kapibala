@@ -12,16 +12,33 @@ export {
   reducePresentation,
   selectMessages,
 } from './reducer.js';
+export { summarizeToolGroup } from './tool-summary.js';
+export type { ToolGroupSummary } from './tool-summary.js';
+export type {
+  ViewEvidence,
+  ViewEvidenceChangeFile,
+  ViewEvidenceChangeStatus,
+  ViewEvidenceDelegation,
+  ViewEvidenceDelegationState,
+  ViewEvidenceMcpServer,
+  ViewEvidenceReference,
+  ViewEvidenceSummary,
+} from './evidence.js';
 export type {
   OperationPhase,
   OperationResult,
   PresentationChange,
   PresentationEvent,
   PresentationState,
+  ViewArtifact,
   ViewBlock,
   ViewIdentity,
   ViewMessage,
   ViewNotice,
   ViewOperation,
+  ViewTodoItem,
+  ViewTodoState,
+  ViewTodoStatus,
   ViewTool,
+  ViewUsage,
 } from './types.js';

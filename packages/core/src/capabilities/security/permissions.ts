@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { ShellCommandClass } from '../shell/command-class.js';
 import type { ShellCommandSafety } from '../shell/command-safety.js';
 import type { Capability, Tool } from '../tools/index.js';
 
@@ -17,6 +18,13 @@ export interface ShellScope {
   executableDigest?: string;
   /** 命令直接引用的工作目录内脚本的内容摘要；仅单脚本命令可计算，组合命令缺省。 */
   scriptDigest?: string;
+  /**
+   * 命令将执行的脚本来源可信度：`clean` 表示直引脚本 / 解释器脚本参数 / `package.json`
+   * 在 git 工作区中无未提交改动，`dirty` 表示有改动（含模型刚写入的未跟踪文件），
+   * `unknown` 表示无 git、超时或无法解析。分类器只有 `clean` 才把脚本类命令判为
+   * `workspace-write`；其余情况归 `unknown`，Auto 不自动放行。缺省（未计算）同样按不可信处理。
+   */
+  scriptTrust?: 'clean' | 'dirty' | 'unknown';
   /** 执行前复核用指纹；审批后重新推导不一致时按目标漂移拒绝执行。 */
   executionFingerprint?: string;
 }
@@ -43,8 +51,22 @@ export interface PermissionRequest {
    * Auto 模式专用：shell 命令安全分级（执行器经 classifyShellCommandSafety 对最终 ShellScope
    * 计算）。仅参与模式默认值裁决，`safe` 允许 Auto 自动放行静态 dangerous 的 shell 工具；
    * `unsafe`/`unknown` 与缺省（非 shell 工具）维持原有降级路径，显式规则与会话缓存仍先于此生效。
+   * 提供 `commandClass` 时本字段不参与裁决，仅用于兼容旧调用方。
    */
   shellSafety?: ShellCommandSafety;
+  /**
+   * Shell 命令的风险类别（执行器经 classifyShellCommandClass 计算）。提供后按类别两轴裁决：
+   * `read` 在 Approval / Auto 放行；`workspace-write` / `vcs-write` 仅 Auto 与 FullAccess 放行；
+   * `network` / `destructive` / `escape` / `unknown` 仅 FullAccess 放行。显式规则与会话缓存
+   * 仍先于此生效；未提供时回退 `shellSafety` 的旧语义。
+   */
+  commandClass?: ShellCommandClass;
+  /**
+   * shell 命令可静态识别、且命中硬禁区的写入目标（workspace 相对路径）。
+   * 提供时在硬限制之后、任何规则/缓存/模式之前直接 `deny`，FullAccess 也不能放行；
+   * 与 PathSandbox 的硬禁区共用同一份判定，避免 shell 成为绕过通道。
+   */
+  protectedTarget?: string;
   /** 规则表须先经 validatePermissionRules 校验；同动作规则按声明顺序取首个命中。 */
   rules?: readonly PermissionRule[];
   /** 会话缓存命中标志（来自 SessionApprovalCache）；仅在 deny / ask 规则都未命中时生效。 */
@@ -56,7 +78,13 @@ export interface PermissionRequest {
 /** 裁决结果及其来源；source 供审计区分硬限制、Plan、规则、缓存与模式默认。 */
 export interface PermissionDecision {
   decision: PermissionAction;
-  source: 'hard_limit' | 'plan' | 'explicit_rule' | 'session_cache' | 'mode_default';
+  source:
+    | 'hard_limit'
+    | 'protected_path'
+    | 'plan'
+    | 'explicit_rule'
+    | 'session_cache'
+    | 'mode_default';
   /** 命中规则在 rules 中的下标；仅 source 为 explicit_rule 时存在。 */
   ruleIndex?: number;
 }
@@ -119,10 +147,14 @@ export class PermissionPolicy {
   /**
    * 裁决顺序固定：硬限制 → Plan 收窄 → deny 规则 → 会话缓存拒绝 → ask 规则 →
    * 会话缓存允许 → allow 规则（run_command 必须带 shell 范围，工具级 allow 不能放行命令）
-   * → 模式默认。同一输入总是得到同一裁决，不读取任何外部状态。
+   * → 两轴类别裁决（提供 `commandClass` 时）→ 模式默认。同一输入总是得到同一裁决，
+   * 不读取任何外部状态。
    */
   decide(request: PermissionRequest): PermissionDecision {
     if (request.hardDenied) return { decision: 'deny', source: 'hard_limit' };
+    // shell 写硬禁区与 PathSandbox 同源：命中即拒绝，不产生审批请求，FullAccess 也不放行。
+    if (request.protectedTarget !== undefined)
+      return { decision: 'deny', source: 'protected_path' };
     if (
       request.mode === 'Plan' &&
       (request.dangerous ||
@@ -149,7 +181,6 @@ export class PermissionPolicy {
         return { decision: 'deny', source: 'session_cache' };
     }
     if (request.cachedApproval) return { decision: 'allow', source: 'session_cache' };
-    if (request.capabilities.length === 0) return { decision: 'ask', source: 'mode_default' };
     const allowIndex = rules.findIndex(
       (rule) =>
         rule.action === 'allow' &&
@@ -158,16 +189,30 @@ export class PermissionPolicy {
     );
     if (allowIndex >= 0)
       return { decision: 'allow', source: 'explicit_rule', ruleIndex: allowIndex };
-    // Auto 模式对经过内置只读分级确认的 shell 命令自动放行：run_command 静态标记
-    // dangerous 导致能力表覆盖 exec/net/env，无法走 fs:read/write 分支，这里以
-    // 分级结果作为唯一额外豁免口；unsafe/unknown 维持询问（fail-closed）。
+    // FullAccess 是「不询问」档：能力表为空或不危险的未知工具也必须放行；
+    // 硬限制与显式规则仍在上面优先，因此这不是无条件信任。
+    if (request.mode === 'FullAccess') return { decision: 'allow', source: 'mode_default' };
+    // 两轴裁决：类别决定「能力上限」，模式决定「何时找人」。Approval 不能复用三值的
+    // safe 判断，必须额外看 class === 'read'；规则与会话缓存已在上方优先处理。
+    if (request.commandClass !== undefined && request.shell !== undefined) {
+      const commandClass = request.commandClass;
+      if (commandClass === 'read') return { decision: 'allow', source: 'mode_default' };
+      if (commandClass === 'workspace-write' || commandClass === 'vcs-write') {
+        return {
+          decision: request.mode === 'Auto' ? 'allow' : 'ask',
+          source: 'mode_default',
+        };
+      }
+      return { decision: 'ask', source: 'mode_default' };
+    }
+    // 兼容路径：调用方未提供 `commandClass` 时，仍按三值 `shellSafety` 判断 Auto 放行；
+    // unsafe/unknown 维持询问（fail-closed）。
     if (request.mode === 'Auto' && request.dangerous && request.shellSafety === 'safe') {
       return { decision: 'allow', source: 'mode_default' };
     }
-    if (request.capabilities.length === 0 || (request.dangerous && request.mode !== 'FullAccess')) {
+    if (request.capabilities.length === 0 || request.dangerous) {
       return { decision: 'ask', source: 'mode_default' };
     }
-    if (request.mode === 'FullAccess') return { decision: 'allow', source: 'mode_default' };
     if (request.capabilities.every((capability) => capability === 'fs:read')) {
       return { decision: 'allow', source: 'mode_default' };
     }

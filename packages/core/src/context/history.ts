@@ -146,8 +146,52 @@ export interface InteractionTerminal {
 }
 
 /**
+ * 定位「最近一次成功 todo_write」所在的交互下标；失败、中断或无结果的调用不计。
+ * 以 tool_use 名称与配对 tool_result 的 isError 判定成功，与宿主重算清单的口径一致。
+ */
+function hasActiveTodoItem(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false;
+  const items = (input as { items?: unknown }).items;
+  if (!Array.isArray(items) || items.length === 0) return false;
+  return items.some(
+    (entry) =>
+      Boolean(entry) &&
+      typeof entry === 'object' &&
+      ((entry as { status?: unknown }).status === 'pending' ||
+        (entry as { status?: unknown }).status === 'in_progress'),
+  );
+}
+
+/**
+ * 定位最近一次成功的 `todo_write` 所在交互；仅当该清单仍存在未完结项（`pending` / `in_progress`）
+ * 时返回其交互下标，全部已完成或已取消后不再锁定早期历史，避免长会话永久无法压缩。
+ */
+function lastSuccessfulTodoInteraction(groups: readonly CanonicalMessage[][]): number {
+  for (let index = groups.length - 1; index >= 0; index--) {
+    const group = groups[index];
+    const calls = new Map<string, unknown>();
+    for (const message of group)
+      for (const block of message.content)
+        if (block.type === 'tool_use' && block.name === 'todo_write')
+          calls.set(block.id, block.input);
+    if (calls.size === 0) continue;
+    let latestSucceededInput: unknown;
+    let foundSuccess = false;
+    for (const message of group)
+      for (const block of message.content)
+        if (block.type === 'tool_result' && calls.has(block.toolUseId) && !block.isError) {
+          latestSucceededInput = calls.get(block.toolUseId);
+          foundSuccess = true;
+        }
+    if (foundSuccess) return hasActiveTodoItem(latestSucceededInput) ? index : -1;
+  }
+  return -1;
+}
+
+/**
  * 以显式终态为准恢复用户交互；旧历史仅在完整工具事务之后存在非空最终答复时推断成功。
- * 保护最近成功交互及其后的所有交互，没有成功证据时保护全部历史。
+ * 保护最近成功交互及其后的所有交互；含最近一次成功 `todo_write` 的交互即便早于最近成功
+ * 交互也不得压缩，否则旧任务清单声明会先于新交互被裁掉。没有成功证据时保护全部历史。
  */
 export function indexInteractions(
   input: readonly CanonicalMessage[],
@@ -206,8 +250,11 @@ export function indexInteractions(
       boundary.status = 'completed';
   }
   const successIndex = interactions.map((i) => i.status).lastIndexOf('completed');
+  const todoIndex = lastSuccessfulTodoInteraction(groups);
+  let protectFrom = Math.max(0, successIndex);
+  if (todoIndex >= 0) protectFrom = Math.min(protectFrom, todoIndex);
   return {
     interactions,
-    protectedMessageIds: interactions.slice(Math.max(0, successIndex)).flatMap((i) => i.messageIds),
+    protectedMessageIds: interactions.slice(protectFrom).flatMap((i) => i.messageIds),
   };
 }

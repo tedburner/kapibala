@@ -647,7 +647,7 @@ describe('resolveBaseURL', () => {
 });
 
 describe('detectProviderFamily', () => {
-  it('按 id / baseURL 推断厂商族', () => {
+  it('按端点证据推断厂商族', () => {
     expect(detectProviderFamily(DEEPSEEK_PROFILE)).toBe('deepseek');
     expect(detectProviderFamily(OPENAI_PROFILE)).toBe('openai');
     expect(
@@ -667,6 +667,19 @@ describe('detectProviderFamily', () => {
     expect(
       detectProviderFamily({ ...OPENAI_PROFILE, id: 'my-gateway', baseURL: 'https://x.dev/v1' }),
     ).toBe('unknown');
+  });
+
+  it('id 前缀不作为归族证据：自建网关用厂商风 id 命名也按端点隔离', () => {
+    // 厂商族驱动同组密钥共享/归一与环境变量回退，凭 id 前缀归族会把 OpenAI 的密钥
+    // 发给第三方网关、或在更新密钥时清掉官方端点的正确凭证。
+    for (const id of ['gpt-proxy', 'kimi-mirror', 'deepseek-relay', 'claude-gateway']) {
+      expect(detectProviderFamily({ ...OPENAI_PROFILE, id, baseURL: 'https://x.dev/v1' })).toBe(
+        'unknown',
+      );
+      expect(credentialGroup({ ...OPENAI_PROFILE, id, baseURL: 'https://x.dev/v1' })).toBe(
+        'host:x.dev',
+      );
+    }
   });
 });
 

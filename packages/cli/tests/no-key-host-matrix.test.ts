@@ -26,7 +26,7 @@ import { runOneShot } from '../src/oneshot.js';
 
 const FIXTURE_KEY = 'fixture-model-key-0001';
 const ENV_SENTINEL = 'env-credential-must-not-be-used';
-const offer = { major: 1, minMinor: 0, maxMinor: 0, clientName: 'no-key', capabilities: [] };
+const offer = { protocolVersion: 2, clientName: 'no-key', capabilities: [] };
 const bases: string[] = [];
 const servers: LocalModelServer[] = [];
 

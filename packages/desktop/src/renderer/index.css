@@ -1,4 +1,6 @@
 @import "@cloudflare/kumo/styles";
 @import "tailwindcss";
+@import "katex/dist/katex.min.css";
 @import "./theme-kapibala.css";
 @source '../../node_modules/@cloudflare/kumo/dist';
+@source '../../node_modules/streamdown/dist';

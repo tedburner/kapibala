@@ -45,6 +45,51 @@ describe('session event host adapter', () => {
     adapter.settle('failed');
     store.close();
   });
+  it('attaches write_file artifacts at the success boundary only', () => {
+    const identity = { conversationId: 'c', branchId: 'main', viewEpoch: 1 };
+    const store = new PresentationStore(identity);
+    const policy = (
+      name: string,
+      input: Record<string, unknown>,
+      succeeded: boolean,
+    ): readonly { kind: 'image'; path: string; ext: string; size: number }[] | undefined =>
+      name === 'write_file' && succeeded && input.path === 'chart.png'
+        ? [{ kind: 'image', path: '/workspace/chart.png', ext: 'png', size: 8 }]
+        : undefined;
+    const adapter = new SessionPresentation(store, 'op', () => [], undefined, policy);
+    adapter.consume({
+      type: 'tool_start',
+      id: 'img',
+      name: 'write_file',
+      input: { path: 'chart.png', content: 'x' },
+    });
+    adapter.consume({
+      type: 'tool_finish',
+      id: 'img',
+      name: 'write_file',
+      result: 'written',
+      isError: false,
+    });
+    adapter.consume({
+      type: 'tool_start',
+      id: 'bad',
+      name: 'write_file',
+      input: { path: 'chart.png' },
+    });
+    adapter.consume({
+      type: 'tool_finish',
+      id: 'bad',
+      name: 'write_file',
+      result: 'denied',
+      isError: true,
+    });
+    const tools = selectMessages(store.snapshot())[0].blocks;
+    expect(tools[0].tool?.artifacts).toEqual([
+      { kind: 'image', path: '/workspace/chart.png', ext: 'png', size: 8 },
+    ]);
+    expect(tools[1].tool?.artifacts).toBeUndefined();
+    store.close();
+  });
   it('shows newly accepted user history and reconciles streamed body exactly once', () => {
     const { store, history, adapter } = fixture();
     history.push({ id: 'u', role: 'user', content: [{ type: 'text', text: 'question' }] });

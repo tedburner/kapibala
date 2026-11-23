@@ -1,6 +1,7 @@
 /// <reference path="../src/renderer/global.d.ts" />
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { type ElectronApplication, _electron as electron, expect, test } from '@playwright/test';
@@ -32,6 +33,7 @@ test.describe
   .serial('composer 输入增强', () => {
     let home: string;
     let userData: string;
+    let server: http.Server;
     let app: ElectronApplication;
     let page: ReturnType<typeof firstWindow> extends Promise<infer T> ? T : never;
 
@@ -39,14 +41,29 @@ test.describe
       home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-electron-composer-'));
       userData = path.join(home, 'desktop-state');
       execFileSync('git', ['init', '--quiet', home]);
+      // 本地零重试快速失败端点：HTTP 401 属于不可重试错误（避免 5xx 触发指数退避重试，也避免关闭端口的 Windows SYN 超时）。
+      server = http.createServer(async (req, res) => {
+        for await (const _chunk of req) {
+          /* drain */
+        }
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: {
+              message: 'offline fixture',
+              type: 'invalid_request_error',
+              code: 'invalid_api_key',
+            },
+          }),
+        );
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as { port: number };
       // 文件清单在应用挂载时缓存：补全候选文件必须先于启动创建
       const workspaceRoot = path.join(home, '.kapibala/workspaces/default');
       fs.mkdirSync(path.join(workspaceRoot, 'src'), { recursive: true });
       fs.writeFileSync(path.join(workspaceRoot, 'src/demo.ts'), 'demo');
       fs.writeFileSync(path.join(workspaceRoot, 'README.md'), 'demo readme');
-      // 发送口要求至少有一个「已配置且启用」的模型：Ollama 已改为默认停用，
-      // 不能再用它的内置内联密钥兜底。这里显式登记一个指向关闭端口的本地模型，
-      // 让首轮运行快速失败但会话照常打开，技能目录数据源随之可用。
       fs.writeFileSync(
         path.join(home, '.kapibala/settings.json'),
         JSON.stringify({
@@ -56,7 +73,7 @@ test.describe
               name: '离线验收模型',
               provider: 'openai-compatible',
               modelName: 'offline',
-              baseURL: 'http://127.0.0.1:1/v1',
+              baseURL: `http://127.0.0.1:${port}/v1`,
               apiKeyEnv: 'KPBL_COMPOSER_FIXTURE_KEY',
               apiKey: 'test-only-local-credential',
               contextWindow: 32000,
@@ -75,10 +92,17 @@ test.describe
       app = await electron.launch({ args: [entry], env: environment(home, userData) });
       page = await firstWindow(app);
       await expect(page.getByLabel('发送消息')).toBeVisible();
+      await expect(page.getByLabel('发送消息')).toBeEnabled({ timeout: 15_000 });
+      await expect(page.getByRole('button', { name: '新建对话', exact: true }).first()).toBeEnabled(
+        {
+          timeout: 15_000,
+        },
+      );
     });
 
     test.afterEach(async () => {
       await stop(app);
+      server.close();
       fs.rmSync(home, { recursive: true, force: true });
     });
 
@@ -122,8 +146,10 @@ test.describe
       // 但会话已打开，技能目录数据源随之可用）。
       await page.getByLabel('发送消息').fill('hi');
       await page.getByLabel('发送消息').press('Enter');
-      await expect(page.getByRole('article', { name: '你的消息' }).first()).toBeVisible();
-      await expect(page.getByLabel('发送消息')).toBeEnabled();
+      await expect(page.getByRole('article', { name: '你的消息' }).first()).toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(page.getByLabel('发送消息')).toBeEnabled({ timeout: 15_000 });
       // `/` 分组面板：技能组出现 demo-skill（可访问名含描述文本，用正则匹配），
       // Tab 接受后草稿进入 /skill 名字段
       await page.getByLabel('发送消息').fill('/demo');
@@ -141,8 +167,10 @@ test.describe
     test('技能无任务直发：发送即执行', async () => {
       await page.getByLabel('发送消息').fill('hi');
       await page.getByLabel('发送消息').press('Enter');
-      await expect(page.getByRole('article', { name: '你的消息' }).first()).toBeVisible();
-      await expect(page.getByLabel('发送消息')).toBeEnabled();
+      await expect(page.getByRole('article', { name: '你的消息' }).first()).toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(page.getByLabel('发送消息')).toBeEnabled({ timeout: 15_000 });
       // `/skill <名称>` 无任务 = 选了就跑：宿主合成启动任务走收据管线（沙箱无模型，
       // 运行会快速失败——收据链路由单测覆盖）；此处断言分发走通了拦截而不是
       // 命中 CLI 的「非空任务」校验（校验报错会在反馈卡可见）。
@@ -150,5 +178,70 @@ test.describe
       await page.getByLabel('发送消息').press('Enter');
       await expect(page.getByText(/请输入合法技能名和非空任务/)).toHaveCount(0);
       await expect(page.getByLabel('发送消息')).toHaveValue('', { timeout: 10_000 });
+    });
+
+    test('↑/↓ 召回本会话已发送问句并保留未提交草稿', async () => {
+      const input = page.getByLabel('发送消息');
+      await input.fill('第一个问题');
+      await input.press('Enter');
+      await expect(page.getByRole('article', { name: '你的消息' }).first()).toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(input).toBeEnabled({ timeout: 15_000 });
+      await input.fill('第二个问题');
+      await input.press('Enter');
+      await expect(page.getByRole('article', { name: '你的消息' })).toHaveCount(2, {
+        timeout: 15_000,
+      });
+      await expect(input).toBeEnabled({ timeout: 15_000 });
+      // 空输入框光标在开头：↑ 依次召回最近与更早的问句，到顶后停住。
+      await input.press('ArrowUp');
+      await expect(input).toHaveValue('第二个问题');
+      await input.press('ArrowUp');
+      await expect(input).toHaveValue('第一个问题');
+      // 到顶后上翻被吞掉但仍停在最早项，光标不会跳回开头。
+      await input.press('ArrowUp');
+      await expect(input).toHaveValue('第一个问题');
+      // 下翻回到最新项，再下翻恢复未提交草稿（此处为空）并停住。
+      await input.press('ArrowDown');
+      await expect(input).toHaveValue('第二个问题');
+      await input.press('ArrowDown');
+      await expect(input).toHaveValue('');
+      await input.press('ArrowDown');
+      await expect(input).toHaveValue('');
+      // 未提交草稿在首次上翻时保存，回到最新项必须原样恢复。
+      // 光标需在草稿开头才接管 ↑，避免抢占多行编辑的正常行移动。
+      await input.fill('还没发的草稿');
+      await input.press('Home');
+      await input.press('ArrowUp');
+      await expect(input).toHaveValue('第二个问题');
+      await input.press('ArrowDown');
+      await expect(input).toHaveValue('还没发的草稿');
+
+      // 上翻召回历史后一旦手动编辑，必须退出历史浏览态，后续按 ↓ 不得抹掉用户刚修改的文本。
+      await input.press('Home');
+      await input.press('ArrowUp');
+      await expect(input).toHaveValue('第二个问题');
+      await input.fill('第二个问题（已手动修改）');
+      await input.press('ArrowDown');
+      await expect(input).toHaveValue('第二个问题（已手动修改）');
+
+      // 会话内执行 /watches 斜杠命令并采集补全面板与命令反馈卡真图。
+      const proofDir = path.resolve('test-results/visual-proof');
+      fs.mkdirSync(proofDir, { recursive: true });
+      await input.fill('/');
+      await expect(page.getByText('命令（')).toBeVisible();
+      await page.screenshot({
+        path: path.join(proofDir, 'composer-skill-completion.png'),
+        animations: 'disabled',
+      });
+
+      await input.fill('/watches');
+      await input.press('Enter');
+      await expect(page.getByText('当前会话没有登记任何监视。')).toBeVisible();
+      await page.screenshot({
+        path: path.join(proofDir, 'composer-command-feedback.png'),
+        animations: 'disabled',
+      });
     });
   });

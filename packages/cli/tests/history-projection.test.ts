@@ -1,5 +1,5 @@
 import type { CanonicalMessage } from '@kiturone/kapibala';
-import { projectHistory } from '@kiturone/kapibala-host/internal';
+import { buildTodoState, projectHistory } from '@kiturone/kapibala-host/internal';
 import { describe, expect, it } from 'vitest';
 
 describe('canonical public history projection', () => {
@@ -150,5 +150,203 @@ describe('canonical public history projection', () => {
     expect(projected[2].blocks[0].tool?.status).toBe('interrupted');
     expect(projected[3].blocks[0].tool?.result).toBe('OUTCOME_UNKNOWN');
     expect(projectHistory(history, 'scope')).toEqual(projected);
+  });
+});
+
+describe('session task list projection', () => {
+  it('returns undefined without a successful todo_write', () => {
+    expect(buildTodoState([])).toBeUndefined();
+    const failed: CanonicalMessage[] = [
+      {
+        id: 'a',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't',
+            name: 'todo_write',
+            input: { items: [{ id: '1', title: 'x', status: 'pending' }] },
+          },
+        ],
+      },
+      {
+        id: 'r',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 't', content: 'boom', isError: true }],
+      },
+    ];
+    expect(buildTodoState(failed)).toBeUndefined();
+  });
+
+  it('takes the latest successful call and counts successful updates as revision', () => {
+    const history: CanonicalMessage[] = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        timestamp: 100,
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'todo_write',
+            input: { items: [{ id: '1', title: '旧', status: 'pending' }] },
+          },
+        ],
+      },
+      {
+        id: 'r1',
+        role: 'tool',
+        timestamp: 110,
+        content: [{ type: 'tool_result', toolUseId: 't1', content: 'ok' }],
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        timestamp: 200,
+        content: [
+          {
+            type: 'tool_use',
+            id: 't2',
+            name: 'todo_write',
+            input: { items: [{ id: '1', title: '新', status: 'completed' }] },
+          },
+        ],
+      },
+      {
+        id: 'r2',
+        role: 'tool',
+        timestamp: 210,
+        content: [{ type: 'tool_result', toolUseId: 't2', content: 'ok' }],
+      },
+    ];
+    expect(buildTodoState(history)).toEqual({
+      items: [{ id: '1', title: '新', status: 'completed' }],
+      revision: 2,
+      updatedAt: 210,
+    });
+  });
+
+  it('ignores failed latest calls and malformed input instead of blinking empty', () => {
+    const history: CanonicalMessage[] = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'todo_write',
+            input: { items: [{ id: '1', title: '保留', status: 'in_progress' }] },
+          },
+        ],
+      },
+      {
+        id: 'r1',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 't1', content: 'ok' }],
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't2',
+            name: 'todo_write',
+            input: { items: [{ id: '2', title: '丢弃', status: 'pending' }] },
+          },
+        ],
+      },
+      {
+        id: 'r2',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 't2', content: 'boom', isError: true }],
+      },
+      {
+        id: 'a3',
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 't3', name: 'todo_write', input: { items: 'bad' } }],
+      },
+      {
+        id: 'r3',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 't3', content: 'ok' }],
+      },
+    ];
+    expect(buildTodoState(history)?.items).toEqual([
+      { id: '1', title: '保留', status: 'in_progress' },
+    ]);
+    expect(buildTodoState(history)?.revision).toBe(1);
+  });
+
+  it('redacts todo titles through the injected public text redactor', () => {
+    const history: CanonicalMessage[] = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'todo_write',
+            input: {
+              items: [
+                { id: '1', title: '轮换 sk-abcd1234 密钥', status: 'pending' },
+                { id: '2', title: '普通标题', status: 'completed' },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        id: 'r1',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 't1', content: 'ok' }],
+      },
+    ];
+    const state = buildTodoState(history, (text) => text.replaceAll('sk-abcd1234', '[REDACTED]'));
+    expect(state?.items.map((item) => item.title)).toEqual(['轮换 [REDACTED] 密钥', '普通标题']);
+    // 脱敏不改变结构事实：revision 与状态保持原样，id/status 不经过脱敏出口。
+    expect(state?.revision).toBe(1);
+    expect(state?.items.map((item) => item.id)).toEqual(['1', '2']);
+  });
+});
+
+describe('artifact projection', () => {
+  const policy = (
+    name: string,
+    _input: Record<string, unknown>,
+    succeeded: boolean,
+  ): readonly { kind: 'image'; path: string; ext: string; size: number }[] | undefined =>
+    name === 'write_file' && succeeded
+      ? [{ kind: 'image', path: '/workspace/chart.png', ext: 'png', size: 12 }]
+      : undefined;
+
+  it('attaches artifacts only to succeeded write_file calls', () => {
+    const history: CanonicalMessage[] = [
+      {
+        id: 'a',
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'ok', name: 'write_file', input: { path: 'chart.png' } },
+          { type: 'tool_use', id: 'bad', name: 'write_file', input: { path: 'chart.png' } },
+        ],
+      },
+      {
+        id: 'r1',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 'ok', content: 'written' }],
+      },
+      {
+        id: 'r2',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 'bad', content: 'denied', isError: true }],
+      },
+    ];
+    const projected = projectHistory(history, 'scope', undefined, { artifacts: policy });
+    expect(projected[0].blocks[0].tool?.artifacts).toEqual([
+      { kind: 'image', path: '/workspace/chart.png', ext: 'png', size: 12 },
+    ]);
+    expect(projected[0].blocks[1].tool?.artifacts).toBeUndefined();
   });
 });

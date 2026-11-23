@@ -15,10 +15,9 @@ const pair = () => {
   const b = new PassThrough();
   return [createStdioTransport(a, b), createStdioTransport(b, a)] as const;
 };
-const offer = { major: 1, minMinor: 0, maxMinor: 0, clientName: 'test', capabilities: [] };
+const offer = { protocolVersion: 2, clientName: 'test', capabilities: [] };
 const initialization = {
-  major: 1,
-  minor: 0,
+  protocolVersion: 2,
   capabilities: [],
   serverInstanceId: 'i',
   clientId: 'c',

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  net,
   BrowserWindow,
   Notification as ElectronNotification,
   Menu,
@@ -31,10 +32,16 @@ import { HostGuard } from './guard.js';
 import { NativeNotices } from './native-notices.js';
 import { Preferences } from './preferences.js';
 import { PreviewDocuments } from './preview-documents.js';
-import { readImageDataUrl, resolveLocalImagePath } from './preview-file.js';
+import {
+  isAllowedLocalPreviewPath,
+  readImageDataUrl,
+  resolveLocalImagePath,
+} from './preview-file.js';
 import { installPreviewProtocol, previewUrl, registerPreviewScheme } from './preview-protocol.js';
 import { HostSupervisor } from './supervisor.js';
-import { normalizeUrl } from './url.js';
+import { checkForDesktopUpdate } from './update-check.js';
+import { downloadUpdate, isTrustedReleaseUrl } from './update-download.js';
+import { normalizeMainFrameUrl, normalizeUrl } from './url.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 app.setName('Kapibala');
@@ -98,6 +105,25 @@ let quitting = false;
 let quitTask: Promise<void> | undefined;
 let cleanup = Promise.resolve();
 let blocked = false;
+/**
+ * 最近一次检查到的可下载资产：只保存在主进程，页面无法注入 URL。
+ * 每次检查都会整体替换（不再有新版本时清空），下载入口以它为准。
+ */
+let updateCandidate:
+  | {
+      installer: { name: string; url: string; size: number };
+      checksum: { name: string; url: string };
+    }
+  | undefined;
+/** 在途下载的取消句柄；同一时刻只允许一个下载，避免并发写同一临时文件。 */
+let updateDownload: AbortController | undefined;
+/** 更新检查结果的进程内短缓存（60s），避免用户连点消耗未认证 GitHub API 的 60 次/小时配额。 */
+let cachedUpdateCheck:
+  | {
+      expiresAt: number;
+      result: Awaited<ReturnType<typeof checkForDesktopUpdate>>;
+    }
+  | undefined;
 const registry = new Map<string, Workspace>();
 const surfaces = { light: '#FFFFFF', dark: '#181818' } as const;
 const displayMode = () =>
@@ -153,6 +179,8 @@ async function recover(): Promise<void> {
 async function requestQuit(): Promise<void> {
   if (quitTask) return quitTask;
   quitTask = (async () => {
+    // 退出时中止在途下载，避免进程结束留下未完成的临时文件。
+    updateDownload?.abort();
     // blocked 且 Host 已退出 = 既有清理未知场景；shutdown 超时或失败会另行置位。
     let unconfirmed = supervisor ? blocked && supervisor.hasExited() : false;
     if (supervisor && !supervisor.hasExited()) {
@@ -205,6 +233,76 @@ async function handle(
   lifetime: ControlLifetime,
 ): Promise<unknown> {
   switch (method) {
+    // 更新检查只由用户动作触发：不做启动时自动联网，也不进入宿主子进程。
+    // 任何网络 / 响应异常都在 update-check 内降级为 unknown，不抛出到这里。
+    case 'app.checkUpdate': {
+      const now = Date.now();
+      const result =
+        cachedUpdateCheck && cachedUpdateCheck.expiresAt > now
+          ? cachedUpdateCheck.result
+          : await checkForDesktopUpdate({
+              currentVersion: app.getVersion(),
+              platform: process.platform,
+              arch: process.arch,
+              fetch: (url, init) => net.fetch(url, init),
+            });
+      if (
+        result.status !== 'unknown' &&
+        (!cachedUpdateCheck || cachedUpdateCheck.expiresAt <= now)
+      ) {
+        cachedUpdateCheck = { expiresAt: now + 60_000, result };
+      }
+      // 只有安装包与摘要清单齐全时才登记下载候选；其余状态清空旧候选，
+      // 避免页面拿着过期的「有新版本」结果去下载已被撤下的资产。
+      updateCandidate =
+        result.status === 'update-available' && result.installer && result.checksum
+          ? { installer: result.installer, checksum: result.checksum }
+          : undefined;
+      return result;
+    }
+    // 下载入口不带参数：URL 只来自主进程登记的检查结果，渲染层无法指定下载地址。
+    case 'app.downloadUpdate': {
+      if (!updateCandidate) return { status: 'failed', reason: 'NO_UPDATE_STATE' };
+      if (updateDownload) return { status: 'failed', reason: 'DOWNLOAD_IN_PROGRESS' };
+      const candidate = updateCandidate;
+      if (
+        !isTrustedReleaseUrl(candidate.installer.url) ||
+        !isTrustedReleaseUrl(candidate.checksum.url)
+      )
+        return { status: 'failed', reason: 'UNTRUSTED_SOURCE' };
+      const controller = new AbortController();
+      updateDownload = controller;
+      let lastProgress = 0;
+      try {
+        const result = await downloadUpdate({
+          installer: candidate.installer,
+          checksum: candidate.checksum,
+          directory: app.getPath('downloads'),
+          fetch: (url, init) => net.fetch(url, init),
+          signal: controller.signal,
+          onProgress: (downloaded, total, final) => {
+            // 进度只是展示反馈：节流到 5 次/秒；末帧（final 或已知 total 满额）必定发送，total=0 时也不截断末帧。
+            const now = Date.now();
+            const isComplete = Boolean(final) || (total > 0 && downloaded === total);
+            if (!isComplete && now - lastProgress < 200) return;
+            lastProgress = now;
+            void source
+              .sendEvent({ type: 'update.downloadProgress', downloaded, total }, 'control')
+              .catch(() => {});
+          },
+        });
+        if (result.status !== 'downloaded') return result;
+        if (controller.signal.aborted || quitting) return { status: 'cancelled' };
+        // 只有摘要严格一致且未取消/未退出时才打开安装包，由安装程序提示手动安装。
+        const openError = await shell.openPath(result.filePath);
+        return { status: 'downloaded', filePath: result.filePath, opened: openError === '' };
+      } finally {
+        if (updateDownload === controller) updateDownload = undefined;
+      }
+    }
+    case 'app.cancelUpdateDownload':
+      updateDownload?.abort();
+      return {};
     case 'app.getInfo':
       return {
         name: 'Kapibala',
@@ -440,8 +538,8 @@ function createWindow(): void {
       contents === win.webContents &&
         permission === 'clipboard-sanitized-write' &&
         details.isMainFrame &&
-        normalizeUrl(details.requestingUrl) === expectedURL &&
-        normalizeUrl(contents.mainFrame.url) === expectedURL,
+        normalizeMainFrameUrl(details.requestingUrl) === expectedURL &&
+        normalizeMainFrameUrl(contents.mainFrame.url) === expectedURL,
     ),
   );
   win.webContents.session.setPermissionCheckHandler(
@@ -449,8 +547,8 @@ function createWindow(): void {
       contents === win.webContents &&
       permission === 'clipboard-sanitized-write' &&
       details.isMainFrame &&
-      normalizeUrl(details.requestingUrl ?? '') === expectedURL &&
-      normalizeUrl(contents.mainFrame.url) === expectedURL,
+      normalizeMainFrameUrl(details.requestingUrl ?? '') === expectedURL &&
+      normalizeMainFrameUrl(contents.mainFrame.url) === expectedURL,
   );
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => {
     const url = normalizeUrl(details.url);
@@ -481,8 +579,9 @@ function createWindow(): void {
   win.webContents.on('render-process-gone', () => {
     renderer?.peer.close('RENDERER_GONE');
   });
-  win.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
-    if (mainFrame) renderer?.peer.close('RENDERER_NAVIGATED');
+  win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+    // 页内锚点跳转（inPlace = true）不改变物理文档与安全上下文，只有真实跨页导航才关闭控制通道。
+    if (mainFrame && !inPlace) renderer?.peer.close('RENDERER_NAVIGATED');
   });
   win.on('ready-to-show', () => win.show());
   win.on('close', (event) => {
@@ -582,7 +681,7 @@ else {
         window &&
         event.sender === window.webContents &&
         event.senderFrame === window.webContents.mainFrame &&
-        normalizeUrl(event.senderFrame.url) === expectedURL
+        normalizeMainFrameUrl(event.senderFrame.url) === expectedURL
           ? displayMode()
           : 'light';
     });
@@ -591,7 +690,7 @@ else {
         !window ||
         event.sender !== window.webContents ||
         event.senderFrame !== window.webContents.mainFrame ||
-        normalizeUrl(event.senderFrame.url) !== expectedURL ||
+        normalizeMainFrameUrl(event.senderFrame.url) !== expectedURL ||
         renderer
       )
         return;
@@ -603,28 +702,37 @@ else {
         !window ||
         event.sender !== window.webContents ||
         event.senderFrame !== window.webContents.mainFrame ||
-        normalizeUrl(event.senderFrame?.url ?? '') !== expectedURL
+        normalizeMainFrameUrl(event.senderFrame?.url ?? '') !== expectedURL
       )
         throw new Error('FORBIDDEN');
       if (typeof html !== 'string' || html.length > HTML_PREVIEW_LIMIT)
         throw new Error('PREVIEW_INVALID');
       return previewUrl(previews.publish(html));
     });
-    // 本地图片预览只接受来自当前主页面的读取请求：只回 data URL，不暴露文件系统句柄。
+    // 本地图片预览只接受来自当前主页面的读取请求，且严格限制在已登记工作区与系统临时目录内（硬排除 ~/.kapibala 凭据区）。
     ipcMain.handle('kpbl:preview-file', async (event, params: unknown) => {
       if (
         !window ||
         event.sender !== window.webContents ||
         event.senderFrame !== window.webContents.mainFrame ||
-        normalizeUrl(event.senderFrame?.url ?? '') !== expectedURL
+        normalizeMainFrameUrl(event.senderFrame?.url ?? '') !== expectedURL
       )
         throw new Error('FORBIDDEN');
       if (typeof params !== 'object' || params === null) throw new Error('PREVIEW_INVALID');
-      const { path, root } = params as { path?: unknown; root?: unknown };
-      if (typeof path !== 'string' || (root !== undefined && typeof root !== 'string'))
+      const { path: rawPath, root } = params as { path?: unknown; root?: unknown };
+      if (typeof rawPath !== 'string' || (root !== undefined && typeof root !== 'string'))
         throw new Error('PREVIEW_INVALID');
-      const target = resolveLocalImagePath(path, root);
+      const workspaceRoots = [...registry.values()].map((item) => item.root);
+      if (
+        root !== undefined &&
+        !isAllowedLocalPreviewPath(root, { workspaceRoots, homeDirectory })
+      ) {
+        throw new Error('FORBIDDEN');
+      }
+      const target = resolveLocalImagePath(rawPath, root);
       if (!target) throw new Error('PREVIEW_INVALID');
+      if (!isAllowedLocalPreviewPath(target, { workspaceRoots, homeDirectory }))
+        throw new Error('FORBIDDEN');
       return readImageDataUrl(target);
     });
     nativeTheme.on('updated', () => {

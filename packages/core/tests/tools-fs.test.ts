@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { countLineDiff } from '../src/capabilities/tools/builtin/file-diff.js';
 import {
   builtinTools,
   editFileTool,
@@ -102,7 +103,34 @@ describe('builtin fs tools', () => {
     it('返回值应带上写入字节数', async () => {
       const result = await writeFileTool.execute({ path: 'a.txt', content: '中文' }, { rootDir });
       // '中文' 为 6 字节(UTF-8)，若按字符数统计会得到 2
-      expect(result).toContain('6 bytes');
+      expect(result.content).toContain('6 bytes');
+    });
+
+    it('新建文件应记录 +行数 −0 的行数事实', async () => {
+      const result = await writeFileTool.execute(
+        { path: 'new.txt', content: 'a\nb\nc\n' },
+        { rootDir },
+      );
+      expect(result.diff).toEqual({ additions: 3, deletions: 0 });
+      expect(writeFileTool.toExecutionResult!(result).execution?.facts?.diff).toEqual({
+        additions: 3,
+        deletions: 0,
+      });
+    });
+
+    it('覆盖已有文件应按真实差分统计增删', async () => {
+      fs.writeFileSync(path.join(rootDir, 'a.txt'), 'keep\nold\nkeep2');
+      const result = await writeFileTool.execute(
+        { path: 'a.txt', content: 'keep\nnew\nkeep2' },
+        { rootDir },
+      );
+      expect(result.diff).toEqual({ additions: 1, deletions: 1 });
+    });
+
+    it('写入内容与旧内容相同时记 0/0，不伪造变更', async () => {
+      fs.writeFileSync(path.join(rootDir, 'a.txt'), 'same');
+      const result = await writeFileTool.execute({ path: 'a.txt', content: 'same' }, { rootDir });
+      expect(result.diff).toEqual({ additions: 0, deletions: 0 });
     });
   });
 
@@ -157,6 +185,28 @@ describe('builtin fs tools', () => {
           { rootDir },
         ),
       ).rejects.toThrow(ToolError);
+    });
+
+    it('精确替换应记录单行增删事实', async () => {
+      fs.writeFileSync(path.join(rootDir, 'a.txt'), 'const a = 1;\nconst b = 2;');
+      const result = await editFileTool.execute(
+        { path: 'a.txt', targetContent: 'const a = 1;', replacementContent: 'const a = 9;' },
+        { rootDir },
+      );
+      expect(result.diff).toEqual({ additions: 1, deletions: 1 });
+      expect(editFileTool.toExecutionResult!(result).execution?.facts?.diff).toEqual({
+        additions: 1,
+        deletions: 1,
+      });
+    });
+
+    it('替换为多行时应按新增行数统计', async () => {
+      fs.writeFileSync(path.join(rootDir, 'a.txt'), 'head\nold\ntail');
+      const result = await editFileTool.execute(
+        { path: 'a.txt', targetContent: 'old', replacementContent: 'new1\nnew2\nnew3' },
+        { rootDir },
+      );
+      expect(result.diff).toEqual({ additions: 3, deletions: 1 });
     });
   });
 
@@ -301,12 +351,45 @@ describe('builtin fs tools', () => {
     });
   });
 
+  describe('countLineDiff', () => {
+    it('相同文本记 0/0', () => {
+      expect(countLineDiff('a\nb', 'a\nb')).toEqual({ additions: 0, deletions: 0 });
+    });
+
+    it('只在末尾追加时按新增行计数', () => {
+      expect(countLineDiff('a', 'a\nb\nc')).toEqual({ additions: 2, deletions: 0 });
+    });
+
+    it('删除中间行时按删除行计数', () => {
+      expect(countLineDiff('a\nb\nc\nd', 'a\nd')).toEqual({ additions: 0, deletions: 2 });
+    });
+
+    it('多处分散修改按 LCS 统计，不把未变行算进变更', () => {
+      expect(countLineDiff('1\n2\n3\n4\n5', '1\nX\n3\nY\n5')).toEqual({
+        additions: 2,
+        deletions: 2,
+      });
+    });
+
+    it('中段超出 LCS 预算时只标记截断，不返回猜测数字', () => {
+      const before = Array.from({ length: 2100 }, (_, index) => `a-${index}`).join('\n');
+      const after = Array.from({ length: 2100 }, (_, index) => `b-${index}`).join('\n');
+      expect(countLineDiff(before, after)).toEqual({ truncated: true });
+    });
+
+    it('前后文本合计超出字节预算时标记截断', () => {
+      expect(countLineDiff('x'.repeat(6 * 1024 * 1024), 'y'.repeat(6 * 1024 * 1024))).toEqual({
+        truncated: true,
+      });
+    });
+  });
+
   describe('注册表装配', () => {
-    it('builtinTools 应导出 5 个工具且名称无重复', () => {
-      expect(builtinTools).toHaveLength(5);
+    it('builtinTools 应导出 6 个工具且名称无重复', () => {
+      expect(builtinTools).toHaveLength(6);
       const names = builtinTools.map((t) => t.name);
       expect(new Set(names).size).toBe(names.length);
-      expect(names).toEqual(['read_file', 'write_file', 'edit_file', 'glob', 'grep']);
+      expect(names).toEqual(['read_file', 'write_file', 'edit_file', 'glob', 'grep', 'todo_write']);
     });
 
     it('每个工具都应声明 minimal 契约：name/description/parameters/execute', () => {
@@ -318,16 +401,16 @@ describe('builtin fs tools', () => {
       }
     });
 
-    it('应能整体注册进 ToolRegistry 并产出 5 条 definitions', () => {
+    it('应能整体注册进 ToolRegistry 并产出 6 条 definitions', () => {
       const registry = new ToolRegistry();
       registry.registerSource('builtin', builtinTools);
-      expect(registry.list()).toHaveLength(5);
-      expect(registry.definitions()).toHaveLength(5);
+      expect(registry.list()).toHaveLength(6);
+      expect(registry.definitions()).toHaveLength(6);
       expect(registry.resolve('read_file').name).toBe('read_file');
     });
 
     it('权限声明应与读写语义一致', () => {
-      const readOnly = ['read_file', 'glob', 'grep'];
+      const readOnly = ['read_file', 'glob', 'grep', 'todo_write'];
       const writable = ['write_file', 'edit_file'];
       for (const tool of builtinTools) {
         const expected = readOnly.includes(tool.name)

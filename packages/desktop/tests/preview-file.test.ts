@@ -1,8 +1,9 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  isAllowedLocalPreviewPath,
   isLocalImagePath,
   readImageDataUrl,
   resolveLocalImagePath,
@@ -47,5 +48,50 @@ describe('本地图片读取', () => {
     await expect(readImageDataUrl(join(directory, 'notes.txt'))).rejects.toThrow(
       'PREVIEW_UNSUPPORTED',
     );
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  it('主进程边界仅放行已登记工作区与临时目录，且硬排除 ~/.kapibala 凭据区', () => {
+    const base = mkdtempSync(join(tmpdir(), 'kpbl-preview-boundary-'));
+    try {
+      const home = join(base, 'home');
+      const workspace = join(base, 'ws');
+      const temp = join(base, 'tmp');
+      const defaultWs = join(home, '.kapibala', 'workspaces', 'default');
+      for (const dir of [home, workspace, temp, defaultWs]) mkdirSync(dir, { recursive: true });
+
+      const options = { workspaceRoots: [workspace], homeDirectory: home, tempRoot: temp };
+      expect(isAllowedLocalPreviewPath(join(workspace, 'a.png'), options)).toBe(true);
+      expect(isAllowedLocalPreviewPath(join(temp, 't.png'), options)).toBe(true);
+      expect(isAllowedLocalPreviewPath(join(home, 'outside.png'), options)).toBe(false);
+
+      // 即使某个已登记工作区恰好包住 home，~/.kapibala 下的配置/会话也绝不可读。
+      expect(
+        isAllowedLocalPreviewPath(join(home, '.kapibala', 'secret.svg'), {
+          workspaceRoots: [base],
+          homeDirectory: home,
+          tempRoot: temp,
+        }),
+      ).toBe(false);
+
+      // 默认空间只有被主进程显式登记时才放行其子路径，~/.kapibala 其余子路径仍拒绝。
+      expect(isAllowedLocalPreviewPath(join(defaultWs, 'chart.png'), options)).toBe(false);
+      expect(
+        isAllowedLocalPreviewPath(join(defaultWs, 'chart.png'), {
+          workspaceRoots: [defaultWs],
+          homeDirectory: home,
+          tempRoot: temp,
+        }),
+      ).toBe(true);
+      expect(
+        isAllowedLocalPreviewPath(join(home, '.kapibala', 'settings.svg'), {
+          workspaceRoots: [defaultWs],
+          homeDirectory: home,
+          tempRoot: temp,
+        }),
+      ).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });

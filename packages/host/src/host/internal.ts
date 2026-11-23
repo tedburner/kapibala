@@ -8,7 +8,9 @@
  * - 显式命名导出，不用 `export *`：ESM 星号导出在多模块重导出同名符号时会静默丢弃（已踩过），
  *   新增消费符号时必须在此登记；类型重导出走 export type（isolatedModules 约束）。
  */
-export { EXPLICIT_SKILL_KICKOFF, projectHistory } from './history-projection.js';
+export { EXPLICIT_SKILL_KICKOFF, buildTodoState, projectHistory } from './history-projection.js';
+export { buildSessionEvidence } from './evidence.js';
+export type { SessionEvidenceInput } from './evidence.js';
 export {
   createManagedSession,
   createManagedSessionResources,
@@ -19,6 +21,7 @@ export {
   bindSessionMcpPlugin,
   createCliServerStartAuthorizer,
   getSessionMcpPlugin,
+  readMcpConfigFile,
   resolveCliMcpOptions,
 } from './mcp.js';
 export {
@@ -99,6 +102,15 @@ export type { DelegationSessionSummary } from './delegations.js';
 export { createCliSubagentResumer, createCliSubagentRunner } from './subagent-runner.js';
 export { TaskObservation } from './task-observation.js';
 export { registerBuiltinTools } from './tool-registration.js';
+export { WATCH_RESUME_INPUT, WatchService } from './watch/service.js';
+export type {
+  WatchFileSystem,
+  WatchServiceOptions,
+  WatchStateStore,
+  WatchView,
+} from './watch/service.js';
+export { createWatchTools } from './watch/tools.js';
+export type { WatchCancelInput, WatchStartInput } from './watch/tools.js';
 export { formatModelError, formatModelFailureSummary } from './ui/model-errors.js';
 export { describeRuntimeError } from './ui/runtime-errors.js';
 export { sanitizeUntrustedOutput } from './ui/text-safety.js';
@@ -115,8 +127,73 @@ export {
   getGlobalMcpConfigPath,
   getProjectMcpConfigPath,
   mutateGlobalMcpConfig,
+  mutateMcpConfig,
+  readMcpApprovalEntries,
   readMcpResourceSnapshot,
+  resolveMcpConfigTarget,
 } from './resource/mcp-config.js';
-export type { McpResourceSnapshot, McpServerSummary } from './resource/mcp-config.js';
+export type {
+  McpApprovalEntry,
+  McpConfigTarget,
+  McpResourceSnapshot,
+  McpServerSummary,
+} from './resource/mcp-config.js';
 export { readSkillsResourceSnapshot } from './resource/skills-catalog.js';
 export type { SkillSummary, SkillsResourceSnapshot } from './resource/skills-catalog.js';
+export {
+  MCP_IMPORT_HARNESS_NAMES,
+  MCP_PROVENANCE_FILE,
+  importMcpServers,
+  readImportedMcpProvenance,
+  scanImportableMcpServers,
+} from './resource/mcp-import.js';
+export type {
+  ImportedMcpProvenance,
+  McpImportCandidate,
+  McpImportConflict,
+  McpImportHarness,
+  McpImportOptions,
+  McpImportOutcome,
+  McpImportResult,
+  McpImportScan,
+  McpImportScope,
+  McpImportSelection,
+  McpImportSourceView,
+} from './resource/mcp-import.js';
+export {
+  MCP_APPROVAL_FILE,
+  McpServerApprovalStore,
+  createApprovedStartAuthorizer,
+  digestServerConfig,
+} from './resource/mcp-approval.js';
+export type {
+  McpApprovalRecord,
+  McpApprovalSource,
+  McpApprovalStatus,
+  McpApprovalTarget,
+} from './resource/mcp-approval.js';
+export {
+  SKILL_IMPORT_HARNESS_NAMES,
+  SKILL_IMPORT_LIMITS,
+  SKILL_PROVENANCE_FILE,
+  diffImportedSkill,
+  importSkills,
+  normalizeImportedSkill,
+  readImportedSkillProvenance,
+  scanImportableSkills,
+} from './resource/skill-import.js';
+export type {
+  ImportedSkillProvenance,
+  NormalizedImportedSkill,
+  SkillImportCandidate,
+  SkillImportConflict,
+  SkillImportHarness,
+  SkillImportOptions,
+  SkillImportOutcome,
+  SkillImportResult,
+  SkillImportScan,
+  SkillImportScope,
+  SkillImportSelection,
+  SkillImportSourceView,
+  SkillImportStatus,
+} from './resource/skill-import.js';

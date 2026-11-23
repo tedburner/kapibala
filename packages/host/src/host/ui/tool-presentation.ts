@@ -184,6 +184,22 @@ const BUILTIN_TOOL_DISPLAY: Record<string, ToolDisplay> = {
     chip: (input) => stringInput(input, 'path') || undefined,
     mono: true,
   },
+  watch_start: {
+    label: '登记监视',
+    verb: '监视',
+    chip: (input) => stringInput(input, 'target') || undefined,
+    mono: true,
+  },
+  watch_cancel: {
+    label: '取消监视',
+    verb: '取消',
+    chip: (input) => stringInput(input, 'watchId') || undefined,
+    mono: true,
+  },
+  todo_write: {
+    label: '更新任务清单',
+    verb: '更新',
+  },
 };
 
 /** 归一 MCP 工具名为「服务 · 工具」；/mcp 工具清单与工具行共用本函数，保证同口径。 */
@@ -218,6 +234,32 @@ export function resolveToolDisplay(name: string): ToolDisplay {
     }
   }
   return { label: beautifyUnknownToolName(name) };
+}
+
+/**
+ * 把工具名与入参投影为结构化的「动词 + 对象」两段（U1.5），供两端直接渲染而不是解析摘要。
+ * 未登记的内置工具与未知工具返回空对象，调用方退回 `invocation`；绝不抛错。
+ */
+export function describeToolActivity(
+  name: string,
+  input: Record<string, unknown>,
+): { verb?: string; chip?: string; mono?: boolean } {
+  if (name.startsWith('mcp__')) {
+    const parts = name.split('__');
+    if (parts.length >= 3) {
+      const server = sanitizeText(parts[1]);
+      const toolName = sanitizeText(parts.slice(2).join('__'));
+      return { verb: '调用', chip: `${server}/${toolName}`, mono: true };
+    }
+  }
+  const display = BUILTIN_TOOL_DISPLAY[name];
+  if (!display) return {};
+  const chip = display.chip?.(input);
+  return {
+    ...(display.verb ? { verb: display.verb } : {}),
+    ...(chip ? { chip } : {}),
+    ...(display.mono ? { mono: true } : {}),
+  };
 }
 
 /**

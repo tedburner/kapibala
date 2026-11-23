@@ -392,4 +392,64 @@ describe('executor permission and audit gate', () => {
       fs.rmSync(outside, { recursive: true, force: true });
     }
   });
+
+  it('denies protected file writes before approval and prompts on escape-class files in Auto mode', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-permission-escape-'));
+    try {
+      const tools = new ToolRegistry();
+      tools.register(writeFileTool);
+      let asked = 0;
+      const make = (mode: 'Approval' | 'Auto' | 'FullAccess') =>
+        new ToolExecutor({
+          tools,
+          hooks: new HookRegistry(),
+          rootDir: root,
+          mode,
+          approvalChannel: {
+            requestApproval: async () => {
+              asked++;
+              return 'deny_once';
+            },
+          },
+          eventLogger: new StructuredLogger({ operationSink: new Sink(), auditSink: new Sink() }),
+          sessionId: 's',
+          runId: 'r',
+        });
+
+      // 1. 硬禁区（.env / .kapibala/permissions.json）三档一致直接拒绝，不产生审批弹窗。
+      for (const mode of ['Approval', 'Auto', 'FullAccess'] as const) {
+        const res = await make(mode).executeOne({
+          type: 'tool_use',
+          id: `prot-${mode}`,
+          name: 'write_file',
+          input: { path: '.env', content: 'SECRET=1' },
+        });
+        expect(res.isError).toBe(true);
+        expect(res.errorCode).toBe('PERMISSION_DENIED');
+      }
+      expect(asked).toBe(0);
+
+      // 2. 决议 3 escape 清单（.github/workflows/**、.npmrc）：Auto 必须询问，FullAccess 放行。
+      const autoWorkflow = await make('Auto').executeOne({
+        type: 'tool_use',
+        id: 'esc-auto',
+        name: 'write_file',
+        input: { path: '.github/workflows/ci.yml', content: 'name: ci' },
+      });
+      expect(asked).toBe(1);
+      expect(autoWorkflow.isError).toBe(true);
+      expect(fs.existsSync(path.join(root, '.github/workflows/ci.yml'))).toBe(false);
+
+      const fullWorkflow = await make('FullAccess').executeOne({
+        type: 'tool_use',
+        id: 'esc-full',
+        name: 'write_file',
+        input: { path: '.npmrc', content: 'registry=https://registry.npmjs.org/' },
+      });
+      expect(asked).toBe(1);
+      expect(fullWorkflow.isError).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

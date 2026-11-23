@@ -1,5 +1,5 @@
 /**
- * 本地客户端示例：以 stdio 拉起 `kpbl serve --stdio` 宿主，用 `LocalClient` 走协议 1.0 完成一次问答。
+ * 本地客户端示例：以 stdio 拉起 `kpbl serve --stdio` 宿主，用 `LocalClient` 走协议 2 完成一次问答。
  *
  * 约束：宿主入口必须是已构建产物（`pnpm dev:build` 后的 `packages/cli/dist/bin.js`）。
  * 工作区根用绝对路径显式传入；`run/start` 必须携带 attach 返回的双代际（`streamEpoch` +
@@ -9,8 +9,8 @@
  */
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { LocalClient, createStdioTransport } from '@kiturone/kapibala-host/client';
-import type { WireEvent } from '@kiturone/kapibala-host/protocol';
+import { LocalClient, createStdioTransport } from '@kiturone/kapibala-cli/client';
+import { PROTOCOL_VERSION, type WireEvent } from '@kiturone/kapibala-cli/protocol';
 
 const hostEntry = process.env.KPBL_HOST_ENTRY
   ? path.resolve(process.env.KPBL_HOST_ENTRY)
@@ -29,9 +29,7 @@ const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>
 const client = await LocalClient.connect(
   createStdioTransport(child.stdout!, child.stdin!),
   {
-    major: 1,
-    minMinor: 0,
-    maxMinor: 0,
+    protocolVersion: PROTOCOL_VERSION,
     clientName: 'kapibala-example',
     // 只声明本次真正依赖的能力；任一项宿主不支持即 PROTOCOL_MISMATCH，不静默降级。
     capabilities: ['sessions', 'approval', 'cancel'],

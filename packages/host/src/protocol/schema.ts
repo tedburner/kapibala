@@ -39,20 +39,22 @@ const object = <
 });
 const control = { sessionId: id, streamEpoch: id, controlEpoch: id };
 const empty = object({});
+const capabilities = { type: 'array', items: id, maxItems: 64 } as const;
+const token = { ...id, maxLength: 512 } as const;
+
+/**
+ * 初始化参数只接受整数代际报价。
+ *
+ * v0.1.3 的 `{major,minMinor,maxMinor}` 形状已从白名单移除：旧客户端会在参数校验阶段得到
+ * `INVALID_PARAMS`（明确失败、连接不再继续），不再保留“放行到协商层再拒绝”的兼容分支。
+ */
+const initialize = object({ protocolVersion: integer, clientName: id, capabilities, token }, [
+  'token',
+]);
 
 /** 初始化和方法参数 Schema 为协议单一白名单；额外参数不作隐式忽略。 */
 export const REQUEST_SCHEMAS = {
-  initialize: object(
-    {
-      major: integer,
-      minMinor: integer,
-      maxMinor: integer,
-      clientName: id,
-      capabilities: { type: 'array', items: id, maxItems: 64 },
-      token: { ...id, maxLength: 512 },
-    },
-    ['token'],
-  ),
+  initialize,
   ping: empty,
   'session/list': object(
     { workspaceRoot: string, cursor: id, limit: { ...integer, minimum: 1, maximum: 50 } },
@@ -78,6 +80,9 @@ export const REQUEST_SCHEMAS = {
     sessionAllowed: boolean,
     expiresAt: integer,
   }),
+  'watch/list': object({ sessionId: id }),
+  'watch/cancel': object({ ...control, watchId: id }),
+  'evidence/read': object({ sessionId: id }),
   'host/shutdown': empty,
 } as const satisfies Record<string, WireSchema>;
 

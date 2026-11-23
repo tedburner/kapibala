@@ -1,6 +1,5 @@
-import { normalizeLanguage } from '@cloudflare/kumo/code';
 import { describe, expect, it } from 'vitest';
-import { HIGHLIGHT_LANGUAGES, clipForDisplay } from '../src/renderer/display-budget.js';
+import { clipForDisplay } from '../src/renderer/display-budget.js';
 import { LIMITS } from '../src/shared/contracts.js';
 
 describe('展示预算', () => {
@@ -19,10 +18,5 @@ describe('展示预算', () => {
     expect(() => clipForDisplay('abc', 0)).toThrow();
     expect(() => clipForDisplay('abc', 1.5)).toThrow();
     expect(() => clipForDisplay('abc', Number.MAX_SAFE_INTEGER + 1)).toThrow();
-  });
-
-  it('高亮语言清单的每一项都是锁定 kumo 版本的规范名，避免 Provider 加载告警回退', () => {
-    expect(HIGHLIGHT_LANGUAGES).toContain('shell');
-    for (const language of HIGHLIGHT_LANGUAGES) expect(normalizeLanguage(language)).toBe(language);
   });
 });

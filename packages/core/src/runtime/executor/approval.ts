@@ -5,13 +5,20 @@ import {
   type SessionApprovalCache,
   stableJsonStringify,
 } from '../../capabilities/security/approval.js';
+import { inspectFileWriteTarget } from '../../capabilities/security/escape-paths.js';
 import type {
   PermissionPolicy,
   PermissionRule,
   SessionMode,
   ShellScope,
 } from '../../capabilities/security/permissions.js';
+import type { PathSandbox } from '../../capabilities/security/sandbox.js';
+import {
+  classifyShellCommandClass,
+  findProtectedShellTargets,
+} from '../../capabilities/shell/command-class.js';
 import { classifyShellCommandSafety } from '../../capabilities/shell/command-safety.js';
+import { computeScriptTargetDigest } from '../../capabilities/shell/script-trust.js';
 import type { Tool, ToolExecutionIdentity } from '../../capabilities/tools/index.js';
 import { commandAuditSummary } from '../../extensibility/logging/index.js';
 import type { ToolResultBlock, ToolResultExecution, ToolUseBlock } from '../../types/index.js';
@@ -27,6 +34,7 @@ export interface ToolApprovalDeps {
   executionIdentity: ToolExecutionIdentity | undefined;
   rootDir: string;
   executionCwd: string;
+  sandbox?: PathSandbox;
   mode: SessionMode | (() => SessionMode);
   permissionRules: readonly PermissionRule[];
   approvalChannel?: ApprovalChannel;
@@ -70,6 +78,7 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
     tool,
     rootDir,
     executionCwd,
+    sandbox,
     mode,
     permissionRules,
     approvalChannel,
@@ -100,7 +109,9 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
       sessionAllowed:
         !shell ||
         shell.scriptDigest !== undefined ||
-        activeMode === 'Auto' ||
+        (activeMode === 'Auto' &&
+          computeScriptTargetDigest(shell.command, shell.cwd, rootDir, shell.interpreter) !==
+            'unhashed') ||
         /^(?:pwd|get-location)$/i.test(shell.command.trim()),
     };
     const repeatKey = createHash('sha256')
@@ -133,16 +144,30 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
     }
     const hardDenied = hardDenial?.(tool, finalInput);
     const cached = approvalCache.get(request);
+    const fileWriteCheck =
+      !shell && request.capabilities.includes('fs:write') && typeof finalInput.path === 'string'
+        ? inspectFileWriteTarget(finalInput.path, rootDir, sandbox)
+        : undefined;
     const decision = policy.decide({
       hardDenied: hardDenied !== undefined,
       mode: activeMode,
       toolName: call.name,
       capabilities: request.capabilities,
-      dangerous: tool.metadata?.dangerous,
+      dangerous: Boolean(tool.metadata?.dangerous || fileWriteCheck?.requiresAsk),
       cachedApproval: cached === 'allow',
       cachedDenial: cached === 'deny',
       rules: permissionRules,
-      ...(shell ? { shell, shellSafety: classifyShellCommandSafety(shell, rootDir) } : {}),
+      ...(fileWriteCheck?.protectedTarget
+        ? { protectedTarget: fileWriteCheck.protectedTarget }
+        : {}),
+      ...(shell
+        ? {
+            shell,
+            shellSafety: classifyShellCommandSafety(shell, rootDir),
+            commandClass: classifyShellCommandClass(shell, rootDir),
+            protectedTarget: findProtectedShellTargets(shell, rootDir)[0],
+          }
+        : {}),
     });
     let permitted = decision.decision === 'allow';
     let source: string = decision.source;

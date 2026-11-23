@@ -65,9 +65,15 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       );
       return;
     }
+    if (JSON.stringify(input).includes('image-proof') && body.messages.at(-1)?.role !== 'tool') {
+      response.end(
+        `data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call-${requests.length}`, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'preview-demo.png', content: 'not-a-real-png' }) } }] }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`,
+      );
+      return;
+    }
     if (JSON.stringify(input).includes('markdown-proof')) {
       const content =
-        '这是**重点**内容，图片如下：\n\n![示意图](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==)';
+        '这是**重点**内容，图片如下：\n\n![示意图](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR4nGOwbvpGFcQwatCoQaMGjRo0atCoQQNvEABPRNLupSafpAAAAABJRU5ErkJggg==)';
       response.end(
         `data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
       );
@@ -181,6 +187,14 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect.poll(() => fs.existsSync(path.join(defaultRoot, 'proof.txt'))).toBe(true);
     expect(fs.existsSync(path.join(home, 'proof.txt'))).toBe(false);
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
+    // 会话看板：成功写入后摘要 chip 常驻，点击进入四分区面板并可用同一关闭入口返回。
+    await expect
+      .poll(() => page.getByRole('button', { name: '会话证据摘要', exact: true }).count())
+      .toBe(1);
+    await page.getByRole('button', { name: '会话证据摘要', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '会话证据', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '摘要', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
     const composer = page.getByRole('textbox', { name: '发送消息' });
     // CI runner 的显示器可能小于默认窗宽（如 macOS 1176×885），窗口会被钳制到工作区，
     // 不能假设一定拿到 ≥1200 的宽布局；两种布局分别验收真实行为。
@@ -220,7 +234,9 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       page.getByText('观察不会收集结果或唤醒模型；投递未知时不补成已收集。'),
     ).toBeVisible();
     await page.screenshot({ path: path.join(artifacts, 'details-1280.png') });
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1199, 800));
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setContentSize(1199, 800),
+    );
     await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toHaveAttribute(
       'aria-modal',
       'true',
@@ -230,7 +246,9 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toBeHidden();
     await expect(page.getByRole('button', { name: '会话状态', exact: true })).toBeFocused();
     await expect(composer).toHaveValue('保留中文草稿');
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1200, 800));
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setContentSize(1200, 800),
+    );
     await page.getByRole('button', { name: '会话状态', exact: true }).click();
     if (wide) {
       // 仅宽布局可断言「点击正文不关闭抽屉」；窄布局下背景在模态遮罩内不可点。
@@ -239,7 +257,9 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     }
     await page.screenshot({ path: path.join(artifacts, 'details-1200.png') });
     await page.getByRole('button', { name: '关闭详情', exact: true }).click();
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setContentSize(1280, 800),
+    );
     await send('cancel-stream');
     await expect(page.getByText('等待取消。', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '停止', exact: true }).click();
@@ -359,6 +379,24 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(
       page.frameLocator('iframe[title="HTML 文件预览"]').getByText('preview-ran'),
     ).toBeVisible();
+    // 图片产物：write_file 写出 .png 后右侧 dock 自动打开预览；不可读取时显示占位而不阻塞对话。
+    await send('image-proof');
+    await approve();
+    const artifactDock = page.getByRole('dialog', { name: '产物预览', exact: true });
+    await expect(artifactDock).toBeVisible();
+    await expect(artifactDock.getByText('preview-demo.png', { exact: true })).toBeVisible();
+    await expect(artifactDock.getByText(/无法读取该图片/)).toBeVisible();
+    // 窄窗口下抽屉是模态的：先关闭，再断言 chip 常驻并可用于重开（宽窄布局同一口径）。
+    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    await expect(artifactDock).toBeHidden();
+    const artifactChip = page.getByRole('button', {
+      name: '预览图片 preview-demo.png',
+      exact: true,
+    });
+    await expect(artifactChip).toBeVisible();
+    await artifactChip.click();
+    await expect(artifactDock).toBeVisible();
+    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
     // Markdown 效果：CJK 相邻的粗体可解析，data: 图片直接渲染。
     await send('markdown-proof');
     await expect(page.getByText('重点', { exact: true })).toBeVisible();
@@ -731,7 +769,8 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
       expect(sample.boundaryContrast).toBeGreaterThanOrEqual(3);
       if (sample.state === 'focus') {
         expect(sample.focusContrast).toBeGreaterThanOrEqual(3);
-        expect(Number.parseFloat(sample.outlineWidth)).toBeGreaterThanOrEqual(2);
+        // Windows 分数缩放（如 125% DPI）会将 2px CSS outline 吸附到整数物理像素再折回 CSS 像素（约 1.6px）。
+        expect(Number.parseFloat(sample.outlineWidth)).toBeGreaterThanOrEqual(1.5);
       }
     }
     await page.evaluate(() => window.kapibala.preferences.update('system'));
@@ -801,5 +840,105 @@ test('渲染层异常由错误边界兜底，恢复界面可重载回正常会�
   } finally {
     await app.close().catch(() => {});
     fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('项目工作区写入图片后自动预览并保留 chip 入口', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-electron-artifact-'));
+  const userData = path.join(home, 'desktop-state');
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-artifact-project-'));
+  execFileSync('git', ['init', '--quiet', project]);
+  const server = http.createServer(async (request, response) => {
+    let data = '';
+    for await (const chunk of request) data += chunk;
+    const body = JSON.parse(data);
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const input =
+      [...body.messages].reverse().find((message: { role: string }) => message.role === 'user')
+        ?.content ?? '';
+    // 模型先写出一张 .png（内容不是真实位图），随后正常收尾；预览读取必然失败走占位分支。
+    if (input.includes('image-proof') && body.messages.at(-1)?.role !== 'tool') {
+      response.end(
+        `data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call-image', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'preview-demo.png', content: 'not-a-real-png' }) } }] }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`,
+      );
+      return;
+    }
+    response.end(
+      `data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { content: '本地链路验证完成。' }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as { port: number };
+  fs.mkdirSync(path.join(home, '.kapibala'));
+  fs.writeFileSync(
+    path.join(home, '.kapibala/settings.json'),
+    JSON.stringify({
+      profiles: [
+        {
+          id: 'fixture',
+          name: '本地验收模型',
+          provider: 'openai-compatible',
+          modelName: 'fixture',
+          baseURL: `http://127.0.0.1:${address.port}/v1`,
+          apiKeyEnv: 'KPBL_FIXTURE_KEY',
+          apiKey: 'test-only-local-credential',
+          contextWindow: 32000,
+        },
+      ],
+      defaultModel: 'fixture',
+    }),
+  );
+  const app = await electron.launch({ args: [entry], env: environment(home, userData) });
+  try {
+    const page = await firstWindow(app);
+    await expect(page.getByRole('textbox', { name: '发送消息' })).toBeEnabled();
+    // 默认空间位于 ~/.kapibala 下（按设计整根排除），产物只能来自真实项目工作区。
+    await app.evaluate(({ dialog }, selection) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selection] });
+    }, project);
+    await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
+    await page.getByRole('menuitem', { name: '新建项目' }).click();
+    const creation = page.getByRole('dialog', { name: '创建项目', exact: true });
+    await creation.getByRole('textbox', { name: '项目名称', exact: true }).fill('产物项目');
+    await creation.getByRole('button', { name: '选择文件夹', exact: true }).click();
+    await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+    await page
+      .getByRole('dialog', { name: '信任此文件夹吗？', exact: true })
+      .getByRole('button', { name: '信任文件夹并创建', exact: true })
+      .click();
+    await expect(creation).toBeHidden();
+    await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
+    await page.getByRole('menuitem', { name: '产物项目', exact: true }).click();
+    await page.getByRole('button', { name: '新建对话', exact: true }).last().click();
+    await page.getByRole('textbox', { name: '发送消息' }).fill('image-proof');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const queue = page.getByRole('dialog', { name: '待处理审批', exact: true });
+    await expect(queue).toBeVisible();
+    await queue.getByRole('button', { name: '批准一次', exact: true }).click();
+    await expect(queue).toBeHidden();
+    const dock = page.getByRole('dialog', { name: '产物预览', exact: true });
+    await expect(dock).toBeVisible();
+    await expect(dock.getByText('preview-demo.png', { exact: true })).toBeVisible();
+    await expect(dock.getByText(/无法读取该图片/)).toBeVisible();
+    // 窄窗口下产物抽屉是模态的，背景消息列表按设计不可达；chip 是关闭后的常驻重开入口，
+    // 因此先验证自动弹出，再关闭并断言 chip 仍存在、点击可重开（宽窄布局同一口径）。
+    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    await expect(dock).toBeHidden();
+    const chip = page.getByRole('button', { name: '预览图片 preview-demo.png', exact: true });
+    await expect(chip).toBeVisible();
+    await chip.click();
+    await expect(dock).toBeVisible();
+    // 顶栏常驻入口：有产物时不依赖工具行 chip，也能主动重开最新预览。
+    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    await expect(dock).toBeHidden();
+    await page.getByRole('button', { name: '打开产物预览', exact: true }).click();
+    await expect(dock).toBeVisible();
+    await expect(dock.getByText('preview-demo.png', { exact: true })).toBeVisible();
+    await stop(app);
+  } finally {
+    await app.close().catch(() => {});
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(project, { recursive: true, force: true });
   }
 });

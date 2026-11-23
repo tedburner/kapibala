@@ -62,6 +62,25 @@ function handle() {
       truncated: false,
     }),
     subscribeInspection: () => () => {},
+    watches: () => [],
+    cancelWatch: vi.fn(async () => {}),
+    subscribeWatches: () => () => {},
+    evidence: async () => ({
+      summary: {
+        additions: 0,
+        deletions: 0,
+        truncatedFiles: 0,
+        missingFiles: 0,
+        references: 0,
+        mcpCalls: 0,
+        mcpFailures: 0,
+        runningDelegations: 0,
+      },
+      changes: [],
+      references: [],
+      mcp: [],
+      delegations: [],
+    }),
   } satisfies ManagedHostSession;
 }
 
@@ -379,4 +398,92 @@ it('run.command 会话归属校验：跨会话拒绝', async () => {
       input: '/help',
     }),
   ).rejects.toThrow();
+});
+
+it('桌面会话内 /watches 与监视自动续跑接入正式 RunReceipt 管线并支持取消', async () => {
+  let capturedOptions: ManagedSessionOptions | undefined;
+  let releaseResume!: () => void;
+  const resumeGate = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  const base = handle();
+  const cancelWatch = vi.fn(async () => {});
+  const cancel = vi.fn(async () => {
+    releaseResume();
+  });
+  const resource: ManagedHostSession = {
+    ...base,
+    watches: () => [
+      {
+        watchId: 'watch-demo-1',
+        kind: 'file_change',
+        target: 'src/index.ts',
+        state: 'armed',
+        armedAt: 1_000,
+        deadlineAt: Date.now() + 60_000,
+        lastSeenAt: 1_000,
+      },
+    ],
+    cancelWatch,
+    run: vi.fn(async (_input: string, signal?: AbortSignal) => {
+      await Promise.race([
+        resumeGate,
+        new Promise<void>((resolve) =>
+          signal?.addEventListener('abort', () => resolve(), { once: true }),
+        ),
+      ]);
+    }),
+    cancel,
+  };
+  const { host, workspace, events } = fixture(async (options) => {
+    capturedOptions = options;
+    return resource;
+  });
+  const opened = (await host.dispatch('session.create', {
+    workspaceId: workspace.id,
+  })) as Output<'session.create'>;
+
+  // 1. 桌面侧 /watches 列出并可取消当前会话监视
+  const listed = (await host.dispatch('run.command', {
+    workspaceId: opened.workspaceId,
+    sessionId: opened.sessionId,
+    input: '/watches',
+  })) as Output<'run.command'>;
+  expect(listed.handled).toBe(true);
+  expect(listed.feedback.join('\n')).toContain('watch-demo-1');
+
+  const cancelled = (await host.dispatch('run.command', {
+    workspaceId: opened.workspaceId,
+    sessionId: opened.sessionId,
+    input: '/watches cancel watch-demo-1',
+  })) as Output<'run.command'>;
+  expect(cancelled.handled).toBe(true);
+  expect(cancelWatch).toHaveBeenCalledWith('watch-demo-1');
+
+  // 2. 监视自动续跑产生正式 RunReceipt、广播 run.changed，并可被 run.cancel 中止
+  expect(capturedOptions?.isHostIdle?.()).toBe(true);
+  const controller = new AbortController();
+  const resumePromise = capturedOptions!.onAutoResume!('监视续跑提示', controller.signal);
+  const activeReceipt = (await host.dispatch('run.status', {
+    workspaceId: opened.workspaceId,
+    sessionId: opened.sessionId,
+  })) as Output<'run.status'>;
+  expect(activeReceipt?.phase).toBe('running');
+  expect(capturedOptions?.isHostIdle?.()).toBe(false);
+
+  await host.dispatch('run.cancel', {
+    workspaceId: opened.workspaceId,
+    sessionId: opened.sessionId,
+    runId: activeReceipt!.runId,
+  });
+  await resumePromise;
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(
+    events.some(
+      (event) =>
+        event.type === 'run.changed' &&
+        event.receipt.runId === activeReceipt!.runId &&
+        event.receipt.phase === 'idle',
+    ),
+  ).toBe(true);
 });

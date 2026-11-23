@@ -50,3 +50,53 @@ it('等待会话清理的控制请求不阻塞其它会话状态查询', async (
   left.peer.close();
   right.peer.close();
 });
+
+it('app.downloadUpdate 不被常规 30s RPC 请求超时截断', async () => {
+  vi.useFakeTimers();
+  try {
+    let releaseDownload!: () => void;
+    const left = new RpcEndpoint(
+      { hostInstanceId: 'host', controlEpoch: 1 },
+      (frame) => queueMicrotask(() => void right.peer.receive(frame)),
+      () => {},
+    );
+    const right = new RpcEndpoint(
+      { hostInstanceId: 'host', controlEpoch: 1 },
+      (frame) => queueMicrotask(() => void left.peer.receive(frame)),
+      () => {},
+      async (method) => {
+        if (method === 'app.downloadUpdate') {
+          await new Promise<void>((resolve) => {
+            releaseDownload = resolve;
+          });
+          return { status: 'cancelled' };
+        }
+        if (method === 'app.checkUpdate') {
+          await new Promise<void>(() => {});
+        }
+        return null;
+      },
+    );
+
+    const normal = left.call('app.checkUpdate', {});
+    const download = left.call('app.downloadUpdate', {});
+    await vi.advanceTimersByTimeAsync(10);
+
+    // 推进 35s：普通请求已在 30s 超时，而安装包下载仍保持在途等待完成。
+    const normalOutcome = normal.then(
+      () => 'ok',
+      (error: Error) => error.message,
+    );
+    await vi.advanceTimersByTimeAsync(35_000);
+    await expect(normalOutcome).resolves.toBe('REQUEST_TIMEOUT');
+
+    releaseDownload();
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(download).resolves.toEqual({ status: 'cancelled' });
+
+    left.peer.close();
+    right.peer.close();
+  } finally {
+    vi.useRealTimers();
+  }
+});

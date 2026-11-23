@@ -20,6 +20,8 @@ export const RuntimeSnapshotSchema = z
             result: result.optional(),
             approvals: z.number().int().nonnegative(),
             cleanup: z.enum(['none', 'closing', 'failed']),
+            /** 仍在监视中的条件数量；缺省（旧宿主）按 0 处理，徽标不出现。 */
+            watches: z.number().int().nonnegative().default(0),
             startedAt: z.number().optional(),
             settledAt: z.number().optional(),
           })

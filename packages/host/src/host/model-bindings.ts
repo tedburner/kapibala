@@ -103,6 +103,7 @@ export function createModelBinding(
       provider = new OpenAICompatibleProvider({
         ...common,
         supportsThinking: actual.supportsThinking,
+        // DeepSeek 官方端点默认回放推理内容；chatCapabilities.replayReasoningContent 显式声明优先。
         replayReasoningContent: detectProviderFamily(profile) === 'deepseek',
         chatCapabilities: actual.chatCapabilities,
       });

@@ -17,12 +17,14 @@ const request = (method: string, params: unknown) => ({
   method,
   params,
 });
-const offer = { major: 1, minMinor: 0, maxMinor: 0, clientName: 'test', capabilities: [] };
+const offer = { protocolVersion: 2, clientName: 'test', capabilities: [] };
+/** v0.1.3 及更早的区间报价已废弃：初始化白名单直接判定参数非法。 */
+const legacyOffer = { major: 1, minMinor: 0, maxMinor: 0, clientName: 'test', capabilities: [] };
 const control = { sessionId: 'session', streamEpoch: 'stream', controlEpoch: 'control' };
 
 describe('local wire protocol', () => {
-  it('publishes independent protocol version and finite resource budgets', () => {
-    expect(PROTOCOL_VERSION).toEqual({ major: 1, minor: 0 });
+  it('publishes an integer protocol generation and finite resource budgets', () => {
+    expect(PROTOCOL_VERSION).toBe(2);
     expect(DEFAULT_LIMITS).toMatchObject({
       maxFrameBytes: 1048576,
       initializationTimeoutMs: 5000,
@@ -37,18 +39,25 @@ describe('local wire protocol', () => {
     });
   });
 
-  it('negotiates a common minor and refuses unsupported versions without throwing', () => {
-    expect(negotiateProtocol(offer)).toMatchObject({ ok: true, value: { major: 1, minor: 0 } });
+  it('requires an exact protocol generation and refuses legacy range offers', () => {
+    expect(negotiateProtocol(offer)).toMatchObject({
+      ok: true,
+      value: { protocolVersion: 2 },
+    });
     for (const invalid of [
-      { ...offer, major: 2 },
-      { ...offer, minMinor: 1, maxMinor: 2 },
+      { ...offer, protocolVersion: 1 },
+      { ...offer, protocolVersion: 3 },
+      { ...offer, protocolVersion: 2.5 },
+      legacyOffer,
     ]) {
-      expect(negotiateProtocol(invalid)).toMatchObject({
+      expect(negotiateProtocol(invalid as never)).toMatchObject({
         ok: false,
         error: { data: { code: 'PROTOCOL_MISMATCH' } },
       });
     }
-    expect(negotiateProtocol({ ...offer, minMinor: 2, maxMinor: 1 })).toMatchObject({ ok: false });
+    // 旧形状在初始化参数白名单阶段就被拒绝，不再保留兼容分支。
+    expect(validateRequest(request('initialize', legacyOffer)).ok).toBe(false);
+    expect(validateRequest(request('initialize', offer)).ok).toBe(true);
   });
 
   it('accepts only implemented capabilities and echoes the required set', () => {
@@ -111,7 +120,7 @@ describe('local wire protocol', () => {
       request('session/list', { workspaceRoot: '/p', limit: -1 }),
       { ...request('ping', {}), extra: 'secret' },
       request('ping', { secret: 'must not echo' }),
-      request('initialize', { ...offer, major: 1.5 }),
+      request('initialize', { ...offer, protocolVersion: 1.5 }),
       request('approval/request', { ...control }),
     ]) {
       const result = validateRequest(invalid);

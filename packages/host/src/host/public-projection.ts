@@ -3,6 +3,7 @@ import type {
   PresentationState,
   ViewBlock,
   ViewMessage,
+  ViewTodoState,
 } from '../view-model/index.js';
 import { redactText } from './redaction.js';
 
@@ -27,9 +28,15 @@ export function redactViewBlock(block: ViewBlock, redact: PublicTextRedactor): V
       name: redact(block.tool.name),
       invocation: redact(block.tool.invocation),
       input: redact(block.tool.input),
+      ...(block.tool.chip === undefined ? {} : { chip: redact(block.tool.chip) }),
       result: block.tool.result === undefined ? undefined : redact(block.tool.result),
     },
   };
+}
+
+/** 任务清单标题随凭证集重脱敏；id/status 是受控枚举值，不经过脱敏出口。 */
+function redactTodoState(state: ViewTodoState, redact: PublicTextRedactor): ViewTodoState {
+  return { ...state, items: state.items.map((item) => ({ ...item, title: redact(item.title) })) };
 }
 
 /** 历史提交、实时文字、工具与诊断统一处理；不改写任何控制身份或序号。 */
@@ -45,6 +52,16 @@ export function redactPresentationChange(
       return { ...change, block: redactViewBlock(change.block, redact) };
     case 'message_committed':
       return { ...change, message: redactViewMessage(change.message, redact) };
+    case 'history_replaced':
+      return {
+        ...change,
+        messages: change.messages.map((message) => redactViewMessage(message, redact)),
+      };
+    case 'todos_changed':
+      return {
+        ...change,
+        todos: change.todos ? redactTodoState(change.todos, redact) : change.todos,
+      };
     default:
       return change;
   }
@@ -60,5 +77,6 @@ export function redactPresentationState(
     messages: state.messages.map((message) => redactViewMessage(message, redact)),
     pendingMessages: state.pendingMessages.map((message) => redactViewMessage(message, redact)),
     notices: state.notices.map((notice) => ({ ...notice, text: redact(notice.text) })),
+    todos: state.todos === undefined ? undefined : redactTodoState(state.todos, redact),
   };
 }

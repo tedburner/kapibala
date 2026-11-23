@@ -15,6 +15,7 @@ import type { ShellScope } from '../security/permissions.js';
 import { defineTool } from '../tools/index.js';
 import type { Tool } from '../tools/index.js';
 import type { ShellEnvironment } from './detect.js';
+import { assessScriptTrust, computeScriptTargetDigest } from './script-trust.js';
 
 const INLINE_LIMIT = 64 * 1024;
 const FILE_LIMIT = 16 * 1024 * 1024;
@@ -395,6 +396,13 @@ export function createRunCommandTool(
       const cwd = effectiveCwd(input, rootDir, executionCwd);
       const timeoutMs = effectiveTimeout(input);
       const scriptDigest = directScriptDigest(input.command, environment.kind, cwd);
+      const scriptTrust = assessScriptTrust(input.command, cwd, rootDir, environment.kind);
+      const scriptTargetDigest = computeScriptTargetDigest(
+        input.command,
+        cwd,
+        rootDir,
+        environment.kind,
+      );
       const stat = fs.statSync(environment.executable);
       const executablePath = toNativePhysicalPath(environment.executable);
       const executableDigest = createHash('sha256')
@@ -410,6 +418,7 @@ export function createRunCommandTool(
         cwd,
         executableDigest,
         ...(scriptDigest ? { scriptDigest } : {}),
+        ...(scriptTrust ? { scriptTrust } : {}),
         executionFingerprint: executionFingerprint({
           command: input.command,
           shell: environment.kind,
@@ -418,7 +427,9 @@ export function createRunCommandTool(
           environmentDigest,
           timeoutMs,
           outputLimitBytes: FILE_LIMIT,
-          targetDigest: scriptDigest,
+          targetDigest:
+            scriptDigest ??
+            (typeof scriptTargetDigest === 'string' ? scriptTargetDigest : undefined),
         }),
       };
     },

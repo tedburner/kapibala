@@ -128,6 +128,81 @@ describe('canonical history', () => {
     ).toBe(false);
   });
 
+  it('protects the interaction holding the latest successful todo_write even before the last success', () => {
+    const raw = identifyHistory(
+      [
+        text('user', 'one'),
+        text('assistant', 'done'),
+        text('user', 'two'),
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'todo',
+              name: 'todo_write',
+              input: { items: [{ id: '1', title: 'plan', status: 'in_progress' }] },
+            },
+          ],
+        },
+        { role: 'tool', content: [{ type: 'tool_result', toolUseId: 'todo', content: 'ok' }] },
+        text('assistant', 'planned'),
+        text('user', 'three'),
+        text('assistant', 'done3'),
+      ],
+      'source',
+    );
+    // 中间交互 1 含未完结项的成功 todo_write，保护起点前移到它，而不是只保护最近成功交互 2。
+    expect(indexInteractions(raw).protectedMessageIds).toEqual(raw.slice(2).map((m) => m.id));
+
+    // 当全部任务均已完成或清空时，释放对早期交互的永久锁定，恢复只保护最近成功交互。
+    const finished = identifyHistory(
+      [
+        text('user', 'one'),
+        text('assistant', 'done'),
+        text('user', 'two'),
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'todo',
+              name: 'todo_write',
+              input: { items: [{ id: '1', title: 'plan', status: 'completed' }] },
+            },
+          ],
+        },
+        { role: 'tool', content: [{ type: 'tool_result', toolUseId: 'todo', content: 'ok' }] },
+        text('assistant', 'planned'),
+        text('user', 'three'),
+        text('assistant', 'done3'),
+      ],
+      'source',
+    );
+    expect(indexInteractions(finished).protectedMessageIds).toEqual(
+      finished.slice(6).map((m) => m.id),
+    );
+
+    // 换成非 todo 工具时行为不变：只保护最近成功交互及其后。
+    const plain = identifyHistory(
+      [
+        text('user', 'one'),
+        text('assistant', 'done'),
+        text('user', 'two'),
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'r', name: 'read_file', input: {} }],
+        },
+        { role: 'tool', content: [{ type: 'tool_result', toolUseId: 'r', content: 'ok' }] },
+        text('assistant', 'planned'),
+        text('user', 'three'),
+        text('assistant', 'done3'),
+      ],
+      'source',
+    );
+    expect(indexInteractions(plain).protectedMessageIds).toEqual(plain.slice(6).map((m) => m.id));
+  });
+
   it('protects everything when no successful interaction is proven', () => {
     const raw = identifyHistory([text('user', 'one'), text('user', 'two')], 'source');
     expect(indexInteractions(raw).protectedMessageIds).toEqual(raw.map((m) => m.id));

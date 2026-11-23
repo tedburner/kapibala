@@ -8,14 +8,20 @@ import {
   Sidebar,
 } from '@cloudflare/kumo';
 import brandMark from '@kapibala-assets/icon.svg';
-import { type ViewNotice, selectMessages } from '@kiturone/kapibala-host/view-model';
+import {
+  type ViewMessage,
+  type ViewNotice,
+  selectMessages,
+} from '@kiturone/kapibala-host/view-model';
 import {
   ArrowUpIcon,
   CaretDownIcon,
   CheckIcon,
   FolderPlusIcon,
   FolderSimpleIcon,
+  GitBranchIcon,
   HandIcon,
+  ImageSquareIcon,
   LightbulbIcon,
   ShieldCheckIcon,
   ShieldWarningIcon,
@@ -27,38 +33,38 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { flushSync } from 'react-dom';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
+import { collectViewArtifacts, latestViewArtifact } from './artifact-model.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
+import { rankFileMatches } from './file-completion.js';
 import { HistoryListClient } from './history-list-client.js';
 import { KubaiIcon } from './icons/KubaiIcon.js';
 import { MessageList } from './message-list.js';
+import { MODE_NAMES } from './mode-labels.js';
 import { ProjectDialog } from './project-dialog.js';
 import { SessionDeleteDialog, SessionRenameDialog, type SessionTarget } from './session-actions.js';
 import { SettingsDialog } from './settings-dialog.js';
+import { TaskPanel } from './task-panel.js';
 import { useUI } from './ui-state.js';
 import { ViewClient } from './view-client.js';
 import { WorkspaceSidebar, runtimeLabel } from './workspace-sidebar.js';
 
 type Opened = Output<'session.open'>;
 type Catalog = Output<'settings.read'>;
+/** 单个输入作用域（会话或 ':new'）的已发送历史与 ↑/↓ 浏览位置。 */
+type PromptHistory = { entries: string[]; index: number; draft?: string };
 const api: DesktopAPI = window.kapibala;
 const client = new ViewClient(api);
 const scopeOf = (opened: Opened) => ({
   workspaceId: opened.workspaceId,
   sessionId: opened.sessionId,
 });
-const MODE_NAMES = {
-  Approval: '变更前确认',
-  Plan: '计划模式',
-  Auto: '自主模式',
-  FullAccess: '完全访问',
-} as const;
 type Mode = keyof typeof MODE_NAMES;
 /** 模式菜单的灰色副标题：用一句话说明该模式何时介入，帮助用户区分三个审批档位的强度。 */
 const MODE_HINTS = {
@@ -149,6 +155,30 @@ const failure = (error: unknown) =>
 /** 首页示例只填入草稿，不创建会话、不自动发送；用户仍可改写后再提交。 */
 const STARTERS = ['梳理当前仓库的目录结构', '为这个项目补一份 README', '检查最近的改动有没有风险'];
 
+/**
+ * 取最后一条真实用户消息的回退占位原文。
+ * 宿主执行重试时优先无损重放 canonical 历史中的原始用户消息（含引用块、技能信封与未脱敏原文），
+ * 此处仅确认存在可重试的用户轮次并提供非空请求字符串；后台监视与子代理通知消息不计入用户轮次。
+ */
+function lastUserPrompt(messages: readonly ViewMessage[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== 'user') continue;
+    const text = message.blocks
+      .filter((block) => block.kind === 'text' && !block.skillName)
+      .map((block) => block.text)
+      .join('\n')
+      .trim();
+    if (text.startsWith('<watch-event ') || text.startsWith('<subagent-notification ')) continue;
+    if (message.blocks.some((block) => block.skillName)) return text || '开始执行该技能。';
+    return text || undefined;
+  }
+  return undefined;
+}
+
+/** 证据防抖的 max-wait：流式事件持续重排 trailing 计时器时，看板至少每 3s 放行一次拉取。 */
+const EVIDENCE_MAX_WAIT_MS = 3000;
+
 /** 桌面应用只组合投影事实与临时 UI 状态；运行和审批的最终决定由 Host 校验。 */
 export function App() {
   const ui = useUI();
@@ -185,7 +215,25 @@ export function App() {
   const detailTrigger = useRef<HTMLElement | null>(null);
   // 编辑回填后聚焦输入框：composer 在首页与对话页互斥复用，同一时刻只挂载一份。
   const composerShell = useRef<HTMLDivElement | null>(null);
+  /** 输入框元素：历史召回写入受控值后，需要把光标补到末尾。 */
+  const composerInput = useRef<HTMLTextAreaElement | null>(null);
+  /**
+   * 已发送输入的进程内历史，按草稿作用域隔离；不落盘、不跨进程，
+   * 与草稿一样只在本次运行内可召回（提问内容可能含敏感信息）。
+   */
+  const promptHistory = useRef(new Map<string, PromptHistory>());
   const [details, setDetails] = useState<DetailsTarget>();
+  // 产物自动预览的基线：按「会话 + 工具调用 + 路径」记录已处理过的产物。
+  // 进入会话、窗口重建或切回会话时先把历史产物整体记为基线且不弹，
+  // 之后只有基线之外的新产物才自动打开一次；用户关闭后旧键仍在基线里，不会复弹。
+  const artifactBaseline = useRef(new Set<string>());
+  const artifactScope = useRef('');
+  /** 当前会话的证据聚合；随快照序号防抖刷新，切换会话即清空。 */
+  const [evidence, setEvidence] = useState<Output<'session.evidence'>>();
+  /** 证据拉取失败标记：与「尚未加载」（undefined）区分，失败时界面保留「证据不可用」入口。 */
+  const [evidenceUnavailable, setEvidenceUnavailable] = useState(false);
+  /** 证据手动重拉代数：抽屉「重新加载」按钮自增，复用同一条防抖拉取管线与竞态防护。 */
+  const [evidenceReloadTick, setEvidenceReloadTick] = useState(0);
   const [wide, setWide] = useState(() => matchMedia('(min-width: 1200px)').matches);
   const current = useRef<Workspace | undefined>(undefined);
   const run =
@@ -195,10 +243,22 @@ export function App() {
   const runtimeItem = facts.runtime?.items.find((item) => item.sessionId === opened?.sessionId);
   const readyToSend = facts.runtimeValid && runtimeItem?.cleanup === 'none';
   const running = run && run.phase !== 'idle';
+  // 首页副标题的第二句只在确有后台任务时出现：干净环境下常驻这句条件文案，会指向不存在的对象。
+  const backgroundRunning = (facts.runtime?.items ?? []).some((item) => item.phase !== 'idle');
+  // Git 分支是宿主净化后的检查快照事实（StatusFacts.gitBranch），只在已打开会话的 inspection
+  // 里出现；渲染层不自行探测 git，非 git 目录或快照未就绪时保持 undefined，chip 整体不占位。
+  const gitBranch = facts.inspection?.status?.gitBranch;
   // 未打开会话时输入框直连"新建对话"流程；草稿按目标会话或 ':new' 键暂存。
-  const draft = opened
-    ? (ui.drafts[`${opened.workspaceId}:${opened.conversationId}`] ?? '')
-    : (ui.drafts[':new'] ?? '');
+  const draftScope = opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new';
+  const draft = ui.drafts[draftScope] ?? '';
+  // 切回某个会话时历史浏览下标可能停在中间项：作用域变化一律回到「未提交草稿」位置。
+  useEffect(() => {
+    const history = promptHistory.current.get(draftScope);
+    if (history) {
+      history.index = history.entries.length;
+      history.draft = undefined;
+    }
+  }, [draftScope]);
   const selectedModel = catalog?.profiles.find(
     (model) => model.id === opened?.configuration.profileId,
   );
@@ -221,8 +281,79 @@ export function App() {
       Boolean(workspace?.trusted) &&
       facts.runtimeValid === true &&
       Boolean(composerModel);
-  const messages = facts.state ? selectMessages(facts.state) : [];
+  // 快照到消息列表的推导按引用记忆：自动预览 effect 只应在快照真正变化时重跑，
+  // 不能因为草稿输入等无关渲染反复扫描历史。
+  const messages = useMemo(() => (facts.state ? selectMessages(facts.state) : []), [facts.state]);
+  // 顶栏手动入口：当前会话存在可预览产物时给出常驻按钮。自动弹只覆盖「新产物」一次，
+  // 用户关闭后仍需要主动重开的方式；没有产物时不渲染，避免出现点了没有内容的入口。
+  const latestArtifact = useMemo(
+    () =>
+      opened
+        ? latestViewArtifact(messages, `${opened.workspaceId}:${opened.conversationId}`)
+        : undefined,
+    [messages, opened],
+  );
+  // 重试只对最后一轮生效：最后一条消息已终态（含生成中断或尚未产出回复的失败用户轮次）且宿主空闲时出现；
+  // 历史回答只展示 token，避免「点了却回退多轮」的隐式行为。
+  const lastMessage = messages.at(-1);
+  const retryable =
+    Boolean(opened) &&
+    !running &&
+    facts.valid &&
+    readyToSend &&
+    Boolean(
+      lastMessage &&
+        ((lastMessage.role === 'assistant' &&
+          (lastMessage.state === 'completed' || lastMessage.state === 'interrupted')) ||
+          (lastMessage.role === 'user' && lastMessage.state !== 'streaming')),
+    );
+  const retryCandidate = retryable ? lastMessage?.id : undefined;
+  const retryPrompt = retryCandidate ? lastUserPrompt(messages) : undefined;
+  const retryableMessageId = retryPrompt ? retryCandidate : undefined;
   const report = setError;
+  // 证据聚合是只读历史扫描：在快照连续变化时防抖，避免流式输出期间每个事件都重算。
+  // 纯 trailing 防抖在流式期间（事件间隔 < 800ms）会让看板整场运行停在旧聚合，
+  // 因此叠加 max-wait：距上次实际拉取超过 3s 就强制放行一次。
+  const evidenceWorkspaceId = opened?.workspaceId;
+  const evidenceSessionId = opened?.sessionId;
+  const evidenceFlushedAt = useRef(0);
+  // facts.state 每次变化都是新的投影对象，用它触发防抖刷新；运行中放宽间隔减少历史扫描。
+  const projection = facts.state;
+  const runPhase = run?.phase;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: evidenceReloadTick 是抽屉「重新加载」的触发信号，effect 有意只消费其变化而不读取其值；移除该依赖手动重拉即失效。
+  useEffect(() => {
+    if (!evidenceWorkspaceId || !evidenceSessionId || !projection) {
+      setEvidence(undefined);
+      setEvidenceUnavailable(false);
+      return;
+    }
+    let cancelled = false;
+    // max-wait 窗口：距上次实际拉取不足 3s 时取「基础间隔」与「窗口剩余」的较小者，
+    // 事件持续重排会让剩余时间单调收敛到 0，保证流式期间每 3s 至少刷新一次看板。
+    const elapsed = evidenceFlushedAt.current ? Date.now() - evidenceFlushedAt.current : 0;
+    const base = runPhase === 'running' ? 800 : 300;
+    const delay =
+      elapsed >= EVIDENCE_MAX_WAIT_MS ? 0 : Math.min(base, EVIDENCE_MAX_WAIT_MS - elapsed);
+    const timer = setTimeout(() => {
+      evidenceFlushedAt.current = Date.now();
+      void api.session
+        .evidence({ workspaceId: evidenceWorkspaceId, sessionId: evidenceSessionId })
+        .then((value) => {
+          if (cancelled) return;
+          setEvidence(value);
+          setEvidenceUnavailable(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setEvidence(undefined);
+          setEvidenceUnavailable(true);
+        });
+    }, delay);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [evidenceWorkspaceId, evidenceSessionId, projection, runPhase, evidenceReloadTick]);
   // 审批请求到达时立即弹出审批面板：队列没有常驻入口，错过弹窗就只能等超时被拒，
   // 用户最终只会看到莫名其妙的 PERMISSION_DENIED。
   // 只在「新增」审批时弹出（对比上次已见数量），用户手动关闭后不被反复打断。
@@ -235,6 +366,32 @@ export function App() {
     seenApprovals.current = approvalsCount;
     if (hasNew && approvalsCount > 0 && !approvalsOpen) openApprovals(true);
   }, [approvalsCount, approvalsOpen, openApprovals]);
+  // 自动预览只在「基线之外的新产物」出现时触发一次；首帧、历史重放与切回会话都只刷新基线。
+  useEffect(() => {
+    if (!opened) {
+      artifactScope.current = '';
+      artifactBaseline.current.clear();
+      return;
+    }
+    const scope = `${opened.workspaceId}:${opened.conversationId}`;
+    const found = collectViewArtifacts(messages, scope);
+    if (artifactScope.current !== scope) {
+      artifactScope.current = scope;
+      artifactBaseline.current = new Set(found.map((item) => item.key));
+      return;
+    }
+    const fresh = found.filter((item) => !artifactBaseline.current.has(item.key));
+    for (const item of found) artifactBaseline.current.add(item.key);
+    const first = fresh[0];
+    if (!first) return;
+    setDetails({
+      kind: 'artifact',
+      callId: first.callId,
+      path: first.artifact.path,
+      ext: first.artifact.ext,
+      ...(first.artifact.size === undefined ? {} : { size: first.artifact.size }),
+    });
+  }, [messages, opened]);
   const reloadCatalog = useCallback(async () => {
     setCatalog(await api.settings.read(current.current?.trusted ? current.current.id : undefined));
   }, []);
@@ -496,6 +653,59 @@ export function App() {
     }
     void act(() => configure({ ...scopeOf(opened), profileId }));
   }
+  /** 记录一条真正发出的输入；空白与连续重复不增加，每个作用域最多保留最近 100 条。 */
+  function rememberPrompt(text: string, scope = draftScope): void {
+    const history = promptHistory.current.get(scope) ?? { entries: [], index: 0 };
+    if (text.trim() && history.entries.at(-1) !== text) history.entries.push(text);
+    if (history.entries.length > 100) history.entries.splice(0, history.entries.length - 100);
+    history.index = history.entries.length;
+    history.draft = undefined;
+    promptHistory.current.set(scope, history);
+  }
+
+  /** 是否正在历史浏览（已上翻离开最新草稿）：↓ 只在这种情况下接管按键。 */
+  function browsingPromptHistory(): boolean {
+    const history = promptHistory.current.get(draftScope);
+    return Boolean(history && history.index < history.entries.length);
+  }
+
+  /** 用户手动编辑或从补全/示例/回填写入草稿后退出历史浏览态，防止后续按 ↓ 抹掉刚编辑的内容。 */
+  function resetPromptHistoryBrowsing(scope = draftScope): void {
+    const history = promptHistory.current.get(scope);
+    if (!history) return;
+    history.index = history.entries.length;
+    history.draft = undefined;
+  }
+
+  /**
+   * ↑/↓ 在已发送输入之间浏览，返回是否消费了按键。
+   * 首次上翻保存当前未提交草稿，下翻越过最新项时原样恢复而不是清空。
+   */
+  function recallPrompt(direction: -1 | 1): boolean {
+    const history = promptHistory.current.get(draftScope);
+    if (!history?.entries.length) return false;
+    if (direction === -1) {
+      if (history.index <= 0) return false;
+      if (history.index === history.entries.length) history.draft = draft;
+      history.index -= 1;
+    } else {
+      if (history.index >= history.entries.length) return false;
+      history.index += 1;
+    }
+    const value =
+      history.index === history.entries.length
+        ? (history.draft ?? '')
+        : history.entries[history.index];
+    // 在离散按键事件内同步提交受控值并就地定位末尾光标：用 requestAnimationFrame 延迟到下一帧
+    // 会在后续全选替换或 Home 移光标之间插入旧的末尾定位，吞掉刚建立的选区导致文本重复拼接。
+    flushSync(() => {
+      ui.draft(draftScope, value);
+    });
+    const element = composerInput.current;
+    if (element) element.selectionStart = element.selectionEnd = element.value.length;
+    return true;
+  }
+
   async function send() {
     const input = draft.trim();
     if (!input || busy) return;
@@ -515,6 +725,7 @@ export function App() {
         if (!result.handled) report(`未知命令：${input.split(/\s+/)[0]}`);
         else if (result.feedback.length) pushFeedback(result.feedback);
         ui.draft(`${opened.workspaceId}:${opened.conversationId}`, '');
+        rememberPrompt(input);
       });
       return;
     }
@@ -523,6 +734,7 @@ export function App() {
       await act(async () => {
         await client.start(scopeOf(opened), input);
         ui.draft(`${opened.workspaceId}:${opened.conversationId}`, '');
+        rememberPrompt(input);
       });
       return;
     }
@@ -542,6 +754,21 @@ export function App() {
       await client.whenReady();
       await client.start(scopeOf(result), input);
       ui.draft(':new', '');
+      // 首页发出的第一问同时记到新会话作用域：进入会话后 ↑ 仍能召回它。
+      rememberPrompt(input);
+      rememberPrompt(input, `${result.workspaceId}:${result.conversationId}`);
+    });
+  }
+  /**
+   * 重试 = 截断上一轮后按同一原文重跑。
+   * 只复用已发送原文：不清草稿、不写入输入历史；宿主负责回退与展示重建，
+   * 失败与普通发送一样进入错误提示，不自动重复请求。
+   */
+  async function retry() {
+    if (!opened || !retryPrompt || busy) return;
+    if (!facts.valid || !readyToSend || running) return;
+    await act(async () => {
+      await client.start(scopeOf(opened), retryPrompt, { regenerate: true });
     });
   }
   const currentTitle =
@@ -727,20 +954,17 @@ export function App() {
     const at = draft.lastIndexOf('@');
     if (at >= 0 && !/\s/.test(draft.slice(at + 1))) {
       const prefix = draft.slice(at + 1).toLowerCase();
-      const items = (fileList?.files ?? [])
-        .filter((file) => file.toLowerCase().includes(prefix))
-        .slice(0, 8)
-        .map((file) => ({ insert: `@${file}`, label: file, detail: '' }));
+      // 排序在 rankFileMatches 定稿：文件名前缀命中优先，避免清单序把目标文件挤出前 8 条。
+      const items = rankFileMatches(fileList?.files ?? [], prefix);
       setCompletion(items.length ? { kind: 'file', items, index: 0 } : undefined);
       return;
     }
     setCompletion(undefined);
   }, [draft, commandList, fileList, skillList]);
 
-  const draftScope = opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new';
-
   /** 补全确认：命令替换整段草稿，文件替换最后一个 @ 触发段。 */
   function acceptCompletion(current: NonNullable<typeof completion>): void {
+    resetPromptHistoryBrowsing();
     const item = current.items[current.index];
     if (current.kind === 'command') {
       ui.draft(draftScope, item.insert);
@@ -753,6 +977,12 @@ export function App() {
 
   const composer = (
     <div ref={composerShell} className="relative w-full space-y-2">
+      {/* key 随会话身份变化重挂 TaskPanel：浮层展开态是会话内状态，切换会话必须收起，
+          不能把上一个会话的浮层直接展示给新会话的任务清单。 */}
+      <TaskPanel
+        key={opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new'}
+        todos={facts.state?.todos}
+      />
       {completion && (
         // 浮层与输入卡同宽并居中对齐：宿主外壳是整列宽度，直接 left-3/right-3 会横跨阅读列。
         <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
@@ -883,12 +1113,14 @@ export function App() {
       {/* 输入、空间、模型、模式与发送同属一张卡：焦点由卡片整体承担，工具条保持低权重。 */}
       <div className="kapibala-composer px-3 pt-3 pb-2">
         <InputArea
+          ref={composerInput}
           aria-label="发送消息"
           placeholder={opened ? '继续对话…' : '描述你想完成的任务…'}
           value={draft}
-          onValueChange={(value) =>
-            ui.draft(opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new', value)
-          }
+          onValueChange={(value) => {
+            resetPromptHistoryBrowsing();
+            ui.draft(draftScope, value);
+          }}
           disabled={busy}
           autoResize
           minRows={1}
@@ -930,6 +1162,24 @@ export function App() {
                 setCompletion(undefined);
                 return;
               }
+            }
+            // 补全面板关闭时 ↑/↓ 召回已发送输入：上翻只在光标位于开头（或在历史浏览中）时接管，
+            // 下翻只在历史浏览且光标位于末尾时接管，避免抢占多行编辑的正常行移动。
+            const element = event.currentTarget;
+            const collapsed = element.selectionStart === element.selectionEnd;
+            const atStart = collapsed && element.selectionStart === 0;
+            const atEnd = collapsed && element.selectionStart === draft.length;
+            const browsing = browsingPromptHistory();
+            if (event.key === 'ArrowUp' && (atStart || (browsing && atEnd))) {
+              // 已到最旧项也要吞掉按键：否则浏览中的光标会被浏览器从末尾弹回开头。
+              event.preventDefault();
+              recallPrompt(-1);
+              return;
+            }
+            if (event.key === 'ArrowDown' && browsing && atEnd) {
+              event.preventDefault();
+              recallPrompt(1);
+              return;
             }
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
@@ -997,6 +1247,24 @@ export function App() {
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu>
+            {/* 分支 chip 与空间/模式/模型同一行，是会话运行事实的只读展示而非选择入口；
+                点击进详情抽屉「运行事实」，与头部「会话状态」同一目标；快照无分支时不渲染，
+                不在工具条常驻空 chip。 */}
+            {opened && gitBranch && (
+              <Button
+                className="kapibala-action kapibala-chip max-w-40"
+                variant="ghost"
+                size="sm"
+                aria-label={`Git 分支：${gitBranch}`}
+                onClick={(event) => {
+                  detailTrigger.current = event.currentTarget;
+                  setDetails({ kind: 'status' });
+                }}
+              >
+                <GitBranchIcon size={18} className="shrink-0 text-kumo-subtle" />
+                <span className="min-w-0 truncate">{gitBranch}</span>
+              </Button>
+            )}
             {opened && (
               <DropdownMenu>
                 <DropdownMenu.Trigger
@@ -1147,27 +1415,32 @@ export function App() {
             )}
           </div>
         </div>
+        {/* 阻断原因（空间未信任 / 没有可用模型）收进卡片底部的脚注行：给出处理入口，
+            不再悬挂在卡片外与输入坞争抢视觉；没有阻断时不占位，卡片高度不额外膨胀。 */}
+        {((!opened && workspace && !workspace.trusted) || usableModels.length === 0) && (
+          <div className="mt-2 border-t border-kumo-hairline px-2 pt-2">
+            {!opened && workspace && !workspace.trusted && (
+              <p className="kapibala-composer-hint text-kumo-warning">
+                当前空间尚未信任，确认信任后才能发送。
+              </p>
+            )}
+            {usableModels.length === 0 && (
+              <p className="kapibala-composer-hint flex flex-wrap items-center gap-1 text-kumo-warning">
+                <span>还没有可用模型，请先在</span>
+                <Button
+                  className="kapibala-action h-auto px-1 py-0 text-xs underline underline-offset-2"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => ui.settings(true)}
+                >
+                  设置
+                </Button>
+                <span>中为模型填写密钥。</span>
+              </p>
+            )}
+          </div>
+        )}
       </div>
-      {!opened && workspace && !workspace.trusted && (
-        <p className="kapibala-composer-hint px-1 text-kumo-warning">
-          当前空间尚未信任，确认信任后才能发送。
-        </p>
-      )}
-      {/* 没有密钥时直接说清阻断原因并给出入口，不让用户点了发送才发现不可用。 */}
-      {usableModels.length === 0 && (
-        <p className="kapibala-composer-hint flex flex-wrap items-center gap-1 px-1 text-kumo-warning">
-          <span>还没有可用模型，请先在</span>
-          <Button
-            className="kapibala-action h-auto px-1 py-0 text-xs underline underline-offset-2"
-            variant="ghost"
-            size="sm"
-            onClick={() => ui.settings(true)}
-          >
-            设置
-          </Button>
-          <span>中为模型填写密钥。</span>
-        </p>
-      )}
     </div>
   );
 
@@ -1256,6 +1529,30 @@ export function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              {opened && latestArtifact && (
+                <Button
+                  className="kapibala-action"
+                  variant="ghost"
+                  shape="square"
+                  size="sm"
+                  aria-label="打开产物预览"
+                  title="打开产物预览"
+                  onClick={(event) => {
+                    detailTrigger.current = event.currentTarget;
+                    setDetails({
+                      kind: 'artifact',
+                      callId: latestArtifact.callId,
+                      path: latestArtifact.artifact.path,
+                      ext: latestArtifact.artifact.ext,
+                      ...(latestArtifact.artifact.size === undefined
+                        ? {}
+                        : { size: latestArtifact.artifact.size }),
+                    });
+                  }}
+                >
+                  <ImageSquareIcon size={16} />
+                </Button>
+              )}
               {opened && (
                 <Button
                   className="kapibala-action kapibala-chip"
@@ -1334,18 +1631,37 @@ export function App() {
                 key={`${opened.workspaceId}:${opened.conversationId}`}
                 memoryKey={`${opened.workspaceId}:${opened.conversationId}`}
                 messages={messages}
+                retryableMessageId={retryableMessageId}
+                onRetry={() => void retry()}
                 root={workspace?.root}
                 scrollRef={scrollRef}
+                evidence={evidence}
+                evidenceUnavailable={evidenceUnavailable}
                 onTool={(callId, trigger) => {
                   detailTrigger.current = trigger;
                   setDetails({ kind: 'tool', callId });
                 }}
+                onArtifact={(callId, artifact, trigger) => {
+                  detailTrigger.current = trigger;
+                  setDetails({
+                    kind: 'artifact',
+                    callId,
+                    path: artifact.path,
+                    ext: artifact.ext,
+                    ...(artifact.size === undefined ? {} : { size: artifact.size }),
+                  });
+                }}
+                onEvidence={(trigger) => {
+                  detailTrigger.current = trigger;
+                  setDetails({ kind: 'evidence' });
+                }}
                 onEdit={(text) => {
                   // 编辑 = 回填草稿并聚焦，不截断已落盘历史；发送即作为新消息继续。
-                  ui.draft(
-                    opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new',
-                    text,
-                  );
+                  const targetScope = opened
+                    ? `${opened.workspaceId}:${opened.conversationId}`
+                    : ':new';
+                  resetPromptHistoryBrowsing(targetScope);
+                  ui.draft(targetScope, text);
                   requestAnimationFrame(() => {
                     composerShell.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus();
                   });
@@ -1365,7 +1681,8 @@ export function App() {
                   <img src={brandMark} alt="" aria-hidden="true" className="kapibala-home-mark" />
                   <h1 className="kapibala-home-title">今天想做点什么？</h1>
                   <p className="kapibala-home-subtitle">
-                    描述任务后按 Enter 发送；其它空间运行中的任务会在后台继续。
+                    描述任务后按 Enter 发送
+                    {backgroundRunning ? '；其它空间运行中的任务会在后台继续。' : '。'}
                   </p>
                   <div className="kapibala-home-starters">
                     {STARTERS.map((starter) => (
@@ -1374,7 +1691,10 @@ export function App() {
                         className="kapibala-action kapibala-starter"
                         variant="secondary"
                         size="sm"
-                        onClick={() => ui.draft(':new', starter)}
+                        onClick={() => {
+                          resetPromptHistoryBrowsing(':new');
+                          ui.draft(':new', starter);
+                        }}
                       >
                         {starter}
                       </Button>
@@ -1391,7 +1711,17 @@ export function App() {
             dismissed={ui.dismissedNotices}
             onDismiss={ui.dismissNotice}
           />
-          {opened && <footer className="kapibala-composer-dock shrink-0">{composer}</footer>}
+          {opened && (
+            // 窄窗抽屉是覆盖式（modal）：主列不避让时 composer 连同发送按钮会被抽屉整段盖住。
+            // 覆盖期间给底部输入坞让出抽屉宽度，输入卡收窄但完整可见；宽窗走占位布局不受影响。
+            <footer
+              className={`kapibala-composer-dock shrink-0 ${
+                details && !wide ? 'mr-(--kapibala-dock-width)' : ''
+              }`}
+            >
+              {composer}
+            </footer>
+          )}
         </main>
         {details && wide && (
           <div className="w-(--kapibala-dock-width) shrink-0" aria-hidden="true" />
@@ -1399,6 +1729,8 @@ export function App() {
         <DetailsDrawer
           target={details}
           tool={detailTool}
+          evidence={evidence}
+          onReloadEvidence={() => setEvidenceReloadTick((value) => value + 1)}
           inspection={facts.inspection}
           runtime={runtimeItem}
           title={`${workspace?.name ?? ''} / ${currentTitle}`}
@@ -1420,12 +1752,13 @@ export function App() {
         hostDown={facts.error !== undefined || facts.runtimeValid === false}
         spaces={spaces}
         workspaceId={opened?.workspaceId ?? spaces[0]?.id}
+        inspection={facts.inspection}
         archiveRevision={archiveRevision}
         onArchivedChanged={() => void refreshSpaces().catch((reason) => report(failure(reason)))}
         onRequestDelete={setPendingDelete}
       />
       {facts.interactions[0] && (
-        <div className="fixed inset-x-0 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-kumo-line bg-kumo-default p-4 shadow-xl">
+        <div className="fixed inset-x-0 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-kumo-line bg-kumo-elevated p-4 shadow-xl">
           <p className="mb-2 text-sm font-medium">{facts.interactions[0].prompt}</p>
           {facts.interactions[0].kind === 'select' ? (
             <div className="space-y-1">

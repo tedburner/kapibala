@@ -282,8 +282,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
         const choice = json.choices?.[0];
         if (!choice) continue;
-        if (finishReason !== undefined)
+        if (finishReason !== undefined) {
+          // 部分 OpenAI 兼容网关在终止帧之后还会补发一条只携带 usage 的空 choice
+          //（delta 无内容、finish_reason 为 null，usage 已在上方解析）；标准 OpenAI 此处应为空数组。
+          // 只放过这种纯元数据帧，真正带内容或新终止原因的尾部 choice 仍按协议违规处理。
+          const trailing = choice.delta;
+          const emptyTrailing =
+            choice.finish_reason == null &&
+            (!trailing ||
+              (typeof trailing === 'object' &&
+                !Array.isArray(trailing) &&
+                !trailing.content &&
+                !trailing.reasoning_content &&
+                (!trailing.tool_calls || trailing.tool_calls.length === 0)));
+          if (emptyTrailing) continue;
           throw invalidResponse('Model response contained a choice after its terminal state');
+        }
         if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
           if (typeof choice.finish_reason !== 'string')
             throw invalidResponse('Model response contained an invalid finish reason');

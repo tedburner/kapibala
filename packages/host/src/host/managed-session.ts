@@ -13,6 +13,7 @@ import {
   SessionManager,
   type SessionMode,
   SessionReferenceReader,
+  WatchInbox,
   type WorkspaceLeaseCoordinator,
   isSessionMode,
   sanitizeSessionTitle,
@@ -20,10 +21,12 @@ import {
 import { type McpPluginInstance, createMcpPlugin } from '@kiturone/kapibala-mcp';
 import { toWireErrorCode } from '../protocol/index.js';
 import type { JsonValue } from '../protocol/index.js';
-import { readDelegationRequestEntries } from './delegations.js';
+import { listDelegationSessions, readDelegationRequestEntries } from './delegations.js';
+import { buildSessionEvidence } from './evidence.js';
 import { resolveCliMcpOptions } from './mcp.js';
 import { CliModelBindings, ROUTABLE_MODEL_ROLES } from './model-bindings.js';
 import { StreamingRedactor, redactText } from './redaction.js';
+import { McpServerApprovalStore, createApprovedStartAuthorizer } from './resource/mcp-approval.js';
 import {
   BUILTIN_PROFILES,
   type UserSettings,
@@ -36,16 +39,19 @@ import { createCliSubagentResumer, createCliSubagentRunner } from './subagent-ru
 import { registerBuiltinTools } from './tool-registration.js';
 import { formatToolDetail } from './ui/tool-presentation.js';
 
-import type { PresentationEvent, PresentationState } from '../view-model/index.js';
+import type { PresentationEvent, PresentationState, ViewEvidence } from '../view-model/index.js';
 import type { StatusFacts } from '../view-model/status.js';
-import { projectHistory } from './history-projection.js';
+import { buildTodoState, projectHistory } from './history-projection.js';
 import { type ManagedInspection, projectInspection } from './inspection.js';
 import { PresentationStore } from './presentation-store.js';
+import { createArtifactPolicy } from './preview-policy.js';
 import { redactPresentationState } from './public-projection.js';
 import { type ReferenceSelection, readReferenceBlocks } from './reference-blocks.js';
 import { SessionPresentation, presentationScope } from './session-presentation.js';
 import { projectStatusFacts } from './status-facts.js';
 import { TaskObservation } from './task-observation.js';
+import { WatchService, type WatchView } from './watch/service.js';
+import { createWatchTools } from './watch/tools.js';
 /** 只在加载时用一次，避免把会话级记忆写回全局默认。 */
 async function readPersistedMode(store: {
   loadState(): Promise<{ records: readonly { type: string; payload: Record<string, unknown> }[] }>;
@@ -104,6 +110,18 @@ export interface ManagedSessionOptions {
   leaseCoordinator: WorkspaceLeaseCoordinator;
   /** 未传时保持 SDK 读取行为；桌面调用方应显式设置读取预算。 */
   maxReadBytes?: number;
+  /**
+   * 监视终态回调：桌面等宿主用它发系统通知或状态增量。
+   * 通知正文已由 `WatchInbox` 落盘，这里的载荷只含展示所需事实，不含文件内容。
+   */
+  onWatchEvent?(notification: import('@kiturone/kapibala').WatchNotification): void;
+  /** 宿主外层忙碌门（如桌面在途 RunReceipt 或本地协议 active run）；缺省仅检查会话自身。 */
+  isHostIdle?(): boolean;
+  /**
+   * 宿主接管监视自动续跑：桌面与本地协议宿主借此把续跑纳入各自的运行收据、事件推送、
+   * 审批路由与取消管线；缺省直接走受管会话内部的 `run(input, signal)`。
+   */
+  onAutoResume?(input: string, signal: AbortSignal): Promise<void>;
 }
 
 /** 本次会话选择；仅空闲时应用，不持久化全局默认或自动提升权限。 */
@@ -126,7 +144,11 @@ export interface ManagedHostSession {
    */
   readonly session: AgentSession;
   /** 完整驱动一次运行；并发请求拒绝，外部中止也等待工具事务收口。 */
-  run(input: string, signal?: AbortSignal): Promise<void>;
+  run(
+    input: string,
+    signal?: AbortSignal,
+    options?: { readonly regenerate?: boolean },
+  ): Promise<void>;
   /**
    * 显式技能直发：与 run 共用同一投影、审批与工具事务管线，事件流语义一致。
    * task 为空或技能名非法时由底层 Session 以 SKILL_INVALID_INPUT 拒绝。
@@ -169,6 +191,17 @@ export interface ManagedHostSession {
   inspection(): ManagedInspection;
   /** 观察变更不依赖页面正文订阅，退订不影响执行。 */
   subscribeInspection(listener: () => void): () => void;
+  /**
+   * 会话看板只读聚合：变更行数 / 引用 / MCP / 委派四分区。
+   * 从当前 canonical 历史实时重算，不落新记录；委派列表需要读取项目桶元数据，因此为异步。
+   */
+  evidence(): Promise<ViewEvidence>;
+  /** 当前会话的监视视图（只读）；缺省没有监视时返回空数组。 */
+  watches(): WatchView[];
+  /** 取消一条仍在监视中的条目；终态条目明确拒绝而不是静默成功。 */
+  cancelWatch(watchId: string): Promise<void>;
+  /** 监视状态变化订阅；用于刷新徽标，退订不影响触发源。 */
+  subscribeWatches(listener: () => void): () => void;
 }
 
 /** 只在调用时装配资源；导入不探测环境、不读终端、不启动 Agent 或工具进程。 */
@@ -232,6 +265,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
   let handle: ManagedSession | undefined;
   let session: AgentSession | undefined;
   let runtime: AgentRuntime | undefined;
+  // 监视服务先于装配完成进入 liveServices；创建失败时也要停掉它，避免泄漏进全局并发统计。
+  let watches: WatchService | undefined;
   try {
     try {
       handle = conversationId
@@ -337,22 +372,35 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         [...mcp.servers].map(([name, entry]) => [name, entry.config]),
       );
       const mcpSession = session;
+      const mcpApprovals = new McpServerApprovalStore({
+        homeDir: homeDirectory,
+        projectRoot: root,
+      });
       mountMcp = async (runSignal) => {
         mcpPlugin = createMcpPlugin(servers, {
-          authorizer: async (descriptor, signal) => {
-            inspectionChanged();
-            const choice = await approval.requestApproval(
-              {
-                toolName: 'mcp_start',
-                rootDir: root,
-                capabilities: descriptor.type === 'stdio' ? ['exec'] : ['net:outbound'],
-                input: { ...descriptor },
-                sessionAllowed: true,
-              },
-              signal ? AbortSignal.any([signal, runSignal]) : runSignal,
-            );
-            return choice === 'cancel' ? 'deny_once' : choice;
-          },
+          authorizer: createApprovedStartAuthorizer({
+            store: mcpApprovals,
+            entries: new Map(
+              [...mcp.servers].map(([name, entry]) => [
+                name,
+                { source: entry.source, config: entry.config },
+              ]),
+            ),
+            fallback: async (descriptor, signal) => {
+              inspectionChanged();
+              const choice = await approval.requestApproval(
+                {
+                  toolName: 'mcp_start',
+                  rootDir: root,
+                  capabilities: descriptor.type === 'stdio' ? ['exec'] : ['net:outbound'],
+                  input: { ...descriptor },
+                  sessionAllowed: true,
+                },
+                signal ? AbortSignal.any([signal, runSignal]) : runSignal,
+              );
+              return choice === 'cancel' ? 'deny_once' : choice;
+            },
+          }),
         });
         try {
           await mcpSession.use(mcpPlugin);
@@ -374,9 +422,16 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       branchId: handle.store.getActiveBranchId(),
       viewEpoch: 1,
     };
+    // 产物识别绑定本次会话的工作区与主目录：允许根与 `~/.kapibala` 排除都在这里固定，
+    // 投影层只拿到纯函数，不接触全局状态或当前进程目录。
+    const artifactPolicy = createArtifactPolicy({ workspaceRoot: root, homeDirectory });
     const presentation = new PresentationStore(
       identity,
-      projectHistory(current.getHistory(), presentationScope(identity), redact),
+      projectHistory(current.getHistory(), presentationScope(identity), redact, {
+        artifacts: artifactPolicy,
+        usageByMessageId: current.getMessageUsages(),
+      }),
+      buildTodoState(current.getHistory(), redact),
     );
     const tasks = new TaskObservation(
       ownedRuntime,
@@ -504,6 +559,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         if (handleReleased) {
           disposed = true;
           tasks.close();
+          watches?.dispose();
           stopInspectionEvents();
           inspectionListeners.clear();
           presentation.close();
@@ -522,13 +578,36 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           .map((task) => ownedRuntime.cancelTask(task.agentId, 'Host cancelled')),
       );
     };
+    const syncExternalPresentation = () => {
+      const snap = presentation.snapshot();
+      if (snap.operation && snap.operation.phase !== 'idle') return;
+      const activeBranch = ownedHandle.store.getActiveBranchId();
+      if (snap.identity.branchId !== activeBranch) return;
+      const scope = presentationScope(snap.identity);
+      const knownIds = new Set(snap.messages.map((item) => item.id));
+      const projected = projectHistory(current.getHistory(), scope, redact, {
+        artifacts: artifactPolicy,
+        usageByMessageId: current.getMessageUsages(),
+      });
+      for (const message of projected) {
+        if (knownIds.has(message.id)) continue;
+        presentation.dispatch({
+          ...snap.identity,
+          sequence: presentation.snapshot().sequence + 1,
+          change: { type: 'message_committed', message },
+        });
+      }
+    };
     const run = async function* (
       input: string,
       signal?: AbortSignal,
       skillName?: string,
       prepare?: () => Promise<PreparedTaskResult>,
+      /** 重试：先预检绑定与 MCP，再截断上一轮并按原消息来源块与未脱敏原文无损重跑。 */
+      regenerate?: boolean,
     ): AsyncGenerator<SessionEvent> {
       refresh();
+      current.validatePrimaryBinding(selectedRole);
       const controller = new AbortController();
       activeController = controller;
       let complete!: () => void;
@@ -538,19 +617,109 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       const combinedSignal = signal
         ? AbortSignal.any([controller.signal, signal])
         : controller.signal;
-      const projected = new SessionPresentation(
-        presentation,
-        randomUUID(),
-        () => current.getHistory(),
-        redact,
-      );
-      activeProjection = projected;
+      let projected: SessionPresentation | undefined;
+      let rewoundState:
+        | {
+            branchId: string;
+            previousBranchId: string;
+            historyLengthAfterRewind: number;
+          }
+        | undefined;
+      let effectiveInput = input;
+      let effectiveSkillName = skillName;
+      let effectivePrepare = prepare;
+      let replaceHistory = false;
+      let nextBranchId: string | undefined;
       runUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       hasUsage = false;
       usageComplete = true;
       awaitingUsage = false;
       let failure: unknown;
       try {
+        if (regenerate && mountMcp) {
+          const mount = mountMcp;
+          await mount(combinedSignal);
+          mountMcp = undefined;
+        }
+        if (regenerate) {
+          const rewound = await current.rewindLastTurn();
+          rewoundState = {
+            branchId: rewound.branchId,
+            previousBranchId: rewound.previousBranchId,
+            historyLengthAfterRewind: current.getHistory().length,
+          };
+          await watches?.onBranchRewound(
+            rewound.previousBranchId,
+            rewound.branchId,
+            rewound.rewoundAt,
+          );
+          // 任务来源分支随活动分支切换；复用同一观察器，避免丢失已见过的投递事件。
+          tasks.refresh({
+            parentSessionId: ownedHandle.conversationId,
+            branchId: rewound.branchId,
+          });
+          replaceHistory = true;
+          nextBranchId = rewound.branchId;
+          if (rewound.rewoundUserMessage) {
+            const blocks = rewound.rewoundUserMessage.content;
+            const primaryIndex = blocks.findIndex(
+              (block) =>
+                block.type === 'text' &&
+                !block.skillSource &&
+                !block.referenceSource &&
+                !block.promptSource,
+            );
+            if (primaryIndex >= 0 && blocks[primaryIndex]?.type === 'text') {
+              effectiveInput = blocks[primaryIndex].text;
+            }
+            const skillBlockIndex = blocks.findIndex(
+              (block) => block.type === 'text' && block.skillSource !== undefined,
+            );
+            const candidateSkill =
+              skillBlockIndex >= 0 && blocks[skillBlockIndex]?.type === 'text'
+                ? blocks[skillBlockIndex].skillSource?.name
+                : undefined;
+            const skillAvailable =
+              candidateSkill !== undefined &&
+              current
+                .getSkills()
+                .skills.some(
+                  (item) =>
+                    item.name === candidateSkill &&
+                    item.userInvocable &&
+                    item.available &&
+                    !item.disabled,
+                );
+            const extraBlocks = blocks.filter((_, index) => {
+              if (index === primaryIndex) return false;
+              if (index === skillBlockIndex && skillAvailable) return false;
+              return true;
+            });
+            if (extraBlocks.length > 0) {
+              const frozenBlocks = structuredClone(extraBlocks);
+              effectivePrepare = async () => ({
+                content: frozenBlocks,
+                ...(skillAvailable && candidateSkill ? { skillName: candidateSkill } : {}),
+              });
+              effectiveSkillName = undefined;
+            } else if (skillAvailable && candidateSkill) {
+              effectiveSkillName = candidateSkill;
+            }
+          }
+        }
+        projected = new SessionPresentation(
+          presentation,
+          randomUUID(),
+          () => current.getHistory(),
+          redact,
+          artifactPolicy,
+          {
+            getUsage: () => current.getMessageUsages(),
+            ...(replaceHistory ? { replaceHistory: true } : {}),
+            ...(nextBranchId ? { nextBranchId } : {}),
+          },
+        );
+        activeProjection = projected;
         const stream = async function* (): AsyncGenerator<SessionEvent> {
           if (mountMcp) {
             const mount = mountMcp;
@@ -560,11 +729,11 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           const textRedactor = new StreamingRedactor(credentials);
           const thinkingRedactor = new StreamingRedactor(credentials);
           // 引用经 runPreparedTask 在运行锁内读取与校验，准备失败时 Core 零 append。
-          const source: AsyncIterable<SessionEvent> = prepare
-            ? current.runPreparedTask(input, prepare, { signal: combinedSignal })
-            : skillName
-              ? current.runSkill(skillName, input, { signal: combinedSignal })
-              : current.run(input, { signal: combinedSignal });
+          const source: AsyncIterable<SessionEvent> = effectivePrepare
+            ? current.runPreparedTask(effectiveInput, effectivePrepare, { signal: combinedSignal })
+            : effectiveSkillName
+              ? current.runSkill(effectiveSkillName, effectiveInput, { signal: combinedSignal })
+              : current.run(effectiveInput, { signal: combinedSignal });
           for await (const event of source) {
             if (event.type === 'text_delta')
               yield { ...event, text: textRedactor.push(event.text) };
@@ -603,12 +772,29 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         }
       } catch (error) {
         failure = error;
+        if (
+          rewoundState &&
+          !current.isBusy() &&
+          current.getHistory().length === rewoundState.historyLengthAfterRewind
+        ) {
+          try {
+            await current.restoreBranch(rewoundState.previousBranchId);
+            await watches?.onBranchRewound(rewoundState.branchId, rewoundState.previousBranchId);
+            tasks.refresh({
+              parentSessionId: ownedHandle.conversationId,
+              branchId: rewoundState.previousBranchId,
+            });
+            projected?.revertBranchTransition();
+          } catch {
+            /* 回滚异常不覆盖原始运行错误。 */
+          }
+        }
         throw error;
       } finally {
         // 提前结束迭代也会等待 Core 的 return/finally，随后才宣告展示空闲。
         try {
           if (!current.isBusy())
-            projected.settle(combinedSignal.aborted ? 'aborted' : undefined, failure);
+            projected?.settle(combinedSignal.aborted ? 'aborted' : undefined, failure);
         } finally {
           activeProjection = undefined;
           activeController = undefined;
@@ -617,11 +803,49 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         }
       }
     };
+    // 监视服务与运行共用同一空闲门：只有本会话与外层宿主都没有在途运行时才投递并自动续跑，
+    // 背景通知经 WatchInbox 落回登记分支并立即同步进内存历史与空闲视图，绝不与用户输入抢写。
+    const watchInbox = new WatchInbox(ownedHandle.store);
+    const watchService = new WatchService({
+      workspaceRoot: root,
+      store: ownedHandle.store,
+      deliver: async (notification, branchId) => {
+        const written = await watchInbox.consume(notification, branchId);
+        if (written && branchId === ownedHandle.store.getActiveBranchId()) {
+          await current.syncExternalHistory();
+          syncExternalPresentation();
+        }
+        return written;
+      },
+      isIdle: () =>
+        !activeController &&
+        !current.isBusy() &&
+        !closing &&
+        !disposed &&
+        (options.isHostIdle?.() ?? true),
+      resume: async (input, signal) => {
+        if (options.onAutoResume) {
+          await options.onAutoResume(input, signal);
+          return;
+        }
+        for await (const _ of run(input, signal)) {
+          /* 投影已在内部完成。 */
+        }
+      },
+      onChange: inspectionChanged,
+      ...(options.onWatchEvent ? { onNotify: options.onWatchEvent } : {}),
+    });
+    watches = watchService;
+    for (const tool of createWatchTools(watchService)) current.tools.register(tool);
+    // 等待持久化监视恢复完成再返回资源句柄，避免快速 dispose 与后台回读会话文件竞态。
+    await watchService.start().catch((error: unknown) => {
+      console.warn('[watch] failed to restore watch states for this session', error);
+    });
     const managed: ManagedHostSession = {
       conversationId: ownedHandle.conversationId,
       session: current,
-      async run(input, signal) {
-        for await (const _ of run(input, signal)) {
+      async run(input, signal, options) {
+        for await (const _ of run(input, signal, undefined, undefined, options?.regenerate)) {
           /* 投影已在内部完成。 */
         }
       },
@@ -720,6 +944,29 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           inspectionListeners.delete(listener);
         };
       },
+      // 证据面板是只读聚合：每次按当前 canonical 历史重算，不缓存也不落新记录，
+      // 因此历史重放与实时观察必然同一口径。
+      evidence: async () => {
+        const phase = presentation.snapshot().operation?.phase;
+        return buildSessionEvidence(
+          {
+            conversationId: ownedHandle.conversationId,
+            history: current.getHistory(),
+            delegations: await listDelegationSessions(manager),
+            tasks: runtime?.listTasks({ parentSessionId: ownedHandle.conversationId }) ?? [],
+            parentActive: phase === 'running' || phase === 'cancelling',
+          },
+          redact,
+        );
+      },
+      watches: () => watchService.list(),
+      cancelWatch: (watchId) => watchService.cancel(watchId),
+      subscribeWatches: (listener) => {
+        inspectionListeners.add(listener);
+        return () => {
+          inspectionListeners.delete(listener);
+        };
+      },
       status: () =>
         projectStatusFacts(
           {
@@ -741,15 +988,19 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       managed,
       conversationId: ownedHandle.conversationId,
       history: () => publicHistory(current.getHistory(), redact),
+      // 本地 wire 适配器只读证据面；复用 managed 的同一聚合，避免两套口径。
+      evidence: () => managed.evidence(),
       redact,
       isBusy: managed.isBusy,
       cancelChildren,
       run,
       dispose,
+      watches: { list: () => managed.watches(), cancel: (id: string) => managed.cancelWatch(id) },
     };
   } catch (error) {
     // 创建失败时也按依赖顺序清理；上游未清理完不能释放存储锁，原始错误优先上报。
     try {
+      watches?.dispose();
       await runtime?.close();
       await session?.destroy();
       await handle?.release();

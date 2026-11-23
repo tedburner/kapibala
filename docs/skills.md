@@ -107,10 +107,60 @@ REPL 和 one-shot 均支持 `--output-detail summary|detailed`。非 TTY detaile
 - 逐技能禁用：`settings.skills.disabled` 事务写回；被禁用技能从后续会话目录排除，目录中不存在的禁用项保留登记。
 - 授权不变：面板的任何操作不改变技能加载授权——显式加载仍走同一读取策略、精确缓存与宿主审批，资源读取审计与物理边界校验保持不变。
 
+### 跨工具导入（v0.1.4）
+
+技能只从**自有目录**读取与写入；其它 Agent Harness 的技能不会进入运行期发现链，只能在用户显式操作时
+**一次性拷贝**进来（CLI `/skill import`、桌面「从其它工具导入」）。
+
+| 来源 | 全局目录 | 项目目录 |
+|---|---|---|
+| Claude Code | `~/.claude/skills` | `<project>/.claude/skills` |
+| Codex | `~/.codex/skills` | `<project>/.codex/skills` |
+| Cursor | `~/.cursor/skills` | `<project>/.cursor/skills` |
+| opencode | `~/.config/opencode/skills` | `<project>/.opencode/skills` |
+
+- **打开时扫描一次**：目录不存在直接跳过；存在但不可读产生 `import_source_unreadable`；单来源上限
+  200 个候选 / 64 MiB，超出按目录名排序截断并标记 `partial`。
+- **不执行来源代码**：脚本、hook、构建步骤都不会运行；不创建 git 工作树。文件按条目读取，只接受
+  普通文件与目录，符号链接越界即跳过（`import_symlink_skipped`）。
+- **目标根**：默认全局 `~/.kapibala/skills`；`--project` 或界面切换为项目 `.kapibala/skills`，
+  项目未信任时直接拒绝。
+- **冲突默认跳过**：同名目标存在时不覆盖；`--force` / 显式覆盖才替换，旧副本移到技能根之外的
+  `~/.kapibala/.skill-backups/`（项目级同构），失败回滚。
+- **幂等**：目标内容摘要与来源相同返回 `unchanged`，不写盘。
+- **TOCTOU 防护**：执行导入携带预览阶段的 `expectedSourceRef`；来源身份变化即拒绝并要求重新扫描。
+- **frontmatter 归一**：`name` / `description` / `license` / `compatibility` / `when_to_use` /
+  `argument-hint` / `metadata` / `allowed-tools` / `disable-model-invocation` / `user-invocable` 保留；
+  `context` / `agent` / `model` / `effort` / `hooks` / `shell` 与未知字段剥离并诊断
+  （`SKILL_IMPORT_FIELD_STRIPPED`）。`allowed-tools` 含参数模式时整条丢弃（`SKILL_IMPORT_TOOLS_DROPPED`）。
+  正文中的动态 shell 不改写，只记 `SKILL_IMPORT_DYNAMIC_SHELL`，落地后仍按既有不可用规则处理。
+- **溯源**：目标技能根写入隐藏文件 `.imported-from.json`（不参与资源列表）：
+
+```json
+{
+  "version": 1,
+  "harness": "claude-code",
+  "sourceRef": "/Users/me/.claude/skills/review-guide",
+  "installedAt": "2026-11-16T10:20:31.000Z",
+  "installedDigest": "sha256:9f1c…",
+  "strippedFields": ["context", "model"]
+}
+```
+
+  `sourceRef` 是来源身份，`installedDigest` 是落地副本摘要（路径 + 内容，排除溯源文件）。重新导入时
+  对比来源摘要可判断「来源是否仍是当初那份」，并列出差异文件；**不做自动同步**，来源后续变化不会
+  影响自有副本。
+- **导入后默认保持启用**：成功的技能名会从 `settings.skills.disabled` 移除。当前会话的注册表是启动
+  快照，重新打开会话后才能看到新技能。
+- **诊断**：`/skills inspect [--json]` 输出发现模式、扫描根、逐技能来源与生命周期事件
+  （`discovered` / `skipped` / `loaded`）；桌面设置页与 CLI 使用同一快照口径。
+
+明确不做：长期读外部兼容目录、导入时执行脚本或探测环境、导入后自动更新、跨 Harness 依赖解析。
+
 ### 会话内斜杠命令与 @ 文件引用（桌面）
 
 桌面会话输入框支持斜杠命令与 `@` 文件引用，二者与 CLI 共享同一命令系统与授权语义：
 
 - 斜杠命令：`/` 开头的输入走与 CLI 相同的命令分发器，命令反馈在会话界面呈现，未知命令不会被发给模型。补全面板按「命令 / 技能」分组展示并支持前缀搜索；依赖 CLI 宿主回调或收据管线适配的命令（`/model`、`/exit`、`/prompt`）在分发前被明确拦截并给出指引（模型与密钥管理走设置面板），补全面板同步过滤这些条目。
-- 技能分组：面板技能组有两个同口径数据源——会话内来自**运行时目录**（只列「现在就能跑」的技能），未打开会话时来自**配置层快照预览**（新会话将可用的技能）；两者都按 `user-invocable` 且可用且未禁用过滤（与 CLI 的 `/skill` 名字补全同口径）。选中后补全 `/skill <名称> `，续写任务回车即经与 `/skill` 命令相同的收据管线执行；**无任务直发**：桌面端 `/skill <名称>` 不带任务回车即执行（宿主合成启动任务走同一收据管线，CLI 仍要求显式任务）。`/skill ` 的名字段有独立补全（出现任务段后不再弹出）；技能全局关闭或全部禁用时面板给出指引，零匹配时显示「无匹配」提示而不是隐藏面板。
+- 技能分组：面板技能组有两个同口径数据源——会话内来自**运行时目录**（只列「现在就能跑」的技能），未打开会话时来自**配置层快照预览**（新会话将可用的技能）；两者都按 `user-invocable` 且可用且未禁用过滤（与 CLI 的 `/skill` 名字补全同口径）。选中后补全 `/skill <名称> `，续写任务回车即经与 `/skill` 命令相同的收据管线执行；**无任务直发**：桌面端 `/skill <名称>` 不带任务回车即执行（与 CLI 一致，宿主合成默认启动任务走同一收据管线）。`/skill ` 的名字段有独立补全（出现任务段后不再弹出）；技能全局关闭或全部禁用时面板给出指引，零匹配时显示「无匹配」提示而不是隐藏面板。
 - `@` 文件引用：`@` 触发沙箱工作区内的路径补全（忽略依赖与版本库元数据目录），确认后以 `@<相对路径>` 文本进入消息——模型按需经既有 read 工具读取，不注入内容、不新增授权路径。

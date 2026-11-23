@@ -674,4 +674,70 @@ describe('two level context compaction', () => {
     expect(history).toEqual(before);
     expect(manager.getSnapshot()?.persistence).toBe('unsupported');
   });
+
+  it('stops pinning ancient todo_write turns once all checklist items are completed or cancelled', async () => {
+    const { indexInteractions } = await import('../src/context/history.js');
+    const activeHistory = identifyHistory(
+      [
+        text('user', 'plan'),
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'todo-1',
+              name: 'todo_write',
+              source: 'builtin',
+              input: { items: [{ id: '1', title: 'step 1', status: 'in_progress' }] },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [{ type: 'tool_result', toolUseId: 'todo-1', content: 'ok' }],
+        },
+        text('assistant', 'working'),
+        text('user', 'next'),
+        text('assistant', 'done next'),
+      ],
+      'todo-active',
+    );
+    // 进行中的清单继续保护其所在交互
+    expect(indexInteractions(activeHistory).protectedMessageIds).toContain(activeHistory[0]!.id);
+
+    const finishedHistory = identifyHistory(
+      [
+        text('user', 'plan'),
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'todo-done',
+              name: 'todo_write',
+              source: 'builtin',
+              input: {
+                items: [
+                  { id: '1', title: 'step 1', status: 'completed' },
+                  { id: '2', title: 'step 2', status: 'cancelled' },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [{ type: 'tool_result', toolUseId: 'todo-done', content: 'ok' }],
+        },
+        text('assistant', 'all tasks finished'),
+        text('user', 'follow-up question'),
+        text('assistant', 'follow-up answer'),
+      ],
+      'todo-done',
+    );
+    // 全部已完成/已取消后，不再把早期轮次死锁在受保护集合中
+    expect(indexInteractions(finishedHistory).protectedMessageIds).not.toContain(
+      finishedHistory[0]!.id,
+    );
+  });
 });

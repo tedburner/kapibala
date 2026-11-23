@@ -30,6 +30,76 @@ describe('versioned session store', () => {
     expect(fs.readFileSync(file)).toEqual(before);
   });
 
+  it('persists watch state as global control records without touching the branch leaf', async () => {
+    const store = await open();
+    await store.append({ role: 'user', content: [{ type: 'text', text: 'hello' }] });
+    const leafBefore = store.getBranchLeaves().get('main');
+    const armed = {
+      watchId: 'watch-1',
+      spec: { kind: 'file_change' as const, target: 'src/a.ts', intervalMs: 2000, deadlineAt: 1 },
+      state: 'armed' as const,
+      lastSeenAt: 0,
+      branchId: 'main',
+      armedAt: 10,
+    };
+    await store.appendWatchState(armed);
+    await store.appendWatchState({ ...armed, state: 'fired', lastSeenAt: 20, closedAt: 20 });
+
+    const records = await store.readRecords();
+    const watchRecords = records.filter((record) => record.type === 'watch_state');
+    expect(watchRecords).toHaveLength(2);
+    for (const record of watchRecords) {
+      // 全局控制记录：parentId/branchId 均为 null，且不推进分支叶子。
+      expect(record.parentId).toBeNull();
+      expect(record.branchId).toBeNull();
+    }
+    expect(store.getBranchLeaves().get('main')).toBe(leafBefore);
+    expect((await store.load()).map((message) => message.role)).toEqual(['user']);
+
+    const reopened = await SessionStore.open(file);
+    expect(await reopened.readWatchStates()).toMatchObject([
+      { watchId: 'watch-1', state: 'fired' },
+    ]);
+  });
+
+  it('skips malformed watch_state records with a diagnostic instead of blocking recovery', async () => {
+    const store = await open();
+    const diagnostics: string[] = [];
+    store.setAppendObserver(
+      () => {},
+      (message) => diagnostics.push(message),
+    );
+    const armed = {
+      watchId: 'watch-ok',
+      spec: { kind: 'file_change' as const, target: 'src/a.ts', deadlineAt: 1 },
+      state: 'armed' as const,
+      lastSeenAt: 0,
+      branchId: 'main',
+      armedAt: 10,
+    };
+    // 残缺载荷若放行，宿主恢复路径读取 spec.deadlineAt 等字段会抛 TypeError；
+    // 这里覆盖缺 spec、数值非法与已摘除的触发源类型三类。
+    await store.appendWatchState(armed);
+    await store.appendWatchState({ watchId: 'watch-no-spec' } as unknown as typeof armed);
+    await store.appendWatchState({
+      ...armed,
+      watchId: 'watch-bad-deadline',
+      spec: { kind: 'file_change' as const, target: 'src/a.ts', deadlineAt: Number.NaN },
+    });
+    await store.appendWatchState({
+      ...armed,
+      watchId: 'watch-legacy-kind',
+      spec: { kind: 'process_exit', target: '4242', deadlineAt: 1 },
+    } as unknown as typeof armed);
+
+    const states = await store.readWatchStates();
+    expect(states).toHaveLength(1);
+    expect(states[0].watchId).toBe('watch-ok');
+    expect(diagnostics).toHaveLength(3);
+    expect(diagnostics.join('\n')).toContain('watch-legacy-kind');
+    expect(diagnostics.join('\n')).toContain('process_exit');
+  });
+
   it('persists stable IDs, causal envelopes and a durable reset boundary', async () => {
     const store = await open();
     await store.append({ role: 'user', content: [{ type: 'text', text: 'hello' }] });

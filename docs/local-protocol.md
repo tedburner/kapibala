@@ -1,15 +1,15 @@
-# Kapibala 本地宿主协议 1.0
+# Kapibala 本地宿主协议 2
 
-协议版本 1.0 独立于产品版本：产品从 v0.0.9 升到 v0.0.10 不自动改变协议主版本。传输仍是 JSON-RPC 2.0 帧的 JSONL，承载方式为本机 stdio 管道或本机 socket（POSIX 为绝对路径 Unix socket，Windows 为 `\\.\pipe\kpbl-*` 命名管道），不提供 TCP、HTTP 或 WebSocket 监听。数据类型从 `@kiturone/kapibala-cli/protocol` 导入，Node 客户端与连接从 `/client` 导入；`protocol` 与 `view-model` 为浏览器安全子路径，产物不引用 `node:` 模块。
+协议版本 2 是整数代际，独立于产品版本：只在破坏性变更时 +1，新增能力走能力集合而不升版本号。传输仍是 JSON-RPC 2.0 帧的 JSONL，承载方式为本机 stdio 管道或本机 socket（POSIX 为绝对路径 Unix socket，Windows 为 `\\.\pipe\kpbl-*` 命名管道），不提供 TCP、HTTP 或 WebSocket 监听。数据类型从 `@kiturone/kapibala-cli/protocol` 导入，Node 客户端与连接从 `/client` 导入；`protocol` 与 `view-model` 为浏览器安全子路径，产物不引用 `node:` 模块。
 
-方法名是稳定白名单，任意 Slash 命令不会被翻译成 RPC。契约冻结在 `scripts/fixtures/protocol/v1.0/`，由 `pnpm check-protocol-contract` 只读比较；改动 wire 需人工执行 `tsx scripts/check-protocol-contract.ts --update` 并评估兼容影响。旧新产物四组合的真实进程比较见 `pnpm verify:compat`。
+方法名是稳定白名单，任意 Slash 命令不会被翻译成 RPC。契约冻结在 `scripts/fixtures/protocol/v2/`，由 `pnpm check-protocol-contract` 只读比较；改动 wire 需人工执行 `tsx scripts/check-protocol-contract.ts --update` 并评估兼容影响。旧新产物四组合的真实进程比较见 `pnpm verify:compat`。
 
 ## 1. 握手与预算
 
 1. 服务端接受连接后分配 `clientId`；客户端**第一条**请求必须是 `initialize`，5 秒内未完成握手即关闭连接。重复 `initialize` 直接 `UNAUTHORIZED`。
 2. 服务端配置了 token 时，`initialize.params.token` 必须等长且时序安全比较通过；token 不进 argv、日志、历史或错误响应，凭证文件模式为 POSIX 0600、运行目录 0700。
-3. 版本协商：`major` 必须等于 1，`minMinor ≤ 服务端 minor ≤ maxMinor`，服务端 minor 只取本机实现支持的交集。
-4. 能力协商：`capabilities` 声明本次真正依赖的能力，当前集合为 `sessions`、`approval`、`cancel`。任一项不被支持都返回 `PROTOCOL_MISMATCH`，不做静默降级；未知能力拼写一律拒绝而不是忽略。
+3. 版本协商：整数 `protocolVersion` 必须严格等于 2，不接受区间协商，也不承诺字段级降级。v0.1.3 及更早的 `{major, minMinor, maxMinor}` 报价已废弃，初始化参数白名单直接判定 `INVALID_PARAMS`（不再有“放行到协商层”的兼容分支）。
+4. 能力协商：`capabilities` 声明本次真正依赖的能力，当前集合为 `sessions`、`approval`、`cancel`、`watch`、`evidence`。任一项不被支持都返回 `PROTOCOL_MISMATCH`，不做静默降级；未知能力拼写一律拒绝而不是忽略；客户端未声明使用的能力，服务端不推送对应事件。
 5. 服务端返回 `limits`（全部正值整数）。客户端校验任何字段都不得大于自身硬上限，随后调用 `LocalTransport.setLimits()` 在握手后同步收紧帧大小与发送队列；现存缓冲超限时传输关闭并抛错。缺少 `setLimits` 能力的自定义传输在连接期失败，不静默使用默认值。
 
 `DEFAULT_LIMITS`（服务端下发即采用值）：
@@ -36,7 +36,7 @@
 
 | 方法 | 参数 | 成功结果 |
 |---|---|---|
-| `initialize` | `ProtocolOffer`：`major`、`minMinor`、`maxMinor`、`clientName`、`capabilities`、可选 `token` | `NegotiatedProtocol & { serverInstanceId, clientId, limits }` |
+| `initialize` | `ProtocolOffer`：`protocolVersion`（整数 2）、`clientName`、`capabilities`、可选 `token` | `NegotiatedProtocol & { serverInstanceId, clientId, limits }` |
 | `ping` | `{}` | `{ alive: true, serverInstanceId }` |
 | `session/list` | `workspaceRoot`（绝对路径）、可选 `cursor`、`limit`（1–50，默认 20） | `{ items: { conversationId, title }[], cursor: string \| null }` |
 | `session/create` | `workspaceRoot`（绝对路径） | `{ sessionId, conversationId }` |
@@ -48,9 +48,16 @@
 | `run/start` | `SessionControl` + `clientOperationId`、`input` | `{ runId, accepted: true }` |
 | `run/cancel` | `SessionControl` + `runId` | `{ cancellationRequested: true }` |
 | `approval/request` | `ApprovalPrompt`（服务端 → 控制连接发起） | `{ choice: ApprovalChoice }` |
+| `watch/list` | `sessionId`（需先 attach） | `{ items: WatchWireItem[] }` |
+| `watch/cancel` | `SessionControl` + `watchId` | `{ cancelled: true }` |
+| `evidence/read` | `sessionId`（需先 attach；能力 `evidence`） | `ViewEvidence`：`{ summary, changes, references, mcp, delegations }` |
 | `host/shutdown` | `{}` | `{ stopped: true }` |
 
-`SessionControl = { sessionId, streamEpoch, controlEpoch }`。写类方法（`session/close`、`run/start`、`run/cancel`）只有当前控制连接可调用：观察或未 attach 的连接返回 `CONTROL_REQUIRED`，代际过期返回 `STALE_CONTROL`。宿主进入停机流程后除 `ping`、`host/shutdown` 外一律 `SHUTTING_DOWN`。
+`WatchWireItem = { watchId, kind: 'file_change' \| 'port_ready', target, state: 'armed' \| 'fired' \| 'timeout' \| 'cancelled' \| 'orphaned', armedAt, deadlineAt, closedAt: number \| null, detail: string \| null }`。`process_exit` 自 v0.1.4 起整体摘除，不再出现在 wire 上；历史落盘的遗留记录由读取侧按残缺数据跳过并输出诊断。`watch/list` 与 `session/snapshot` 同门禁：未 attach 返回 `CONTROL_REQUIRED`；默认 `createResourceFactory`（`kpbl serve`）经 `createManagedSessionResources` 在会话单写者锁（`SessionLock`）内完整布置监视触发源，若自定义 `ResourceFactory` 未注入监视门面，则 `watch/list` 返回空列表、`watch/cancel` 返回 `INVALID_REQUEST`。
+
+`ViewEvidence` 的 `changes` 只统计成功的 `write_file` / `edit_file`：`status` 为 `recorded` 时带精确 `additions` / `deletions`，`truncated`（文件过大或超出差分预算）与 `missing`（旧历史没有落盘事实）都把数字置为 `null`，调用方必须显示「未记录」而不是 0；`run_command` 的间接改动不计入。`mcp` 按 `mcp__<server>__<tool>` 归组，失败只认工具结果的 `isError`；`delegations` 只含当前父会话派生的子会话，父会话已收尾但子任务仍在活动时 `state` 为 `ended`。该方法是只读聚合，宿主不提供证据面时返回 `INVALID_REQUEST`。
+
+`SessionControl = { sessionId, streamEpoch, controlEpoch }`。写类方法（`session/close`、`run/start`、`run/cancel`、`watch/cancel`）只有当前控制连接可调用：观察或未 attach 的连接返回 `CONTROL_REQUIRED`，代际过期返回 `STALE_CONTROL`。宿主进入停机流程后除 `ping`、`host/shutdown` 外一律 `SHUTTING_DOWN`。
 
 `session/list` 的标题来自首条用户消息，与历史、审批提示共用同一套凭据替换与单行化规则（打码后截断到 200 字符），不承诺识别任意无标签秘密。
 

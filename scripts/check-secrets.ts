@@ -11,6 +11,14 @@ const IGNORED_DIRS = new Set([
   '.workbuddy',
 ]);
 
+// 仅忽略桌面端受管构建与 Playwright 测试产物目录，避免同名源码子目录被全局静默跳过。
+const IGNORED_RELATIVE_DIRS = new Set([
+  'packages/desktop/out',
+  'packages/desktop/test-results',
+  'packages/desktop/playwright-report',
+  'packages/desktop/icons-check-out',
+]);
+
 const ALLOWED_PLACEHOLDERS = [
   'sk-***',
   'sk-xxx',
@@ -59,7 +67,9 @@ function scanDirectory(dir: string): { file: string; line: number; match: string
     if (IGNORED_DIRS.has(entry.name)) continue;
 
     const fullPath = path.join(dir, entry.name);
+    const relativePath = path.relative(rootDir, fullPath).replaceAll('\\', '/');
     if (entry.isDirectory()) {
+      if (IGNORED_RELATIVE_DIRS.has(relativePath)) continue;
       violations.push(...scanDirectory(fullPath));
     } else if (entry.isFile()) {
       // 忽略图片和二进制文件

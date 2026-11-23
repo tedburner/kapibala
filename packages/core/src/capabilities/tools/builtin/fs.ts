@@ -1,10 +1,34 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { AbortError, ToolError } from '../../../errors/index.js';
+import type { ToolDiffFacts } from '../../../types/index.js';
 import { PathSandbox } from '../../security/sandbox.js';
 import { defineTool } from '../index.js';
+import { todoWriteTool } from './todo.js';
 
-import type { ToolContext } from '../index.js';
+import type { ToolContext, ToolExecutionResult } from '../index.js';
+import { MAX_DIFF_BYTES, countLineDiff, countTextLines } from './file-diff.js';
+
+/** 写入工具的成功返回：正文保持原有字符串语义，另附可落盘的行数事实。 */
+interface FileWriteOutput {
+  content: string;
+  diff?: ToolDiffFacts;
+}
+
+/**
+ * 把写入结果收敛为执行事实；执行器只在成功路径调用它。
+ * 没有 diff 时不写空 facts，避免历史里出现「有事实但没有数字」的歧义记录。
+ */
+function toWriteExecutionResult(raw: FileWriteOutput): ToolExecutionResult {
+  return {
+    content: raw.content,
+    execution: {
+      version: 1,
+      dispatchOutcome: 'succeeded',
+      ...(raw.diff ? { facts: { version: 1, diff: raw.diff } } : {}),
+    },
+  };
+}
 
 /**
  * 优先复用调用上下文由 AgentSession 持有的 PathSandbox 独占实例，
@@ -172,7 +196,8 @@ export const writeFileTool = defineTool({
     },
     required: ['path', 'content'],
   },
-  async execute(input: { path: string; content: string }, ctx) {
+  toExecutionResult: toWriteExecutionResult,
+  async execute(input: { path: string; content: string }, ctx): Promise<FileWriteOutput> {
     const sandbox = resolveToolSandbox(ctx);
     const safePath = sandbox.resolveSafePath(input.path);
 
@@ -181,8 +206,28 @@ export const writeFileTool = defineTool({
       fs.mkdirSync(dir, { recursive: true });
     }
 
+    // 行数事实在写盘前生成：覆盖已有文件需要旧内容，新建文件按行数计 +N −0。
+    // 读取失败或文件过大时不阻断写入，只让 fact 缺失或标记截断，绝不猜数字。
+    let diff: ToolDiffFacts | undefined;
+    if (!fs.existsSync(safePath)) {
+      diff = { additions: countTextLines(input.content), deletions: 0 };
+    } else {
+      try {
+        const stat = fs.statSync(safePath);
+        if (stat.isFile()) {
+          if (stat.size > MAX_DIFF_BYTES) diff = { truncated: true };
+          else diff = countLineDiff(fs.readFileSync(safePath, 'utf-8'), input.content);
+        }
+      } catch {
+        /* 旧内容不可读时保留「未记录」，写入本身仍按既有语义执行。 */
+      }
+    }
+
     fs.writeFileSync(safePath, input.content, 'utf-8');
-    return `Successfully wrote ${Buffer.byteLength(input.content, 'utf-8')} bytes to ${input.path}`;
+    return {
+      content: `Successfully wrote ${Buffer.byteLength(input.content, 'utf-8')} bytes to ${input.path}`,
+      ...(diff ? { diff } : {}),
+    };
   },
 });
 
@@ -212,7 +257,11 @@ export const editFileTool = defineTool({
     },
     required: ['path', 'targetContent', 'replacementContent'],
   },
-  async execute(input: { path: string; targetContent: string; replacementContent: string }, ctx) {
+  toExecutionResult: toWriteExecutionResult,
+  async execute(
+    input: { path: string; targetContent: string; replacementContent: string },
+    ctx,
+  ): Promise<FileWriteOutput> {
     const sandbox = resolveToolSandbox(ctx);
     const safePath = sandbox.resolveSafePath(input.path);
 
@@ -243,7 +292,10 @@ export const editFileTool = defineTool({
     // 导致写入内容被静默污染(例如替换目标里写 '$$' 会变成 '$')。
     const newContent = content.replace(input.targetContent, () => input.replacementContent);
     fs.writeFileSync(safePath, newContent, 'utf-8');
-    return `Successfully replaced target content in ${input.path}`;
+    return {
+      content: `Successfully replaced target content in ${input.path}`,
+      diff: countLineDiff(content, newContent),
+    };
   },
 });
 
@@ -448,5 +500,15 @@ function simpleMatch(str: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, 'i').test(str);
 }
 
-/** 五个内置文件工具的聚合；全部经 PathSandbox 校验，路径越界或符号链接穿透一律拒绝。 */
-export const builtinTools = [readFileTool, writeFileTool, editFileTool, globTool, grepTool];
+/**
+ * 内置工具聚合：五个文件工具（全部经 PathSandbox 校验，路径越界或符号链接穿透一律拒绝）
+ * 加会话任务清单写入工具（无文件副作用，见 todo.ts）。宿主按此数组整体注册。
+ */
+export const builtinTools = [
+  readFileTool,
+  writeFileTool,
+  editFileTool,
+  globTool,
+  grepTool,
+  todoWriteTool,
+];

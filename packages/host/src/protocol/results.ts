@@ -70,6 +70,9 @@ export interface RequestResults {
   'run/start': { runId: string; accepted: true };
   'run/cancel': { cancellationRequested: true };
   'approval/request': { choice: import('./types.js').ApprovalChoice };
+  'watch/list': { items: import('./types.js').WatchWireItem[] };
+  'watch/cancel': { cancelled: true };
+  'evidence/read': import('./types.js').EvidenceWire;
   'host/shutdown': { stopped: true };
 }
 /** 根据原请求参数区分首块与续块，不能只凭方法或响应形状判断。 */
@@ -126,17 +129,71 @@ const metadata = {
   maxOpenSessions: positive,
 } as const;
 const page = { chunk: text, cursor: nullable(id) } as const;
+/** 监视项与 wire 类型逐字段对齐：可选事实统一用 null 表达，避免 optional 与 Schema 结构不一致。 */
+const watchItem = object({
+  watchId: id,
+  // process_exit 自 v0.1.4 起摘除，wire 枚举同步收窄，遗留值由客户端按未知类型拒绝。
+  kind: { type: 'string', enum: ['file_change', 'port_ready'] },
+  target: text,
+  state: {
+    type: 'string',
+    enum: ['armed', 'fired', 'timeout', 'cancelled', 'orphaned'],
+  },
+  armedAt: integer,
+  deadlineAt: integer,
+  closedAt: nullable(integer),
+  detail: nullable(text),
+});
 const limits = object(
   Object.fromEntries(Object.keys(DEFAULT_LIMITS).map((key) => [key, positive])) as {
     [K in keyof ProtocolLimits]: typeof positive;
   },
 );
+/** 会话看板：可空事实统一用 null，避免 optional 让「缺失」与「0」在 wire 上不可区分。 */
+const evidenceChange = object({
+  path: text,
+  callId: id,
+  status: { type: 'string', enum: ['recorded', 'truncated', 'missing'] },
+  additions: nullable(integer),
+  deletions: nullable(integer),
+});
+const evidenceReference = object({
+  sessionId: id,
+  recordId: id,
+  role: { type: 'string', enum: ['user', 'assistant', 'branch_summary'] },
+  timestamp: integer,
+  title: nullable(text),
+});
+const evidenceMcp = object({ server: text, calls: integer, failed: integer });
+const evidenceDelegation = object({
+  sessionId: id,
+  title: text,
+  taskName: text,
+  state: { type: 'string', enum: ['running', 'ended', 'finished', 'idle', 'archived'] },
+  summary: nullable(text),
+  lastActivityAt: integer,
+});
+const evidence = object({
+  summary: object({
+    additions: integer,
+    deletions: integer,
+    truncatedFiles: integer,
+    missingFiles: integer,
+    references: integer,
+    mcpCalls: integer,
+    mcpFailures: integer,
+    runningDelegations: integer,
+  }),
+  changes: array(evidenceChange),
+  references: array(evidenceReference),
+  mcp: array(evidenceMcp),
+  delegations: array(evidenceDelegation),
+});
 
 /** 结果变体目录保留现有 wire 字段，首块和续块不能互相代替。 */
 export const RESULT_SCHEMAS = {
   initialize: object({
-    major: integer,
-    minor: integer,
+    protocolVersion: integer,
     capabilities: array(id),
     serverInstanceId: id,
     clientId: id,
@@ -156,6 +213,9 @@ export const RESULT_SCHEMAS = {
   'run/start': object({ runId: id, accepted: yes }),
   'run/cancel': object({ cancellationRequested: yes }),
   'approval/request': APPROVAL_RESPONSE_SCHEMA,
+  'watch/list': object({ items: array(watchItem) }),
+  'watch/cancel': object({ cancelled: yes }),
+  'evidence/read': evidence,
   'host/shutdown': object({ stopped: yes }),
 } as const satisfies Record<string, WireSchema>;
 const fixed =
@@ -177,6 +237,9 @@ export const RESULT_SELECTORS = {
   'run/start': fixed('run/start'),
   'run/cancel': fixed('run/cancel'),
   'approval/request': fixed('approval/request'),
+  'watch/list': fixed('watch/list'),
+  'watch/cancel': fixed('watch/cancel'),
+  'evidence/read': fixed('evidence/read'),
   'host/shutdown': fixed('host/shutdown'),
 } satisfies { [M in WireMethod]: (params: RequestParams[M]) => keyof typeof RESULT_SCHEMAS };
 

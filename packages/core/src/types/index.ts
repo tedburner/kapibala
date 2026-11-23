@@ -127,7 +127,23 @@ export interface ToolResultExecution {
     phase: 'validation' | 'projection' | 'hook' | 'audit';
     code: string;
   };
+  /**
+   * 工具执行时生成的证据事实；只随 canonical 结果落盘，不进入 Provider wire。
+   * 缺省表示该调用没有可聚合的事实（历史旧记录或非文件类工具），投影层显示「未记录」，
+   * 不从入参或结果正文反推。`diff` 为判别联合：要么是精确行数，要么只声明截断，
+   * 不存在「截断但数字为 0」这种会误导聚合的中间态。
+   */
+  facts?: ToolExecutionFacts;
 }
+
+/** 文件类工具的行数事实；只由执行时的真实内容差分生成，不做投影期重算。 */
+export interface ToolExecutionFacts {
+  version: 1;
+  diff?: ToolDiffFacts;
+}
+
+/** 单次写入的精确行数；`truncated` 表示差分超出预算，调用方不得把它当成 0 行变更。 */
+export type ToolDiffFacts = { additions: number; deletions: number } | { truncated: true };
 
 export interface ToolResultBlock {
   type: 'tool_result';
@@ -188,6 +204,19 @@ export interface SubagentSourceMetadata {
 }
 
 /**
+ * 会话级监视背景消息的来源元数据；仅用于去重与审计，不发送到 Provider wire。
+ * `eventId` 与 `watchId` 相同（一条监视至多产生一条通知），`kind` 与 `state` 保持字符串，
+ * 让旧宿主读取新记录时不因未知枚举值拒绝整条历史。
+ */
+export interface WatchSourceMetadata {
+  readonly eventId: string;
+  readonly watchId: string;
+  readonly kind: string;
+  readonly state: string;
+  readonly branchId: string;
+}
+
+/**
  * 协议无关的历史真源；wire 格式只在请求投影时出现。
  * 不变量：assistant 消息中的 tool_use 进入历史后，对应 tool_result 消息必须紧跟其后。
  */
@@ -205,6 +234,8 @@ export interface CanonicalMessage {
   timestamp?: number;
   /** 子代理通知背景消息来源元数据（仅用于审计与收件箱幂等去重）。 */
   subagentSource?: SubagentSourceMetadata;
+  /** 会话级监视背景消息来源元数据（仅用于审计与收件箱幂等去重）。 */
+  watchSource?: WatchSourceMetadata;
 }
 
 /** 判别并收窄为文本块。 */

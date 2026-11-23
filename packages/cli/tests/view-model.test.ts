@@ -29,6 +29,49 @@ describe('pure client presentation', () => {
     expect(state.notices[0].text).toBe('保存失败');
   });
 
+  it('history_replaced 整体替换消息与顺序，并保留逐消息 usage', () => {
+    let state = createPresentation(identity);
+    state = reducePresentation(state, event(1, { type: 'operation_started' }));
+    state = reducePresentation(
+      state,
+      event(2, {
+        type: 'message_committed',
+        message: {
+          id: 'old',
+          role: 'assistant',
+          state: 'completed',
+          persisted: true,
+          blocks: [
+            { id: 'old-block', kind: 'text', text: '旧回答', state: 'completed', revision: 1 },
+          ],
+        },
+      }),
+    );
+    const usage = { promptTokens: 7, completionTokens: 5, totalTokens: 12 };
+    state = reducePresentation(
+      state,
+      event(3, {
+        type: 'history_replaced',
+        messages: [
+          {
+            id: 'new',
+            role: 'assistant',
+            state: 'completed',
+            persisted: true,
+            blocks: [
+              { id: 'new-block', kind: 'text', text: '新回答', state: 'completed', revision: 1 },
+            ],
+            usage,
+          },
+        ],
+      }),
+    );
+    expect(state.order).toEqual(['new']);
+    expect(state.messages.map((message) => message.id)).toEqual(['new']);
+    expect(state.messages[0]?.usage).toEqual(usage);
+    expect(state.pendingMessages).toEqual([]);
+  });
+
   it('rejects stale view, operation and sequence updates without modifying the current state', () => {
     let state = createPresentation(identity);
     state = reducePresentation(state, event(2, { type: 'operation_started' }));
@@ -233,5 +276,22 @@ describe('pure client presentation', () => {
       'second-saved',
     ]);
     expect(selectMessages(state)[0].blocks[0].revision).toBeGreaterThan(1);
+  });
+
+  it('applies session todos_changed only for the active operation', () => {
+    let state = createPresentation(identity);
+    state = reducePresentation(state, event(1, { type: 'operation_started' }));
+    const todos = {
+      items: [{ id: 'a', title: '任务', status: 'in_progress' as const }],
+      revision: 1,
+    };
+    state = reducePresentation(state, event(2, { type: 'todos_changed', todos }));
+    expect(state.todos).toEqual(todos);
+    expect(
+      reducePresentation(
+        state,
+        event(3, { type: 'todos_changed', todos: undefined }, 'previous-op'),
+      ),
+    ).toBe(state);
   });
 });

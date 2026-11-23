@@ -17,7 +17,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { SubagentRole } from '../../capabilities/security/subagent-policy.js';
 import { createMessageId } from '../../types/identity.js';
-import type { CanonicalMessage } from '../../types/index.js';
+import type {
+  CanonicalMessage,
+  SubagentSourceMetadata,
+  WatchSourceMetadata,
+} from '../../types/index.js';
+import type { WatchNotification } from '../watch/types.js';
 import type { AgentTaskRecord, AgentTaskStatus } from './types.js';
 
 /**
@@ -226,7 +231,6 @@ export class SubagentOutbox {
  * 父会话收件箱（SessionInbox），负责去重与作为背景消息持久化入父历史。
  */
 export class SessionInbox {
-  private static readonly globalInFlightConsumes = new Map<string, Promise<boolean>>();
   private readonly store: SessionMessageSink;
   private readonly consumedEventIds = new Set<string>();
 
@@ -249,73 +253,172 @@ export class SessionInbox {
    * @returns 是否为新写入的消息（false 表示幂等跳过）
    */
   async consume(notification: AgentNotification): Promise<boolean> {
-    const { eventId, originBranchId } = notification;
-
-    if (this.consumedEventIds.has(eventId)) {
-      return false;
-    }
-
-    const inFlight = SessionInbox.globalInFlightConsumes.get(eventId);
-    if (inFlight) {
-      return inFlight;
-    }
-
-    const consumePromise = (async () => {
-      // 回读父会话历史，检查是否已有相同 eventId 的通知消息落盘
-      if (this.store.readRecords) {
-        const records = await this.store.readRecords();
-        for (const r of records) {
-          if (r.type === 'message') {
-            const payload = r.payload as Record<string, unknown>;
-            const sourceMeta = payload.subagentSource as Record<string, unknown> | undefined;
-            if (sourceMeta && sourceMeta.eventId === eventId) {
-              this.consumedEventIds.add(eventId);
-              return false;
-            }
-          }
-        }
-      }
-
-      const messageText = formatNotificationContent(notification);
-      const message: CanonicalMessage = {
-        id: createMessageId(),
-        role: 'user',
-        timestamp: Date.now(),
-        content: [
-          {
-            type: 'text',
-            text: messageText,
-          },
-        ],
-      };
-
-      // 附加 subagentSource 元数据供审计与去重消费（不作为模型指令）
-      message.subagentSource = {
+    return consumeBackgroundMessage(this.store, this.consumedEventIds, {
+      metadataKey: 'subagentSource',
+      eventId: notification.eventId,
+      branchId: notification.originBranchId,
+      text: formatNotificationContent(notification),
+      metadata: {
         eventId: notification.eventId,
         agentId: notification.agentId,
         rootTaskId: notification.rootTaskId,
         role: notification.role,
         status: notification.status,
         originBranchId: notification.originBranchId,
-      };
-
-      // 持久化追加到父会话的对应分支
-      await this.store.append(message, { branchId: originBranchId });
-      this.consumedEventIds.add(eventId);
-      return true;
-    })();
-
-    SessionInbox.globalInFlightConsumes.set(eventId, consumePromise);
-    try {
-      return await consumePromise;
-    } finally {
-      SessionInbox.globalInFlightConsumes.delete(eventId);
-    }
+      },
+    });
   }
 
   /**
    * 判断指定 eventId 是否已在收件箱中被消费。
    */
+  hasConsumed(eventId: string): boolean {
+    return this.consumedEventIds.has(eventId);
+  }
+}
+
+/** 收件箱共享投递参数；两类背景消息只在元数据键与正文格式上不同。 */
+interface BackgroundMessageSource {
+  readonly metadataKey: 'subagentSource' | 'watchSource';
+  readonly eventId: string;
+  readonly branchId: string;
+  readonly text: string;
+  readonly metadata: SubagentSourceMetadata | WatchSourceMetadata;
+}
+
+/** 进程内共享的在途消费（仅单进程内跨收件箱实例去重，跨进程互斥由 SessionLock 与落盘幂等回读保证）。 */
+const globalInFlightConsumes = new Map<string, Promise<boolean>>();
+
+/**
+ * 子代理与监视共用的背景消息投递实现（语义与 `SessionInbox` 一致）。
+ *
+ * 顺序约束：先回读历史确认未投递，再落盘消息，最后才把 eventId 记入进程内集合；
+ * 任一步失败都抛出，由调用方保留水位并重试，绝不「先确认后落盘」。
+ */
+async function consumeBackgroundMessage(
+  store: SessionMessageSink,
+  consumedEventIds: Set<string>,
+  source: BackgroundMessageSource,
+): Promise<boolean> {
+  const { eventId } = source;
+  if (consumedEventIds.has(eventId)) return false;
+
+  const key = `${source.metadataKey}:${eventId}`;
+  const inFlight = globalInFlightConsumes.get(key);
+  if (inFlight) return inFlight;
+
+  const consumePromise = (async () => {
+    if (store.readRecords) {
+      const records = await store.readRecords();
+      for (const record of records) {
+        if (record.type !== 'message') continue;
+        const payload = record.payload as Record<string, unknown>;
+        const metadata = payload[source.metadataKey] as Record<string, unknown> | undefined;
+        if (metadata && metadata.eventId === eventId) {
+          consumedEventIds.add(eventId);
+          return false;
+        }
+      }
+    }
+
+    const message: CanonicalMessage = {
+      id: createMessageId(),
+      role: 'user',
+      timestamp: Date.now(),
+      content: [{ type: 'text', text: source.text }],
+    };
+    if (source.metadataKey === 'subagentSource') {
+      message.subagentSource = source.metadata as SubagentSourceMetadata;
+    } else {
+      message.watchSource = source.metadata as WatchSourceMetadata;
+    }
+
+    // 必须先落盘再确认：水位与幂等集合都依赖这条顺序。
+    await store.append(message, { branchId: source.branchId });
+    consumedEventIds.add(eventId);
+    return true;
+  })();
+
+  globalInFlightConsumes.set(key, consumePromise);
+  try {
+    return await consumePromise;
+  } finally {
+    globalInFlightConsumes.delete(key);
+  }
+}
+
+const WATCH_STATE_LABELS: Readonly<Record<WatchNotification['state'], string>> = {
+  fired: '已触发',
+  timeout: '已超时',
+  cancelled: '已取消',
+  orphaned: '已失联',
+};
+
+/** 属性值只做结构转义，不改变可读文本；换行压平，避免伪装成新的结构化标签。 */
+function escapeWatchAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/[\r\n]+/g, ' ');
+}
+
+/**
+ * 把监视触发通知格式化为背景消息正文：结构化 `<watch-event>` 标签 + 人类可读事实。
+ * 标签只用于溯源，不构成权限；正文始终以 `role: 'user'` 背景消息进入历史。
+ */
+export function formatWatchNotificationContent(notification: WatchNotification): string {
+  const attributes = [
+    `watch="${escapeWatchAttribute(notification.watchId)}"`,
+    `kind="${escapeWatchAttribute(notification.kind)}"`,
+    `state="${escapeWatchAttribute(notification.state)}"`,
+    `fired-at="${notification.firedAt}"`,
+  ].join(' ');
+  return [
+    `[会话监视通知 · ${WATCH_STATE_LABELS[notification.state]}]`,
+    `<watch-event ${attributes}>`,
+    `- 目标: ${notification.target}`,
+    ...(notification.detail ? [`- 事实: ${notification.detail}`] : []),
+  ].join('\n');
+}
+
+/**
+ * 监视收件箱：与 `SessionInbox` 共用同一投递实现，只替换元数据键与正文格式。
+ *
+ * 分支必须由调用方显式给出（取 `WatchState.branchId`），禁止猜测当前活动分支：
+ * 会话在等待期间可能已切换分支，通知仍应落回登记时的分支。
+ */
+export class WatchInbox {
+  private readonly store: SessionMessageSink;
+  private readonly consumedEventIds = new Set<string>();
+
+  constructor(store: SessionMessageSink) {
+    this.store = store;
+  }
+
+  /**
+   * 消费并持久化一条监视通知。
+   *
+   * @returns 是否为新写入的消息；false 表示进程内或历史中已存在同一 `eventId`。
+   */
+  async consume(notification: WatchNotification, branchId: string): Promise<boolean> {
+    return consumeBackgroundMessage(this.store, this.consumedEventIds, {
+      metadataKey: 'watchSource',
+      eventId: notification.eventId,
+      branchId,
+      text: formatWatchNotificationContent(notification),
+      metadata: {
+        eventId: notification.eventId,
+        watchId: notification.watchId,
+        kind: notification.kind,
+        state: notification.state,
+        branchId,
+      },
+    });
+  }
+
+  /** 判断指定 eventId 是否已在本收件箱实例中确认投递。 */
   hasConsumed(eventId: string): boolean {
     return this.consumedEventIds.has(eventId);
   }
