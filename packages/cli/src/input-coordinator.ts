@@ -44,6 +44,15 @@ export class CliInputCoordinator {
   private completionHandler?: (line: string) => [string[], string];
   private readonly interactionHandlers = new Set<() => void>();
   private closed = false;
+  /**
+   * 只保留聊天问句的进程内历史；审批答案、菜单选项、确认词与密钥不进入，
+   * 避免 ↑ 把 `1`、`yes` 或 API Key 重新放回编辑缓冲。
+   */
+  private readonly chatHistory: string[] = [];
+  /** 当前浏览位置：等于长度表示停在未提交草稿，小于长度为历史项下标。 */
+  private historyIndex = 0;
+  /** 首次上翻时保存的未提交草稿；回到最新项时按原光标恢复。 */
+  private unfinished: { line: string; cursor: number } | undefined;
   private readonly signalHandler = () => this.interrupt();
   /** readline 对未绑定 Ctrl+O 会插入控制字节；先路由，再改为其忽略的 Escape，完全不访问秘密缓冲。 */
   private readonly keyHandler = (_value: string, key: readline.Key) => {
@@ -53,6 +62,10 @@ export class CliInputCoordinator {
       return;
     }
     if (key?.name === 'escape' && this.pending) this.cancel();
+    // 独占问答期间 ↑/↓ 不碰历史，避免把审批答案顶替成聊天问句；readline 自身历史已关闭。
+    if ((key?.name === 'up' || key?.name === 'down') && !this.pending && !this.closed) {
+      if (this.navigateHistory(key.name === 'up' ? -1 : 1)) key.name = 'escape';
+    }
   };
 
   constructor(options: CliInputOptions = {}) {
@@ -77,13 +90,22 @@ export class CliInputCoordinator {
       input: this.input,
       output: guardedOutput,
       terminal: options.terminal ?? this.interactive,
+      // readline 默认把所有 line 事件（含审批答案、菜单选项与密钥）自动记入 ↑ 历史；
+      // 这里关闭隐式历史，改由 remember() 只记录宿主确认为聊天的输入。
+      historySize: 0,
       completer: (line: string) =>
         !this.pending ? (this.completionHandler?.(line) ?? [[], line]) : [[], line],
     });
     this.rl.pause();
     this.rl.on('line', (line) => {
+      // 兜底清空 readline 自有历史：即便某个 Node 版本忽略 historySize: 0，
+      // 密钥与审批答案也不能停在 ↑ 能召回的位置。
+      (this.rl as unknown as { history: string[] }).history.length = 0;
       if (this.pending) this.pending.finish(line);
-      else this.lineHandler?.(line);
+      else {
+        this.remember(line);
+        this.lineHandler?.(line);
+      }
     });
     let finish!: () => void;
     this.whenClosed = new Promise((resolve) => {
@@ -152,6 +174,8 @@ export class CliInputCoordinator {
     if (this.closed) throw new Error('Input closed');
     if (this.pending) throw new Error('Input is busy / 输入已被占用');
     if (options?.signal?.aborted) throw new Error('Input cancelled');
+    // 独占问答会清空编辑缓冲，历史浏览必须回到「未提交草稿」起点。
+    this.resetHistoryNavigation();
     return new Promise<string>((resolve, reject) => {
       const onAbort = () => finish(undefined, new Error('Input cancelled'));
       const finish = (value?: string, error?: Error) => {
@@ -279,6 +303,50 @@ export class CliInputCoordinator {
   clearLine(): void {
     (this.rl as unknown as { line: string }).line = '';
     (this.rl as unknown as { cursor: number }).cursor = 0;
+    this.resetHistoryNavigation();
+  }
+  /** 记录一条已提交的聊天输入；空白与连续重复项不增加，最多保留最近 100 条。 */
+  private remember(line: string): void {
+    if (!line.trim()) return;
+    if (this.chatHistory.at(-1) !== line) this.chatHistory.push(line);
+    if (this.chatHistory.length > 100) this.chatHistory.splice(0, this.chatHistory.length - 100);
+    this.resetHistoryNavigation();
+  }
+  /** 把浏览位置退回未提交草稿；问答开始、清行与提交后调用，避免沿用过期的历史下标。 */
+  private resetHistoryNavigation(): void {
+    this.historyIndex = this.chatHistory.length;
+    this.unfinished = undefined;
+  }
+  /**
+   * 在 readline 编辑缓冲上实现 ↑/↓ 浏览聊天历史，返回是否实际替换了内容。
+   * 读取私有重绘方法是因为输入循环只能有一套：历史由本协调器独占，
+   * 不能再建第二个 readline；独占问答期间调用方必须已挡掉。
+   */
+  private navigateHistory(direction: -1 | 1): boolean {
+    const rl = this.rl as unknown as {
+      line: string;
+      cursor: number;
+      _refreshLine?: () => void;
+    };
+    if (direction === -1) {
+      if (this.historyIndex <= 0) return false;
+      if (this.historyIndex === this.chatHistory.length) {
+        this.unfinished = { line: rl.line, cursor: rl.cursor };
+      }
+      this.historyIndex--;
+    } else {
+      if (this.historyIndex >= this.chatHistory.length) return false;
+      this.historyIndex++;
+    }
+    if (this.historyIndex === this.chatHistory.length) {
+      rl.line = this.unfinished?.line ?? '';
+      rl.cursor = this.unfinished?.cursor ?? 0;
+    } else {
+      rl.line = this.chatHistory[this.historyIndex];
+      rl.cursor = rl.line.length;
+    }
+    rl._refreshLine?.();
+    return true;
   }
   /** 只读当前编辑缓冲，用于空闲 Ctrl+C 清行，不访问秘密输入正文。 */
   getLine(): string {

@@ -70,7 +70,11 @@ import { createMessageId, identifyHistory } from '../history.js';
 import { sessionToolResultsDirectory } from '../managed-results.js';
 import { ContextManager, type ContextSnapshot } from '../manager.js';
 import { resolveSessionProject } from '../session-manager.js';
-import { supportsSessionState } from '../session-store.js';
+import {
+  type SessionRecord,
+  type StatefulMessageStore,
+  supportsSessionState,
+} from '../session-store.js';
 import type { MessageStore } from '../store/index.js';
 import { resolveWorkspaceContext } from '../workspace.js';
 import {
@@ -94,6 +98,30 @@ import { computeContextUsage, recordSummaryUsage, recordUsage } from './usage.js
  * 此处原样转发以保持包根导出面稳定。
  */
 export * from './types.js';
+
+/** 具备会话分支能力的 Store 子集；分支原语只存在于 v2 会话实现，旧 SDK Store 不满足。 */
+interface BranchingMessageStore extends StatefulMessageStore {
+  createBranch(branchId: string, baseRecordId: string): Promise<SessionRecord>;
+  selectBranch(branchId: string): Promise<SessionRecord>;
+  isReadOnly?(): boolean;
+}
+
+/** 判断 Store 是否同时支持状态读取与分支切换；缺任一项时重试必须显式失败而不是降级。 */
+function hasBranchingStore(store: StatefulMessageStore): store is BranchingMessageStore {
+  return (
+    typeof (store as Partial<BranchingMessageStore>).createBranch === 'function' &&
+    typeof (store as Partial<BranchingMessageStore>).selectBranch === 'function'
+  );
+}
+
+/** 校验持久化的单条消息消耗形状；字段缺失或非法时整条丢弃，不用估算值补零。 */
+function isPersistedUsage(value: unknown): value is Usage {
+  if (!value || typeof value !== 'object') return false;
+  const usage = value as Usage;
+  return [usage.promptTokens, usage.completionTokens, usage.totalTokens].every(
+    (token) => typeof token === 'number' && Number.isFinite(token) && token >= 0,
+  );
+}
 
 /**
  * 宿主无关的 Agent 会话门面：统一模型路由、工具执行、权限与上下文压缩。
@@ -159,6 +187,10 @@ export class AgentSession {
   }
 
   private history: CanonicalMessage[] = [];
+  /** 助手消息 ID → 该次模型响应的真实消耗；仅用于宿主展示，不参与预算或权限。 */
+  private readonly messageUsages = new Map<string, Usage>();
+  /** 当前 run 内已落盘助手消息的消耗；run_finished 时持久化，供重开会话恢复。 */
+  private readonly activeRunUsages = new Map<string, Usage>();
   private totalTurns = 0;
   private usageStats: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   private lastMetrics?: TurnMetrics;
@@ -280,14 +312,8 @@ export class AgentSession {
           throw new Error('Session conversation identity mismatch');
         this.persistentId = state.header.conversationId;
         this.totalTurns = state.records.filter((r) => r.type === 'run_started').length;
-        for (const record of state.records.filter(
-          (r) => r.type === 'usage' && r.payload.role === 'primary' && !r.payload.importedFromFork,
-        )) {
-          this.accountUsage(
-            String(record.payload.attemptId),
-            record.payload.usage as unknown as Usage,
-          );
-        }
+        // 主任务消耗与逐消息消耗共用同一恢复口径：旧记录缺 assistantUsages 时只是没有展示值。
+        this.restoreUsageFromRecords(state.records);
         for (const record of state.records.filter(
           (r) => r.type === 'usage' && r.payload.role === 'summary' && !r.payload.importedFromFork,
         )) {
@@ -296,15 +322,6 @@ export class AgentSession {
             record.payload.usage as unknown as Usage | undefined,
           );
         }
-        this.usageKnown =
-          !this.history.some((m) => m.role === 'assistant') ||
-          (state.records.some(
-            (r) =>
-              r.type === 'usage' && r.payload.role === 'primary' && !r.payload.importedFromFork,
-          ) &&
-            !state.records.some(
-              (r) => r.type === 'run_finished' && r.payload.usageKnown === false,
-            ));
       } else this.usageKnown = this.history.length === 0;
     }
     const recovered = await recovery;
@@ -556,6 +573,75 @@ export class AgentSession {
     return this.lastRunMetrics ? structuredClone(this.lastRunMetrics) : undefined;
   }
 
+  /**
+   * 返回助手消息 ID → 该次模型响应消耗的只读副本。
+   *
+   * 边界：只有模型真实回报 usage 的消息才出现在映射里；旧会话缺少逐消息记录时
+   * 返回空映射，宿主据此隐藏 token 文案，不做估算或补零。映射内容仅用于展示，
+   * 不参与权限、预算或落盘事实。
+   */
+  getMessageUsages(): ReadonlyMap<string, Usage> {
+    return new Map(this.messageUsages);
+  }
+
+  /**
+   * 回退最后一轮（用户输入及其全部回答），创建并切换到新分支后重载内存状态。
+   *
+   * 约束与边界：
+   * - 必须在空闲会话调用；运行或清理进行中抛 `SessionBusyError`，不打断在途任务；
+   * - 依赖具备分支能力的状态化 Store（v2 会话），旧 SDK Store 或 v1 只读会话抛
+   *   `REWIND_UNAVAILABLE`，不做破坏性降级；
+   * - 切点取最后一条 `run_started` 的父记录，未闭合工具事务由 Store 拒绝分叉；
+   * - 只重载历史、上下文投影与 usage 统计，不重放模型或工具；被截断轮次的 usage
+   *   从累计值中剔除，原分支记录保留在文件中，可通过分支切换人工找回。
+   *
+   * @returns 新分支 ID，供宿主在展示层标识或排障使用。
+   * @throws {SessionBusyError} 会话正在运行或清理时抛出。
+   * @throws {KapibalaError} 没有可回退轮次或存储不支持分支时抛出（code `REWIND_UNAVAILABLE`）。
+   */
+  async rewindLastTurn(): Promise<{ branchId: string }> {
+    this.assertIdle('rewind last turn');
+    if (!this.initialized) await this.init();
+    const stateful = this.store && supportsSessionState(this.store) ? this.store : undefined;
+    const branching = stateful && hasBranchingStore(stateful) ? stateful : undefined;
+    if (!branching || branching.isReadOnly?.())
+      throw new KapibalaError('Session store does not support rewinding the last turn', {
+        code: 'REWIND_UNAVAILABLE',
+        retryPolicy: 'after_user_action',
+        safeMessage: '当前会话不支持重试上一轮',
+      });
+    const before = await branching.loadState();
+    const runRecords = before.records.filter((record) => record.type === 'run_started');
+    const lastRun = runRecords.at(-1);
+    if (!lastRun?.parentId)
+      throw new KapibalaError('No turn available to rewind', {
+        code: 'REWIND_UNAVAILABLE',
+        retryPolicy: 'after_user_action',
+        safeMessage: '没有可重试的上一轮对话',
+      });
+    const branchId = `retry-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    await branching.createBranch(branchId, lastRun.parentId);
+    await branching.selectBranch(branchId);
+
+    const next = await branching.loadState();
+    const runIdOf = (record: SessionRecord) =>
+      String(record.payload.runId ?? record.payload.interactionId ?? '');
+    const remaining = new Set(
+      next.records.filter((record) => record.type === 'run_started').map(runIdOf),
+    );
+    const removedRuns = new Set(runRecords.map(runIdOf).filter((id) => id && !remaining.has(id)));
+    this.history = identifyHistory(await branching.load(), 'legacy-sdk');
+    this.totalTurns = next.records.filter((record) => record.type === 'run_started').length;
+    this.restoreUsageFromRecords(next.records, removedRuns);
+    this.lastMetrics = undefined;
+    this.lastRunMetrics = undefined;
+    this.pendingResume = false;
+    this.activeRunUsages.clear();
+    this.context = this.createContextManager();
+    await this.context.restore(this.history);
+    return { branchId };
+  }
+
   /** 空闲时清空存储与全部内存状态；conversationId 不变，恢复语义等同全新会话。 */
   async reset(): Promise<void> {
     this.assertIdle('reset session');
@@ -564,6 +650,8 @@ export class AgentSession {
     this.totalTurns = 0;
     this.pendingResume = false;
     this.usageStats = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    this.messageUsages.clear();
+    this.activeRunUsages.clear();
     this.lastMetrics = undefined;
     this.lastRunMetrics = undefined;
     this.lastPrimaryProfile = undefined;
@@ -665,6 +753,8 @@ export class AgentSession {
     let previousRequest: ModelRequest | undefined;
     // 在途消息只参与预算；正式历史仍由 Loop 在全部工具结果闭合后原子追加。
     let budgetToolMessages: readonly CanonicalMessage[] = [];
+    // 每轮独立收集：run_finished 只持久化本轮新产生的逐消息消耗。
+    this.activeRunUsages.clear();
 
     const finalizeRun = (status: RunMetrics['status']): RunMetrics => {
       const endTime = Date.now();
@@ -1232,6 +1322,15 @@ export class AgentSession {
                 runId,
                 status: terminalStatus,
                 usageKnown: this.usageKnown,
+                // 逐消息消耗随轮次记录：重开会话据此恢复每条回答的 token，无需重放 usage 记录配对。
+                ...(this.activeRunUsages.size
+                  ? {
+                      assistantUsages: [...this.activeRunUsages].map(([messageId, usage]) => ({
+                        messageId,
+                        usage: { ...usage },
+                      })),
+                    }
+                  : {}),
               });
             this.context.finishInteraction({ interactionId: runId, status: terminalStatus });
           }
@@ -1362,6 +1461,11 @@ export class AgentSession {
     await persistAssistantMessage(event, this.store, () => {
       this.usageKnown = false;
     });
+    // 只有模型真实回报 usage 时才建立展示映射；缺 usage 的消息不补零也不估算。
+    if (event.usage && event.message.id) {
+      this.messageUsages.set(event.message.id, { ...event.usage });
+      this.activeRunUsages.set(event.message.id, { ...event.usage });
+    }
   }
 
   /** 创建上下文协调器并注入当前路由；摘要不经过主任务 Loop，插件结果不默认为可剪裁。 */
@@ -1469,6 +1573,61 @@ export class AgentSession {
           : {}),
       },
     });
+  }
+
+  /**
+   * 按会话记录重建主任务消耗与逐消息消耗。
+   *
+   * 约束：
+   * - 只重放真实 `usage` 记录与 `run_finished.assistantUsages`，缺失时保持未知而不是补零；
+   * - `excludeRunIds` 用于重试回退：被截断轮次的 usage 记录是全局记录、仍留在文件中，
+   *   必须按 attemptId 的 run 前缀排除，否则累计值会把已删除的回答继续计入；
+   * - 摘要消耗属于跨轮上下文成本，不随轮次回退，由调用方单独处理。
+   */
+  private restoreUsageFromRecords(
+    records: readonly SessionRecord[],
+    excludeRunIds?: ReadonlySet<string>,
+  ): void {
+    const excluded = (runId: unknown): boolean =>
+      typeof runId === 'string' && (excludeRunIds?.has(runId) ?? false);
+    this.usageStats = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    this.accountedAttempts.clear();
+    this.messageUsages.clear();
+    this.usageKnown = true;
+    for (const record of records) {
+      if (record.type !== 'usage' || record.payload.role !== 'primary') continue;
+      if (record.payload.importedFromFork) continue;
+      const attemptId = String(record.payload.attemptId);
+      // attemptId 形如 `run:step:attempt`；按首段 runId 前缀排除被回退的轮次。
+      if (excludeRunIds?.size && excludeRunIds.has(attemptId.split(':')[0] ?? '')) continue;
+      this.accountUsage(attemptId, record.payload.usage as unknown as Usage);
+    }
+    for (const record of records) {
+      if (record.type !== 'run_finished' || excluded(record.payload.runId)) continue;
+      const entries = record.payload.assistantUsages;
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (!entry || typeof entry !== 'object') continue;
+        const { messageId, usage } = entry as { messageId?: unknown; usage?: unknown };
+        if (typeof messageId !== 'string' || !messageId || !isPersistedUsage(usage)) continue;
+        this.messageUsages.set(messageId, { ...usage });
+      }
+    }
+    this.usageKnown =
+      !this.history.some((message) => message.role === 'assistant') ||
+      (records.some(
+        (r) =>
+          r.type === 'usage' &&
+          r.payload.role === 'primary' &&
+          !r.payload.importedFromFork &&
+          !excludeRunIds?.has(String(r.payload.attemptId).split(':')[0]),
+      ) &&
+        !records.some(
+          (r) =>
+            r.type === 'run_finished' &&
+            r.payload.usageKnown === false &&
+            !excluded(r.payload.runId),
+        ));
   }
 
   /** 以模型 attempt 身份幂等累加真实消耗；非法或缺失 usage 保持未知。 */

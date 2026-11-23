@@ -151,4 +151,39 @@ test.describe
       await expect(page.getByText(/请输入合法技能名和非空任务/)).toHaveCount(0);
       await expect(page.getByLabel('发送消息')).toHaveValue('', { timeout: 10_000 });
     });
+
+    test('↑/↓ 召回本会话已发送问句并保留未提交草稿', async () => {
+      const input = page.getByLabel('发送消息');
+      await input.fill('第一个问题');
+      await input.press('Enter');
+      await expect(page.getByRole('article', { name: '你的消息' }).first()).toBeVisible();
+      await expect(input).toBeEnabled();
+      await input.fill('第二个问题');
+      await input.press('Enter');
+      await expect(page.getByRole('article', { name: '你的消息' })).toHaveCount(2);
+      await expect(input).toBeEnabled();
+      // 空输入框光标在开头：↑ 依次召回最近与更早的问句，到顶后停住。
+      await input.press('ArrowUp');
+      await expect(input).toHaveValue('第二个问题');
+      await input.press('ArrowUp');
+      await expect(input).toHaveValue('第一个问题');
+      // 到顶后上翻被吞掉但仍停在最早项，光标不会跳回开头。
+      await input.press('ArrowUp');
+      await expect(input).toHaveValue('第一个问题');
+      // 下翻回到最新项，再下翻恢复未提交草稿（此处为空）并停住。
+      await input.press('ArrowDown');
+      await expect(input).toHaveValue('第二个问题');
+      await input.press('ArrowDown');
+      await expect(input).toHaveValue('');
+      await input.press('ArrowDown');
+      await expect(input).toHaveValue('');
+      // 未提交草稿在首次上翻时保存，回到最新项必须原样恢复。
+      // 光标需在草稿开头才接管 ↑，避免抢占多行编辑的正常行移动。
+      await input.fill('还没发的草稿');
+      await input.press('Home');
+      await input.press('ArrowUp');
+      await expect(input).toHaveValue('第二个问题');
+      await input.press('ArrowDown');
+      await expect(input).toHaveValue('还没发的草稿');
+    });
   });

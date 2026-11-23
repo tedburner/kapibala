@@ -965,6 +965,8 @@ export class DesktopHost {
       sessionId: string;
       operationId: string;
       input: string;
+      /** 重试：托管层先回退上一轮再重跑，失败按普通运行错误回执。 */
+      regenerate?: boolean;
     },
     execute?: (handle: ManagedHostSession) => Promise<void>,
   ): RunReceipt {
@@ -998,7 +1000,11 @@ export class DesktopHost {
     slot.run = receipt;
     this.operations.set(p.operationId, { digest, receipt });
     this.emitRun(slot);
-    slot.running = (execute ? execute(slot.handle) : slot.handle.run(p.input))
+    slot.running = (
+      execute
+        ? execute(slot.handle)
+        : slot.handle.run(p.input, undefined, { regenerate: p.regenerate })
+    )
       .then(
         () => {
           receipt.result = slot.handle.snapshot().operation?.result ?? 'completed';

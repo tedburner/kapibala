@@ -35,7 +35,7 @@ pnpm verify
 
 `dev:desktop` 使用 `packages/desktop/scripts/dev.mjs`：先构建共享产物，启动仅绑定 loopback 的 Vite Renderer，再通过私有父子 IPC 请求 Main 正常退出，等待工具清理、Host 正常退出及 guard 清除后才重建并启动。源码内容指纹过滤构建器产生的元数据事件；Renderer 更新走 Vite，不以强杀 Host 换取热更新。清理失败停止重启，保留 guard。该开发 IPC 仅在非打包、Node 父子 IPC 和随机开发令牌同时存在时启用，不暴露给 Renderer。macOS 开发入口会在 `.workbuddy/desktop-dev-runtime/` 缓存独立的 Electron 应用包副本，将菜单栏与 Dock 名称设为 Kapibala 并重新签名；不修改依赖中的 Electron 包。
 
-**dev 使用独立 userData，guard 不写生产目录。** `dev.mjs` 通过标准 `--user-data-dir` 开关把开发实例的 userData 指到 `<repo>/.workbuddy/desktop-dev/userData`（gitignore，目录固定、不随 Electron 版本变化），Host guard（`host-guard.json`）与 Chromium 状态全部落在这里；watch 模式反复重启即使清理失败，也不会让正式版启动时弹出「上次执行未确认完成清理」。HOME 不隔离：agent host 继续使用真实 `~/.kapibala` 的模型密钥、会话与全局指令。`dev.mjs` 同时持有 `.workbuddy/desktop-dev/dev.lock` 防重入锁（记录 PID，持有者已死视为陈旧锁自动接管），两个 dev 实例并存会共享状态并互相触发 guard 冲突，第二个实例直接拒绝启动。
+**dev 使用独立 userData，guard 不写生产目录。** `dev.mjs` 通过标准 `--user-data-dir` 开关把开发实例的 userData 指到 `<repo>/.workbuddy/desktop-dev/userData`（gitignore，目录固定、不随 Electron 版本变化），Host guard（`host-guard.json`）与 Chromium 状态全部落在这里；watch 模式反复重启即使清理失败，也不会让正式版启动时弹出「上次执行未确认完成清理」。HOME 不隔离：agent host 继续使用真实 `~/.kapibala` 的模型密钥、会话与全局指令。`dev.mjs` 同时持有 `.workbuddy/desktop-dev/dev.lock` 防重入锁：锁内记录 PID、随机 token 与心跳 mtime，持有者每 10s 续心跳。只有持有者仍在运行且心跳新鲜时，第二个实例才拒绝启动；发现持有者已被 Ctrl+Z 挂起或心跳超时，会先恢复并结束旧实例（释放 5173 与 Electron）再接管，挂起不再需要等 30s；SIGKILL、终端异常关闭留下的锁按心跳超时清理。被接管的旧实例在下一次心跳发现 token 变化后自行清理退出——两个 dev 实例并存会共享状态并互相触发 guard 冲突。
 
 不要只启动 electron-vite 就宣称共享代码已更新。开发重启同样要经过取消和清理；清理失败保留异常 guard，不能靠热更新跳过执行阻断。Renderer 的普通视图更新不重启 Host。
 

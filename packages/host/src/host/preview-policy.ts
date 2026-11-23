@@ -4,18 +4,20 @@ import path from 'node:path';
 import type { ViewArtifact } from '../view-model/index.js';
 
 /**
- * 可预览位图扩展名（小写、不含点）。
+ * 可预览图片扩展名（小写、不含点）。
  *
- * 刻意排除 SVG：现有图片预览白名单虽含 svg，但 v1 只投影模型生成的位图；
- * 若在此放行会出现「白名单有、面板却有/没有」的口径分裂（设计 012 §6.2）。
+ * 与桌面端 `IMAGE_MIME_BY_EXTENSION` 保持同一口径：位图与 SVG 都投影，避免出现
+ * 「预览白名单有、右侧面板却没有」的分裂。SVG 经 `<img>` 的 data URL 渲染，
+ * 脚本不执行、外链不加载，SMIL/CSS 动画可正常播放。
  */
-export const RASTER_IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
+export const PREVIEWABLE_IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   'png',
   'jpg',
   'jpeg',
   'gif',
   'webp',
   'bmp',
+  'svg',
 ]);
 
 /**
@@ -85,7 +87,7 @@ export function resolveWriteArtifact(
   const raw = input.path;
   if (typeof raw !== 'string' || !raw.trim()) return { ok: false, code: 'file_not_found' };
   const ext = path.extname(raw).slice(1).toLowerCase();
-  if (!RASTER_IMAGE_EXTENSIONS.has(ext)) return { ok: false, code: 'not_image' };
+  if (!PREVIEWABLE_IMAGE_EXTENSIONS.has(ext)) return { ok: false, code: 'not_image' };
 
   const candidate = path.isAbsolute(raw)
     ? path.normalize(raw)

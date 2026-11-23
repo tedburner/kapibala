@@ -68,7 +68,7 @@ export interface ViewTool {
   readonly resultMessageId?: string;
   readonly elapsedMs?: number;
   readonly outputBytes?: number;
-  /** 本次可预览产物；缺省表示该工具不投影产物（失败终态、SVG、非图片一律不出现）。 */
+  /** 本次可预览产物；缺省表示该工具不投影产物（失败终态、非图片扩展一律不出现；SVG 纳入图片）。 */
   readonly artifacts?: readonly ViewArtifact[];
 }
 
@@ -88,6 +88,13 @@ export interface ViewBlock {
   readonly skillName?: string;
 }
 
+/** 单条助手消息的模型消耗；只用于展示，不参与权限、计费或持久化事实判定。 */
+export interface ViewUsage {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly totalTokens: number;
+}
+
 /** 可重建展示消息；persisted 表示已观察的提交事实，临时片段不冒充落盘。 */
 export interface ViewMessage {
   readonly id: string;
@@ -95,6 +102,8 @@ export interface ViewMessage {
   readonly state: 'streaming' | 'completed' | 'interrupted';
   readonly persisted: boolean;
   readonly blocks: readonly ViewBlock[];
+  /** 该条助手消息对应的模型消耗；缺失表示旧记录未持久化 usage，渲染层不补零。 */
+  readonly usage?: ViewUsage;
 }
 
 /** 受控诊断展示；仅保存宿主已经脱敏的文字，不携带 Error/Provider 原始对象。 */
@@ -150,6 +159,11 @@ export type PresentationChange =
       readonly provisionalId?: string;
       readonly aliases?: Readonly<Record<string, string>>;
     }
+  /**
+   * 整段历史被截断重建（例如重试上一轮后重新投影）：渲染层必须整体替换消息列表，
+   * 不能沿用旧回答，也不能把它当作增量追加。
+   */
+  | { readonly type: 'history_replaced'; readonly messages: readonly ViewMessage[] }
   | { readonly type: 'set_expanded'; readonly blockId: string; readonly expanded: boolean }
   | { readonly type: 'todos_changed'; readonly todos?: ViewTodoState }
   | ({ readonly type: 'diagnostic' } & ViewNotice);

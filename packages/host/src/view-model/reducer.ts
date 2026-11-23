@@ -247,6 +247,14 @@ export function reducePresentation(
         ),
       };
     }
+    case 'history_replaced':
+      // 历史被截断重建：旧消息与半成品片段一律丢弃，按新投影重建顺序。
+      return {
+        ...next,
+        messages: change.messages,
+        order: change.messages.map((message) => message.id),
+        pendingMessages: [],
+      };
     case 'todos_changed':
       return { ...next, todos: change.todos };
     case 'set_expanded':

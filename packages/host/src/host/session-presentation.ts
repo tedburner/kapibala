@@ -10,6 +10,7 @@ import type {
   ViewIdentity,
   ViewMessage,
   ViewTool,
+  ViewUsage,
 } from '../view-model/index.js';
 import { buildTodoState, displayMessageId, projectHistory } from './history-projection.js';
 import type { PresentationStore } from './presentation-store.js';
@@ -53,6 +54,10 @@ export class SessionPresentation {
   private result: OperationResult | undefined;
   /** 已下发到视图的任务清单 revision；只在成功调用数变化时发 todos_changed。 */
   private todosRevision = 0;
+  /** 重试截断历史后需要整体替换一次消息列表；替换成功即关闭。 */
+  private needsHistoryReplace: boolean;
+  /** 逐消息消耗的实时来源；缺省不附加 usage，保持未装配该能力的宿主行为不变。 */
+  private readonly getUsage?: () => ReadonlyMap<string, ViewUsage>;
 
   constructor(
     private readonly store: PresentationStore,
@@ -61,9 +66,16 @@ export class SessionPresentation {
     private readonly redact: PublicTextRedactor = (text) => redactText(text, []),
     /** 产物策略；缺省不投影产物，供未装配预览能力的宿主复用同一投影器。 */
     private readonly artifacts?: ArtifactPolicy,
+    options?: {
+      readonly getUsage?: () => ReadonlyMap<string, ViewUsage>;
+      /** 历史刚被截断重建时置 true：首次同步整体替换视图，避免旧回答残留。 */
+      readonly replaceHistory?: boolean;
+    },
   ) {
     this.identity = { ...store.snapshot().identity };
     this.scope = presentationScope(this.identity);
+    this.getUsage = options?.getUsage;
+    this.needsHistoryReplace = options?.replaceHistory === true;
     for (const message of store.snapshot().messages) this.known.add(message.id);
     this.todosRevision = store.snapshot().todos?.revision ?? 0;
     if (!this.emit({ type: 'operation_started' }))
@@ -283,7 +295,17 @@ export class SessionPresentation {
     const history = this.getHistory();
     const projected = projectHistory(history, this.scope, this.redact, {
       ...(this.artifacts ? { artifacts: this.artifacts } : {}),
+      ...(this.getUsage ? { usageByMessageId: this.getUsage() } : {}),
     });
+    // 重试截断历史后，旧消息必须从视图里整体消失；替换成功后全部消息视为已下发，
+    // 后续 message_stop 仍按增量追加。emit 失败（视图已换代）时保留标记，下次同步再试。
+    if (this.needsHistoryReplace) {
+      if (this.emit({ type: 'history_replaced', messages: projected })) {
+        this.needsHistoryReplace = false;
+        this.known.clear();
+        for (const message of projected) this.known.add(message.id);
+      }
+    }
     const targetIndex = target
       ? history.findIndex(
           (message) => message === target || (target.id !== undefined && message.id === target.id),

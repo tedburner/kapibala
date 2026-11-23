@@ -8,6 +8,7 @@ import {
   summarizeToolGroup,
 } from '@kiturone/kapibala-host/view-model';
 import {
+  ArrowClockwiseIcon,
   ArrowDownIcon,
   BrainIcon,
   CaretDownIcon,
@@ -389,6 +390,8 @@ function ToolGroup({
 /** 消息虚拟化由 TanStack 负责；滚动跟随只记录用户意图，切换会话保留内存草稿与阅读位置。 */
 export function MessageList({
   messages,
+  retryableMessageId,
+  onRetry,
   memoryKey,
   root,
   scrollRef,
@@ -401,6 +404,10 @@ export function MessageList({
   report,
 }: {
   messages: readonly ViewMessage[];
+  /** 唯一可重试的助手消息（最新一轮）；缺失时历史回答不出现重试按钮。 */
+  retryableMessageId?: string;
+  /** 重试 = 宿主截断上一轮后重新生成；只在最新回答上调用。 */
+  onRetry(): void;
   memoryKey: string;
   /** 当前工作区根路径；正文里相对路径的本地图片以它为基准解析。 */
   root?: string;
@@ -529,6 +536,8 @@ export function MessageList({
             const hasBody = message.blocks.some(
               (block) => block.kind === 'text' || block.kind === 'tool',
             );
+            // 重试只出现在宿主指定的最新回答上；历史回答保持只读，避免回退多轮。
+            const retryable = message.id === retryableMessageId;
             return (
               <div
                 key={row.key}
@@ -618,14 +627,40 @@ export function MessageList({
                       </span>
                     </output>
                   )}
-                  {message.role === 'assistant' && copyText && (
-                    <InlineCopyText
-                      className="kapibala-action mt-2 text-xs text-kumo-subtle opacity-0 transition-opacity [@media(hover:none)]:opacity-100 group-hover:opacity-100 focus-within:opacity-100 focus-visible:opacity-100"
-                      value={copyText}
-                      labels={{ copyAction: '复制正文', copied: '已复制正文' }}
-                    >
-                      <span>复制正文</span>
-                    </InlineCopyText>
+                  {!isUser && (copyText || message.usage || retryable) && (
+                    <div className="kapibala-action mt-2 flex flex-wrap items-center gap-2 text-xs text-kumo-subtle opacity-0 transition-opacity [@media(hover:none)]:opacity-100 group-hover:opacity-100 focus-within:opacity-100 focus-visible:opacity-100">
+                      {copyText && (
+                        <InlineCopyText
+                          className="kapibala-action text-kumo-subtle"
+                          value={copyText}
+                          labels={{ copyAction: '复制正文', copied: '已复制正文' }}
+                        >
+                          <span>复制正文</span>
+                        </InlineCopyText>
+                      )}
+                      {retryable && (
+                        <Button
+                          className="kapibala-action text-kumo-subtle"
+                          variant="ghost"
+                          size="sm"
+                          shape="square"
+                          aria-label="重新生成回答"
+                          title="重新生成回答"
+                          onClick={onRetry}
+                        >
+                          <ArrowClockwiseIcon size={14} />
+                        </Button>
+                      )}
+                      {/* token 来自模型真实 usage；缺记录时不补零。悬停行与复制按钮同显隐。 */}
+                      {message.usage && (
+                        <span
+                          className="text-2xs text-kumo-faint tabular-nums"
+                          title={`输入 ${message.usage.promptTokens.toLocaleString('zh-CN')} · 输出 ${message.usage.completionTokens.toLocaleString('zh-CN')}`}
+                        >
+                          | 消耗 {message.usage.totalTokens.toLocaleString('zh-CN')} token
+                        </span>
+                      )}
+                    </div>
                   )}
                   {/* 用户消息 hover 操作：复制原文 + 回填编辑；协议不支持截断重发，编辑只填草稿。 */}
                   {isUser && copyText && (

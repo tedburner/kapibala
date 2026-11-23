@@ -6,6 +6,7 @@ import type {
   ViewTodoState,
   ViewTodoStatus,
   ViewTool,
+  ViewUsage,
 } from '../view-model/index.js';
 import type { ArtifactPolicy } from './preview-policy.js';
 import { type PublicTextRedactor, redactViewMessage } from './public-projection.js';
@@ -45,12 +46,16 @@ export function displayBlockId(messageId: string, index: number): string {
  * 工具结果按历史顺序匹配最近尚未闭合的调用，合入调用卡片，兼容逆序结束与后续复用 ID。
  * 未配对结果保留为可检查卡片；历史中缺结果的调用标中断，不恢复为仍在执行。
  * `options.artifacts` 只在调用配对到成功结果时补充产物；缺省不投影任何产物。
+ * `options.usageByMessageId` 只做按 ID 附加：缺记录的消息不带 usage，不估算、不补零。
  */
 export function projectHistory(
   history: readonly CanonicalMessage[],
   scope: string,
   redact?: PublicTextRedactor,
-  options?: { readonly artifacts?: ArtifactPolicy },
+  options?: {
+    readonly artifacts?: ArtifactPolicy;
+    readonly usageByMessageId?: ReadonlyMap<string, ViewUsage>;
+  },
 ): ViewMessage[] {
   const waiting = new Map<string, string>();
   const results = new Map<string, MatchedResult>();
@@ -165,17 +170,32 @@ export function projectHistory(
       }
       // provider_state、redacted_thinking、签名与协议元数据不进入白名单。
     }
-    if (blocks.length)
+    if (blocks.length) {
+      // 消耗按 canonical 消息 ID 附加；只有模型真实回报过 usage 的助手消息才有值。
+      // 只拷贝展示需要的三项：Core 的 Usage 还含缓存命中等字段，不能把私有字段带进公共投影。
+      const usage =
+        message.role === 'assistant' && message.id
+          ? options?.usageByMessageId?.get(message.id)
+          : undefined;
+      const viewUsage = usage
+        ? {
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.totalTokens,
+          }
+        : undefined;
       projected.push({
         id,
         role: message.role,
         persisted: true,
         blocks,
+        ...(viewUsage ? { usage: viewUsage } : {}),
         state:
           message.state === 'draft' || message.state === 'failed' || message.state === 'interrupted'
             ? 'interrupted'
             : 'completed',
       });
+    }
   }
   return projected.map((message) => redactViewMessage(message, redact));
 }

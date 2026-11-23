@@ -921,6 +921,12 @@ test('项目工作区写入图片后自动预览并保留 chip 入口', async ()
     await expect(chip).toBeVisible();
     await chip.click();
     await expect(dock).toBeVisible();
+    // 顶栏常驻入口：有产物时不依赖工具行 chip，也能主动重开最新预览。
+    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    await expect(dock).toBeHidden();
+    await page.getByRole('button', { name: '打开产物预览', exact: true }).click();
+    await expect(dock).toBeVisible();
+    await expect(dock.getByText('preview-demo.png', { exact: true })).toBeVisible();
     await stop(app);
   } finally {
     await app.close().catch(() => {});

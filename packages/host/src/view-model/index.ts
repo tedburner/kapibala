@@ -40,4 +40,5 @@ export type {
   ViewTodoState,
   ViewTodoStatus,
   ViewTool,
+  ViewUsage,
 } from './types.js';

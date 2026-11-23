@@ -137,7 +137,11 @@ export interface ManagedHostSession {
    */
   readonly session: AgentSession;
   /** 完整驱动一次运行；并发请求拒绝，外部中止也等待工具事务收口。 */
-  run(input: string, signal?: AbortSignal): Promise<void>;
+  run(
+    input: string,
+    signal?: AbortSignal,
+    options?: { readonly regenerate?: boolean },
+  ): Promise<void>;
   /**
    * 显式技能直发：与 run 共用同一投影、审批与工具事务管线，事件流语义一致。
    * task 为空或技能名非法时由底层 Session 以 SKILL_INVALID_INPUT 拒绝。
@@ -418,6 +422,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       identity,
       projectHistory(current.getHistory(), presentationScope(identity), redact, {
         artifacts: artifactPolicy,
+        usageByMessageId: current.getMessageUsages(),
       }),
       buildTodoState(current.getHistory(), redact),
     );
@@ -571,8 +576,20 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       signal?: AbortSignal,
       skillName?: string,
       prepare?: () => Promise<PreparedTaskResult>,
+      /** 重试：先截断上一轮再按同一输入重跑；截断失败直接抛出，不产生任何 Core append。 */
+      regenerate?: boolean,
     ): AsyncGenerator<SessionEvent> {
       refresh();
+      let replaceHistory = false;
+      if (regenerate) {
+        const { branchId } = await current.rewindLastTurn();
+        // 任务来源分支随活动分支切换；复用同一观察器，避免丢失已见过的投递事件。
+        tasks.refresh({
+          parentSessionId: ownedHandle.conversationId,
+          branchId,
+        });
+        replaceHistory = true;
+      }
       const controller = new AbortController();
       activeController = controller;
       let complete!: () => void;
@@ -588,6 +605,10 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         () => current.getHistory(),
         redact,
         artifactPolicy,
+        {
+          getUsage: () => current.getMessageUsages(),
+          ...(replaceHistory ? { replaceHistory: true } : {}),
+        },
       );
       activeProjection = projected;
       runUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -687,8 +708,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     const managed: ManagedHostSession = {
       conversationId: ownedHandle.conversationId,
       session: current,
-      async run(input, signal) {
-        for await (const _ of run(input, signal)) {
+      async run(input, signal, options) {
+        for await (const _ of run(input, signal, undefined, undefined, options?.regenerate)) {
           /* 投影已在内部完成。 */
         }
       },

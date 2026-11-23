@@ -90,6 +90,7 @@ wire 1 的 `{major, minMinor, maxMinor}`，新端报价从候选构建的 `PROTO
 | ViewModel 新增 `ViewArtifact`、`ViewTodoStatus`、`ViewTodoItem`、`ViewTodoState`，`ViewTool` 增加可选 `artifacts`，`PresentationState` 增加可选 `todos` | 纯可选字段增补；旧渲染忽略即保持原行为 | 无迁移动作；渲染前仍需按宿主允许根校验产物路径 |
 | Core `ShellScope` 新增可选 `scriptTrust: 'clean' \| 'dirty' \| 'unknown'` | 只影响命令类别判定；缺省按不可信处理，脚本类命令在 Auto 下回到询问 | 自定义宿主需在 `approvalScope` 中给出 git 清洁度；不要把未知状态写成 `clean` |
 | Core 新增 `SkillLifecyclePhase` / `SkillLifecycleEvent` / `SKILL_LIFECYCLE_LIMIT`；`SkillRegistry` 增加 `lifecycle` / `roots` 只读访问器；`AgentSession.getSkills()` 返回值附加 `enabled` / `roots` / `lifecycle` | 纯新增导出与只读字段，既有字段语义不变 | 无迁移动作；生命周期事件只用于诊断，不参与优先级或权限判定 |
+| ViewModel 新增 `ViewUsage` 与可选 `ViewMessage.usage`、`history_replaced` 展示变更；Core 新增 `AgentSession.getMessageUsages()` 与 `rewindLastTurn()` | 纯可选字段与新增方法；不投影 usage 的宿主行为不变，重试只在宿主显式调用 `rewindLastTurn()` 时发生 | 需要回答级 token 时把 `getMessageUsages()` 按消息 ID 投影；重试后必须按 `history_replaced` 整体替换消息列表，不能增量追加 |
 
 ## 1. 盘点口径
 

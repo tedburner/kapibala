@@ -52,6 +52,11 @@ export function redactPresentationChange(
       return { ...change, block: redactViewBlock(change.block, redact) };
     case 'message_committed':
       return { ...change, message: redactViewMessage(change.message, redact) };
+    case 'history_replaced':
+      return {
+        ...change,
+        messages: change.messages.map((message) => redactViewMessage(message, redact)),
+      };
     case 'todos_changed':
       return {
         ...change,

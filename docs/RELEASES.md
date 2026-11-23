@@ -84,7 +84,7 @@
 - 009：来源检测只在打开导入界面时扫描；全部导入默认作用域为全局；导入后默认保持启用。
 - 010：接受「变更行数不含 run_command 间接改动」的保守声明；统计只认成功工具，行数只读工具执行时持久化的 `facts.diff`，缺失显示「未记录」，**不做 LCS 兜底、不从入参重算**；单文件超 10 MB 只记 `truncated`；父会话结束时仍在运行的委派标记为已结束。
 - 011：未签名更新三平台统一「检查 → 下载 → 手动安装」，macOS 附右键 / xattr 提示；`SHA256SUMS.txt` 缺失或无目标条目即拒绝，不提供跳过开关；摘要只证明完整性、不证明来源，未签名须显式声明；项目级 MCP 写入仅限已信任项目；MCP **执行**需逐服务器批准 + 配置摘要，配置变更即重新待批；当前版本读 `app.getVersion()`。
-- 012：v1 只识别 `write_file` 成功终态的位图产物（png / jpg / jpeg / gif / webp / bmp，SVG 不投影）；自动弹按 `(workspaceKey, toolCallId)` 只弹一次、不加设置开关；路径按固定允许根校验（工作区 / OS 临时目录 / 固定应用目录），整根排除 `~/.kapibala`，`realpathSync.native` 后先判边界再判存在，拒绝码 `path_not_allowed` / `file_not_found` 分离。
+- 012：v1 只识别 `write_file` 成功终态的图片产物（png / jpg / jpeg / gif / webp / bmp / svg；SVG 经 `<img>` data URL 渲染，脚本不执行、外链不加载）；自动弹按 `(workspaceKey, toolCallId)` 只弹一次、不加设置开关；有产物时顶栏提供「打开产物预览」手动重开入口，无产物不渲染；路径按固定允许根校验（工作区 / OS 临时目录 / 固定应用目录），整根排除 `~/.kapibala`，`realpathSync.native` 后先判边界再判存在，拒绝码 `path_not_allowed` / `file_not_found` 分离。
 - 013：pill 仅在有清单时显示；底栏空间名优先、无空间回退「本地」；`todo_write` 在子代理会话注册；四态 `pending / in_progress / completed / cancelled`；进度分母为全部条目、分子为 `completed`；`in_progress` 允许 0..N，第一条为主任务，其余 `+N`；读最近一次成功调用，写入加会话内互斥。
 - 009：溯源文件 `.imported-from.json` 为本项目自定格式，不兼容读取 CodeWhale `.installed-from`；溯源拆 `sourceRef` / `installedDigest`，执行导入带 `expectedSourceRef`；导入不执行来源代码、不建工作树；单来源上限 200 个候选 / 64 MiB，超出返回 `partial: true`。
 - 008：`lastSeenAt < 事件时间` 即欠一次投递，落盘成功后推进水位；同一监视至多一条通知；忙碌期间多事件按 2s 窗口合并，60s 冷却与每分钟 1 次续跑为硬上限；仅持会话写租约的宿主恢复 watcher；v1 不识别自写路径，文档标注限制。

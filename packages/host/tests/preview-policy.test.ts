@@ -51,14 +51,27 @@ describe('preview artifact policy', () => {
     expect(policy('write_file', { path: tempTarget }, true)?.[0]?.ext).toBe('webp');
   });
 
-  it('skips failed terminal states, non-write tools and SVG', () => {
+  it('projects a successful SVG write with the same read-only facts as bitmaps', () => {
     const target = path.join(roots.workspace, 'icon.svg');
-    fs.writeFileSync(target, '<svg/>');
+    const content = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4" /></svg>';
+    fs.writeFileSync(target, content);
+    const policy = createArtifactPolicy(options);
+    expect(policy('write_file', { path: 'icon.svg' }, true)).toEqual([
+      {
+        kind: 'image',
+        path: fs.realpathSync.native(target),
+        ext: 'svg',
+        size: Buffer.byteLength(content),
+      },
+    ]);
+  });
+
+  it('skips failed terminal states, non-write tools and non-image extensions', () => {
     const policy = createArtifactPolicy(options);
     expect(policy('write_file', { path: 'chart.png' }, false)).toBeUndefined();
     expect(policy('edit_file', { path: 'chart.png' }, true)).toBeUndefined();
     expect(policy('run_command', { path: 'chart.png' }, true)).toBeUndefined();
-    expect(policy('write_file', { path: 'icon.svg' }, true)).toBeUndefined();
+    expect(policy('write_file', { path: 'notes.md' }, true)).toBeUndefined();
   });
 
   it('separates path_not_allowed from file_not_found', () => {
@@ -89,7 +102,7 @@ describe('preview artifact policy', () => {
     });
   });
 
-  it('rejects directories and non-bitmap extensions', () => {
+  it('rejects directories and non-image extensions', () => {
     fs.mkdirSync(path.join(roots.workspace, 'folder.png'));
     expect(resolveWriteArtifact(options, { path: 'folder.png' })).toEqual({
       ok: false,

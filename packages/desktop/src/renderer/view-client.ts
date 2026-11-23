@@ -103,9 +103,18 @@ export class ViewClient {
     if (this.scope) await this.select(this.scope);
   }
   /** 发送只尝试一次；应答不明时冻结发送，必须先查询事实并重同步。 */
-  async start(scope: { workspaceId: string; sessionId: string }, input: string): Promise<void> {
+  async start(
+    scope: { workspaceId: string; sessionId: string },
+    input: string,
+    options?: { regenerate?: boolean },
+  ): Promise<void> {
     try {
-      await this.api.run.start({ ...scope, operationId: crypto.randomUUID(), input });
+      await this.api.run.start({
+        ...scope,
+        operationId: crypto.randomUUID(),
+        input,
+        ...(options?.regenerate ? { regenerate: true } : {}),
+      });
     } catch (error) {
       this.halted = true;
       this.installation++;

@@ -147,7 +147,7 @@ const tool = z
     resultMessageId: text.optional(),
     elapsedMs: z.number().optional(),
     outputBytes: z.number().optional(),
-    /** 缺省表示本次调用不投影产物；失败终态与 SVG 一律缺省。 */
+    /** 缺省表示本次调用不投影产物；失败终态与非图片扩展一律缺省（SVG 纳入图片）。 */
     artifacts: z.array(artifact).optional(),
   })
   .strict();
@@ -163,6 +163,14 @@ const block = z
     skillName: text.optional(),
   })
   .strict();
+/** 单条助手消息的模型消耗；只用于展示，旧记录缺失时整块省略。 */
+const usage = z
+  .object({
+    promptTokens: z.number().nonnegative(),
+    completionTokens: z.number().nonnegative(),
+    totalTokens: z.number().nonnegative(),
+  })
+  .strict();
 const message = z
   .object({
     id: text,
@@ -170,6 +178,7 @@ const message = z
     state: z.enum(['streaming', 'completed', 'interrupted']),
     persisted: z.boolean(),
     blocks: z.array(block),
+    usage: usage.optional(),
   })
   .strict();
 const identity = z
@@ -241,6 +250,10 @@ const change = z.discriminatedUnion('type', [
       provisionalId: text.optional(),
       aliases: z.record(text, text).optional(),
     })
+    .strict(),
+  // 重试截断历史后整体替换消息列表；页面必须丢弃旧回答，不能当增量追加。
+  z
+    .object({ type: z.literal('history_replaced'), messages: z.array(message) })
     .strict(),
   z
     .object({
@@ -866,6 +879,8 @@ export const PARAMS = {
   'run.start': session.extend({
     operationId: z.uuid(),
     input: z.string().min(1).max(512_000),
+    /** 重试：宿主先截断上一轮再按同一输入重跑；缺省为普通发送。 */
+    regenerate: z.boolean().optional(),
   }),
   'run.cancel': session.extend({ runId: id }),
   'run.status': session,

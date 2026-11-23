@@ -46,3 +46,16 @@ export function collectViewArtifacts(
   }
   return [...found.values()];
 }
+
+/**
+ * 当前会话最新的可预览产物。
+ *
+ * 按消息与块的原始顺序取去重后的最后一项，供顶栏常驻入口手动重开预览；
+ * 没有产物时返回 undefined，调用方据此隐藏入口，不渲染点了没有内容的按钮。
+ */
+export function latestViewArtifact(
+  messages: readonly ViewMessage[],
+  scope: string,
+): DetectedArtifact | undefined {
+  return collectViewArtifacts(messages, scope).at(-1);
+}

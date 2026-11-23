@@ -2,7 +2,7 @@ import { PassThrough, Writable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { CliInputCoordinator } from '../src/input-coordinator.js';
 
-function create(interactive = true) {
+function create(interactive = true, terminal = false) {
   const input = new PassThrough();
   let text = '';
   const output = new Writable({
@@ -11,7 +11,7 @@ function create(interactive = true) {
       callback();
     },
   });
-  const coordinator = new CliInputCoordinator({ input, output, interactive, terminal: false });
+  const coordinator = new CliInputCoordinator({ input, output, interactive, terminal });
   return { input, coordinator, output: () => text };
 }
 describe('shared CLI input ownership', () => {
@@ -104,5 +104,53 @@ describe('shared CLI input ownership', () => {
     tty.input.write('answer\n');
     expect(await first).toBe('answer');
     tty.coordinator.close();
+  });
+
+  it('recalls only chat lines with arrows and restores the unfinished draft', async () => {
+    const { input, coordinator } = create(true, true);
+    const chat: string[] = [];
+    coordinator.onLine((line) => chat.push(line));
+    input.write('first question\n');
+    input.write('second question\n');
+    expect(chat).toEqual(['first question', 'second question']);
+    // 上翻到最近一次问句，再上翻到更早；到顶后保持不动。
+    input.emit('keypress', '', { name: 'up' });
+    expect(coordinator.getLine()).toBe('second question');
+    input.emit('keypress', '', { name: 'up' });
+    expect(coordinator.getLine()).toBe('first question');
+    input.emit('keypress', '', { name: 'up' });
+    expect(coordinator.getLine()).toBe('first question');
+    // 下翻回到最新问句，再下翻恢复空草稿并停住。
+    input.emit('keypress', '', { name: 'down' });
+    expect(coordinator.getLine()).toBe('second question');
+    input.emit('keypress', '', { name: 'down' });
+    expect(coordinator.getLine()).toBe('');
+    // 未提交草稿在首次上翻时被保存，回到最新项必须原样恢复而不是丢弃。
+    input.write('未提交草稿');
+    expect(coordinator.getLine()).toBe('未提交草稿');
+    input.emit('keypress', '', { name: 'up' });
+    expect(coordinator.getLine()).toBe('second question');
+    input.emit('keypress', '', { name: 'down' });
+    expect(coordinator.getLine()).toBe('未提交草稿');
+    coordinator.close();
+  });
+
+  it('keeps modal answers, secrets and blank lines out of the arrow history', async () => {
+    const { input, coordinator } = create();
+    const chat: string[] = [];
+    coordinator.onLine((line) => chat.push(line));
+    input.write('real question\n');
+    input.write('\n');
+    const choice = coordinator.select({ message: 'choose', options: [{ label: 'one', value: 1 }] });
+    input.write('1\n');
+    expect(await choice).toBe(1);
+    const secret = coordinator.readSecret('key: ');
+    input.write('sk-secret\n');
+    expect(await secret).toBe('sk-secret');
+    input.emit('keypress', '', { name: 'up' });
+    expect(coordinator.getLine()).toBe('real question');
+    input.emit('keypress', '', { name: 'up' });
+    expect(coordinator.getLine()).toBe('real question');
+    coordinator.close();
   });
 });

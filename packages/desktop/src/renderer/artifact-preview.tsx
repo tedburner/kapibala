@@ -15,7 +15,9 @@ function formatSize(bytes: number): string {
  *
  * 路径与大小都来自宿主投影，渲染层不自行判定信任边界；超过图片预览上限时
  * 不调用读取通道，只显示文件名与提示，避免「半张图」或必然失败的请求。
- * 读取失败（文件被移动、格式不支持）退化为可读占位，不抛出到错误边界。
+ * 位图与 SVG 共用 `preview.file()` 的 data URL 通道：SVG 进 `<img>` 后脚本不执行、
+ * 外链不加载，SMIL/CSS 动画照常播放。读取失败（文件被移动、格式不支持）退化为
+ * 可读占位，不抛出到错误边界。
  */
 export function ArtifactPreview({
   path,

@@ -4,6 +4,7 @@ import {
   artifactFileName,
   collectViewArtifacts,
   isArtifactTooLarge,
+  latestViewArtifact,
 } from '../src/renderer/artifact-model.js';
 import { IMAGE_PREVIEW_LIMIT } from '../src/shared/preview.js';
 
@@ -43,6 +44,16 @@ describe('产物预览模型', () => {
     expect(collectViewArtifacts(messages, 'ws:c').map((item) => item.key)).toEqual([
       'ws:c|t1|/w/a.png',
     ]);
+  });
+
+  it('顶栏入口取最后一项，跳过失败终态；无产物时返回 undefined', () => {
+    const messages = [
+      message('t1', 'succeeded', ['/w/a.png']),
+      message('t2', 'succeeded', ['/w/b.png']),
+      message('t3', 'failed', ['/w/c.png']),
+    ];
+    expect(latestViewArtifact(messages, 'ws:c')?.artifact.path).toBe('/w/b.png');
+    expect(latestViewArtifact([], 'ws:c')).toBeUndefined();
   });
 
   it('文件名按 Windows 与 POSIX 分隔符取最后一段', () => {
