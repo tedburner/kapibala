@@ -15,13 +15,15 @@ export interface ResourceFactoryOptions {
 export function createResourceFactory(options: ResourceFactoryOptions = {}): ResourceFactory {
   const leases = new WorkspaceLeaseCoordinator();
   return {
-    create(workspaceRoot, conversationId, approval) {
+    create(workspaceRoot, conversationId, approval, hooks) {
       return createManagedSessionResources({
         workspaceRoot: detectProjectRoot(fs.realpathSync.native(workspaceRoot)),
         homeDirectory: options.homeDir ?? os.homedir(),
         conversationId,
         approvalChannel: approval,
         leaseCoordinator: leases,
+        ...(hooks?.isHostIdle ? { isHostIdle: hooks.isHostIdle } : {}),
+        ...(hooks?.onAutoResume ? { onAutoResume: hooks.onAutoResume } : {}),
       });
     },
   };

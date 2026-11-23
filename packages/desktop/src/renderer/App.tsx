@@ -38,8 +38,6 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
 import { collectViewArtifacts, latestViewArtifact } from './artifact-model.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
@@ -157,20 +155,21 @@ const failure = (error: unknown) =>
 const STARTERS = ['梳理当前仓库的目录结构', '为这个项目补一份 README', '检查最近的改动有没有风险'];
 
 /**
- * 取最后一条用户消息的可复现原文。
- * 技能信封（skillName）来自宿主注入的技能直发，无法用普通输入忠实复现：返回 undefined
- * 让重试按钮不出现，避免静默改变语义。引用块属于用户消息正文，按原文一并带回。
+ * 取最后一条真实用户消息的回退占位原文。
+ * 宿主执行重试时优先无损重放 canonical 历史中的原始用户消息（含引用块、技能信封与未脱敏原文），
+ * 此处仅确认存在可重试的用户轮次并提供非空请求字符串；后台监视与子代理通知消息不计入用户轮次。
  */
 function lastUserPrompt(messages: readonly ViewMessage[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
     if (message.role !== 'user') continue;
-    if (message.blocks.some((block) => block.skillName)) return undefined;
     const text = message.blocks
-      .filter((block) => block.kind === 'text')
+      .filter((block) => block.kind === 'text' && !block.skillName)
       .map((block) => block.text)
       .join('\n')
       .trim();
+    if (text.startsWith('<watch-event ') || text.startsWith('<subagent-notification ')) continue;
+    if (message.blocks.some((block) => block.skillName)) return text || '开始执行该技能。';
     return text || undefined;
   }
   return undefined;
@@ -293,18 +292,22 @@ export function App() {
         : undefined,
     [messages, opened],
   );
-  // 重试只对最后一轮生效：最后一条回答已终态、宿主可接受新运行时按钮才出现；
+  // 重试只对最后一轮生效：最后一条消息已终态（含生成中断或尚未产出回复的失败用户轮次）且宿主空闲时出现；
   // 历史回答只展示 token，避免「点了却回退多轮」的隐式行为。
+  const lastMessage = messages.at(-1);
   const retryable =
     Boolean(opened) &&
     !running &&
     facts.valid &&
     readyToSend &&
-    messages.at(-1)?.role === 'assistant' &&
-    messages.at(-1)?.state === 'completed';
-  const retryCandidate = retryable ? messages.at(-1)?.id : undefined;
+    Boolean(
+      lastMessage &&
+        ((lastMessage.role === 'assistant' &&
+          (lastMessage.state === 'completed' || lastMessage.state === 'interrupted')) ||
+          (lastMessage.role === 'user' && lastMessage.state !== 'streaming')),
+    );
+  const retryCandidate = retryable ? lastMessage?.id : undefined;
   const retryPrompt = retryCandidate ? lastUserPrompt(messages) : undefined;
-  // 技能直发等无法忠实复现的原文不出现重试按钮：按钮一旦渲染就必须真的可执行。
   const retryableMessageId = retryPrompt ? retryCandidate : undefined;
   const report = setError;
   // 证据聚合是只读历史扫描：在快照连续变化时防抖，避免流式输出期间每个事件都重算。
@@ -665,6 +668,14 @@ export function App() {
     return Boolean(history && history.index < history.entries.length);
   }
 
+  /** 用户手动编辑或从补全/示例/回填写入草稿后退出历史浏览态，防止后续按 ↓ 抹掉刚编辑的内容。 */
+  function resetPromptHistoryBrowsing(scope = draftScope): void {
+    const history = promptHistory.current.get(scope);
+    if (!history) return;
+    history.index = history.entries.length;
+    history.draft = undefined;
+  }
+
   /**
    * ↑/↓ 在已发送输入之间浏览，返回是否消费了按键。
    * 首次上翻保存当前未提交草稿，下翻越过最新项时原样恢复而不是清空。
@@ -951,6 +962,7 @@ export function App() {
 
   /** 补全确认：命令替换整段草稿，文件替换最后一个 @ 触发段。 */
   function acceptCompletion(current: NonNullable<typeof completion>): void {
+    resetPromptHistoryBrowsing();
     const item = current.items[current.index];
     if (current.kind === 'command') {
       ui.draft(draftScope, item.insert);
@@ -1103,7 +1115,10 @@ export function App() {
           aria-label="发送消息"
           placeholder={opened ? '继续对话…' : '描述你想完成的任务…'}
           value={draft}
-          onValueChange={(value) => ui.draft(draftScope, value)}
+          onValueChange={(value) => {
+            resetPromptHistoryBrowsing();
+            ui.draft(draftScope, value);
+          }}
           disabled={busy}
           autoResize
           minRows={1}
@@ -1640,10 +1655,11 @@ export function App() {
                 }}
                 onEdit={(text) => {
                   // 编辑 = 回填草稿并聚焦，不截断已落盘历史；发送即作为新消息继续。
-                  ui.draft(
-                    opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new',
-                    text,
-                  );
+                  const targetScope = opened
+                    ? `${opened.workspaceId}:${opened.conversationId}`
+                    : ':new';
+                  resetPromptHistoryBrowsing(targetScope);
+                  ui.draft(targetScope, text);
                   requestAnimationFrame(() => {
                     composerShell.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus();
                   });
@@ -1673,7 +1689,10 @@ export function App() {
                         className="kapibala-action kapibala-starter"
                         variant="secondary"
                         size="sm"
-                        onClick={() => ui.draft(':new', starter)}
+                        onClick={() => {
+                          resetPromptHistoryBrowsing(':new');
+                          ui.draft(':new', starter);
+                        }}
                       >
                         {starter}
                       </Button>
@@ -1737,7 +1756,7 @@ export function App() {
         onRequestDelete={setPendingDelete}
       />
       {facts.interactions[0] && (
-        <div className="fixed inset-x-0 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-kumo-line bg-kumo-default p-4 shadow-xl">
+        <div className="fixed inset-x-0 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-kumo-line bg-kumo-elevated p-4 shadow-xl">
           <p className="mb-2 text-sm font-medium">{facts.interactions[0].prompt}</p>
           {facts.interactions[0].kind === 'select' ? (
             <div className="space-y-1">

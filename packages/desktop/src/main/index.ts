@@ -41,7 +41,7 @@ import { installPreviewProtocol, previewUrl, registerPreviewScheme } from './pre
 import { HostSupervisor } from './supervisor.js';
 import { checkForDesktopUpdate } from './update-check.js';
 import { downloadUpdate, isTrustedReleaseUrl } from './update-download.js';
-import { normalizeUrl } from './url.js';
+import { normalizeMainFrameUrl, normalizeUrl } from './url.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 app.setName('Kapibala');
@@ -292,7 +292,8 @@ async function handle(
           },
         });
         if (result.status !== 'downloaded') return result;
-        // 只有摘要严格一致才会走到这里：打开安装包，由安装程序提示手动安装。
+        if (controller.signal.aborted || quitting) return { status: 'cancelled' };
+        // 只有摘要严格一致且未取消/未退出时才打开安装包，由安装程序提示手动安装。
         const openError = await shell.openPath(result.filePath);
         return { status: 'downloaded', filePath: result.filePath, opened: openError === '' };
       } finally {
@@ -537,8 +538,8 @@ function createWindow(): void {
       contents === win.webContents &&
         permission === 'clipboard-sanitized-write' &&
         details.isMainFrame &&
-        normalizeUrl(details.requestingUrl) === expectedURL &&
-        normalizeUrl(contents.mainFrame.url) === expectedURL,
+        normalizeMainFrameUrl(details.requestingUrl) === expectedURL &&
+        normalizeMainFrameUrl(contents.mainFrame.url) === expectedURL,
     ),
   );
   win.webContents.session.setPermissionCheckHandler(
@@ -546,8 +547,8 @@ function createWindow(): void {
       contents === win.webContents &&
       permission === 'clipboard-sanitized-write' &&
       details.isMainFrame &&
-      normalizeUrl(details.requestingUrl ?? '') === expectedURL &&
-      normalizeUrl(contents.mainFrame.url) === expectedURL,
+      normalizeMainFrameUrl(details.requestingUrl ?? '') === expectedURL &&
+      normalizeMainFrameUrl(contents.mainFrame.url) === expectedURL,
   );
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => {
     const url = normalizeUrl(details.url);
@@ -578,8 +579,9 @@ function createWindow(): void {
   win.webContents.on('render-process-gone', () => {
     renderer?.peer.close('RENDERER_GONE');
   });
-  win.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
-    if (mainFrame) renderer?.peer.close('RENDERER_NAVIGATED');
+  win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+    // 页内锚点跳转（inPlace = true）不改变物理文档与安全上下文，只有真实跨页导航才关闭控制通道。
+    if (mainFrame && !inPlace) renderer?.peer.close('RENDERER_NAVIGATED');
   });
   win.on('ready-to-show', () => win.show());
   win.on('close', (event) => {
@@ -679,7 +681,7 @@ else {
         window &&
         event.sender === window.webContents &&
         event.senderFrame === window.webContents.mainFrame &&
-        normalizeUrl(event.senderFrame.url) === expectedURL
+        normalizeMainFrameUrl(event.senderFrame.url) === expectedURL
           ? displayMode()
           : 'light';
     });
@@ -688,7 +690,7 @@ else {
         !window ||
         event.sender !== window.webContents ||
         event.senderFrame !== window.webContents.mainFrame ||
-        normalizeUrl(event.senderFrame.url) !== expectedURL ||
+        normalizeMainFrameUrl(event.senderFrame.url) !== expectedURL ||
         renderer
       )
         return;
@@ -700,7 +702,7 @@ else {
         !window ||
         event.sender !== window.webContents ||
         event.senderFrame !== window.webContents.mainFrame ||
-        normalizeUrl(event.senderFrame?.url ?? '') !== expectedURL
+        normalizeMainFrameUrl(event.senderFrame?.url ?? '') !== expectedURL
       )
         throw new Error('FORBIDDEN');
       if (typeof html !== 'string' || html.length > HTML_PREVIEW_LIMIT)
@@ -713,7 +715,7 @@ else {
         !window ||
         event.sender !== window.webContents ||
         event.senderFrame !== window.webContents.mainFrame ||
-        normalizeUrl(event.senderFrame?.url ?? '') !== expectedURL
+        normalizeMainFrameUrl(event.senderFrame?.url ?? '') !== expectedURL
       )
         throw new Error('FORBIDDEN');
       if (typeof params !== 'object' || params === null) throw new Error('PREVIEW_INVALID');

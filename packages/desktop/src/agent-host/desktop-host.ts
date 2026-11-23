@@ -22,8 +22,12 @@ import {
   loadSettings,
   redactText,
 } from '@kiturone/kapibala-host/host';
-// 启动任务文本只在宿主内部约定里共享：它不进入公共导出面，投影与直发两处必须同一个常量。
-import { EXPLICIT_SKILL_KICKOFF } from '@kiturone/kapibala-host/internal';
+// 启动任务文本与技能导入门面只在宿主内部约定里共享：投影与直发两处必须同一个常量。
+import {
+  EXPLICIT_SKILL_KICKOFF,
+  importSkills,
+  scanImportableSkills,
+} from '@kiturone/kapibala-host/internal';
 import type { PresentationEvent } from '@kiturone/kapibala-host/view-model';
 import {
   LIMITS,
@@ -239,7 +243,7 @@ export class DesktopHost {
       }
       case 'resources.inspectSkills': {
         const p = PARAMS[method].parse(params);
-        return await this.resources.inspectSkills(p.workspaceId);
+        return await this.resources.inspectSkills(p);
       }
       case 'resources.importSkills': {
         const p = PARAMS[method].parse(params);
@@ -534,6 +538,17 @@ export class DesktopHost {
             'control',
           ).catch(() => {});
         },
+        isHostIdle: () => {
+          if (!slot || this.dead || slot.cleanupFailed || slot.closing) return false;
+          this.settleIfDone(slot);
+          if (slot.run && slot.run.phase !== 'idle') return false;
+          if (this.counts().runs >= LIMITS.runs) return false;
+          // 若当前标签已建立视图订阅但尚未完成初始快照安装，暂缓一拍避免运行在半安装视图上启动。
+          if (slot.view && (!slot.view.installed || !slot.view.valid)) return false;
+          return true;
+        },
+        onAutoResume: (input, signal) =>
+          slot ? this.autoResume(slot, input, signal) : Promise.resolve(),
       });
       if (this.dead) {
         await handle.dispose();
@@ -792,10 +807,8 @@ export class DesktopHost {
       feedback.push(unhandled);
       return { handled: true, feedback };
     }
-    // /skill <名称> 无任务直发：桌面把「选技能即运行」作为一等交互（CLI 仍要求显式
-    // 任务并走 dispatcher 校验）。core 对显式技能要求非空 userInput（canonical 历史
-    // 不变量），此处合成启动任务并走与 runSkill 相同的收据管线；start 的同步门禁
-    // 拒绝必须以命令反馈可见，不能静默消失。
+    // /skill <名称> 无任务直发：与 CLI 同样使用宿主合成启动任务满足 core 的非空 userInput 约束，
+    // 在此提前进入 start 收据管线，确保忙碌门禁与同步拒绝直接呈现为命令反馈。
     const skillOnly = /^\/skill\s+(\S+)\s*$/.exec(trimmed);
     if (skillOnly) {
       const kickoff = EXPLICIT_SKILL_KICKOFF;
@@ -909,14 +922,46 @@ export class DesktopHost {
       error: (message) => feedback.push(message),
       write: (text) => feedback.push(text),
     };
+    const workspace = this.workspaces.get(slot.scope.workspaceId);
     return {
       session: slot.handle.session,
       settings: loaded.settings,
       output,
-      // 透传隔离 HOME 与实际配置路径：命令介导的全局写入（默认模型/路由/密钥）必须
-      // 落在 workspaces.home，settings 读取也要如实报告来源而不是「使用内置默认」。
+      // 透传隔离 HOME、实际配置路径与项目根：命令介导的全局/项目写入（默认模型/路由/密钥/MCP/技能导入）
+      // 必须落在当前工作区与 workspaces.home，settings 读取也要如实报告来源而不是「使用内置默认」。
       homeDir: this.workspaces.home,
       settingsPath: loaded.sourcePath,
+      projectRoot: workspace.root,
+      watches: {
+        list: () => slot.handle.watches(),
+        cancel: (watchId) => slot.handle.cancelWatch(watchId),
+      },
+      scanImportableSkills: (scope) =>
+        scanImportableSkills({
+          homeDir: this.workspaces.home,
+          projectRoot: workspace.root,
+          projectTrusted: workspace.trusted,
+          settings: loadSettings({
+            homeDir: this.workspaces.home,
+            cwd: workspace.root,
+            includeProject: workspace.trusted,
+          }).settings,
+          scope,
+        }),
+      importSkills: (request) =>
+        importSkills({
+          homeDir: this.workspaces.home,
+          projectRoot: workspace.root,
+          projectTrusted: workspace.trusted,
+          settings: loadSettings({
+            homeDir: this.workspaces.home,
+            cwd: workspace.root,
+            includeProject: workspace.trusted,
+          }).settings,
+          scope: request.scope,
+          items: request.items,
+          overwrite: request.overwrite,
+        }),
       // 门禁外的兜底：正常路径不会到达（model/exit 已在 dispatch 前拦截）。
       onModelSwitched: () => {
         throw new Error('桌面端不支持会话内模型切换；请使用设置面板管理模型。');
@@ -1025,6 +1070,52 @@ export class DesktopHost {
         this.emitRun(slot);
       });
     return { ...receipt };
+  }
+
+  /**
+   * 监视自动续跑：与前台 `start` 共用同一份 `slot.run` 收据、审批准入与 `run.cancel` 停止能力，
+   * 同时允许后台会话标签（`slot.view === undefined`）在不要求前台视图订阅的前提下安全推进。
+   */
+  private async autoResume(slot: Slot, input: string, signal: AbortSignal): Promise<void> {
+    if (this.dead || signal.aborted || slot.cleanupFailed || slot.closing) return;
+    this.settleIfDone(slot);
+    if (slot.handle.isBusy() || (slot.run && slot.run.phase !== 'idle')) return;
+    if (this.counts().runs >= LIMITS.runs) return;
+    if (slot.view && (!slot.view.installed || !slot.view.valid)) return;
+    slot.redact = this.settings.captureRedactor(slot.scope.workspaceId);
+    slot.cancellation = undefined;
+    const operationId = randomUUID();
+    const receipt: RunReceipt = {
+      ...slot.scope,
+      runId: randomUUID(),
+      operationId,
+      phase: 'running',
+      startedAt: Date.now(),
+    };
+    slot.run = receipt;
+    this.emitRun(slot);
+    slot.running = slot.handle
+      .run(input, signal)
+      .then(
+        () => {
+          receipt.result = slot.handle.snapshot().operation?.result ?? 'completed';
+        },
+        (error) => {
+          receipt.result = 'failed';
+          receipt.error = safeError(error);
+        },
+      )
+      .then(async () => {
+        try {
+          await slot.cancellation;
+        } catch {
+          receipt.error = safeError(new Error('SESSION_CLEANUP_FAILED'));
+        }
+        receipt.phase = slot.handle.isBusy() ? 'settling' : 'idle';
+        if (receipt.phase === 'idle') receipt.settledAt = Date.now();
+        this.emitRun(slot);
+      });
+    await slot.running;
   }
   /** settling 只是「清理尚未确认」的过渡态；清理完成后没有任何事件会再推进它，
    *  这里在读取与新建运行两个入口复查，避免收据永久卡在 settling 导致会话无法再次运行。 */

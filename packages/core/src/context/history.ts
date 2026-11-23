@@ -149,18 +149,41 @@ export interface InteractionTerminal {
  * 定位「最近一次成功 todo_write」所在的交互下标；失败、中断或无结果的调用不计。
  * 以 tool_use 名称与配对 tool_result 的 isError 判定成功，与宿主重算清单的口径一致。
  */
+function hasActiveTodoItem(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false;
+  const items = (input as { items?: unknown }).items;
+  if (!Array.isArray(items) || items.length === 0) return false;
+  return items.some(
+    (entry) =>
+      Boolean(entry) &&
+      typeof entry === 'object' &&
+      ((entry as { status?: unknown }).status === 'pending' ||
+        (entry as { status?: unknown }).status === 'in_progress'),
+  );
+}
+
+/**
+ * 定位最近一次成功的 `todo_write` 所在交互；仅当该清单仍存在未完结项（`pending` / `in_progress`）
+ * 时返回其交互下标，全部已完成或已取消后不再锁定早期历史，避免长会话永久无法压缩。
+ */
 function lastSuccessfulTodoInteraction(groups: readonly CanonicalMessage[][]): number {
   for (let index = groups.length - 1; index >= 0; index--) {
     const group = groups[index];
-    const calls = new Set<string>();
+    const calls = new Map<string, unknown>();
     for (const message of group)
       for (const block of message.content)
-        if (block.type === 'tool_use' && block.name === 'todo_write') calls.add(block.id);
+        if (block.type === 'tool_use' && block.name === 'todo_write')
+          calls.set(block.id, block.input);
     if (calls.size === 0) continue;
+    let latestSucceededInput: unknown;
+    let foundSuccess = false;
     for (const message of group)
       for (const block of message.content)
-        if (block.type === 'tool_result' && calls.has(block.toolUseId) && !block.isError)
-          return index;
+        if (block.type === 'tool_result' && calls.has(block.toolUseId) && !block.isError) {
+          latestSucceededInput = calls.get(block.toolUseId);
+          foundSuccess = true;
+        }
+    if (foundSuccess) return hasActiveTodoItem(latestSucceededInput) ? index : -1;
   }
   return -1;
 }

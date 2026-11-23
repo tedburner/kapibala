@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assessScriptTrust } from '../src/capabilities/shell/script-trust.js';
+import {
+  assessScriptTrust,
+  computeScriptTargetDigest,
+} from '../src/capabilities/shell/script-trust.js';
 
 const directories: string[] = [];
 function temp(): string {
@@ -146,5 +149,28 @@ describe('assessScriptTrust', () => {
     expect(assessScriptTrust('make', root, root)).toBe('clean');
     fs.writeFileSync(path.join(root, 'vitest.config.ts'), 'export default {}');
     expect(assessScriptTrust('vitest run', root, root)).toBe('dirty');
+
+    // 5. 解释器未知选项、子包未提交 package.json 与未跟踪 vitest 测试文件均不得判为 clean。
+    fs.rmSync(path.join(root, 'vitest.config.ts'));
+    expect(assessScriptTrust('node --title scripts/app.mjs -e "console.log(1)"', root, root)).toBe(
+      'unknown',
+    );
+    fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'sub', 'package.json'),
+      JSON.stringify({ scripts: { test: 'node evil.mjs' } }),
+    );
+    expect(assessScriptTrust('pnpm -C sub test', root, root)).toBe('dirty');
+    expect(assessScriptTrust('pnpm --dir=sub test', root, root)).toBe('dirty');
+    fs.writeFileSync(path.join(root, 'pwn.test.ts'), 'import "evil";');
+    expect(assessScriptTrust('vitest run pwn.test.ts', root, root)).toBe('dirty');
+
+    // 6. 脚本与 package.json 内容摘要绑定：篡改脚本或 package.json 后摘要立即变化，动态/未知参数返回 unhashed。
+    const digestBefore = computeScriptTargetDigest('node scripts/app.mjs', root, root, 'bash');
+    expect(typeof digestBefore).toBe('string');
+    fs.writeFileSync(path.join(root, 'scripts', 'app.mjs'), 'console.log("tampered")');
+    const digestAfter = computeScriptTargetDigest('node scripts/app.mjs', root, root, 'bash');
+    expect(digestAfter).not.toBe(digestBefore);
+    expect(computeScriptTargetDigest('node -e "1"', root, root, 'bash')).toBe('unhashed');
   });
 });

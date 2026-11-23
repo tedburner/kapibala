@@ -347,7 +347,7 @@ function ToolGroup({
 }) {
   const tools = blocks.flatMap((block) => (block.tool ? [block.tool] : []));
   const summary = summarize(tools);
-  // U1.8：连续同类调用合并为「已读取 3 个文件」「运行 20 次，1 次失败」；混合时退回「执行 N 步」。
+  // 连续同类调用合并为「已读取 3 个文件」「运行 20 次，1 次失败」；混合时退回「执行 N 步」。
   const group = summarizeToolGroup(tools);
   const totalMs = tools.reduce((sum, tool) => sum + (tool.durationMs ?? 0), 0);
   return (
@@ -589,9 +589,15 @@ export function MessageList({
                             />
                           </Collapsible.Trigger>
                           <Collapsible.Panel>
-                            <p className="mt-1 mb-2 border-l-2 border-kumo-line pl-3 whitespace-pre-wrap text-xs leading-6 text-kumo-subtle">
-                              {group.block.text}
-                            </p>
+                            <div className="mt-1 mb-2 border-l-2 border-kumo-line pl-3">
+                              <MessageMarkdown
+                                text={group.block.text}
+                                root={root}
+                                streaming={group.block.state === 'streaming'}
+                                variant="compact"
+                                report={report}
+                              />
+                            </div>
                           </Collapsible.Panel>
                         </Collapsible.Root>
                       ) : group.block.skillName ? (
@@ -611,6 +617,7 @@ export function MessageList({
                           key={group.block.id}
                           text={group.block.text}
                           root={root}
+                          streaming={!isUser && group.block.state === 'streaming'}
                           report={report}
                         />
                       ),
@@ -662,28 +669,45 @@ export function MessageList({
                       )}
                     </div>
                   )}
-                  {/* 用户消息 hover 操作：复制原文 + 回填编辑；协议不支持截断重发，编辑只填草稿。 */}
-                  {isUser && copyText && (
+                  {/* 用户消息 hover 操作：复制原文 + 回填编辑；若本轮尚未生成助手回答即失败/中断，同时提供重试入口。 */}
+                  {isUser && (copyText || retryable) && (
                     <div className="mt-1 flex items-center justify-end gap-1 opacity-0 transition-opacity [@media(hover:none)]:opacity-100 group-hover:opacity-100 focus-within:opacity-100">
-                      <InlineCopyText
-                        className="kapibala-action text-kumo-subtle"
-                        // 图标由组件内置（hover 显示），空文本节点仅满足 children 类型必填。
-                        value={copyText}
-                        labels={{ copyAction: '复制原文', copied: '已复制' }}
-                      >
-                        {''}
-                      </InlineCopyText>
-                      <Button
-                        className="kapibala-action text-kumo-subtle"
-                        variant="ghost"
-                        size="sm"
-                        shape="square"
-                        aria-label="编辑该消息"
-                        title="编辑该消息"
-                        onClick={() => onEdit(copyText)}
-                      >
-                        <PencilSimpleIcon size={14} />
-                      </Button>
+                      {copyText && (
+                        <>
+                          <InlineCopyText
+                            className="kapibala-action text-kumo-subtle"
+                            // 图标由组件内置（hover 显示），空文本节点仅满足 children 类型必填。
+                            value={copyText}
+                            labels={{ copyAction: '复制原文', copied: '已复制' }}
+                          >
+                            {''}
+                          </InlineCopyText>
+                          <Button
+                            className="kapibala-action text-kumo-subtle"
+                            variant="ghost"
+                            size="sm"
+                            shape="square"
+                            aria-label="编辑该消息"
+                            title="编辑该消息"
+                            onClick={() => onEdit(copyText)}
+                          >
+                            <PencilSimpleIcon size={14} />
+                          </Button>
+                        </>
+                      )}
+                      {retryable && (
+                        <Button
+                          className="kapibala-action text-kumo-subtle"
+                          variant="ghost"
+                          size="sm"
+                          shape="square"
+                          aria-label="重新生成回答"
+                          title="重新生成回答"
+                          onClick={onRetry}
+                        >
+                          <ArrowClockwiseIcon size={14} />
+                        </Button>
+                      )}
                     </div>
                   )}
                 </article>

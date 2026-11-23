@@ -357,8 +357,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         const watches = new WatchService({
           workspaceRoot: manager.project.projectRoot,
           store: handle.store,
-          deliver: (notification, branchId) => watchInbox.consume(notification, branchId),
-          isIdle: () => !created.isBusy(),
+          deliver: async (notification, branchId) => {
+            const written = await watchInbox.consume(notification, branchId);
+            if (written && branchId === handle.store.getActiveBranchId()) {
+              await created.syncExternalHistory();
+            }
+            return written;
+          },
+          isIdle: () => !created.isBusy() && !inputCoordinator.isBusy(),
           resume: (input, signal) => runWatchResume(created, input, signal),
         });
         sessionWatches.set(created, watches);
@@ -410,13 +416,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         settings,
         settingsPath: sourcePath,
         projectRoot: manager.project.projectRoot,
-        // 导入能力在命令显式调用时才扫描，不预热；信任状态每次按当前设置重算。
-        scanImportableSkills: () =>
+        // 导入能力在命令显式调用时才扫描，不预热；信任状态与目标作用域每次按当前参数重算。
+        scanImportableSkills: (scope) =>
           scanImportableSkills({
             homeDir: os.homedir(),
             projectRoot: manager.project.projectRoot,
             projectTrusted: isProjectTrusted(settings, manager.project.projectRoot),
             settings,
+            scope,
           }),
         importSkills: (request) =>
           importSkills({

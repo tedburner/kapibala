@@ -25,6 +25,12 @@ export function MarkdownImage({
   // 极小图（自然尺寸 ≤8px，常为追踪像素或 1×1 占位）按正文渲染会成一个孤立杂点，
   // 观感像渲染故障：加载后改用与占位链路一致的文案呈现，不试图放大它。
   const [tiny, setTiny] = useState(false);
+  const [srcOwner, setSrcOwner] = useState(src);
+  if (srcOwner !== src) {
+    setSrcOwner(src);
+    setFailed(false);
+    setTiny(false);
+  }
   const source = classifyImageSource(src);
   if (source.kind === 'local') return <LocalImage path={source.path} root={root} alt={alt} />;
   if (source.kind === 'placeholder')

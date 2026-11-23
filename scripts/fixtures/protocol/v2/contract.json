@@ -1,5 +1,5 @@
 {
-  "capabilities": ["sessions", "approval", "cancel", "watch", "evidence", "skill-import"],
+  "capabilities": ["sessions", "approval", "cancel", "watch", "evidence"],
   "errors": [
     "PROTOCOL_MISMATCH",
     "UNAUTHORIZED",

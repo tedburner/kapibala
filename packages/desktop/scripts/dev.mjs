@@ -84,6 +84,13 @@ function sleepSync(ms) {
 function terminateStaleOwner(pid, ownerToken) {
   const current = readDevLock();
   if (current?.owner?.pid !== pid || current?.owner?.token !== ownerToken) return;
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    } catch {}
+    sleepSync(300);
+    return;
+  }
   const group = processGroupId(pid);
   const ownGroup = processGroupId(process.pid);
   const signal = (name) => {
@@ -180,6 +187,7 @@ const watchers = [];
 const watched = [
   'packages/core/src',
   'packages/mcp/src',
+  'packages/host/src',
   'packages/cli/src',
   'packages/desktop/src/main',
   'packages/desktop/src/preload',

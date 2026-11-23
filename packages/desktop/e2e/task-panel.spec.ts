@@ -107,6 +107,20 @@ test('任务面板：pill 进度、浮层四态与底栏状态条', async () => 
     await expect(panel.getByLabel('已取消：遗留项', { exact: true })).toBeVisible();
     await expect(pill).toHaveAttribute('aria-expanded', 'true');
 
+    const proofDir = path.resolve('test-results/visual-proof');
+    fs.mkdirSync(proofDir, { recursive: true });
+    await page.screenshot({
+      path: path.join(proofDir, 'task-panel-open-light.png'),
+      animations: 'disabled',
+    });
+    await page.evaluate(() => window.kapibala.preferences.update('dark'));
+    await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
+    await page.screenshot({
+      path: path.join(proofDir, 'task-panel-open-dark.png'),
+      animations: 'disabled',
+    });
+    await page.evaluate(() => window.kapibala.preferences.update('light'));
+
     await pill.press('Escape');
     await expect(panel).toBeHidden();
   } finally {

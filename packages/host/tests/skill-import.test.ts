@@ -532,4 +532,38 @@ describe('导入链路边界回归', () => {
     // 深层文件被跳过后不进入差异清单：来源与目标的可见层仍然一致。
     expect(candidate?.previouslyImported?.changedFiles).toEqual([]);
   });
+
+  it('按目标导入作用域（而非来源作用域）判定冲突与重导入差异', async () => {
+    const home = temp('kpbl-import-scope-');
+    const project = temp('kpbl-import-scope-proj-');
+    // 来源在项目目录（origin = 'project'），而目标将导入全局目录（scope = 'global'）
+    const projectClaudeRoot = path.join(project, '.claude', 'skills');
+    writeSourceSkill(projectClaudeRoot, 'cross-scope-skill');
+    fs.mkdirSync(path.join(home, '.kapibala', 'skills', 'cross-scope-skill'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.kapibala', 'skills', 'cross-scope-skill', 'SKILL.md'),
+      '---\nname: cross-scope-skill\ndescription: existing\n---\nbody',
+    );
+    const globalScan = await scanImportableSkills({
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: true,
+      settings: settingsWith(),
+      scope: 'global',
+    });
+    expect(globalScan.candidates.find((c) => c.name === 'cross-scope-skill')?.conflict).toBe(
+      'exists-enabled',
+    );
+
+    const projectScan = await scanImportableSkills({
+      homeDir: home,
+      projectRoot: project,
+      projectTrusted: true,
+      settings: settingsWith(),
+      scope: 'project',
+    });
+    expect(projectScan.candidates.find((c) => c.name === 'cross-scope-skill')?.conflict).toBe(
+      'none',
+    );
+  });
 });

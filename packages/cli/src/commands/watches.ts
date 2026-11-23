@@ -44,7 +44,7 @@ function remaining(item: WatchView, now: number): string {
  */
 export const watchesCommand: CommandHandler = async (args, ctx) => {
   const output = resolveCommandOutput(ctx);
-  const service = getActiveWatchService();
+  const service = ctx.watches ?? getActiveWatchService();
   if (!service) {
     output.log('当前宿主没有布置监视触发源（委派会话或单次问答不支持监视）。');
     return;

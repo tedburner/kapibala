@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { normalizeUrl } from '../src/main/url.js';
+import { normalizeMainFrameUrl, normalizeUrl } from '../src/main/url.js';
 
 // pathToFileURL 只按当前平台语义解析绝对路径：POSIX 上 'C:/…' 是相对路径，会被拼上 cwd。
 // 夹具路径按平台选择；Chromium 侧字面 URL 的前缀随之对齐（Windows 三斜杠，POSIX 路径自带首斜杠）。
@@ -47,5 +47,14 @@ describe('URL 同源比较规范化', () => {
       'file:///C:/plain/index.html?mode=dark',
     );
     expect(normalizeUrl('http://127.0.0.1:5173/')).toBe('http://127.0.0.1:5173/');
+  });
+
+  it('normalizeMainFrameUrl 剥离页内 #fragment 后保留查询串与 8.3 短名归一', () => {
+    expect(normalizeMainFrameUrl('file:///C:/KPBL83%7E1/index.html?mode=dark#details')).toBe(
+      normalizeUrl('file:///C:/KPBL83~1/index.html?mode=dark'),
+    );
+    expect(normalizeMainFrameUrl('http://127.0.0.1:5173/?mode=light#user-content-fn-1')).toBe(
+      'http://127.0.0.1:5173/?mode=light',
+    );
   });
 });

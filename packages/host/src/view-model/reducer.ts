@@ -103,7 +103,10 @@ export function reducePresentation(
       operation: { id: event.operationId, phase: 'running' },
     };
   }
-  const viewOnly = change.type === 'set_expanded' || change.type === 'diagnostic';
+  const viewOnly =
+    change.type === 'set_expanded' ||
+    change.type === 'diagnostic' ||
+    (change.type === 'message_committed' && !event.operationId && !change.provisionalId);
   if (viewOnly && event.operationId && state.operation && event.operationId !== state.operation.id)
     return state;
   if (!viewOnly && (!state.operation || event.operationId !== state.operation.id)) return state;
@@ -248,9 +251,10 @@ export function reducePresentation(
       };
     }
     case 'history_replaced':
-      // 历史被截断重建：旧消息与半成品片段一律丢弃，按新投影重建顺序。
+      // 历史被截断重建：旧消息与半成品片段一律丢弃，按新投影重建顺序；若切到新分支则同步视图分支身份。
       return {
         ...next,
+        ...(change.branchId ? { identity: { ...state.identity, branchId: change.branchId } } : {}),
         messages: change.messages,
         order: change.messages.map((message) => message.id),
         pendingMessages: [],

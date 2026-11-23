@@ -241,6 +241,8 @@ export async function scanImportableSkills(options: {
   projectRoot: string;
   projectTrusted: boolean;
   settings: UserSettings;
+  /** 拟写入的目标作用域；缺省按全局目录判定同名冲突与已导入差异。 */
+  scope?: SkillImportScope;
   signal?: AbortSignal;
 }): Promise<SkillImportScan> {
   const diagnostics: SkillDiagnostic[] = [];
@@ -250,6 +252,8 @@ export async function scanImportableSkills(options: {
     global: path.join(options.homeDir, '.kapibala', 'skills'),
     project: path.join(options.projectRoot, '.kapibala', 'skills'),
   };
+  const targetScope: SkillImportScope = options.scope ?? 'global';
+  const targetRoot = targetRoots[targetScope];
   const disabled = new Set(options.settings.skills?.disabled ?? []);
   const seen = new Set<string>();
   let partial = false;
@@ -271,8 +275,8 @@ export async function scanImportableSkills(options: {
             ? path.join(options.homeDir, dir)
             : path.join(options.projectRoot, dir);
         const readability = await checkSourceRoot(rootPath);
-        roots.push({ path: rootPath, scope, readable: readability.readable });
         if (!readability.exists) continue;
+        roots.push({ path: rootPath, scope, readable: readability.readable });
         if (!readability.readable) {
           diagnostics.push({
             code: 'import_source_unreadable',
@@ -290,7 +294,6 @@ export async function scanImportableSkills(options: {
         for (const skill of scan.skills) {
           options.signal?.throwIfAborted();
           const directoryName = path.basename(path.dirname(skill.filePath));
-          const targetRoot = targetRoots[scope];
           const key = `${source.harness}:${skill.name}`;
           if (seen.has(key)) {
             diagnostics.push({

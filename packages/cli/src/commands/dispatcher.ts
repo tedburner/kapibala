@@ -65,10 +65,18 @@ export interface CommandContext {
   /** 项目根（绝对路径）；宿主提供后导入命令才能定位项目级技能目录。 */
   projectRoot?: string;
   /**
+   * 当前会话的监视服务门面；桌面等无全局单例的宿主经此注入 `/watches` 列表与取消能力，
+   * 缺省回退到 CLI 单会话 `getActiveWatchService()`。
+   */
+  watches?: {
+    list(): import('@kiturone/kapibala-host/internal').WatchView[];
+    cancel(watchId: string): Promise<void>;
+  };
+  /**
    * 扫描外部 Harness 的可导入技能；只在命令显式调用时执行一次，不预热。
    * 宿主不提供时 `/skill import` 明确报告不支持，不返回空表冒充「没有可导入项」。
    */
-  scanImportableSkills?: () => Promise<SkillImportScan>;
+  scanImportableSkills?: (scope?: 'global' | 'project') => Promise<SkillImportScan>;
   /** 执行技能导入；正文读取、原子写与溯源全部由宿主完成，命令层只传来源身份。 */
   importSkills?: (request: {
     scope: 'global' | 'project';

@@ -93,7 +93,18 @@ export class SessionRegistry {
               ? this.options.approval(holder.entry).requestApproval(request, signal)
               : Promise.resolve('cancel'),
         };
-        const resources = await this.options.create(root, conversationId, approval);
+        const resources = await this.options.create(root, conversationId, approval, {
+          isHostIdle: () =>
+            Boolean(holder.entry) &&
+            !this.shuttingDown &&
+            !holder.entry!.closing &&
+            !holder.entry!.active &&
+            !holder.entry!.needsCleanup &&
+            [...this.sessions.values()].filter((item) => item.active).length <
+              DEFAULT_LIMITS.maxConcurrentRuns,
+          onAutoResume: (input, signal) =>
+            holder.entry ? this.autoResume(holder.entry, input, signal) : Promise.resolve(),
+        });
         const sessionId = randomUUID();
         const streamEpoch = randomUUID();
         const entry: RegisteredSession = {
@@ -193,8 +204,49 @@ export class SessionRegistry {
     )
       throw new Error('RESOURCE_LIMIT');
     const runId = randomUUID();
-    const abort = new AbortController();
     entry.operations.set(clientOperationId, { inputHash, runId });
+    this.launchRun(entry, clientOperationId, runId, input);
+    return { runId, accepted: true };
+  }
+
+  /**
+   * 监视自动续跑：不要求已附着控制者（守护进程可在后台唤醒），但完整纳入 `entry.active`
+   * 与 `entry.feed` 事件流，使后续附着观察者、`session/cancel` 与审批通道全部按正式运行工作。
+   */
+  private async autoResume(
+    entry: RegisteredSession,
+    input: string,
+    externalSignal: AbortSignal,
+  ): Promise<void> {
+    if (
+      this.shuttingDown ||
+      entry.closing ||
+      entry.active ||
+      entry.needsCleanup ||
+      externalSignal.aborted ||
+      [...this.sessions.values()].filter((item) => item.active).length >=
+        DEFAULT_LIMITS.maxConcurrentRuns
+    )
+      return;
+    const runId = randomUUID();
+    const clientOperationId = `watch-resume:${runId}`;
+    const active = this.launchRun(entry, clientOperationId, runId, input, externalSignal);
+    await active.done;
+  }
+
+  private launchRun(
+    entry: RegisteredSession,
+    clientOperationId: string,
+    runId: string,
+    input: string,
+    externalSignal?: AbortSignal,
+  ): ActiveRun {
+    const abort = new AbortController();
+    const onExternalAbort = () => abort.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) abort.abort();
+      else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
     const active: ActiveRun = { id: runId, abort, done: Promise.resolve() };
     entry.active = active;
     const live = { events: [] as JsonValue[], bytes: 0, complete: true };
@@ -316,10 +368,13 @@ export class SessionRegistry {
       }
       entry.feed.publish({ type: 'run_settled', payload: { outcome }, runId });
     });
-    active.done = active.done.finally(remember);
+    active.done = active.done.finally(() => {
+      externalSignal?.removeEventListener('abort', onExternalAbort);
+      remember();
+    });
     // 持有并观察运行 Promise，防止宿主订阅/投影故障形成 unhandledRejection。
     void active.done.catch(() => {});
-    return { runId, accepted: true };
+    return active;
   }
 
   /**

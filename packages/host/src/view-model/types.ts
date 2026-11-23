@@ -161,9 +161,13 @@ export type PresentationChange =
     }
   /**
    * 整段历史被截断重建（例如重试上一轮后重新投影）：渲染层必须整体替换消息列表，
-   * 不能沿用旧回答，也不能把它当作增量追加。
+   * 不能沿用旧回答，也不能把它当作增量追加；`branchId` 存在时同步推进视图的活动分支身份。
    */
-  | { readonly type: 'history_replaced'; readonly messages: readonly ViewMessage[] }
+  | {
+      readonly type: 'history_replaced';
+      readonly messages: readonly ViewMessage[];
+      readonly branchId?: string;
+    }
   | { readonly type: 'set_expanded'; readonly blockId: string; readonly expanded: boolean }
   | { readonly type: 'todos_changed'; readonly todos?: ViewTodoState }
   | ({ readonly type: 'diagnostic' } & ViewNotice);

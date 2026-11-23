@@ -103,6 +103,7 @@ export * from './types.js';
 interface BranchingMessageStore extends StatefulMessageStore {
   createBranch(branchId: string, baseRecordId: string): Promise<SessionRecord>;
   selectBranch(branchId: string): Promise<SessionRecord>;
+  getActiveBranchId?(): string;
   isReadOnly?(): boolean;
 }
 
@@ -585,61 +586,129 @@ export class AgentSession {
   }
 
   /**
+   * 将外部收件箱（`WatchInbox` / `SessionInbox`）直接写入会话存储的背景通知同步进当前内存历史。
+   *
+   * 约束：仅在会话空闲时调用；当磁盘历史存在尚未进入内存的尾部消息或分支切换时同步上下文投影，
+   * 避免自动续跑或手动提问在陈旧内存历史上盲跑。
+   */
+  async syncExternalHistory(): Promise<boolean> {
+    this.assertIdle('sync external history');
+    if (!this.initialized) await this.init();
+    return this.pullExternalAppends();
+  }
+
+  /**
+   * 严格校验当前或指定主任务角色的绑定、凭据与上下文预算，供宿主在破坏性分支回退前预检。
+   */
+  validatePrimaryBinding(role: PrimaryModelRole = this.primaryRole): void {
+    this.resolvePrimaryBinding(role);
+  }
+
+  /**
    * 回退最后一轮（用户输入及其全部回答），创建并切换到新分支后重载内存状态。
    *
    * 约束与边界：
-   * - 必须在空闲会话调用；运行或清理进行中抛 `SessionBusyError`，不打断在途任务；
+   * - 必须在空闲会话调用，且异步落盘期间全程持有 `activeRun` 忙碌锁，阻止监视续跑或并发操作穿插；
    * - 依赖具备分支能力的状态化 Store（v2 会话），旧 SDK Store 或 v1 只读会话抛
    *   `REWIND_UNAVAILABLE`，不做破坏性降级；
    * - 切点取最后一条 `run_started` 的父记录，未闭合工具事务由 Store 拒绝分叉；
-   * - 只重载历史、上下文投影与 usage 统计，不重放模型或工具；被截断轮次的 usage
-   *   从累计值中剔除，原分支记录保留在文件中，可通过分支切换人工找回。
+   * - 返回新旧分支 ID 以及被回退轮次的原始用户消息副本（完整保留 `referenceSource` / `promptSource` /
+   *   `skillSource` 与未脱敏原文），供宿主无损重放或在预检失败时回滚分支。
    *
-   * @returns 新分支 ID，供宿主在展示层标识或排障使用。
+   * @returns 新旧分支 ID、被截断轮次的用户消息副本及起始时间戳。
    * @throws {SessionBusyError} 会话正在运行或清理时抛出。
    * @throws {KapibalaError} 没有可回退轮次或存储不支持分支时抛出（code `REWIND_UNAVAILABLE`）。
    */
-  async rewindLastTurn(): Promise<{ branchId: string }> {
+  async rewindLastTurn(): Promise<{
+    branchId: string;
+    previousBranchId: string;
+    rewoundUserMessage?: CanonicalMessage;
+    rewoundAt?: number;
+  }> {
     this.assertIdle('rewind last turn');
-    if (!this.initialized) await this.init();
-    const stateful = this.store && supportsSessionState(this.store) ? this.store : undefined;
-    const branching = stateful && hasBranchingStore(stateful) ? stateful : undefined;
-    if (!branching || branching.isReadOnly?.())
-      throw new KapibalaError('Session store does not support rewinding the last turn', {
-        code: 'REWIND_UNAVAILABLE',
-        retryPolicy: 'after_user_action',
-        safeMessage: '当前会话不支持重试上一轮',
-      });
-    const before = await branching.loadState();
-    const runRecords = before.records.filter((record) => record.type === 'run_started');
-    const lastRun = runRecords.at(-1);
-    if (!lastRun?.parentId)
-      throw new KapibalaError('No turn available to rewind', {
-        code: 'REWIND_UNAVAILABLE',
-        retryPolicy: 'after_user_action',
-        safeMessage: '没有可重试的上一轮对话',
-      });
-    const branchId = `retry-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    await branching.createBranch(branchId, lastRun.parentId);
-    await branching.selectBranch(branchId);
+    this.activeRun = true;
+    try {
+      if (!this.initialized) await this.init();
+      const stateful = this.store && supportsSessionState(this.store) ? this.store : undefined;
+      const branching = stateful && hasBranchingStore(stateful) ? stateful : undefined;
+      if (!branching || branching.isReadOnly?.())
+        throw new KapibalaError('Session store does not support rewinding the last turn', {
+          code: 'REWIND_UNAVAILABLE',
+          retryPolicy: 'after_user_action',
+          safeMessage: '当前会话不支持重试上一轮',
+        });
+      await this.pullExternalAppends();
+      const before = await branching.loadState();
+      const previousBranchId = branching.getActiveBranchId?.() ?? before.activeBranchId;
+      const runRecords = before.records.filter((record) => record.type === 'run_started');
+      const lastRun = runRecords.at(-1);
+      if (!lastRun?.parentId)
+        throw new KapibalaError('No turn available to rewind', {
+          code: 'REWIND_UNAVAILABLE',
+          retryPolicy: 'after_user_action',
+          safeMessage: '没有可重试的上一轮对话',
+        });
+      const lastRunId = String(lastRun.payload.runId ?? lastRun.payload.interactionId ?? '');
+      const matchedUser =
+        (lastRunId
+          ? this.history.find((msg) => msg.role === 'user' && msg.interactionId === lastRunId)
+          : undefined) ??
+        [...this.history]
+          .reverse()
+          .find((msg) => msg.role === 'user' && !msg.watchSource && !msg.subagentSource);
+      const rewoundUserMessage = matchedUser ? structuredClone(matchedUser) : undefined;
+      const rewoundAt = rewoundUserMessage?.timestamp;
 
-    const next = await branching.loadState();
-    const runIdOf = (record: SessionRecord) =>
-      String(record.payload.runId ?? record.payload.interactionId ?? '');
-    const remaining = new Set(
-      next.records.filter((record) => record.type === 'run_started').map(runIdOf),
-    );
-    const removedRuns = new Set(runRecords.map(runIdOf).filter((id) => id && !remaining.has(id)));
-    this.history = identifyHistory(await branching.load(), 'legacy-sdk');
-    this.totalTurns = next.records.filter((record) => record.type === 'run_started').length;
-    this.restoreUsageFromRecords(next.records, removedRuns);
-    this.lastMetrics = undefined;
-    this.lastRunMetrics = undefined;
-    this.pendingResume = false;
-    this.activeRunUsages.clear();
-    this.context = this.createContextManager();
-    await this.context.restore(this.history);
-    return { branchId };
+      const branchId = `retry-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      await branching.createBranch(branchId, lastRun.parentId);
+      await branching.selectBranch(branchId);
+
+      const next = await branching.loadState();
+      this.history = identifyHistory(await branching.load(), 'legacy-sdk');
+      this.totalTurns = next.records.filter((record) => record.type === 'run_started').length;
+      this.restoreUsageFromRecords(next.records);
+      this.lastMetrics = undefined;
+      this.lastRunMetrics = undefined;
+      this.pendingResume = false;
+      this.activeRunUsages.clear();
+      this.context = this.createContextManager();
+      await this.context.restore(this.history);
+      return {
+        branchId,
+        previousBranchId,
+        ...(rewoundUserMessage ? { rewoundUserMessage } : {}),
+        ...(rewoundAt !== undefined ? { rewoundAt } : {}),
+      };
+    } finally {
+      this.activeRun = false;
+    }
+  }
+
+  /**
+   * 空闲时切回指定既有分支并完整重建内存历史、投影与 usage 统计（用于重试启动前失败时的无损回滚）。
+   */
+  async restoreBranch(branchId: string): Promise<void> {
+    this.assertIdle('restore session branch');
+    this.activeRun = true;
+    try {
+      if (!this.initialized) await this.init();
+      const stateful = this.store && supportsSessionState(this.store) ? this.store : undefined;
+      const branching = stateful && hasBranchingStore(stateful) ? stateful : undefined;
+      if (!branching || branching.isReadOnly?.()) return;
+      await branching.selectBranch(branchId);
+      const next = await branching.loadState();
+      this.history = identifyHistory(await branching.load(), 'legacy-sdk');
+      this.totalTurns = next.records.filter((record) => record.type === 'run_started').length;
+      this.restoreUsageFromRecords(next.records);
+      this.lastMetrics = undefined;
+      this.lastRunMetrics = undefined;
+      this.pendingResume = false;
+      this.activeRunUsages.clear();
+      this.context = this.createContextManager();
+      await this.context.restore(this.history);
+    } finally {
+      this.activeRun = false;
+    }
   }
 
   /** 空闲时清空存储与全部内存状态；conversationId 不变，恢复语义等同全新会话。 */
@@ -777,6 +846,8 @@ export class AgentSession {
     try {
       if (!this.initialized) {
         await this.init();
+      } else {
+        await this.pullExternalAppends();
       }
       if (this.pendingResume) {
         this.pendingResume = false;
@@ -1576,20 +1647,50 @@ export class AgentSession {
   }
 
   /**
-   * 按会话记录重建主任务消耗与逐消息消耗。
+   * 检查持久存储是否由外部收件箱（`WatchInbox` / `SessionInbox`）追加了新背景消息；
+   * 仅当磁盘历史以前缀方式严格扩展当前内存历史时增量合入，不破坏无状态模拟 Store。
+   */
+  private async pullExternalAppends(): Promise<boolean> {
+    if (!this.store) return false;
+    const stored = identifyHistory(await this.store.load(), 'legacy-sdk');
+    if (stored.length <= this.history.length) return false;
+    for (let i = 0; i < this.history.length; i++) {
+      if (stored[i]?.id !== this.history[i]?.id) return false;
+    }
+    this.history = stored;
+    await this.context.restore(this.history);
+    return true;
+  }
+
+  /**
+   * 按当前活动分支的会话记录重建主任务消耗与逐消息消耗。
    *
    * 约束：
-   * - 只重放真实 `usage` 记录与 `run_finished.assistantUsages`，缺失时保持未知而不是补零；
-   * - `excludeRunIds` 用于重试回退：被截断轮次的 usage 记录是全局记录、仍留在文件中，
-   *   必须按 attemptId 的 run 前缀排除，否则累计值会把已删除的回答继续计入；
+   * - `usage` 是全局控制记录、在所有分支可见，而 `records` 中的 `run_started`/`run_finished`
+   *   已由 `SessionStore.loadState()` 收敛到当前活动分支因果链；因此形如 `run:step:attempt` 的
+   *   请求消耗只计入首段 `runId` 落在当前活动分支 `run_started` 集合内的记录，彻底避免多次回退
+   *   或重开会话时复活已废弃分支的 token；
    * - 摘要消耗属于跨轮上下文成本，不随轮次回退，由调用方单独处理。
    */
-  private restoreUsageFromRecords(
-    records: readonly SessionRecord[],
-    excludeRunIds?: ReadonlySet<string>,
-  ): void {
-    const excluded = (runId: unknown): boolean =>
-      typeof runId === 'string' && (excludeRunIds?.has(runId) ?? false);
+  private restoreUsageFromRecords(records: readonly SessionRecord[]): void {
+    const runIdOf = (record: SessionRecord): string =>
+      String(record.payload.runId ?? record.payload.interactionId ?? '');
+    const activeRunIds = new Set(
+      records
+        .filter((record) => record.type === 'run_started')
+        .map(runIdOf)
+        .filter(Boolean),
+    );
+    const hasRunLineage =
+      activeRunIds.size > 0 ||
+      records.some((r) => r.type === 'branch_created') ||
+      !records.some((r) => r.type === 'legacy_import');
+    const isUsageOnActiveBranch = (attemptId: string): boolean => {
+      if (!hasRunLineage || !attemptId.includes(':')) return true;
+      const runPrefix = attemptId.split(':')[0] ?? '';
+      return activeRunIds.has(runPrefix);
+    };
+
     this.usageStats = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     this.accountedAttempts.clear();
     this.messageUsages.clear();
@@ -1598,12 +1699,11 @@ export class AgentSession {
       if (record.type !== 'usage' || record.payload.role !== 'primary') continue;
       if (record.payload.importedFromFork) continue;
       const attemptId = String(record.payload.attemptId);
-      // attemptId 形如 `run:step:attempt`；按首段 runId 前缀排除被回退的轮次。
-      if (excludeRunIds?.size && excludeRunIds.has(attemptId.split(':')[0] ?? '')) continue;
+      if (!isUsageOnActiveBranch(attemptId)) continue;
       this.accountUsage(attemptId, record.payload.usage as unknown as Usage);
     }
     for (const record of records) {
-      if (record.type !== 'run_finished' || excluded(record.payload.runId)) continue;
+      if (record.type !== 'run_finished') continue;
       const entries = record.payload.assistantUsages;
       if (!Array.isArray(entries)) continue;
       for (const entry of entries) {
@@ -1620,14 +1720,9 @@ export class AgentSession {
           r.type === 'usage' &&
           r.payload.role === 'primary' &&
           !r.payload.importedFromFork &&
-          !excludeRunIds?.has(String(r.payload.attemptId).split(':')[0]),
+          isUsageOnActiveBranch(String(r.payload.attemptId)),
       ) &&
-        !records.some(
-          (r) =>
-            r.type === 'run_finished' &&
-            r.payload.usageKnown === false &&
-            !excluded(r.payload.runId),
-        ));
+        !records.some((r) => r.type === 'run_finished' && r.payload.usageKnown === false));
   }
 
   /** 以模型 attempt 身份幂等累加真实消耗；非法或缺失 usage 保持未知。 */

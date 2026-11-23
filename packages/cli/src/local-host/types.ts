@@ -32,11 +32,18 @@ export interface SessionResources {
   redact?(text: string): string;
 }
 
+/** 宿主注入给会话资源工厂的运行期协同钩子（空闲门与自动续跑接管）。 */
+export interface ResourceFactoryHooks {
+  isHostIdle?(): boolean;
+  onAutoResume?(input: string, signal: AbortSignal): Promise<void>;
+}
+
 /** 资源工厂必须复用当前宿主的写租约，审批代理可在连接变化时重定向。 */
 export interface ResourceFactory {
   create(
     workspaceRoot: string,
     conversationId: string | undefined,
     approval: ApprovalChannel,
+    hooks?: ResourceFactoryHooks,
   ): Promise<SessionResources>;
 }

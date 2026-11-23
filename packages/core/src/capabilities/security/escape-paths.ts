@@ -4,8 +4,8 @@ import { ToolError } from '../../errors/index.js';
 import { PathSandbox } from './sandbox.js';
 
 /**
- * 剥除每个路径段末尾的空白与点（保留 `.` 与 `..` 段本身）：
- * Windows Win32 API 在创建文件时会静默剥掉尾随空格与点（如 `".npmrc "` 实际落盘为 `".npmrc"`），
+ * 剥除每个路径段的 NTFS 数据流后缀（如 `::$DATA`）与末尾空白/点（保留 `.` 与 `..` 段本身）：
+ * Windows Win32 API 在创建文件时会把默认数据流后缀与尾随空格/点落到同一文件身份，
  * 词法归一化先行折叠才能让新建文件的敏感路径判定与落盘真实身份一致。
  */
 export function normalizePathSegments(relativePath: string): string {
@@ -14,14 +14,17 @@ export function normalizePathSegments(relativePath: string): string {
     .replace(/^\.\//, '')
     .replace(/\/+$/, '')
     .split('/')
-    .map((segment) =>
-      segment === '.' || segment === '..' ? segment : segment.replace(/[ .]+$/, ''),
-    )
+    .map((segment, index) => {
+      if (segment === '.' || segment === '..') return segment;
+      const withoutStream =
+        index === 0 && /^[A-Za-z]:$/.test(segment) ? segment : segment.replace(/:.*$/, '');
+      return withoutStream.replace(/[ .]+$/, '');
+    })
     .join('/');
 }
 
 /**
- * 「escape 类」敏感路径清单（016 §4.2 / §13.1 决议 3）：向这些位置写入等于取得 CI 执行权
+ * 「escape 类」敏感路径清单：向这些位置写入等于取得 CI 执行权
  * 或完成凭据注入，属「跨边界」行为而非普通工作区写入。
  *
  * 与硬禁区（`sandbox.ts` 的 `isProtectedWorkspacePath`）刻意区分：

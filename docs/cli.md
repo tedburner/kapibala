@@ -128,6 +128,8 @@ pnpm build && node packages/cli/dist/bin.js
 | `/delegate <任务> [--role\|--model\|--name]` | 用户级派发 detached 委派会话（复用当前会话写租约），终态保留可续聊 | `/delegate 整理 docs/ 链接 --name 文档巡检` |
 | `/delegations [list\|show\|open\|cancel\|delete] <id>` | 委派会话面板：元数据跨进程可见，按 ID 或唯一前缀操作；delete 物理删除释放保留名额 | `/delegations open a1b2` |
 | `/watches [cancel <watchId>]` | 查看当前会话的外部条件监视（文件变化 / 端口就绪）或取消其中一条 | `/watches cancel w1` |
+| `/evidence [--json]` | 只读汇总当前会话证据（文件变更行数、跨会话引用、MCP 调用统计、委派会话状态） | `/evidence` |
+| `/todos` | 查看当前活动分支最近一次成功写入的会话任务清单（完成度与四态分组） | `/todos` |
 | `/rename <title>` | 修改当前会话标题 | `/rename 上下文设计` |
 | `/context` | 查看保护范围、预算、剪裁与有效检查点 | `/context` |
 | `/compact` | 空闲时手动摘要旧完整交互 | `/compact` |
@@ -146,6 +148,7 @@ pnpm build && node packages/cli/dist/bin.js
 | `/mcp enable\|disable <server>` | 会话内启停该服务的工具，纯内存生效、忙碌时拦截 | `/mcp disable git-tools` |
 | `/mcp add\|remove\|edit <name> ...` | 配置级增删改，直接写 `mcp.json` 事务（`--project` 需已信任项目）；参数按空白切分，含空格的值请用桌面设置页或手编配置；边界见 [MCP 说明](mcp.md) §5 | `/mcp add demo --command npx` |
 | `/mcp approve\|revoke <server>` | 逐服务器启动批准：批准绑定完整配置摘要，任一字段变化后需重新批准；见 [MCP 说明](mcp.md) §6 | `/mcp approve demo` |
+| `/mcp import [<name>\|--all] [--from <harness>] [--project] [--force]` | 从 Claude Desktop / Claude Code / Cursor 一次性拷贝 MCP 声明（凭据值脱敏不回显） | `/mcp import --all --from claude-code` |
 | `/prompts [query]` | 检索已就绪服务的 Prompt 模板元数据（不预取正文） | `/prompts review` |
 | `/prompt <server/name> [arguments-json]` | 受控获取模板并作为单条 user 消息进入任务执行流 | `/prompt git-tools/commit "topic=docs"` |
 | `/help [command]` | 与注册共用命令目录、别名和参数规则 | `/help resume` |

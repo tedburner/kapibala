@@ -239,7 +239,7 @@
 
 html 代码块（` ```html `）与 `write_file` 写出 `.html/.htm` 的工具行各加一个「预览 HTML」开关，点击后在原位展开沙箱 iframe；默认不挂载，历史回看不批量创建预览。预览文档由主进程登记的 `kpbl-preview://` 独立来源提供，页面 CSP 只放行 `frame-src kpbl-preview:`：blob:/srcdoc 会继承主页面 CSP，模型输出里的内联脚本会被应用的 `script-src 'self'` 一并封掉，独立来源才能在保留 `sandbox="allow-scripts"`（无 `allow-same-origin`）的前提下运行。预览响应头与文档 meta 使用同一份策略（`connect-src 'none'`、`img-src data: blob:`、`form-action 'none'`），断掉网络外发；单份上限 1 MiB，主进程按 16 份 / 8 MiB 淘汰，超限不给入口而不是截断预览。
 
-同日补正文渲染：Markdown 解析加 `remark-cjk-friendly`，修复 CJK 字符紧邻 `**`／链接时的解析偏差；图片只渲染远程 http(s) 与 `data:image`（惰加载、限高、点击经 Main 在浏览器打开、失败降级为 alt 文案），本地路径与 `file:` 没有读取通道，退化为文字占位；`urlTransform` 只对 `src` 放行（默认实现会剥掉 `data:image`），`href` 仍走协议白名单。网络侧只放行 `resourceType === 'image'` 的 http(s) 请求，脚本/样式/字体继续由 `onBeforeRequest` 取消；代码块对五行以上内容补行号，长行保持横向滚动。
+同日补正文渲染：Markdown 解析加 `remark-cjk-friendly`，修复 CJK 字符紧邻 `**`／链接时的解析偏差（2026-11-23 起由 `@streamdown/cjk` 接管，见下方修订）；图片只渲染远程 http(s) 与 `data:image`（惰加载、限高、点击经 Main 在浏览器打开、失败降级为 alt 文案），本地路径与 `file:` 没有读取通道，退化为文字占位（v0.1.3 后工作区受控本地图片经 `kpbl:preview-file` 协议放行）；`urlTransform` 只对 `src` 放行（默认实现会剥掉 `data:image`），`href` 仍走协议白名单。网络侧只放行 `resourceType === 'image'` 的 http(s) 请求，脚本/样式/字体继续由 `onBeforeRequest` 取消；代码块对五行以上内容补行号，长行保持横向滚动。
 
 ### 2026-10-27 — 侧栏布局修订
 
@@ -266,3 +266,11 @@ html 代码块（` ```html `）与 `write_file` 写出 `.html/.htm` 的工具行
 - **§5.3 角色标记被 PI 重做替代**：assistant 不再显示可见「Kapibala」标记；可访问名保留 `Kapibala 回复`。
 - **§5.1 路径例外补全**：创建项目弹窗展示完整源文件夹路径是流程必需，列入例外清单。
 - 同批界面修复：深色 primary 按钮标签对比度（Kumo `!text-white` 与 PI 深色品牌底的冲突，桌面侧 utilities 层覆盖）、窄窗抽屉覆盖时 composer 避让、思考行展开箭头、设置表单类面板统一可读宽度（`--kapibala-settings-form-width`）、10px 中文标签升到 11px 第三档、侧栏「会话」组改名「临时对话」、运行事实空值行整行隐藏、首页副标题第二句条件化、信任弹窗按钮横排统一、极小图占位呈现、write_file / edit_file 英文回执不再在工具行回显、抽屉权限模式走中文显示名；同日第二轮：composer 状态条去掉与工具条重复的空间名并改为缺省整条不渲染（见设计 013 §6.3 修订），「空间未信任 / 没有可用模型」阻断提示从卡片外收进卡片内底部脚注行。
+
+### 2026-11-23 — 正文与思考流 Streamdown 升级
+
+对齐主流 AI 桌面端正文表现，在不突破 PI 单色纸面语言与安全沙箱的前提下替换桌面 Markdown 管线：
+
+- **渲染引擎**：`MessageMarkdown` 切换至 `streamdown` + `@streamdown/{code,mermaid,math,cjk}` + `katex`，移除 `react-markdown`、`remark-cjk-friendly` 与启动期预热的 Kumo `ShikiProvider`（18 语言限制）；按 `ViewBlock.state === 'streaming'` 自动切换流式自愈/块级缓存与静态模式，流式期间暂缓本地相对图片请求。
+- **双密度排版**：补齐 Tailwind v4 Preflight 下的 `.kapibala-prose`（`h1`–`h6` 字阶、`disc`/`decimal` 列表缩进、行内代码胶囊、左竖线引用、无竖线单层卡片表格、用户气泡 `pre-wrap`），新增 `.kapibala-prose-compact` 渲染展开后的思考过程，避免裸露原始 Markdown 标记；显式关闭 Streamdown 块容器的 `content-visibility: auto`，保证虚拟列表测量稳定。
+- **代码、图表与公式守卫**：代码块统一单层卡片顶栏，新增「自动换行」切换与 `svg` 代码块沙箱预览（「预览 SVG」）；Mermaid 以 `securityLevel: 'strict'` 渲染单色 `neutral` / `dark` 交互流程图；KaTeX 接入 `\( ... \)` / `\[ ... \]` 归一化与货币/环境变量单 `$` 守卫（CSP `font-src 'self' data:` 仅放行打包内联字体）；关闭 GFM 与 CJK 的 `singleTilde` 防数值区间与 `8.3` 短路径误加删除线；包裹单消息级 `MarkdownErrorBoundary`。

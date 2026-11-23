@@ -38,17 +38,29 @@ function tryNativeRealpath(target: string): string | undefined {
   }
 }
 
-/** 把路径分隔符统一为 `/`、去掉前导 `./`，并剥除每段尾随空白与点（防御 Windows Win32 尾随空白/点落盘归一绕过）。 */
+/**
+ * 把路径分隔符统一为 `/`、去掉前导 `./`，并剥除 NTFS 数据流后缀（`::$DATA` 等）及每段尾随空白与点
+ * （防御 Windows Win32 默认流后缀与尾随空白/点落盘归一绕过）。
+ */
 function normalizeRelative(relativePath: string): string {
   return relativePath
     .replace(/\\/g, '/')
     .replace(/^\.\//, '')
     .replace(/\/+$/, '')
     .split('/')
-    .map((segment) =>
-      segment === '.' || segment === '..' ? segment : segment.replace(/[ .]+$/, ''),
-    )
+    .map((segment, index) => {
+      if (segment === '.' || segment === '..') return segment;
+      const withoutDrive =
+        index === 0 && /^[A-Za-z]:$/.test(segment) ? segment : segment.replace(/:.*$/, '');
+      return withoutDrive.replace(/[ .]+$/, '');
+    })
     .join('/');
+}
+
+/** 检测路径是否携带非盘符冒号（Windows NTFS 备用/默认数据流，如 `.env::$DATA`）。 */
+function hasNtfsStreamSuffix(rawPath: string): boolean {
+  const withoutDrive = rawPath.replace(/^[A-Za-z]:(?=[\\/]|$)/, '');
+  return withoutDrive.includes(':');
 }
 
 /**
@@ -134,6 +146,13 @@ export class PathSandbox {
   resolveSafePath(targetPath: string, options?: { mode?: 'read' | 'write' }): string {
     if (!targetPath || typeof targetPath !== 'string') {
       throw new ToolError('Invalid path: path must be a non-empty string');
+    }
+
+    if (hasNtfsStreamSuffix(targetPath)) {
+      throw new ToolError(
+        `Access denied: NTFS data stream syntax in '${targetPath}' cannot be accessed`,
+        'PERMISSION_DENIED',
+      );
     }
 
     // 处理绝对路径或相对路径（相对路径以 workspaceRoot 为基准）

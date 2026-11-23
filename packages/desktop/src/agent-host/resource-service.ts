@@ -299,18 +299,21 @@ export class ResourceService {
   }
 
   /**
-   * 扫描外部 Harness 的可导入技能（打开导入抽屉时调用一次）。
+   * 扫描外部 Harness 的可导入技能（打开导入抽屉或切换目标作用域时调用）。
    *
    * 边界：未信任项目只扫描全局来源；项目来源目录不读取，避免在用户确认信任前触碰仓库内容。
    */
-  async inspectSkills(workspaceId: string): Promise<Output<'resources.inspectSkills'>> {
-    const { root, trusted, home } = this.context(workspaceId);
+  async inspectSkills(
+    params: Params<'resources.inspectSkills'>,
+  ): Promise<Output<'resources.inspectSkills'>> {
+    const { root, trusted, home } = this.context(params.workspaceId);
     const loaded = loadSettings({ homeDir: home, cwd: root, includeProject: trusted });
     return await scanSkillImport({
       homeDir: home,
       projectRoot: root,
       projectTrusted: trusted,
       settings: loaded.settings,
+      scope: params.scope,
     });
   }
 

@@ -322,26 +322,34 @@ export function SettingsDialog({
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState('');
   const [importResult, setImportResult] = useState<SkillImportResultView>();
-  /** 打开导入抽屉并扫描来源；默认全选，冲突项仍可勾选但执行时会被跳过。 */
+  /** 打开导入抽屉或切换目标作用域时扫描来源；默认全选，冲突项仍可勾选但执行时会被跳过。 */
+  const scanSkillImport = useCallback(
+    (scope: 'global' | 'project') => {
+      if (!workspaceId) return;
+      setImportScan(undefined);
+      setImportResult(undefined);
+      setImportError('');
+      setImportBusy(true);
+      void withWatchdog(
+        window.kapibala.resources.inspectSkills(workspaceId, scope),
+        '技能来源扫描超时',
+        30_000,
+      )
+        .then((scan) => {
+          setImportScan(scan);
+          setImportSelected(new Set(scan.candidates.map(importKey)));
+        })
+        .catch((error) => setImportError((error as Error).message))
+        .finally(() => setImportBusy(false));
+    },
+    [workspaceId],
+  );
   const openImportDrawer = useCallback(() => {
     if (!workspaceId) return;
     setImportOpen(true);
-    setImportScan(undefined);
-    setImportResult(undefined);
-    setImportError('');
-    setImportBusy(true);
-    void withWatchdog(
-      window.kapibala.resources.inspectSkills(workspaceId),
-      '技能来源扫描超时',
-      30_000,
-    )
-      .then((scan) => {
-        setImportScan(scan);
-        setImportSelected(new Set(scan.candidates.map(importKey)));
-      })
-      .catch((error) => setImportError((error as Error).message))
-      .finally(() => setImportBusy(false));
-  }, [workspaceId]);
+    setImportScope('global');
+    scanSkillImport('global');
+  }, [workspaceId, scanSkillImport]);
   function toggleImportCandidate(key: string): void {
     setImportSelected((current) => {
       const next = new Set(current);
@@ -2186,7 +2194,10 @@ export function SettingsDialog({
                           items={{ global: '全局', project: '项目（需信任）' }}
                           disabled={importBusy || !resMcp?.projectTrusted}
                           onValueChange={(value) => {
-                            if (value === 'global' || value === 'project') setImportScope(value);
+                            if (value !== 'global' && value !== 'project') return;
+                            setImportScope(value);
+                            // 冲突状态与已导入差异取决于目标作用域目录，切换后重新扫描刷新预览。
+                            scanSkillImport(value);
                           }}
                         />
                         {importError && (

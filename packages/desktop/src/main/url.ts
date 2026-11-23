@@ -24,3 +24,14 @@ export function normalizeUrl(url: string): string {
     return UNRESERVED.test(char) ? char : encoded.toUpperCase();
   });
 }
+
+/**
+ * 剥离 `#fragment` 后执行主框架 URL 规范化。
+ *
+ * 主页面内的页内锚点（例如 GFM 脚注或 SVG 锚点）即使改变了 URL 片段，物理文档身份并未离开
+ * 期望的渲染入口；剥离片段后再做严格字面比较，防止合法的同文档状态令 IPC 守卫永久误拒。
+ */
+export function normalizeMainFrameUrl(url: string): string {
+  const hashIndex = url.indexOf('#');
+  return normalizeUrl(hashIndex >= 0 ? url.slice(0, hashIndex) : url);
+}

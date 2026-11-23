@@ -1,7 +1,5 @@
-import { ShikiProvider } from '@cloudflare/kumo/code';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
-import { HIGHLIGHT_LANGUAGES } from './display-budget.js';
 import { FaultProbe, RendererErrorBoundary } from './error-boundary.js';
 import './index.css';
 
@@ -20,13 +18,7 @@ createRoot(root, {
   },
 }).render(
   <RendererErrorBoundary>
-    <ShikiProvider
-      engine="javascript"
-      languages={[...HIGHLIGHT_LANGUAGES]}
-      labels={{ copy: '复制代码', copied: '已复制' }}
-    >
-      <FaultProbe />
-      <App />
-    </ShikiProvider>
+    <FaultProbe />
+    <App />
   </RendererErrorBoundary>,
 );

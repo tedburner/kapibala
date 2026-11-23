@@ -146,7 +146,8 @@ const api: DesktopAPI = {
     readSkills: (workspaceId) => call('resources.readSkills', { workspaceId }),
     setSkillsEnabled: (params) => call('resources.setSkillsEnabled', params),
     setSkillDisabled: (params) => call('resources.setSkillDisabled', params),
-    inspectSkills: (workspaceId) => call('resources.inspectSkills', { workspaceId }),
+    inspectSkills: (workspaceId, scope) =>
+      call('resources.inspectSkills', { workspaceId, ...(scope ? { scope } : {}) }),
     importSkills: (params) => call('resources.importSkills', params),
   },
   session: {

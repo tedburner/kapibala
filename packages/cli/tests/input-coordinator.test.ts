@@ -153,4 +153,26 @@ describe('shared CLI input ownership', () => {
     expect(coordinator.getLine()).toBe('real question');
     coordinator.close();
   });
+
+  it('clears readline edit buffer on question() entry when user navigated history or typed ahead', async () => {
+    const { input, coordinator } = create(true, true);
+    coordinator.onLine(() => {});
+    input.write('previous prompt\n');
+    // 运行中用户按了 ↑ 召回历史，缓冲里留着 previous prompt
+    input.emit('keypress', '', { name: 'up' });
+    expect(coordinator.getLine()).toBe('previous prompt');
+    const approval = coordinator.approve(
+      {
+        toolName: 'run_command',
+        capabilities: ['exec'],
+        input: { command: 'ls' },
+        rootDir: '/repo',
+        sessionAllowed: false,
+      },
+      new AbortController().signal,
+    );
+    input.write('1\n');
+    expect(await approval).toBe('allow_once');
+    coordinator.close();
+  });
 });

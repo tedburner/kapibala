@@ -91,10 +91,15 @@ export function checkDesktop(artifacts = false): void {
               specifier === '@kiturone/kapibala-host/internal',
             `${relative}: private host import`,
           );
-        if (relative.startsWith('renderer/') && specifier.startsWith('@kiturone/kapibala-host'))
+        if (
+          (relative.startsWith('renderer/') ||
+            relative.startsWith('shared/') ||
+            relative.startsWith('preload/')) &&
+          specifier.startsWith('@kiturone/kapibala-host')
+        )
           insist(
             specifier === '@kiturone/kapibala-host/view-model',
-            `${relative}: renderer may only import the view-model subpath`,
+            `${relative}: browser/preload may only import the view-model subpath`,
           );
       }
       ts.forEachChild(node, visit);
@@ -137,8 +142,6 @@ export function checkDesktop(artifacts = false): void {
     '@tanstack/react-virtual',
     'react',
     'react-dom',
-    'react-markdown',
-    'remark-cjk-friendly',
     'remark-gfm',
     'zustand',
     'zod',
@@ -151,12 +154,18 @@ export function checkDesktop(artifacts = false): void {
   // 只查 dependencies 会放行新增的未批准 UI 库；构建工具链在此单独登记，新增一律过门禁。
   const devAllowed = new Set([
     '@playwright/test',
+    '@streamdown/cjk',
+    '@streamdown/code',
+    '@streamdown/math',
+    '@streamdown/mermaid',
     '@tailwindcss/vite',
     '@types/react',
     '@types/react-dom',
     'electron',
     'electron-builder',
     'electron-vite',
+    'katex',
+    'streamdown',
     'tailwindcss',
     'typescript',
     'vite',
@@ -194,16 +203,17 @@ export function checkDesktop(artifacts = false): void {
     'Missing first-frame theme or CSP',
   );
   const main = fs.readFileSync(path.join(desktop, 'src/main/index.ts'), 'utf8');
-  // URL 守卫必须两侧都经 normalizeUrl：pathToFileURL 会把 8.3 短名里的 ~ 编码成 %7E，
-  // 而 Chromium 帧 URL 保留字面 ~，字面比较在 Windows 短路径下永不相等（控制端口永不投递）。
+  // URL 守卫必须两侧都经 normalizeMainFrameUrl / normalizeUrl：pathToFileURL 会把 8.3 短名里的 ~ 编码成 %7E，
+  // Chromium 帧 URL 保留字面 ~，且页内 #fragment 导航不得误断控制通道或触发跨源误拒。
   for (const setting of [
     'contextIsolation: true',
     'sandbox: true',
     'nodeIntegration: false',
     'webSecurity: true',
     'senderFrame !== window.webContents.mainFrame',
-    'normalizeUrl(event.senderFrame.url) !== expectedURL',
+    'normalizeMainFrameUrl(event.senderFrame.url) !== expectedURL',
     'expectedURL = normalizeUrl(initial.href)',
+    "if (mainFrame && !inPlace) renderer?.peer.close('RENDERER_NAVIGATED')",
   ])
     insist(main.includes(setting), `Missing desktop source guard: ${setting}`);
   // 启动环境必须经白名单构造：全量继承会把宿主注入的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE

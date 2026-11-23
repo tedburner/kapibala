@@ -18,6 +18,7 @@ import {
   findProtectedShellTargets,
 } from '../../capabilities/shell/command-class.js';
 import { classifyShellCommandSafety } from '../../capabilities/shell/command-safety.js';
+import { computeScriptTargetDigest } from '../../capabilities/shell/script-trust.js';
 import type { Tool, ToolExecutionIdentity } from '../../capabilities/tools/index.js';
 import { commandAuditSummary } from '../../extensibility/logging/index.js';
 import type { ToolResultBlock, ToolResultExecution, ToolUseBlock } from '../../types/index.js';
@@ -108,7 +109,9 @@ export async function resolveToolApproval(deps: ToolApprovalDeps): Promise<ToolA
       sessionAllowed:
         !shell ||
         shell.scriptDigest !== undefined ||
-        activeMode === 'Auto' ||
+        (activeMode === 'Auto' &&
+          computeScriptTargetDigest(shell.command, shell.cwd, rootDir, shell.interpreter) !==
+            'unhashed') ||
         /^(?:pwd|get-location)$/i.test(shell.command.trim()),
     };
     const repeatKey = createHash('sha256')

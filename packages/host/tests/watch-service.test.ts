@@ -625,4 +625,62 @@ describe('WatchService', () => {
     expect(env.resumes).toHaveLength(2);
     env.service.dispose();
   });
+
+  it('切到其他分支后旧分支通知仍落回登记分支，但不触发当前新分支的盲目续跑；回退轮次时同步取消该轮新登记监视并迁移旧监视分支', async () => {
+    let now = 1_000_000;
+    let activeBranch = 'main';
+    const baseStore = memoryStore();
+    const store: WatchStateStore & { states: WatchState[] } = {
+      ...baseStore,
+      getActiveBranchId: () => activeBranch,
+    };
+    const files = memoryFileSystem({ 'early.txt': '1', 'late.txt': '1', 'other.txt': '1' });
+    const env = harness({ now: () => now, fileSystem: files, store });
+    await env.service.register({
+      kind: 'file_change',
+      target: 'early.txt',
+      intervalMs: 2_000,
+      deadlineAt: now + 180_000,
+    });
+    now += 5_000;
+    const rewoundTurnAt = now;
+    await env.service.register({
+      kind: 'file_change',
+      target: 'late.txt',
+      intervalMs: 2_000,
+      deadlineAt: now + 180_000,
+    });
+
+    // 重试回退最后一轮：本轮登记的 late.txt 被取消，早期轮次的 early.txt 迁移到 retry-1 分支
+    activeBranch = 'retry-1';
+    await env.service.onBranchRewound('main', 'retry-1', rewoundTurnAt);
+    expect(env.service.list().find((w) => w.target === 'late.txt')?.state).toBe('cancelled');
+    expect(env.service.list().find((w) => w.target === 'early.txt')?.state).toBe('armed');
+
+    // early.txt 触发后投递到新活动分支 retry-1 并正常唤醒续跑
+    files.write('early.txt', '2');
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    now += 300;
+    await vi.advanceTimersByTimeAsync(301);
+    expect(env.resumes).toHaveLength(1);
+
+    // 在 retry-1 登记一条监视后用户手动切到 feature 分支：通知落盘回 retry-1，但不唤醒 feature 分支
+    now += 70_000;
+    await env.service.register({
+      kind: 'file_change',
+      target: 'other.txt',
+      intervalMs: 2_000,
+      deadlineAt: now + 180_000,
+    });
+    activeBranch = 'feature';
+    files.write('other.txt', '2');
+    now += 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    now += 300;
+    await vi.advanceTimersByTimeAsync(301);
+    expect(env.delivered).toHaveLength(2);
+    expect(env.resumes).toHaveLength(1);
+    env.service.dispose();
+  });
 });

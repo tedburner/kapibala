@@ -17,9 +17,10 @@ export function collectBundledLicenses(
   const vendors = new Map<string, { name: string; version: string }>();
   for (const id of moduleIds) {
     const file = id.split('?')[0];
+    const normalizedFile = file.replaceAll('\\', '/');
     if (
       !path.isAbsolute(file) ||
-      !file.includes(`${path.sep}node_modules${path.sep}`) ||
+      !normalizedFile.includes('/node_modules/') ||
       !fs.existsSync(file)
     )
       continue;

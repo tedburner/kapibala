@@ -251,9 +251,13 @@ const change = z.discriminatedUnion('type', [
       aliases: z.record(text, text).optional(),
     })
     .strict(),
-  // 重试截断历史后整体替换消息列表；页面必须丢弃旧回答，不能当增量追加。
+  // 重试截断历史后整体替换消息列表；页面必须丢弃旧回答，不能当增量追加；带 branchId 时同步活动分支。
   z
-    .object({ type: z.literal('history_replaced'), messages: z.array(message) })
+    .object({
+      type: z.literal('history_replaced'),
+      messages: z.array(message),
+      branchId: id.optional(),
+    })
     .strict(),
   z
     .object({
@@ -648,7 +652,7 @@ const updateCheckResult = z
       .object({ name: text, url: z.url().max(2048), size: z.number().nonnegative() })
       .strict()
       .optional(),
-    /** 同一平台的 SHA256 清单；下载与打开前必须校验（U0.2）。 */
+    /** 同一平台的 SHA256 清单；下载与打开前必须校验。 */
     checksum: z
       .object({ name: text, url: z.url().max(2048) })
       .strict()
@@ -820,7 +824,12 @@ export const PARAMS = {
       disabled: z.boolean(),
     })
     .strict(),
-  'resources.inspectSkills': z.object({ workspaceId: id }).strict(),
+  'resources.inspectSkills': z
+    .object({
+      workspaceId: id,
+      scope: z.enum(['global', 'project']).optional(),
+    })
+    .strict(),
   /** 只传来源身份，不传正文；`items` 为空数组表示导入全部候选。 */
   'resources.importSkills': z
     .object({
@@ -1281,8 +1290,11 @@ export type DesktopAPI = {
     setSkillDisabled(
       params: Params<'resources.setSkillDisabled'>,
     ): Promise<Output<'resources.setSkillDisabled'>>;
-    /** 扫描外部 Harness 的可导入技能；只在打开导入抽屉时调用一次。 */
-    inspectSkills(workspaceId: string): Promise<Output<'resources.inspectSkills'>>;
+    /** 扫描外部 Harness 的可导入技能；打开导入抽屉或切换目标作用域时调用。 */
+    inspectSkills(
+      workspaceId: string,
+      scope?: 'global' | 'project',
+    ): Promise<Output<'resources.inspectSkills'>>;
     /** 执行导入；项目作用域在未信任项目上由 host 直接拒绝。 */
     importSkills(
       params: Params<'resources.importSkills'>,

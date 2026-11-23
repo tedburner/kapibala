@@ -3,8 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 import { clipForDisplay } from './display-budget.js';
 
 /**
- * 纯文本代码回退块：无法识别语言或超过展示预算的内容在这里渲染，
- * 不进入高亮管线（避免组件告警与整段 tokenize），保留复制能力。
+ * 纯文本代码回退块：详情抽屉原始载荷与超过展示预算的代码块在这里渲染，
+ * 不进入语法高亮管线（避免超大文本整段分词阻塞主线程），保留复制能力。
  * 只渲染经预算裁剪后的文本；截断时复制完整原文并向用户明示显示范围。
  */
 export function PlainCodeBlock({

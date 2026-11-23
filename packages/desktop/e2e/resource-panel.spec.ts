@@ -76,6 +76,50 @@ test.describe
       // 第一次保存（http 缺 url）被拒绝，第二次（合法 stdio）以同一名称落盘
       expect(config.mcpServers.broken?.command).toBe('node resource-e2e-server.js');
       expect(config.mcpServers.broken?.enabled).toBe(true);
+
+      const proofDir = path.resolve('test-results/visual-proof');
+      fs.mkdirSync(proofDir, { recursive: true });
+      await page.screenshot({
+        path: path.join(proofDir, 'resource-mcp-panel.png'),
+        animations: 'disabled',
+      });
+    });
+
+    test('技能导入抽屉：切换目标作用域重算冲突并采集真图', async () => {
+      const extSkill = path.join(home, '.claude/skills/ext-review');
+      fs.mkdirSync(extSkill, { recursive: true });
+      fs.writeFileSync(
+        path.join(extSkill, 'SKILL.md'),
+        '---\nname: ext-review\ndescription: 跨工具导入验收技能\nmodel: claude-sonnet\n---\nReview body.',
+      );
+      // 预先仅在全局目录放入同名技能，项目空间尚无同名技能
+      const globalTarget = path.join(home, '.kapibala/skills/ext-review');
+      fs.mkdirSync(globalTarget, { recursive: true });
+      fs.writeFileSync(
+        path.join(globalTarget, 'SKILL.md'),
+        '---\nname: ext-review\ndescription: 既有全局副本\n---\nOld.',
+      );
+
+      await page.getByRole('button', { name: '打开设置' }).click();
+      await page.getByRole('tab', { name: '资源管理' }).click();
+      // 技能区块的「从其它工具导入」按钮（MCP 区块同名按钮带 aria-label="从其它工具导入 MCP"）
+      await page.getByRole('button', { name: '从其它工具导入', exact: true }).click();
+      const drawer = page.getByRole('region', { name: '从其它工具导入技能' });
+      await expect(drawer).toBeVisible();
+      await expect(drawer.getByText(/已存在（将跳过）/)).toBeVisible();
+
+      // 切换目标作用域为「项目（需信任）」后重新扫描，项目目录无同名技能，冲突提示消失
+      await drawer.getByLabel('目标作用域').click();
+      await page.getByRole('option', { name: '项目（需信任）' }).click();
+      await expect(drawer.getByText('ext-review', { exact: true })).toBeVisible();
+      await expect(drawer.getByText(/已存在（将跳过）/)).toHaveCount(0);
+
+      const proofDir = path.resolve('test-results/visual-proof');
+      fs.mkdirSync(proofDir, { recursive: true });
+      await page.screenshot({
+        path: path.join(proofDir, 'resource-skill-import-drawer.png'),
+        animations: 'disabled',
+      });
     });
 
     test('启停开关写回配置文件', async () => {

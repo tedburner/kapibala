@@ -173,4 +173,83 @@ describe('AgentSession 逐消息消耗与上一轮回退', () => {
     });
     await session.destroy();
   });
+
+  it('连续多次回退与重新打开会话不会复活已废弃重试分支的 usage，且保留原用户消息并持有忙碌门', async () => {
+    const { session } = await openSession([
+      reply('第一轮', 11),
+      reply('第二轮初稿', 17),
+      reply('第二轮一改', 23),
+      reply('第二轮二改', 29),
+    ]);
+    for await (const _ of session.run('问题一')) {
+      /* 消费事件 */
+    }
+    for await (const _ of session.run('问题二')) {
+      /* 消费事件 */
+    }
+    const rewound1 = await session.rewindLastTurn();
+    expect(rewound1.rewoundUserMessage?.content).toEqual([{ type: 'text', text: '问题二' }]);
+    for await (const _ of session.run('问题二')) {
+      /* 消费事件 */
+    }
+    expect(session.getStats().totalTokens.totalTokens).toBe(11 + 23);
+
+    // 第二次连续回退：不得把第一次被抛弃的 17 token 重新加回累计值。
+    const rewinding = session.rewindLastTurn();
+    expect(session.isBusy()).toBe(true);
+    await rewinding;
+    expect(session.isBusy()).toBe(false);
+    expect(session.getStats().totalTokens.totalTokens).toBe(11);
+
+    for await (const _ of session.run('问题二')) {
+      /* 消费事件 */
+    }
+    expect(session.getStats().totalTokens.totalTokens).toBe(11 + 29);
+    await session.destroy();
+
+    // 重新打开同一会话：只统计当前活动分支链上的 usage（11 + 29 = 40），不混入废弃分支（17、23）。
+    const reopenedStore = await SessionStore.open(file);
+    const reopened = new AgentSession({
+      conversationId: 'test-rewind',
+      defaultProfile: TEST_PROFILE,
+      defaultProvider: new ScriptedProvider([]),
+      store: reopenedStore,
+      rootDir: directory,
+    });
+    await reopened.init();
+    expect(reopened.getStats().totalTokens.totalTokens).toBe(40);
+    await reopened.destroy();
+  });
+
+  it('已初始化会话在下一轮运行前自动同步 WatchInbox 落盘的背景通知进内存历史', async () => {
+    const { WatchInbox } = await import('../src/runtime/agent/outbox.js');
+    const { session, provider, store } = await openSession([
+      reply('已设置监视', 10),
+      reply('已收到监视通知并处理', 14),
+    ]);
+    for await (const _ of session.run('开始监视')) {
+      /* 消费事件 */
+    }
+    const inbox = new WatchInbox(store);
+    await inbox.consume(
+      {
+        eventId: 'watch-evt-1',
+        watchId: 'watch-1',
+        kind: 'file_change',
+        target: 'build/out.txt',
+        state: 'fired',
+        firedAt: Date.now(),
+        detail: '文件内容已变化',
+      },
+      store.getActiveBranchId(),
+    );
+    for await (const _ of session.run('（会话监视事件已触发，请根据上一条通知继续。）')) {
+      /* 消费事件 */
+    }
+    const sentText = JSON.stringify(provider.requests[1] ?? []);
+    expect(sentText).toContain('watch-1');
+    expect(sentText).toContain('build/out.txt');
+    expect(session.getHistory().some((msg) => msg.watchSource?.watchId === 'watch-1')).toBe(true);
+    await session.destroy();
+  });
 });

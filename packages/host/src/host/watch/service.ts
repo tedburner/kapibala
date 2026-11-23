@@ -388,6 +388,76 @@ export class WatchService {
   }
 
   /**
+   * 轮次回退或分支恢复后同步调整活动监视归属。
+   *
+   * 规则：
+   * - 提供 `rewoundAt` 时，属于 `fromBranchId` 且登记时间不早于被截断轮次起点（`armedAt >= rewoundAt`）
+   *   的条目随该轮一并取消（清理待投递通知并把水位推进到关闭时刻，避免重启后反向补投）；
+   * - 更早轮次已在 `fromBranchId` 登记的 `armed` 条目（及未提供 `rewoundAt` 的分支回滚）迁移到 `toBranchId`，
+   *   使后续命中继续落入新的活动分支。
+   */
+  async onBranchRewound(
+    fromBranchId: string,
+    toBranchId: string,
+    rewoundAt?: number,
+  ): Promise<void> {
+    if (this.disposed || fromBranchId === toBranchId) return;
+    let changed = false;
+    for (const entry of this.entries.values()) {
+      if (entry.state.branchId !== fromBranchId) continue;
+      if (rewoundAt !== undefined && entry.state.armedAt >= rewoundAt) {
+        for (let index = this.queue.length - 1; index >= 0; index--) {
+          if (this.queue[index]?.notification.watchId === entry.state.watchId) {
+            this.queue.splice(index, 1);
+          }
+        }
+        this.deliveryFailures.delete(entry.state.watchId);
+        if (entry.state.state === 'armed') {
+          this.clearTimers(entry);
+          const closedAt = this.now();
+          const cancelled: WatchState = {
+            ...entry.state,
+            state: 'cancelled',
+            closedAt,
+            lastSeenAt: closedAt,
+          };
+          entry.state = cancelled;
+          entry.detail = '随轮次回退一并取消';
+          changed = true;
+          try {
+            await this.options.store.appendWatchState(cancelled);
+          } catch {
+            /* 落盘失败只影响下次恢复展示，本进程内存已停掉定时器。 */
+          }
+        }
+        continue;
+      }
+      for (const pending of this.queue) {
+        if (
+          pending.notification.watchId === entry.state.watchId &&
+          pending.branchId === fromBranchId
+        ) {
+          pending.branchId = toBranchId;
+        }
+      }
+      if (entry.state.state === 'armed') {
+        const migrated: WatchState = { ...entry.state, branchId: toBranchId };
+        entry.state = migrated;
+        changed = true;
+        try {
+          await this.options.store.appendWatchState(migrated);
+        } catch {
+          /* 分支迁移落盘失败不阻断当前重试。 */
+        }
+      }
+    }
+    if (changed) {
+      this.pruneTerminalEntries();
+      this.options.onChange?.();
+    }
+  }
+
+  /**
    * 停止全部定时器并中止在途续跑；不写 `watch_state`，未触发的监视在下次宿主启动时继续恢复。
    * 续跑若已进入宿主运行管线，由其自行响应 abort 信号收尾，本方法不等待。
    */
@@ -632,17 +702,22 @@ export class WatchService {
       return;
     }
     const batch = this.queue.splice(0, this.queue.length);
-    let delivered = 0;
-    // 只有真实条件命中（fired / timeout / orphaned）才值得唤醒续跑；
-    // 用户主动取消不产生新信息，续跑只会空烧一轮。
+    const activeBranchId = this.options.store.getActiveBranchId();
+    // 只有真实条件命中（fired / timeout / orphaned）且落在当前活动分支才值得唤醒续跑；
+    // 用户主动取消或旧分支延迟到期的通知不触发当前分支的盲目续跑。
     let resumable = 0;
     for (const item of batch) {
       try {
         const written = await this.options.deliver(item.notification, item.branchId);
-        if (written) delivered++;
         this.deliveryFailures.delete(item.notification.eventId);
         await this.advanceWater(item);
-        if (written && item.notification.state !== 'cancelled') resumable++;
+        if (
+          written &&
+          item.notification.state !== 'cancelled' &&
+          item.branchId === activeBranchId
+        ) {
+          resumable++;
+        }
       } catch (error) {
         const attempts = (this.deliveryFailures.get(item.notification.eventId) ?? 0) + 1;
         this.deliveryFailures.set(item.notification.eventId, attempts);

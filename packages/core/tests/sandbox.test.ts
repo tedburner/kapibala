@@ -239,6 +239,29 @@ describe('PathSandbox (硬禁区)', () => {
     expect(isProtectedWorkspacePath('nested/.envrc')).toBe(true);
     expect(isProtectedWorkspacePath('src/index.ts')).toBe(false);
   });
+
+  it('rejects NTFS alternate/default data stream suffixes (::$DATA) on new files and escape paths', async () => {
+    const { inspectFileWriteTarget, isEscapeClassPath } = await import(
+      '../src/capabilities/security/escape-paths.js'
+    );
+    const sandbox = new PathSandbox({ rootDir });
+    for (const target of [
+      '.env::$DATA',
+      '.envrc::$DATA',
+      '.git/config::$DATA',
+      'nested/.env:secret',
+    ]) {
+      expect(() => sandbox.resolveSafePath(target)).toThrowError(
+        expect.objectContaining({ code: 'PERMISSION_DENIED' }),
+      );
+      expect(inspectFileWriteTarget(target, rootDir, sandbox).protectedTarget).toBeDefined();
+    }
+    expect(isEscapeClassPath('.npmrc::$DATA')).toBe(true);
+    expect(isEscapeClassPath('.github/workflows/ci.yml::$DATA')).toBe(true);
+    expect(() => sandbox.resolveSafePath('.npmrc::$DATA')).toThrowError(
+      expect.objectContaining({ code: 'PERMISSION_DENIED' }),
+    );
+  });
 });
 
 describe.skipIf(!linkSupport.file)('PathSandbox (越界文件符号链接穿透)', () => {

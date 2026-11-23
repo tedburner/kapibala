@@ -9,12 +9,19 @@
  * - 空前缀视为文件名前缀命中，按更短路径优先排序，首页补全先看到浅层文件；
  * - `limit` 只影响返回条数，不影响排序与匹配集合。
  */
+/** 单个 `@` 文件补全候选条目；`insert` 带前导 `@`，确认后原样替换触发片段。 */
 export interface FileCompletionItem {
   insert: string;
   label: string;
   detail: string;
 }
 
+/**
+ * 按前缀对工作区相对路径清单打分并截取前 `limit` 条候选。
+ *
+ * 优先级固定为「文件名前缀命中 > 文件名子串命中 > 目录路径包含」，同级内短路径优先、字典序兜底；
+ * 不访问文件系统，也不修改传入数组。
+ */
 export function rankFileMatches(
   files: readonly string[],
   prefix: string,

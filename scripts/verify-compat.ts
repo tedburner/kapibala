@@ -45,6 +45,7 @@ export interface CompatCombo {
   host: HostSide;
 }
 
+/** 旧新产物四组合完整枚举；`verify:compat` 逐项在 stdio 与本机 socket 两种传输上执行。 */
 export const COMPAT_COMBOS: readonly CompatCombo[] = [
   { id: 'old-old', client: 'old', host: 'old' },
   { id: 'old-new', client: 'old', host: 'new' },
@@ -381,6 +382,7 @@ function legacyPaths(cacheRoot: string): { client: string; host: string } {
   return { client: path.join(root, 'client/index.js'), host: path.join(root, 'bin.js') };
 }
 
+/** 单次子进程兼容套件执行输出；`ok: false` 时 `error` 携带供断言比对的拒绝分类或异常文本。 */
 export interface HarnessResult {
   ok: boolean;
   transport: TransportKind;

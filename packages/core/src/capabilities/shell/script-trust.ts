@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -44,11 +45,26 @@ const PACKAGE_SCRIPT_SUBCOMMANDS = new Set([
 const PACKAGE_VALUE_FLAGS = new Set([
   '--dir',
   '--filter',
+  '--loglevel',
   '--prefix',
   '--reporter',
   '--workspace',
   '-C',
   '-F',
+  '-w',
+]);
+
+/** 会改变包管理器工作目录的选项：目标 `package.json` 必须从切换后的目录解析。 */
+const PACKAGE_DIR_FLAGS = new Set(['-C', '--dir', '--prefix']);
+
+/** 会让包管理器在工作区多个子包执行脚本的选项：需一并校验工作区子包的 `package.json`。 */
+const PACKAGE_MULTI_MANIFEST_FLAGS = new Set([
+  '--filter',
+  '-F',
+  '--workspace',
+  '-w',
+  '-r',
+  '--recursive',
 ]);
 
 /** 看起来像可执行脚本的扩展名；只用于识别 `./x.sh` 形式。 */
@@ -205,6 +221,67 @@ function statSignature(targets: readonly string[]): string {
   return parts.join('|');
 }
 
+/** 解释器在主脚本前允许放行的纯布尔无参开关；其余未知选项一律保守归 `unknown`。 */
+const INTERPRETER_SAFE_BOOLEAN_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  node: new Set(['--no-warnings', '--enable-source-maps', '--expose-gc', '--preserve-symlinks']),
+  tsx: new Set(['--no-warnings', '--enable-source-maps']),
+  python: new Set(['-u', '-B', '-E', '-s', '-S', '-O', '-OO', '-I', '-q']),
+  python3: new Set(['-u', '-B', '-E', '-s', '-S', '-O', '-OO', '-I', '-q']),
+  bash: new Set(['-u', '-x']),
+  sh: new Set(['-u', '-x']),
+  dash: new Set(['-u', '-x']),
+  zsh: new Set(['-u', '-x']),
+  deno: new Set(['-q', '--quiet', '--no-check', '--no-lock', '--no-npm', '--no-remote']),
+};
+
+/** 工作区工具可执行任意外部命令或加载未受检模块的危险开关。 */
+const WORKSPACE_UNSAFE_FLAGS = new Set([
+  '--plugin',
+  '--rulesdir',
+  '--require',
+  '-r',
+  '--import',
+  '--onSuccess',
+  '--onFailure',
+  '--inject',
+  '--esbuildOptions',
+  '--globalSetup',
+  '--setupFiles',
+  '--setupFilesAfterEnv',
+  '--browser',
+  '--environment',
+]);
+
+/** vitest 子命令与取值型选项：用于区分位置测试文件参数与普通开关参数。 */
+const VITEST_SUBCOMMANDS = new Set([
+  'run',
+  'watch',
+  'dev',
+  'related',
+  'bench',
+  'typecheck',
+  'list',
+  'init',
+]);
+const VITEST_VALUE_FLAGS = new Set([
+  '-t',
+  '--testNamePattern',
+  '--reporter',
+  '--outputFile',
+  '--pool',
+  '--shard',
+  '--project',
+  '--dir',
+  '--root',
+  '--sequence',
+  '--maxConcurrency',
+  '--testTimeout',
+  '--hookTimeout',
+]);
+
+/** 单文件可纳入会话级批准指纹的最大体积（1 MiB）。 */
+const MAX_DIGEST_TARGET_BYTES = 1024 * 1024;
+
 /**
  * 计算命令将执行的脚本 / `package.json` / 构建配置的 git 可信度。
  *
@@ -218,18 +295,70 @@ export function assessScriptTrust(
   command: string,
   cwd: string,
   rootDir: string,
+  interpreter?: string,
 ): ScriptTrust | undefined {
-  const segments = splitSegments(command);
+  const powershell = interpreter === 'pwsh' || interpreter === 'powershell';
+  const collected = collectCommandScriptTargets(command, cwd, rootDir, powershell);
+  if (collected === 'unknown') return 'unknown';
+  if (collected.length === 0) return undefined;
+  return gitTrust(collected, path.resolve(rootDir));
+}
+
+/**
+ * 计算命令涉及的全部脚本、`package.json` 与构建配置的内容摘要，供会话批准缓存与执行前 TOCTOU 复核绑定。
+ *
+ * 边界：
+ * - 命令不涉及任何脚本/清单目标时返回 `undefined`；
+ * - 涉及脚本/清单但存在动态参数、未知选项或单文件超 1 MiB 无法完整哈希时返回 `'unhashed'`，
+ *   调用方据此禁止 `allow_session` 盲缓存；
+ * - 全部目标可静态解析且在体积上限内时返回确定性 SHA-256 十六进制摘要，文件一经篡改摘要立即失配。
+ */
+export function computeScriptTargetDigest(
+  command: string,
+  cwd: string,
+  rootDir: string,
+  interpreter?: string,
+): string | 'unhashed' | undefined {
+  const powershell = interpreter === 'pwsh' || interpreter === 'powershell';
+  const collected = collectCommandScriptTargets(command, cwd, rootDir, powershell);
+  if (collected === 'unknown') return 'unhashed';
+  if (collected.length === 0) return undefined;
+  const sorted = [...new Set(collected)].sort();
+  const hash = createHash('sha256');
+  for (const target of sorted) {
+    try {
+      const stat = fs.statSync(target);
+      if (!stat.isFile() || stat.size > MAX_DIGEST_TARGET_BYTES) return 'unhashed';
+      hash.update(target);
+      hash.update('\0');
+      hash.update(fs.readFileSync(target));
+      hash.update('\0');
+    } catch {
+      return 'unhashed';
+    }
+  }
+  return hash.digest('hex');
+}
+
+function collectCommandScriptTargets(
+  command: string,
+  cwd: string,
+  rootDir: string,
+  powershell: boolean,
+): readonly string[] | 'unknown' {
+  const segments = splitSegments(command, powershell);
   if (segments === undefined) return 'unknown';
   const root = path.resolve(rootDir);
   let effectiveCwd = path.resolve(cwd);
   let cwdUnknown = false;
   const targets = new Set<string>();
   for (const segment of segments) {
-    const stripped = stripRedirections(segment);
+    const stripped = stripRedirections(segment, powershell);
     if (stripped === undefined) return 'unknown';
-    const words = splitWords(stripped);
-    if (words === undefined || words.length === 0) continue;
+    const rawWords = splitWords(stripped, powershell);
+    if (rawWords === undefined) return 'unknown';
+    const words = powershell ? expandPowerShellColonArgs(rawWords) : rawWords;
+    if (words.length === 0) continue;
     const cdUpdate = trackDirectoryChange(words, effectiveCwd, root);
     if (cdUpdate !== undefined) {
       if (cdUpdate === 'unknown') cwdUnknown = true;
@@ -241,8 +370,7 @@ export function assessScriptTrust(
     if (extracted === 'unknown') return 'unknown';
     for (const target of extracted) targets.add(target);
   }
-  if (targets.size === 0) return undefined;
-  return gitTrust([...targets], root);
+  return [...targets];
 }
 
 /** 校验前导 `KEY=VALUE` 赋值：禁止加载器注入键与含路径/命令分隔符的取值静默放行。 */
@@ -367,9 +495,9 @@ function segmentTargets(
           collected.push(...resolvedPreload);
           continue;
         }
-        // 其它未知 `--flag=路径` 形态可能向运行时注入模块或配置，保守归 unknown。
-        if (eq > 0 && /[\\/]/.test(word.slice(eq + 1))) return 'unknown';
-        continue;
+        if (INTERPRETER_SAFE_BOOLEAN_FLAGS[program]?.has(word)) continue;
+        // 主脚本前的任何未知解释器选项都可能消费后继文件名参数（如 `node --title clean.mjs -e ...`）或注入配置，保守归 unknown。
+        return 'unknown';
       }
       if (mainScript === undefined) {
         mainScript = word;
@@ -377,7 +505,7 @@ function segmentTargets(
         break;
       }
     }
-    if (mainScript === undefined) return collected.length > 0 ? 'unknown' : [];
+    if (mainScript === undefined) return 'unknown';
     // `bun run <name>` 没有脚本扩展名时是 package.json 脚本，与包管理器同一条信任链。
     if (!SCRIPT_EXTENSION.test(mainScript)) {
       if (program !== 'bun') return 'unknown';
@@ -393,10 +521,32 @@ function segmentTargets(
   }
 
   if (program === 'npm' || program === 'pnpm' || program === 'yarn') {
-    const subcommand = firstSubcommand(rest);
+    const parsed = parsePackageManagerArgs(rest);
+    if (parsed === 'unknown') return 'unknown';
+    let targetCwd = cwd;
+    for (const dirTarget of parsed.directories) {
+      if (
+        dirTarget.includes('$') ||
+        dirTarget.includes('`') ||
+        dirTarget.startsWith('~') ||
+        /[*?[]/.test(dirTarget)
+      ) {
+        return 'unknown';
+      }
+      const resolvedDir = path.resolve(targetCwd, dirTarget);
+      const rel = path.relative(root, resolvedDir);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) return 'unknown';
+      targetCwd = resolvedDir;
+    }
+    const { subcommand } = parsed;
     if (subcommand === undefined) return [];
+    if (subcommand === 'dlx' || subcommand === 'exec') return 'unknown';
     if (!PACKAGE_SCRIPT_SUBCOMMANDS.has(subcommand)) return [];
-    const manifest = nearestPackageJson(cwd, root);
+    if (parsed.multiWorkspace) {
+      const manifests = collectWorkspacePackageJsons(root);
+      return manifests === 'unknown' || manifests.length === 0 ? 'unknown' : manifests;
+    }
+    const manifest = nearestPackageJson(targetCwd, root);
     return manifest === undefined ? 'unknown' : [manifest];
   }
 
@@ -408,8 +558,9 @@ function segmentTargets(
 }
 
 /**
- * 提取构建/检查器（`make` / `eslint` / `vitest` 等）的配置文件目标：
+ * 提取构建/检查器（`make` / `eslint` / `vitest` 等）的配置文件与位置测试文件目标：
  * - `make` 必须找到已存在的 Makefile（或 `-f` 指定文件），缺失归 `unknown`；
+ * - `vitest` 显式传入位置测试文件路径时一并纳入 git 清洁度检查；
  * - 其余工具显式传 `-c`/`--config` 时必须纳入校验，未传时收集从 `cwd` 到 `root` 已存在的默认配置。
  */
 function resolveWorkspaceProgramConfigs(
@@ -420,32 +571,51 @@ function resolveWorkspaceProgramConfigs(
 ): readonly string[] | 'unknown' {
   const configFlags = WORKSPACE_CONFIG_FLAGS[program];
   const explicit: string[] = [];
+  const positionalTargets: string[] = [];
+  let sawSubcommand = false;
   for (let i = 0; i < rest.length; i++) {
     const word = rest[i]!;
-    if (!word.startsWith('-')) continue;
-    const eq = word.indexOf('=');
-    const flag = eq > 0 ? word.slice(0, eq) : word;
-    if (
-      flag === '--plugin' ||
-      flag === '--rulesdir' ||
-      flag === '--require' ||
-      flag === '-r' ||
-      flag === '--import'
-    ) {
-      return 'unknown';
+    if (word.startsWith('-')) {
+      const eq = word.indexOf('=');
+      const flag = eq > 0 ? word.slice(0, eq) : word;
+      if (WORKSPACE_UNSAFE_FLAGS.has(flag)) {
+        return 'unknown';
+      }
+      if (configFlags?.has(flag)) {
+        const val = eq > 0 ? word.slice(eq + 1) : rest[++i];
+        if (!val) return 'unknown';
+        const resolved = resolveAnyFileTarget(val, cwd, root);
+        if (resolved === 'unknown') return 'unknown';
+        explicit.push(...resolved);
+        continue;
+      }
+      if (program === 'vitest' && eq === -1 && VITEST_VALUE_FLAGS.has(flag)) {
+        if (rest[i + 1] === undefined) return 'unknown';
+        i++;
+      }
+      continue;
     }
-    if (configFlags?.has(flag)) {
-      const val = eq > 0 ? word.slice(eq + 1) : rest[++i];
-      if (!val) return 'unknown';
-      const resolved = resolveAnyFileTarget(val, cwd, root);
-      if (resolved === 'unknown') return 'unknown';
-      explicit.push(...resolved);
+    if (program === 'vitest') {
+      if (!sawSubcommand && VITEST_SUBCOMMANDS.has(word.toLowerCase())) {
+        sawSubcommand = true;
+        continue;
+      }
+      const resolvedFile = resolveAnyFileTarget(word, cwd, root);
+      if (resolvedFile !== 'unknown') {
+        positionalTargets.push(...resolvedFile);
+        continue;
+      }
+      const resolvedDir = resolveDirectoryFiles(word, cwd, root);
+      if (resolvedDir === 'unknown') return 'unknown';
+      positionalTargets.push(...resolvedDir);
     }
   }
-  if (explicit.length > 0) return explicit;
-  const found = findNearestFiles(cwd, root, WORKSPACE_CONFIG_CANDIDATES[program]!);
-  if (program === 'make' && found.length === 0) return 'unknown';
-  return found;
+  const baseConfigs =
+    explicit.length > 0
+      ? explicit
+      : findNearestFiles(cwd, root, WORKSPACE_CONFIG_CANDIDATES[program]!);
+  if (program === 'make' && baseConfigs.length === 0) return 'unknown';
+  return [...baseConfigs, ...positionalTargets];
 }
 
 /** 从 `cwd` 向上到 `root` 查找候选配置文件；经 native realpath 还原真实大小写并去重，兼容 Windows/macOS 大小写不敏感文件系统与 git 索引大小写敏感语义。 */
@@ -508,6 +678,75 @@ function resolveAnyFileTarget(
   } catch {
     return [resolved];
   }
+}
+
+/** 收集工作区内所有非忽略目录的 `package.json`（上限 64 个），供 `--filter`/`-w`/`-r` 多包脚本校验。 */
+function collectWorkspacePackageJsons(root: string): readonly string[] | 'unknown' {
+  const manifests: string[] = [];
+  const queue = [path.resolve(root)];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return 'unknown';
+    }
+    for (const entry of entries) {
+      if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === 'dist') continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(full);
+      } else if (entry.isFile() && entry.name === 'package.json') {
+        manifests.push(full);
+        if (manifests.length > 64) return 'unknown';
+      }
+    }
+  }
+  return manifests;
+}
+
+/** 递归收集工作区内指定测试目录下的脚本文件（上限 256 个），存在越界或超限返回 `unknown`。 */
+function resolveDirectoryFiles(
+  targetDir: string,
+  cwd: string,
+  root: string,
+): readonly string[] | 'unknown' {
+  if (
+    targetDir.includes('$') ||
+    targetDir.includes('`') ||
+    targetDir.startsWith('~') ||
+    /[*?[]/.test(targetDir)
+  ) {
+    return 'unknown';
+  }
+  const resolved = path.resolve(cwd, targetDir);
+  const rel = path.relative(root, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return 'unknown';
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return 'unknown';
+  const files: string[] = [];
+  const queue = [resolved];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return 'unknown';
+    }
+    for (const entry of entries) {
+      if (entry.name === '.git' || entry.name === 'node_modules') continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) queue.push(full);
+      else if (entry.isFile() && SCRIPT_EXTENSION.test(entry.name)) {
+        const fileTarget = resolveAnyFileTarget(full, cwd, root);
+        if (fileTarget === 'unknown') return 'unknown';
+        files.push(...fileTarget);
+        if (files.length > 256) return 'unknown';
+      }
+    }
+  }
+  return files.length > 0 ? files : 'unknown';
 }
 
 /** 从 cwd 向上找到最近的 `package.json`，不越过工作区根。 */
@@ -592,14 +831,43 @@ function gitTrust(targets: readonly string[], root: string): ScriptTrust {
 }
 
 /** 剥离段内引号外的重定向操作符与目标；遇到 heredoc 或进程替换返回 undefined。 */
-function stripRedirections(text: string): string | undefined {
+function stripRedirections(text: string, powershell = false): string | undefined {
   let command = '';
   let quote: '"' | "'" | undefined;
   for (let index = 0; index < text.length; index++) {
     const character = text[index]!;
-    if (quote) {
-      if (character === quote) quote = undefined;
+    if (quote === "'") {
+      if (powershell && character === "'" && text[index + 1] === "'") {
+        command += "''";
+        index++;
+        continue;
+      }
+      if (character === "'") quote = undefined;
       command += character;
+      continue;
+    }
+    if (quote === '"') {
+      if ((!powershell && character === '\\') || (powershell && character === '`')) {
+        const next = text[index + 1];
+        if (next === undefined) return undefined;
+        command += character + next;
+        index++;
+        continue;
+      }
+      if (powershell && character === '"' && text[index + 1] === '"') {
+        command += '""';
+        index++;
+        continue;
+      }
+      if (character === '"') quote = undefined;
+      command += character;
+      continue;
+    }
+    if ((!powershell && character === '\\') || (powershell && character === '`')) {
+      const next = text[index + 1];
+      if (next === undefined) return undefined;
+      command += character + next;
+      index++;
       continue;
     }
     if (character === '"' || character === "'") {
@@ -622,9 +890,32 @@ function stripRedirections(text: string): string | undefined {
     if (text[index + 1] === '(') return undefined;
     while (index + 1 < text.length) {
       const next = text[index + 1]!;
-      if (targetQuote) {
-        if (next === targetQuote) targetQuote = undefined;
+      if (targetQuote === "'") {
+        if (powershell && next === "'" && text[index + 2] === "'") {
+          index += 2;
+          continue;
+        }
+        if (next === "'") targetQuote = undefined;
         index++;
+        continue;
+      }
+      if (targetQuote === '"') {
+        if ((!powershell && next === '\\') || (powershell && next === '`')) {
+          if (text[index + 2] === undefined) return undefined;
+          index += 2;
+          continue;
+        }
+        if (powershell && next === '"' && text[index + 2] === '"') {
+          index += 2;
+          continue;
+        }
+        if (next === '"') targetQuote = undefined;
+        index++;
+        continue;
+      }
+      if ((!powershell && next === '\\') || (powershell && next === '`')) {
+        if (text[index + 2] === undefined) return undefined;
+        index += 2;
         continue;
       }
       if (next === '"' || next === "'") {
@@ -635,6 +926,7 @@ function stripRedirections(text: string): string | undefined {
       if (/[\s|&;<>]/.test(next)) break;
       index++;
     }
+    if (targetQuote !== undefined) return undefined;
     command += ' ';
   }
   return command;
@@ -662,22 +954,73 @@ function gitEnvironment(): NodeJS.ProcessEnv {
   );
 }
 
-/** 引号感知分段：只按引号外的 `&&` `||` `;` `|` 与换行拆分；不闭合引号返回 undefined。 */
-function splitSegments(command: string): string[] | undefined {
+/** 引号与转义感知分段：只按引号外的 `&&` `||` `;` `|` `&` 与换行拆分；不闭合引号或命令替换返回 undefined。 */
+function splitSegments(command: string, powershell = false): string[] | undefined {
   const segments: string[] = [];
   let current = '';
   let quote: '"' | "'" | undefined;
   for (let index = 0; index < command.length; index++) {
     const character = command[index]!;
-    if (quote) {
-      if (character === quote) quote = undefined;
+    if (quote === "'") {
+      if (powershell && character === "'" && command[index + 1] === "'") {
+        current += "''";
+        index++;
+        continue;
+      }
+      if (character === "'") quote = undefined;
       current += character;
+      continue;
+    }
+    if (quote === '"') {
+      if (!powershell && character === '\\') {
+        const next = command[index + 1];
+        if (next === undefined) return undefined;
+        current += character + next;
+        index++;
+        continue;
+      }
+      if (powershell && character === '`') {
+        const next = command[index + 1];
+        if (next === undefined) return undefined;
+        current += character + next;
+        index++;
+        continue;
+      }
+      if (powershell && character === '"' && command[index + 1] === '"') {
+        current += '""';
+        index++;
+        continue;
+      }
+      if (character === '"') {
+        quote = undefined;
+        current += character;
+        continue;
+      }
+      if (!powershell && character === '`') return undefined;
+      if (
+        character === '$' &&
+        (command[index + 1] === '(' || (!powershell && command[index + 1] === '{'))
+      ) {
+        return undefined;
+      }
+      current += character;
+      continue;
+    }
+    if ((!powershell && character === '\\') || (powershell && character === '`')) {
+      const next = command[index + 1];
+      if (next === undefined) return undefined;
+      current += character + next;
+      index++;
       continue;
     }
     if (character === '"' || character === "'") {
       quote = character;
       current += character;
       continue;
+    }
+    if (!powershell && character === '`') return undefined;
+    if (character === '$' && (command[index + 1] === '(' || command[index + 1] === '{')) {
+      return undefined;
     }
     if (
       (character === '&' && command[index + 1] === '&') ||
@@ -700,22 +1043,74 @@ function splitSegments(command: string): string[] | undefined {
   return segments.filter((segment) => segment.trim() !== '');
 }
 
-/** 引号感知分词；引号不闭合返回 undefined，成对引号剥离后作为单词。 */
-function splitWords(text: string): string[] | undefined {
+/** 引号与转义感知分词；引号不闭合返回 undefined，相邻引号段拼接为同一单词。 */
+function splitWords(text: string, powershell = false): string[] | undefined {
   const words: string[] = [];
   let current = '';
   let quote: '"' | "'" | undefined;
   let started = false;
-  for (const character of text) {
-    if (quote) {
-      if (character === quote) {
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index]!;
+    if (quote === "'") {
+      if (powershell && character === "'" && text[index + 1] === "'") {
+        current += "'";
+        started = true;
+        index++;
+        continue;
+      }
+      if (character === "'") {
         quote = undefined;
-        words.push(current);
-        current = '';
-        started = false;
       } else {
         current += character;
+        started = true;
       }
+      continue;
+    }
+    if (quote === '"') {
+      if (!powershell && character === '\\') {
+        const next = text[index + 1];
+        if (next === undefined) return undefined;
+        current += '"\\$`'.includes(next) ? next : `\\${next}`;
+        started = true;
+        index++;
+        continue;
+      }
+      if (powershell && character === '`') {
+        const next = text[index + 1];
+        if (next === undefined) return undefined;
+        current += next;
+        started = true;
+        index++;
+        continue;
+      }
+      if (powershell && character === '"' && text[index + 1] === '"') {
+        current += '"';
+        started = true;
+        index++;
+        continue;
+      }
+      if (character === '"') {
+        quote = undefined;
+      } else {
+        current += character;
+        started = true;
+      }
+      continue;
+    }
+    if (!powershell && character === '\\') {
+      const next = text[index + 1];
+      if (next === undefined) return undefined;
+      current += next;
+      started = true;
+      index++;
+      continue;
+    }
+    if (powershell && character === '`') {
+      const next = text[index + 1];
+      if (next === undefined) return undefined;
+      current += next;
+      started = true;
+      index++;
       continue;
     }
     if (character === '"' || character === "'") {
@@ -737,17 +1132,48 @@ function splitWords(text: string): string[] | undefined {
   return words;
 }
 
-/** 跳过选项与取值，取第一个真正的子命令（小写）。 */
-function firstSubcommand(words: readonly string[]): string | undefined {
+/** 展开 PowerShell `-Param:Value` 冒号参数，使目录/路径型选项与空格分隔写法统一受检。 */
+function expandPowerShellColonArgs(words: readonly string[]): string[] {
+  const expanded: string[] = [];
+  for (const word of words) {
+    const colonMatch = /^(-[A-Za-z][A-Za-z0-9-]*):([\s\S]+)$/.exec(word);
+    if (colonMatch) expanded.push(colonMatch[1]!, colonMatch[2]!);
+    else expanded.push(word);
+  }
+  return expanded;
+}
+
+/** 解析包管理器选项、目录切换参数与首个子命令。 */
+function parsePackageManagerArgs(
+  words: readonly string[],
+): { subcommand?: string; directories: string[]; multiWorkspace: boolean } | 'unknown' {
+  const directories: string[] = [];
+  let multiWorkspace = false;
   for (let index = 0; index < words.length; index++) {
     const word = words[index]!;
     if (word.startsWith('-')) {
-      if (PACKAGE_VALUE_FLAGS.has(word)) index++;
+      const eq = word.indexOf('=');
+      const flag = eq > 0 ? word.slice(0, eq) : word;
+      if (PACKAGE_MULTI_MANIFEST_FLAGS.has(flag)) multiWorkspace = true;
+      if (PACKAGE_DIR_FLAGS.has(flag)) {
+        const val = eq > 0 ? word.slice(eq + 1) : words[++index];
+        if (!val) return 'unknown';
+        directories.push(val);
+        continue;
+      }
+      if (word.startsWith('-C') && word.length > 2) {
+        directories.push(word.slice(2));
+        continue;
+      }
+      if (eq === -1 && PACKAGE_VALUE_FLAGS.has(flag)) {
+        if (words[index + 1] === undefined) return 'unknown';
+        index++;
+      }
       continue;
     }
-    return word.toLowerCase();
+    return { subcommand: word.toLowerCase(), directories, multiWorkspace };
   }
-  return undefined;
+  return { directories, multiWorkspace };
 }
 
 /** 去掉路径前缀取程序名；空词或以 `-` 开头返回 undefined。 */

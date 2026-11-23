@@ -73,7 +73,7 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     }
     if (JSON.stringify(input).includes('markdown-proof')) {
       const content =
-        '这是**重点**内容，图片如下：\n\n![示意图](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==)';
+        '这是**重点**内容，图片如下：\n\n![示意图](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR4nGOwbvpGFcQwatCoQaMGjRo0atCoQQNvEABPRNLupSafpAAAAABJRU5ErkJggg==)';
       response.end(
         `data: ${JSON.stringify({ id: 'fixture', choices: [{ index: 0, delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
       );
@@ -234,7 +234,9 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       page.getByText('观察不会收集结果或唤醒模型；投递未知时不补成已收集。'),
     ).toBeVisible();
     await page.screenshot({ path: path.join(artifacts, 'details-1280.png') });
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1199, 800));
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setContentSize(1199, 800),
+    );
     await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toHaveAttribute(
       'aria-modal',
       'true',
@@ -244,7 +246,9 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toBeHidden();
     await expect(page.getByRole('button', { name: '会话状态', exact: true })).toBeFocused();
     await expect(composer).toHaveValue('保留中文草稿');
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1200, 800));
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setContentSize(1200, 800),
+    );
     await page.getByRole('button', { name: '会话状态', exact: true }).click();
     if (wide) {
       // 仅宽布局可断言「点击正文不关闭抽屉」；窄布局下背景在模态遮罩内不可点。
@@ -253,7 +257,9 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     }
     await page.screenshot({ path: path.join(artifacts, 'details-1200.png') });
     await page.getByRole('button', { name: '关闭详情', exact: true }).click();
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setContentSize(1280, 800),
+    );
     await send('cancel-stream');
     await expect(page.getByText('等待取消。', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '停止', exact: true }).click();
@@ -763,7 +769,8 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
       expect(sample.boundaryContrast).toBeGreaterThanOrEqual(3);
       if (sample.state === 'focus') {
         expect(sample.focusContrast).toBeGreaterThanOrEqual(3);
-        expect(Number.parseFloat(sample.outlineWidth)).toBeGreaterThanOrEqual(2);
+        // Windows 分数缩放（如 125% DPI）会将 2px CSS outline 吸附到整数物理像素再折回 CSS 像素（约 1.6px）。
+        expect(Number.parseFloat(sample.outlineWidth)).toBeGreaterThanOrEqual(1.5);
       }
     }
     await page.evaluate(() => window.kapibala.preferences.update('system'));

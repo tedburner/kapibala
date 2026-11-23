@@ -193,12 +193,17 @@ const PACKAGE_NETWORK_SUBCOMMANDS = new Set([
 const PACKAGE_VALUE_FLAGS = new Set([
   '--dir',
   '--filter',
+  '--loglevel',
   '--prefix',
   '--reporter',
   '--workspace',
   '-C',
   '-F',
+  '-w',
 ]);
+
+/** 会切换包管理器执行目录的选项：取值必须留在工作区内且指向受检 `package.json`。 */
+const PACKAGE_DIR_FLAGS = new Set(['-C', '--dir', '--prefix']);
 
 /** git 只读子命令。 */
 const GIT_READ_SUBCOMMANDS = new Set([
@@ -266,7 +271,7 @@ const POWERSHELL_READ = new Set([
 
 /**
  * PowerShell 路径型读 cmdlet（小写，含常用别名）：与 POSIX 侧 `READ_PATH_PROGRAMS` 同款，
- * 显式路径参数解析到 workspace 外时升为 `escape`（016 §13.1 决议 1 的 PowerShell 侧对齐）。
+ * 显式路径参数解析到 workspace 外时升为 `escape`。
  */
 const POWERSHELL_READ_PATH = new Set([
   'get-content',
@@ -294,18 +299,41 @@ const POWERSHELL_NETWORK = new Set([
 
 /** PowerShell 破坏性 cmdlet 与别名。 */
 const POWERSHELL_DESTRUCTIVE = new Set([
+  'del',
   'enter-pssession',
+  'erase',
   'invoke-command',
+  'mi',
+  'move',
+  'move-item',
+  'rd',
   'remove-item',
+  'ren',
+  'rename-item',
   'ri',
   'rm',
+  'rmdir',
+  'rni',
   'set-executionpolicy',
   'start-process',
   'stop-process',
 ]);
 
-/** PowerShell 写文件 cmdlet：参数路径越界升级为 `escape`。 */
-const POWERSHELL_WRITE = new Set(['add-content', 'new-item', 'out-file', 'set-content']);
+/** PowerShell 写文件 cmdlet（含别名）：参数路径越界升级为 `escape`。 */
+const POWERSHELL_WRITE = new Set([
+  'ac',
+  'add-content',
+  'new-item',
+  'ni',
+  'out-file',
+  'sc',
+  'set-content',
+  'tee',
+  'tee-object',
+]);
+
+/** PowerShell 复制 cmdlet（含别名）：源与目标均须留在工作区内，目标走敏感路径分级。 */
+const POWERSHELL_COPY = new Set(['copy', 'copy-item', 'cp', 'cpi']);
 
 /** PowerShell 无法静态判读的 cmdlet。 */
 const POWERSHELL_UNKNOWN = new Set(['iex', 'invoke-expression']);
@@ -362,11 +390,41 @@ const DANGEROUS_ENV_KEYS = new Set([
   'BASHOPTS',
 ]);
 
+/** 解释器在主脚本前允许放行的纯布尔无参开关；其余未知选项可能消费后继文件名参数或注入配置，一律归 `unknown`。 */
+const INTERPRETER_SAFE_BOOLEAN_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  node: new Set(['--no-warnings', '--enable-source-maps', '--expose-gc', '--preserve-symlinks']),
+  tsx: new Set(['--no-warnings', '--enable-source-maps']),
+  python: new Set(['-u', '-B', '-E', '-s', '-S', '-O', '-OO', '-I', '-q']),
+  python3: new Set(['-u', '-B', '-E', '-s', '-S', '-O', '-OO', '-I', '-q']),
+  bash: new Set(['-u', '-x']),
+  sh: new Set(['-u', '-x']),
+  zsh: new Set(['-u', '-x']),
+  deno: new Set(['-q', '--quiet', '--no-check', '--no-lock', '--no-npm', '--no-remote']),
+};
+
+/** 工作区工具可执行任意外部命令或加载未受检模块的危险开关。 */
+const WORKSPACE_UNSAFE_FLAGS = new Set([
+  '--plugin',
+  '--rulesdir',
+  '--require',
+  '-r',
+  '--import',
+  '--onSuccess',
+  '--onFailure',
+  '--inject',
+  '--esbuildOptions',
+  '--globalSetup',
+  '--setupFiles',
+  '--setupFilesAfterEnv',
+  '--browser',
+  '--environment',
+]);
+
 /**
  * 判断命令的风险类别。
  *
  * 判定顺序：cwd 越界 → 单脚本摘要 → 逐段分类（escape → destructive → network →
- * workspace-write / vcs-write → read → unknown），多段取最严。含变量、命令替换、
+ * unknown → workspace-write → vcs-write → read），多段取最严。含变量、命令替换、
  * heredoc 与未闭合引号时返回 `unknown`，由上层询问；不读取文件系统，也不修改任何状态。
  *
  * 脚本类命令（直引脚本 / 解释器脚本参数 / package.json 脚本）额外受 `shell.scriptTrust`
@@ -377,10 +435,10 @@ export function classifyShellCommandClass(shell: ShellScope, rootDir: string): S
   if (!isWithinRoot(shell.cwd, rootDir)) return 'escape';
   if (shell.scriptDigest !== undefined)
     return shell.scriptTrust === 'clean' ? 'workspace-write' : 'unknown';
-  const segments = splitSegments(shell.command);
+  const isPowerShell = shell.interpreter === 'pwsh' || shell.interpreter === 'powershell';
+  const segments = splitSegments(shell.command, isPowerShell);
   if (segments === undefined || segments.length === 0) return 'unknown';
   if (segments.some((segment) => segment.hadSubshell)) return 'unknown';
-  const isPowerShell = shell.interpreter === 'pwsh' || shell.interpreter === 'powershell';
   let effectiveCwd = shell.cwd;
   let cwdUnknown = false;
   const classes: ShellCommandClass[] = [];
@@ -397,7 +455,7 @@ export function classifyShellCommandClass(shell: ShellScope, rootDir: string): S
       ? classifyPowerShellSegment(segment, effectiveCwd, rootDir, shell.scriptTrust)
       : classifyPosixSegment(segment, effectiveCwd, rootDir, shell.scriptTrust);
     classes.push(cls);
-    const nextCwd = advanceSegmentCwd(segment.text, effectiveCwd);
+    const nextCwd = advanceSegmentCwd(segment.text, effectiveCwd, isPowerShell);
     if (nextCwd === 'unknown') cwdUnknown = true;
     else if (nextCwd !== undefined) effectiveCwd = nextCwd;
   }
@@ -430,18 +488,20 @@ export function toShellCommandSafety(cls: ShellCommandClass): ShellCommandSafety
  */
 export function findProtectedShellTargets(shell: ShellScope, rootDir: string): readonly string[] {
   if (!isWithinRoot(shell.cwd, rootDir)) return [];
-  const segments = splitSegments(shell.command);
+  const isPowerShell = shell.interpreter === 'pwsh' || shell.interpreter === 'powershell';
+  const segments = splitSegments(shell.command, isPowerShell);
   if (segments === undefined) return [];
   const root = path.resolve(rootDir);
   const found = new Set<string>();
   let effectiveCwd = shell.cwd;
   for (const segment of segments) {
     const cleanedSegment = segment.text.trim().replace(/^[()]+|[()]+$/g, '');
-    const scan = scanRedirections(cleanedSegment);
+    const scan = scanRedirections(cleanedSegment, isPowerShell);
     // 进程替换的目标可以是任意命令，无法静态归因；分类器侧已按 unknown 询问。
     if (scan.processSubstitution) continue;
-    const words = splitWords(scan.command);
-    if (words === undefined) continue;
+    const rawWords = splitWords(scan.command, isPowerShell);
+    if (rawWords === undefined) continue;
+    const words = isPowerShell ? expandPowerShellColonArgs(rawWords) : rawWords;
     const candidates = scan.hasOutput ? [...scan.targets] : [];
     let index = 0;
     while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) index++;
@@ -450,13 +510,51 @@ export function findProtectedShellTargets(shell: ShellScope, rootDir: string): r
     const cmdWords = words.slice(index);
     const program = baseName(cmdWords[0]);
     const args = cmdWords.slice(1).filter((word) => !word.startsWith('-'));
-    if (program === 'tee' || program === 'touch' || program === 'mkdir') candidates.push(...args);
-    if (program === 'cp' || program === 'mv' || program === 'install') {
-      // GNU `-t DIR` 的取值才是写入目标（位置参数是源）；无值配对无法归因，跳过该段。
+    if (
+      program === 'tee' ||
+      program === 'tee-object' ||
+      program === 'touch' ||
+      program === 'mkdir' ||
+      program === 'rm' ||
+      program === 'rmdir' ||
+      program === 'unlink' ||
+      program === 'remove-item' ||
+      program === 'ri' ||
+      program === 'del' ||
+      program === 'erase' ||
+      program === 'rd'
+    ) {
+      candidates.push(...args);
+    }
+    if (
+      program === 'cp' ||
+      program === 'mv' ||
+      program === 'install' ||
+      program === 'ln' ||
+      program === 'copy-item' ||
+      program === 'cpi' ||
+      program === 'copy' ||
+      program === 'move-item' ||
+      program === 'mi' ||
+      program === 'move' ||
+      program === 'rename-item' ||
+      program === 'rni' ||
+      program === 'ren'
+    ) {
+      // GNU `-t DIR` 或 PowerShell `-Destination` 的取值优先为写入目标；否则取末位位置参数。
+      const psDestination = isPowerShell
+        ? extractPowerShellNamedTargets(cmdWords.slice(1), ['-destination', '-newname'])
+        : [];
       const targetDirectory = gnuTargetDirectory(cmdWords);
       if (targetDirectory.present && targetDirectory.value === undefined) continue;
-      const destination = targetDirectory.present ? targetDirectory.value! : args[args.length - 1];
-      if (destination !== undefined) candidates.push(destination);
+      if (psDestination.length > 0) {
+        candidates.push(...psDestination);
+      } else {
+        const destination = targetDirectory.present
+          ? targetDirectory.value!
+          : args[args.length - 1];
+        if (destination !== undefined) candidates.push(destination);
+      }
     }
     if (program === 'git') {
       for (const out of extractGitOutputTargets(cmdWords.slice(1)).values) candidates.push(out);
@@ -472,11 +570,20 @@ export function findProtectedShellTargets(shell: ShellScope, rootDir: string): r
     if (program === 'find' && cmdWords.includes('-delete')) candidates.push(...args);
     if (
       program === 'set-content' ||
+      program === 'sc' ||
       program === 'add-content' ||
+      program === 'ac' ||
       program === 'out-file' ||
-      program === 'new-item'
-    )
-      candidates.push(...args);
+      program === 'new-item' ||
+      program === 'ni'
+    ) {
+      const named = extractPowerShellNamedTargets(cmdWords.slice(1), [
+        '-path',
+        '-literalpath',
+        '-filepath',
+      ]);
+      candidates.push(...(named.length > 0 ? named : args));
+    }
     for (const candidate of candidates) {
       if (candidate.includes('$') || candidate.includes('`') || candidate.startsWith('~')) continue;
       // glob 元字符会让 bash 先展开再写入，字面路径不代表真实目标，无法静态归因（分类器侧归 unknown）。
@@ -486,7 +593,7 @@ export function findProtectedShellTargets(shell: ShellScope, rootDir: string): r
       const relative = path.relative(root, resolved).replace(/\\/g, '/');
       if (isProtectedWorkspacePath(relative)) found.add(relative);
     }
-    const nextCwd = advanceSegmentCwd(cleanedSegment, effectiveCwd);
+    const nextCwd = advanceSegmentCwd(cleanedSegment, effectiveCwd, isPowerShell);
     if (nextCwd !== undefined && nextCwd !== 'unknown') effectiveCwd = nextCwd;
   }
   return [...found];
@@ -563,8 +670,11 @@ function lastNonOptionWord(words: readonly string[]): string | undefined {
 
 type Segment = { text: string; hadSubstitution: boolean; hadDollar: boolean; hadSubshell: boolean };
 
-/** 引号感知分段：按引号外的 `&&` `||` `;` `|` `&` 拆分，并检测命令替换、子 shell 与变量展开。 */
-function splitSegments(command: string): Segment[] | undefined {
+/**
+ * 引号与转义感知分段：按引号外的 `&&` `||` `;` `|` `&` 拆分，并检测命令替换、子 shell 与变量展开。
+ * POSIX 处理 `\` 转义（`'` 内不转义），PowerShell 处理反引号 `` ` `` 与双写引号转义，防止 `\"'` 类失步绕过。
+ */
+function splitSegments(command: string, powershell = false): Segment[] | undefined {
   const segments: Segment[] = [];
   let current = '';
   let hadDollar = false;
@@ -580,11 +690,65 @@ function splitSegments(command: string): Segment[] | undefined {
     hasContent = false;
   };
   for (let index = 0; index < command.length; index++) {
-    const character = command[index];
-    if (quote) {
-      if (character === quote) quote = undefined;
-      else if (quote === '"' && character === '$') hadDollar = true;
+    const character = command[index]!;
+    if (quote === "'") {
+      if (powershell && character === "'" && command[index + 1] === "'") {
+        current += "''";
+        index++;
+        continue;
+      }
+      if (character === "'") quote = undefined;
       current += character;
+      continue;
+    }
+    if (quote === '"') {
+      if (!powershell && character === '\\') {
+        const next = command[index + 1];
+        if (next === undefined) return undefined;
+        current += character + next;
+        index++;
+        continue;
+      }
+      if (powershell && character === '`') {
+        const next = command[index + 1];
+        if (next === undefined) return undefined;
+        current += character + next;
+        index++;
+        continue;
+      }
+      if (powershell && character === '"' && command[index + 1] === '"') {
+        current += '""';
+        index++;
+        continue;
+      }
+      if (character === '"') {
+        quote = undefined;
+        current += character;
+        continue;
+      }
+      if (!powershell && character === '`') return undefined;
+      if (character === '$') {
+        const next = command[index + 1];
+        if (next === '(' || (!powershell && next === '{')) return undefined;
+        hadDollar = true;
+      }
+      current += character;
+      continue;
+    }
+    if (!powershell && character === '\\') {
+      const next = command[index + 1];
+      if (next === undefined) return undefined;
+      current += character + next;
+      hasContent = true;
+      index++;
+      continue;
+    }
+    if (powershell && character === '`') {
+      const next = command[index + 1];
+      if (next === undefined) return undefined;
+      current += character + next;
+      hasContent = true;
+      index++;
       continue;
     }
     if (character === '"' || character === "'") {
@@ -619,7 +783,7 @@ function splitSegments(command: string): Segment[] | undefined {
     if (character === '>' || character === '<') {
       current += character;
       hasContent = true;
-      while (index + 1 < command.length && /[<>&0-9]/.test(command[index + 1]))
+      while (index + 1 < command.length && /[<>&0-9]/.test(command[index + 1]!))
         current += command[++index];
       continue;
     }
@@ -649,9 +813,11 @@ function splitSegments(command: string): Segment[] | undefined {
 function advanceSegmentCwd(
   segmentText: string,
   currentCwd: string,
+  powershell = false,
 ): string | 'unknown' | undefined {
-  const scan = scanRedirections(segmentText);
-  const words = splitWords(scan.command);
+  const scan = scanRedirections(segmentText, powershell);
+  const rawWords = splitWords(scan.command, powershell);
+  const words = rawWords && powershell ? expandPowerShellColonArgs(rawWords) : rawWords;
   if (!words || words.length === 0) return undefined;
   let index = 0;
   while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) index++;
@@ -733,9 +899,9 @@ interface RedirectScan {
 
 /**
  * 扫描引号外的重定向，返回命令正文与目标。
- * 目标里的变量、`~`、命令替换由调用方按 `unknown` 处理；这里只做词法提取。
+ * 目标里的变量、`~`、命令替换由调用方按 `unknown` 处理；这里按解释器规则还原引号与转义。
  */
-function scanRedirections(text: string): RedirectScan {
+function scanRedirections(text: string, powershell = false): RedirectScan {
   let command = '';
   const targets: string[] = [];
   let heredoc = false;
@@ -743,11 +909,42 @@ function scanRedirections(text: string): RedirectScan {
   let processSubstitution = false;
   let quote: '"' | "'" | undefined;
   for (let index = 0; index < text.length; index++) {
-    const character = text[index];
-    if (quote) {
-      if (character === quote) quote = undefined;
+    const character = text[index]!;
+    if (quote === "'") {
+      if (powershell && character === "'" && text[index + 1] === "'") {
+        command += "''";
+        index++;
+        continue;
+      }
+      if (character === "'") quote = undefined;
       command += character;
       continue;
+    }
+    if (quote === '"') {
+      if ((!powershell && character === '\\') || (powershell && character === '`')) {
+        const next = text[index + 1];
+        if (next !== undefined) {
+          command += character + next;
+          index++;
+          continue;
+        }
+      }
+      if (powershell && character === '"' && text[index + 1] === '"') {
+        command += '""';
+        index++;
+        continue;
+      }
+      if (character === '"') quote = undefined;
+      command += character;
+      continue;
+    }
+    if ((!powershell && character === '\\') || (powershell && character === '`')) {
+      const next = text[index + 1];
+      if (next !== undefined) {
+        command += character + next;
+        index++;
+        continue;
+      }
     }
     if (character === '"' || character === "'") {
       quote = character;
@@ -764,9 +961,9 @@ function scanRedirections(text: string): RedirectScan {
       continue;
     }
     // 吃掉 `>>`、`2>`、`&>`、`>|`，以及 fd 复制 `2>&1` 的操作符部分。
-    while (index + 1 < text.length && /[>&|]/.test(text[index + 1])) index++;
+    while (index + 1 < text.length && /[>&|]/.test(text[index + 1]!)) index++;
     // 去掉紧邻操作符的 fd 数字（如 `2>` 的 2）。
-    if (/\d$/.test(command) && (command.length === 1 || /\s/.test(command[command.length - 2])))
+    if (/\d$/.test(command) && (command.length === 1 || /\s/.test(command[command.length - 2]!)))
       command = command.slice(0, -1);
     // 操作符与目标之间可以有空白（`> out.txt`）。
     while (index + 1 < text.length && (text[index + 1] === ' ' || text[index + 1] === '\t'))
@@ -774,12 +971,60 @@ function scanRedirections(text: string): RedirectScan {
     let target = '';
     let targetQuote: '"' | "'" | undefined;
     while (index + 1 < text.length) {
-      const next = text[index + 1];
-      if (targetQuote) {
-        if (next === targetQuote) targetQuote = undefined;
+      const next = text[index + 1]!;
+      if (targetQuote === "'") {
+        if (powershell && next === "'" && text[index + 2] === "'") {
+          target += "'";
+          index += 2;
+          continue;
+        }
+        if (next === "'") targetQuote = undefined;
         else target += next;
         index++;
         continue;
+      }
+      if (targetQuote === '"') {
+        if (!powershell && next === '\\') {
+          const escaped = text[index + 2];
+          if (escaped !== undefined) {
+            target += '"\\$`'.includes(escaped) ? escaped : `\\${escaped}`;
+            index += 2;
+            continue;
+          }
+        }
+        if (powershell && next === '`') {
+          const escaped = text[index + 2];
+          if (escaped !== undefined) {
+            target += escaped;
+            index += 2;
+            continue;
+          }
+        }
+        if (powershell && next === '"' && text[index + 2] === '"') {
+          target += '"';
+          index += 2;
+          continue;
+        }
+        if (next === '"') targetQuote = undefined;
+        else target += next;
+        index++;
+        continue;
+      }
+      if (!powershell && next === '\\') {
+        const escaped = text[index + 2];
+        if (escaped !== undefined) {
+          target += escaped;
+          index += 2;
+          continue;
+        }
+      }
+      if (powershell && next === '`') {
+        const escaped = text[index + 2];
+        if (escaped !== undefined) {
+          target += escaped;
+          index += 2;
+          continue;
+        }
       }
       if (next === '"' || next === "'") {
         targetQuote = next;
@@ -876,7 +1121,7 @@ function classifyPosixWords(
   if (program === 'tee') return classifyWriteTargets(rest, cwd, rootDir);
   if (program === 'cp') return classifyCopy(rest, cwd, rootDir);
   if (program === 'pnpm' || program === 'npm' || program === 'yarn')
-    return classifyPackageManager(rest, scriptTrust);
+    return classifyPackageManager(rest, cwd, rootDir, scriptTrust);
   if (program === 'npx') return 'network';
   if (program === 'docker') return classifyDocker(rest);
   if (program === 'gh') return 'network';
@@ -900,14 +1145,45 @@ function classifyPowerShellSegment(
   rootDir: string,
   scriptTrust?: ShellScope['scriptTrust'],
 ): ShellCommandClass {
-  const scan = scanRedirections(segment.text);
+  const scan = scanRedirections(segment.text, true);
   const redirect = classifyRedirectTargets(scan, cwd, rootDir);
   if (redirect !== undefined) return redirect;
   if (segment.hadDollar) return 'unknown';
-  const words = splitWords(scan.command);
-  if (words === undefined || words.length === 0) return 'unknown';
+  const rawWords = splitWords(scan.command, true);
+  if (rawWords === undefined || rawWords.length === 0) return 'unknown';
+  const words = expandPowerShellColonArgs(rawWords);
   const result = classifyPowerShellWords(words, cwd, rootDir, scriptTrust);
   return scan.hasOutput && result === 'read' ? 'workspace-write' : result;
+}
+
+/** 将 PowerShell `-Param:Value` 冒号绑定语法展开为独立选项与参数值，防止路径值因 `-` 前缀漏检。 */
+function expandPowerShellColonArgs(words: readonly string[]): string[] {
+  const expanded: string[] = [];
+  for (const word of words) {
+    const colonMatch = /^(-[A-Za-z][A-Za-z0-9-]*):([\s\S]+)$/.exec(word);
+    if (colonMatch) {
+      expanded.push(colonMatch[1]!, colonMatch[2]!);
+    } else {
+      expanded.push(word);
+    }
+  }
+  return expanded;
+}
+
+/** 提取 PowerShell 命名路径参数（如 `-Destination foo`）的取值列表。 */
+function extractPowerShellNamedTargets(
+  args: readonly string[],
+  names: readonly string[],
+): string[] {
+  const targetNames = new Set(names.map((name) => name.toLowerCase()));
+  const found: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const lower = args[i]!.toLowerCase();
+    if (targetNames.has(lower) && args[i + 1] && !args[i + 1]!.startsWith('-')) {
+      found.push(args[++i]!);
+    }
+  }
+  return found;
 }
 
 /** 按 cmdlet 分派 PowerShell 命令；调用方已完成重定向与变量检查。 */
@@ -932,8 +1208,15 @@ function classifyPowerShellWords(
   if (program === 'popd') return 'unknown';
   if (POWERSHELL_NETWORK.has(program)) return 'network';
   if (POWERSHELL_DESTRUCTIVE.has(program)) return 'destructive';
+  if (POWERSHELL_COPY.has(program)) return classifyCopy(rest, cwd, rootDir);
   if (POWERSHELL_WRITE.has(program)) return classifyWriteTargets(rest, cwd, rootDir);
   if (POWERSHELL_UNKNOWN.has(program)) return 'unknown';
+  if (program === 'pnpm' || program === 'npm' || program === 'yarn')
+    return classifyPackageManager(rest, cwd, rootDir, scriptTrust);
+  if (INTERPRETER_PROGRAMS.has(program))
+    return classifyInterpreter(program, rest, cwd, rootDir, scriptTrust);
+  if (WORKSPACE_PROGRAMS.has(program))
+    return classifyWorkspaceProgram(program, rest, cwd, rootDir, scriptTrust);
   if (POWERSHELL_READ.has(program)) {
     // PowerShell 自有的路径型读 cmdlet 不在 POSIX 的 READ_PATH_PROGRAMS 内，需单独集合；
     // 两者取并集保证 `cat` / `ls` 等跨解释器别名同样受路径越界检查。
@@ -963,9 +1246,16 @@ function looksLikePath(word: string): boolean {
   if (word === '' || word.startsWith('-')) return false;
   if (word === '..' || word.startsWith('../') || word.startsWith('..\\')) return true;
   if (word.startsWith('~')) return true;
-  if (word.startsWith('/') || word.startsWith('./') || word.startsWith('.\\')) return true;
-  if (/^[A-Za-z]:[\\/]/.test(word)) return true;
-  return word.includes('/') && !/^[a-z][a-z0-9+.-]*:\/\//i.test(word);
+  if (
+    word.startsWith('/') ||
+    word.startsWith('\\') ||
+    word.startsWith('./') ||
+    word.startsWith('.\\')
+  ) {
+    return true;
+  }
+  if (/^[A-Za-z]:/.test(word) && !/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(word)) return true;
+  return (word.includes('/') || word.includes('\\')) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(word);
 }
 
 /**
@@ -1037,12 +1327,22 @@ function classifyChangeDirectory(
   return isWithinRoot(path.resolve(cwd, target), rootDir) ? 'read' : 'escape';
 }
 
-/** 包管理器：只认第一个子命令；`exec` 可拉起任意程序（等价于本地命令执行器），与 `dlx`/`npx` 同判 `network`。 */
+/** 包管理器：校验 `-C`/`--dir`/`--prefix` 目录边界后取首个子命令；`exec` 与 `dlx`/`npx` 同判 `network`。 */
 function classifyPackageManager(
   rest: readonly string[],
+  cwd: string,
+  rootDir: string,
   scriptTrust: ShellScope['scriptTrust'],
 ): ShellCommandClass {
-  const subcommand = firstSubcommand(rest);
+  const parsed = parsePackageManagerInvocation(rest);
+  if (parsed === 'unknown') return 'unknown';
+  for (const dirTarget of parsed.directories) {
+    if (dirTarget.includes('$') || dirTarget.includes('`')) return 'unknown';
+    if (dirTarget.startsWith('~')) return 'escape';
+    if (containsGlobMeta(dirTarget)) return 'unknown';
+    if (!isWithinRoot(path.resolve(cwd, dirTarget), rootDir)) return 'escape';
+  }
+  const { subcommand } = parsed;
   if (subcommand === undefined) return 'unknown';
   if (subcommand === 'dlx' || subcommand === 'exec') return 'network';
   if (PACKAGE_NETWORK_SUBCOMMANDS.has(subcommand)) return 'network';
@@ -1054,8 +1354,8 @@ function classifyPackageManager(
 /**
  * 构建与检查工具（`make` / `eslint` / `vitest` / `tsc` 等）：
  * - `make` 直接执行 Makefile 脚本，必须显式拿到 `scriptTrust === 'clean'`；
- * - 其余工具若 `scriptTrust` 为 `dirty` / `unknown`（说明对应配置文件刚被模型写入或未入库）一律归 `unknown`；
- * - 显式配置文件选项需校验工作区边界，插件注入类选项直接归 `unknown`。
+ * - 其余工具若 `scriptTrust` 为 `dirty` / `unknown`（说明对应配置文件或测试文件未入库/已改动）一律归 `unknown`；
+ * - 显式配置文件选项需校验工作区边界，插件/钩子注入类选项直接归 `unknown`。
  */
 function classifyWorkspaceProgram(
   program: string,
@@ -1071,13 +1371,7 @@ function classifyWorkspaceProgram(
     if (!word.startsWith('-')) continue;
     const eq = word.indexOf('=');
     const flag = eq > 0 ? word.slice(0, eq) : word;
-    if (
-      flag === '--plugin' ||
-      flag === '--rulesdir' ||
-      flag === '--require' ||
-      flag === '-r' ||
-      flag === '--import'
-    ) {
+    if (WORKSPACE_UNSAFE_FLAGS.has(flag)) {
       return 'unknown';
     }
     if (configFlags?.has(flag)) {
@@ -1095,17 +1389,35 @@ function classifyWorkspaceProgram(
   return 'workspace-write';
 }
 
-/** 跳过选项及其取值，取第一个真正的子命令（小写）。 */
-function firstSubcommand(words: readonly string[]): string | undefined {
+/** 解析包管理器选项与首个子命令，提取 `-C` / `--dir` / `--prefix` 目录切换目标。 */
+function parsePackageManagerInvocation(
+  words: readonly string[],
+): { subcommand?: string; directories: string[] } | 'unknown' {
+  const directories: string[] = [];
   for (let index = 0; index < words.length; index++) {
     const word = words[index]!;
     if (word.startsWith('-')) {
-      if (PACKAGE_VALUE_FLAGS.has(word)) index++;
+      const eq = word.indexOf('=');
+      const flag = eq > 0 ? word.slice(0, eq) : word;
+      if (PACKAGE_DIR_FLAGS.has(flag)) {
+        const val = eq > 0 ? word.slice(eq + 1) : words[++index];
+        if (!val) return 'unknown';
+        directories.push(val);
+        continue;
+      }
+      if (word.startsWith('-C') && word.length > 2) {
+        directories.push(word.slice(2));
+        continue;
+      }
+      if (eq === -1 && PACKAGE_VALUE_FLAGS.has(flag)) {
+        if (words[index + 1] === undefined) return 'unknown';
+        index++;
+      }
       continue;
     }
-    return word.toLowerCase();
+    return { subcommand: word.toLowerCase(), directories };
   }
-  return undefined;
+  return { directories };
 }
 
 /** `docker`：只读子命令放行，涉及构建 / 运行 / 仓库的子命令按网络处理。 */
@@ -1176,8 +1488,9 @@ function classifyInterpreter(
         if (!isWithinRoot(path.resolve(cwd, preload), rootDir)) return 'escape';
         continue;
       }
-      if (eq > 0 && /[\\/]/.test(word.slice(eq + 1))) return 'unknown';
-      continue;
+      if (INTERPRETER_SAFE_BOOLEAN_FLAGS[program]?.has(word)) continue;
+      // 主脚本前的任何未知解释器选项都可能消费下一个词（如 `node --title clean.mjs -e ...`）或加载外部配置，保守归 unknown。
+      return 'unknown';
     }
     script = word;
     break;
@@ -1271,23 +1584,77 @@ function classifyGit(rest: readonly string[], cwd: string, rootDir: string): She
   return 'unknown';
 }
 
-/** 引号感知分词；引号不闭合返回 undefined，成对引号剥离后作为单词。 */
-function splitWords(text: string): string[] | undefined {
+/**
+ * 引号与转义感知分词；引号不闭合或尾随孤立转义返回 undefined。
+ * 相邻引号与非引号片段拼接为同一单词（如 `"."env` → `.env`），仅在引号外空白处切词。
+ */
+function splitWords(text: string, powershell = false): string[] | undefined {
   const words: string[] = [];
   let current = '';
   let quote: '"' | "'" | undefined;
   let started = false;
-  for (const character of text) {
-    if (quote) {
-      if (character === quote) {
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index]!;
+    if (quote === "'") {
+      if (powershell && character === "'" && text[index + 1] === "'") {
+        current += "'";
+        started = true;
+        index++;
+        continue;
+      }
+      if (character === "'") {
         quote = undefined;
-        words.push(current);
-        current = '';
-        started = false;
       } else {
         current += character;
         started = true;
       }
+      continue;
+    }
+    if (quote === '"') {
+      if (!powershell && character === '\\') {
+        const next = text[index + 1];
+        if (next === undefined) return undefined;
+        current += '"\\$`'.includes(next) ? next : `\\${next}`;
+        started = true;
+        index++;
+        continue;
+      }
+      if (powershell && character === '`') {
+        const next = text[index + 1];
+        if (next === undefined) return undefined;
+        current += next;
+        started = true;
+        index++;
+        continue;
+      }
+      if (powershell && character === '"' && text[index + 1] === '"') {
+        current += '"';
+        started = true;
+        index++;
+        continue;
+      }
+      if (character === '"') {
+        quote = undefined;
+      } else {
+        current += character;
+        started = true;
+      }
+      continue;
+    }
+    if (!powershell && character === '\\') {
+      const next = text[index + 1];
+      if (next === undefined) return undefined;
+      current += next;
+      started = true;
+      index++;
+      continue;
+    }
+    if (powershell && character === '`') {
+      const next = text[index + 1];
+      if (next === undefined) return undefined;
+      current += next;
+      started = true;
+      index++;
       continue;
     }
     if (character === '"' || character === "'") {

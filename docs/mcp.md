@@ -293,7 +293,8 @@ Kapibala CLI 提供了轻量、安全的统一斜杠命令支持 MCP 生态运�
   - 默认写全局 `~/.kapibala/mcp.json`；`--project` 写 `<project>/.kapibala/mcp.json`，要求项目已信任；
   - 可选 `--disabled` 写入即禁用。
 - `/mcp edit <name> [同上选项]`：只替换传入字段，其余基础字段（`required` / 超时 / 工具白名单等）原样保留；
-- `/mcp remove <name> [--project]`：移除声明。
+- `/mcp remove <name> [--project]`：移除声明；
+- `/mcp import [<name>|--all] [--from <harness>] [--project] [--force]`：从 Claude Desktop / Claude Code / Cursor 一次性扫描并拷贝 MCP 声明（默认跳过同名冲突，`--force` 覆盖；环境变量值与请求头原文全程脱敏不回显）。
 
 保证与边界：
 
@@ -333,10 +334,10 @@ Kapibala CLI 提供了轻量、安全的统一斜杠命令支持 MCP 生态运�
 
 ### 7. 桌面资源管理面
 
-桌面客户端在设置的「资源管理」页提供 MCP 服务器配置管理（`/mcp` 是会话运行时视图；面板是配置层视图，两者分别同源于同一解析管道）：
+桌面客户端在设置的「资源管理」页提供完整 MCP 服务器配置与审批管理（`/mcp` 是会话运行时视图；面板是配置层视图，两者分别同源于同一解析管道）：
 
-- 全局 CRUD：`~/.kapibala/mcp.json` 的服务器列表与增删改经 `mutateGlobalMcpConfig` 短事务写回（与 settings.json 同款锁语义，竞争报 `MCP_CONFIG_BUSY`），写回前全量校验，任一 error 级诊断拒绝整个事务并保留原文件。
-- 逐服务器启停：写回 `enabled` 字段（含纯禁用覆盖语义）；启停只影响后续会话装配，运行中的会话不变。
-- 项目级只读：`.kapibala/mcp.json` 声明只读展示；未信任项目的声明以「已排除」诊断可见，面板不提供编辑入口。
+- 全局与项目级 CRUD：`~/.kapibala/mcp.json` 与已信任项目的 `<项目>/.kapibala/mcp.json` 统一经 `mutateMcpConfig` 短事务写回（与 settings.json 同款锁语义，竞争报 `MCP_CONFIG_BUSY`），写回前全量校验，任一 error 级诊断拒绝整个事务并保留原文件；未信任项目的项目级写入直接拒绝（`MCP_PROJECT_UNTRUSTED`）。
+- 逐服务器启停与启动批准：写回 `enabled` 字段（启停只影响后续会话装配），并支持逐服务器启动批准与撤销（`approveMcpServer` / `revokeMcpServer`，绑定完整配置摘要）。
+- 跨工具导入：支持从 Claude Desktop / Claude Code / Cursor 一次性扫描脱敏预览并导入到全局或已信任项目配置（默认跳过同名冲突，可选覆盖）。
 - 诊断可见：解析失败、格式错误等诊断在面板原样展示，经既有脱敏管道，不回显环境变量值或请求头原文。
-- 授权不变：stdio 启动审批、宿主 `--no-mcp` 硬防线、会话隔离等语义全部保留，面板不提供绕过入口。
+- 授权不变：stdio/HTTP 启动审批、宿主 `--no-mcp` 硬防线、会话隔离等语义全部保留，面板不提供绕过入口。

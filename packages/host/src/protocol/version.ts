@@ -8,7 +8,7 @@ export const PROTOCOL_VERSION = 2 as const;
 
 /**
  * 服务端实际支持的能力；initialize 按客户端声明取交集，未知能力不做静默降级。
- * `watch` / `evidence` / `skill-import` 随 v0.1.4 新增，纯字段扩展不单列能力名。
+ * `watch` / `evidence` 随 v0.1.4 新增，纯字段扩展与非本地 wire 宿主入口不单列能力名。
  */
 export const SERVER_CAPABILITIES = Object.freeze([
   'sessions',
@@ -16,7 +16,6 @@ export const SERVER_CAPABILITIES = Object.freeze([
   'cancel',
   'watch',
   'evidence',
-  'skill-import',
 ] as const);
 
 /** 协商后的能力名只能来自固定集合，避免调用方拼写差异被当作新能力接受。 */

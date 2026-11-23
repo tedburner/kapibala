@@ -16,8 +16,8 @@ export type ShellCommandSafety = 'safe' | 'unsafe' | 'unknown';
  *
  * 边界：
  * - cwd 必须物理落在 rootDir 内，否则 `unsafe`；
- * - 多段命令取最严：`escape` > `destructive` > `network` > `workspace-write` / `vcs-write`
- *   > `read` > `unknown`；
+ * - 多段命令取最严：`escape` > `destructive` > `network` > `unknown` > `workspace-write`
+ *   > `vcs-write` > `read`；
  * - 本函数不读文件系统，脚本清洁度与路径存在性由宿主在执行前另行确认。
  */
 export function classifyShellCommandSafety(shell: ShellScope, rootDir: string): ShellCommandSafety {

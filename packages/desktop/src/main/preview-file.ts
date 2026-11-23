@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import os from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { IMAGE_MIME_BY_EXTENSION, IMAGE_PREVIEW_LIMIT } from '../shared/preview.js';
@@ -112,7 +112,25 @@ export function resolveLocalImagePath(src: string, root: string | undefined): st
 export async function readImageDataUrl(path: string): Promise<string> {
   const mime = IMAGE_MIME_BY_EXTENSION[extname(path).slice(1).toLowerCase()];
   if (!mime) throw new Error('PREVIEW_UNSUPPORTED');
-  const buffer = await readFile(path);
-  if (buffer.byteLength > IMAGE_PREVIEW_LIMIT) throw new Error('PREVIEW_TOO_LARGE');
-  return `data:${mime};base64,${buffer.toString('base64')}`;
+  const stats = await stat(path);
+  if (!stats.isFile()) throw new Error('PREVIEW_UNSUPPORTED');
+  if (stats.size > IMAGE_PREVIEW_LIMIT) throw new Error('PREVIEW_TOO_LARGE');
+  const handle = await open(path, 'r');
+  try {
+    const cap = IMAGE_PREVIEW_LIMIT + 1;
+    const buffer = Buffer.allocUnsafe(Math.min(Math.max(stats.size + 1, 1), cap));
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+      if (offset > IMAGE_PREVIEW_LIMIT) throw new Error('PREVIEW_TOO_LARGE');
+    }
+    const extra = Buffer.allocUnsafe(1);
+    const { bytesRead: trailing } = await handle.read(extra, 0, 1, offset);
+    if (offset + trailing > IMAGE_PREVIEW_LIMIT) throw new Error('PREVIEW_TOO_LARGE');
+    return `data:${mime};base64,${buffer.subarray(0, offset).toString('base64')}`;
+  } finally {
+    await handle.close();
+  }
 }

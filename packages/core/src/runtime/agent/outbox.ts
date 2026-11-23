@@ -290,7 +290,7 @@ interface BackgroundMessageSource {
 const globalInFlightConsumes = new Map<string, Promise<boolean>>();
 
 /**
- * 子代理与监视共用的背景消息投递实现（v0.1.4 抽取，语义与 SessionInbox 原实现一致）。
+ * 子代理与监视共用的背景消息投递实现（语义与 `SessionInbox` 一致）。
  *
  * 顺序约束：先回读历史确认未投递，再落盘消息，最后才把 eventId 记入进程内集合；
  * 任一步失败都抛出，由调用方保留水位并重试，绝不「先确认后落盘」。

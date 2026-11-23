@@ -265,7 +265,7 @@ async function importSkillCommand(tail: string, ctx: CommandContext): Promise<vo
   }
   let scan: SkillImportScan;
   try {
-    scan = await ctx.scanImportableSkills();
+    scan = await ctx.scanImportableSkills(options.scope);
   } catch (error) {
     output.error(`扫描可导入技能失败: ${error instanceof Error ? error.message : String(error)}`);
     return;

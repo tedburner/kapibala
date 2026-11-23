@@ -65,12 +65,12 @@ macOS 打包后只读挂载 DMG，复制应用到临时安装目录，保留 fra
 
 | 当前入口 | 实施动作 | 必须保留的语义 |
 |---|---|---|
-| [local-host/resources.ts](../packages/cli/src/local-host/resources.ts)、[subagent-runner.ts](../packages/cli/src/subagent-runner.ts) | 抽取装配到 `host/managed-session.ts`，贯通父子会话的全部用户路径，保留延迟 MCP 挂载、取消和销毁 | 配置/信任检查先于历史句柄；失败装配也清理；runtime 和 session 清理成功后才释放句柄 |
-| [host/presentation-store.ts](../packages/cli/src/host/presentation-store.ts) | 新增有序事件订阅，保留现有状态变化订阅 | 只发布 reducer 接受的事件；reload 推进代次；观察者异常不能中断工具事务 |
-| [host/history-projection.ts](../packages/cli/src/host/history-projection.ts)、[host/session-presentation.ts](../packages/cli/src/host/session-presentation.ts) | 共用历史与实时身份、工具关联和公共脱敏 | 不从卡片标题猜 callId，不把最终消息再追加成重复卡片 |
-| [host/task-observation.ts](../packages/cli/src/host/task-observation.ts)、[host/status-facts.ts](../packages/cli/src/host/status-facts.ts) | 对接会话观察快照及变化通知 | 父会话过滤、未知投递状态、未知用量保留；只读观察不执行收集 |
-| [settings.ts](../packages/cli/src/settings.ts)、[model-bindings.ts](../packages/cli/src/model-bindings.ts) | 增加共享配置事务和窄服务出口 | 从原始全局配置写回，保留同组单份凭证、目录迁移和模型绑定规则 |
-| [local-host/redaction.ts](../packages/cli/src/local-host/redaction.ts) | 抽取到 `host/redaction.ts`，让本地宿主和桌面共用 | 不导出原始凭证；流式跨块匹配与完整消息脱敏结果一致 |
+| [local-host/resources.ts](../packages/cli/src/local-host/resources.ts)、[host/subagent-runner.ts](../packages/host/src/host/subagent-runner.ts) | 抽取装配到 `packages/host/src/host/managed-session.ts`，贯通父子会话的全部用户路径，保留延迟 MCP 挂载、取消和销毁 | 配置/信任检查先于历史句柄；失败装配也清理；runtime 和 session 清理成功后才释放句柄 |
+| [host/presentation-store.ts](../packages/host/src/host/presentation-store.ts) | 新增有序事件订阅，保留现有状态变化订阅 | 只发布 reducer 接受的事件；reload 推进代次；观察者异常不能中断工具事务 |
+| [host/history-projection.ts](../packages/host/src/host/history-projection.ts)、[host/session-presentation.ts](../packages/host/src/host/session-presentation.ts) | 共用历史与实时身份、工具关联和公共脱敏 | 不从卡片标题猜 callId，不把最终消息再追加成重复卡片 |
+| [host/task-observation.ts](../packages/host/src/host/task-observation.ts)、[host/status-facts.ts](../packages/host/src/host/status-facts.ts) | 对接会话观察快照及变化通知 | 父会话过滤、未知投递状态、未知用量保留；只读观察不执行收集 |
+| [host/settings.ts](../packages/host/src/host/settings.ts)、[host/model-bindings.ts](../packages/host/src/host/model-bindings.ts) | 增加共享配置事务和窄服务出口 | 从原始全局配置写回，保留同组单份凭证、目录迁移和模型绑定规则 |
+| [local-host/redaction.ts](../packages/cli/src/local-host/redaction.ts) | 抽取到 [host/redaction.ts](../packages/host/src/host/redaction.ts)，让本地宿主和桌面共用 | 不导出原始凭证；流式跨块匹配与完整消息脱敏结果一致 |
 | [Core 会话目录](../packages/core/src/context) | 贯通可选 maxReadBytes，包括元数据、升级、尾恢复与重载；增加 SessionManager 的精确根策略 | 超限不是尾损坏；拒绝前不改原文件；工具事务闭合仍可落盘；旧调用保留 Git 分桶行为 |
 
 抽取后的 `/host` 导入本身不读终端、不注册全局监听、不创建 Session、不启动 MCP。显式传入已确定的绝对工作区根、homeDirectory、审批通道和同一个宿主级协调器；会话所有者负责资源释放，调用方不能拿到原始 Session 或 Provider 再绕开受管入口。
@@ -136,14 +136,14 @@ packages/desktop/
 
 Main、Preload、Renderer、Agent Host 是四个构建入口。Preload 的有限 Electron require 不等于完整 Node；schema 依赖打包进单文件，不在运行时加载任意 npm 模块。类型检查分别使用各自 tsconfig，Renderer 不注入 Node 类型。
 
-Renderer 的样式入口按 [004 第 6.1 节](design/004-v0.1.0-desktop-harness.md#61-确定的技术栈)固定顺序：`@source` 扫描 Kumo 产物，Kumo 样式先于 Tailwind 导入，主题文件覆盖语义变量，根元素 `isolation: isolate`，主题通过 `data-mode` 切换。这个顺序和 Kumo 版本一起构成 UI 启动契约，不能按个人习惯调整。
+Renderer 的样式入口按 [004 第 6.1 节](design/004-v0.1.0-desktop-harness.md#61-确定的技术栈)固定顺序：`@source` 扫描 Kumo 与 Streamdown 产物，Kumo 与 KaTeX 样式先于 Tailwind 导入，主题文件覆盖语义变量，根元素 `isolation: isolate`，主题通过 `data-mode` 切换；页面 CSP 的 `font-src 'self' data:` 仅放行 Vite 内联的 KaTeX 公式字体，网络层继续拦截远端字体与脚本。这个顺序和 Kumo 版本一起构成 UI 启动契约，不能按个人习惯调整。
 
 | 调用方 | 可以依赖 | 不允许的捷径 |
 |---|---|---|
-| Renderer | CLI `/view-model`、shared、命名桌面 API、Kumo、Phosphor、Zustand、`@tanstack/react-virtual`、react-markdown、remark-gfm | `/host`、Core、MCP、fs、Electron、`dist/*` 深路径、直连 `@base-ui/react` |
+| Renderer | `@kiturone/kapibala-host/view-model`、shared、命名桌面 API、Kumo、Phosphor、Zustand、`@tanstack/react-virtual`、`streamdown`（含 `@streamdown/{code,mermaid,math,cjk}`）、`katex`、`remark-gfm` | `/host`、Core、MCP、fs、Electron、`dist/*` 深路径、直连 `@base-ui/react` |
 | Preload | 内联 shared、有限 Electron IPC API | CLI、Core、文件系统、向页面暴露端口或任意 channel |
 | Main | Electron、shared、原生生命周期代码 | 执行工具循环、加载配置明文密钥、解析原始历史 |
-| Agent Host | CLI `/host`、shared、受管装配 | CLI bin/index 启动入口、菜单、REPL、终端渲染器 |
+| Agent Host | `@kiturone/kapibala-host/{host,view-model,internal}`、`@kiturone/kapibala-cli/commands`（唯一 CLI 例外）、shared、受管装配 | CLI bin/index 启动入口、`/host` 兼容 barrel、菜单、REPL、终端渲染器 |
 
 UI 依赖按角色唯一，阶段 B 的基础断言集中在 `scripts/check-desktop.ts`；阶段 C 已补充应用动效约束、真实按钮状态对比度与减少动效断言：
 
@@ -154,7 +154,7 @@ UI 依赖按角色唯一，阶段 B 的基础断言集中在 `scripts/check-desk
 | 动画 | Kumo 内置过渡，含 Sidebar 布局过渡；自写时使用同主版本 Motion 且仅动画 transform/opacity | 直装 framer-motion、react-spring、GSAP、Anime.js；应用源码新增 `transition: all` 或叠加同属性动画 |
 | 布局与拖拽 | Kumo Sidebar、CSS Grid/Flex | 首版引入 react-resizable-panels 或 dnd-kit（无对应需求） |
 | 状态 | Zustand 5（仅易失 UI 状态）、现有 ViewModel | 在 Zustand 复制消息、运行、审批或持久偏好，使用 `persist` |
-| Markdown 与高亮 | react-markdown、remark-gfm、Kumo `CodeHighlighted` | 自写 Markdown 解析、Prism、highlight.js、直装 Shiki |
+| Markdown 与高亮 | `streamdown`（含 `@streamdown/{code,mermaid,math,cjk}`）、`remark-gfm`、`katex`；超预算回退 `PlainCodeBlock` | 自写 Markdown 解析、Prism、highlight.js、第二套 Markdown/高亮库并存 |
 | 色值与形状 | `theme-kapibala.css` 中的 Kumo token，主操作底色与文字强调色分开 | 应用组件内十六进制色值、原始调色板类、`dark:` 变体、自定义圆角档位；依赖与高亮生成样式不按此源码规则误报 |
 
 边界检查同时检查源码导入和实际 bundle 的依赖闭包，覆盖别名、动态导入和转导出。新增 `/host` 的声明与 JS 一起构建，并通过三包隔离安装验证；桌面安装包额外验证资源内的 utility Host 和 CJS Preload 可加载，不能依赖开发机 workspace 软链。
@@ -244,7 +244,7 @@ primary 按钮沿用 Kumo 固定白字，按参考截图采用黑色底色；深
 
 `session.configure` 返回 Host 实际生效的 Profile、角色与模式；页面不根据所点角色猜测模型。`session.inspect` 及其变化通知只观察已有状态，每类列表至多 32 项、文本有界净化与脱敏，超额显式标记；订阅随展示订阅释放。后台摘要每个控制连接独立一份，通过数据通道发送，控制通道仍保留停止容量。两类观察收到失效后丢弃迟到快照，仅新订阅可恢复。
 
-TanStack Virtual 渲染可见消息；向上阅读停止跟随，返回底部恢复。Markdown 使用 GFM，禁用 HTML 与远程图片加载，代码高亮及复制由 Kumo 提供，不运行代码。仅受校验的主页面允许 `clipboard-sanitized-write`，拒绝剪贴板读取和其它浏览器权限。详情大于等于 1200 宽时并排、非模态，点击或 Tab 到输入区保持打开；窄窗口覆盖并锁定焦点，遮罩/Escape 关闭。触发工具行卸载后焦点回到稳定的消息滚动区。
+TanStack Virtual 渲染可见消息；向上阅读停止跟随，返回底部恢复。Markdown 基于 Streamdown（GFM + CJK，禁用单波浪线删除线与原始 HTML），图片仅放行远程 `http(s)` / `data:image` 与工作区受控本地路径（流式期间暂缓本地半截路径请求），代码块由 `@streamdown/code` 按需高亮并提供折行开关、复制与 HTML/SVG 沙箱预览，Mermaid 图表（`securityLevel: 'strict'`）与 KaTeX 公式（含货币/环境变量单 `$` 守卫）内联渲染，不直接执行模型代码。仅受校验的主页面允许 `clipboard-sanitized-write`，拒绝剪贴板读取和其它浏览器权限。详情大于等于 1200 宽时并排、非模态，点击或 Tab 到输入区保持打开；窄窗口覆盖并锁定焦点，遮罩/Escape 关闭。触发工具行卸载后焦点回到稳定的消息滚动区。
 
 状态、Skill/MCP 与直接子任务全部来自共享宿主，观察不会启动 MCP、收集子任务或确认投递。当前运行累计只汇总明确的 Provider usage；任何请求缺失用量时显示未提供，明确返回零仍保留零；上下文估算标记独立显示。
 

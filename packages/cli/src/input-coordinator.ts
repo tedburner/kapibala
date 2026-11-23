@@ -174,8 +174,11 @@ export class CliInputCoordinator {
     if (this.closed) throw new Error('Input closed');
     if (this.pending) throw new Error('Input is busy / 输入已被占用');
     if (options?.signal?.aborted) throw new Error('Input cancelled');
-    // 独占问答会清空编辑缓冲，历史浏览必须回到「未提交草稿」起点。
+    // 独占问答会清空编辑缓冲，历史浏览必须回到「未提交草稿」起点；
+    // 同时立即清空底层 readline 行缓冲，避免用户在问答弹出前按 ↑ 或预敲的字符混入本次审批/输入答案。
     this.resetHistoryNavigation();
+    (this.rl as unknown as { line: string }).line = '';
+    (this.rl as unknown as { cursor: number }).cursor = 0;
     return new Promise<string>((resolve, reject) => {
       const onAbort = () => finish(undefined, new Error('Input cancelled'));
       const finish = (value?: string, error?: Error) => {

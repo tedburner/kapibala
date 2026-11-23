@@ -136,7 +136,7 @@ it('inspectSkills 预览候选，importSkills 归一后落盘并可回读', asyn
     path.join(source, 'SKILL.md'),
     '---\nname: imported-skill\ndescription: 导入演示\nmodel: claude-3\n---\nBody.',
   );
-  const scan = await service.inspectSkills(workspaceId);
+  const scan = await service.inspectSkills({ workspaceId });
   const candidate = scan.candidates.find((item) => item.name === 'imported-skill');
   expect(candidate?.harness).toBe('claude-code');
   expect(candidate?.strippedFields).toContain('model');
@@ -156,6 +156,12 @@ it('inspectSkills 预览候选，importSkills 归一后落盘并可回读', asyn
   expect(fs.readFileSync(target, 'utf8')).not.toContain('model:');
   const listed = await service.readSkills(workspaceId);
   expect(listed.skills.some((skill) => skill.name === 'imported-skill')).toBe(true);
+
+  // 已导入到全局目录后，全局作用域扫描应报告 exists-enabled，切到尚未存在的项目子空间时按目标目录重算。
+  const globalRescan = await service.inspectSkills({ workspaceId, scope: 'global' });
+  expect(globalRescan.candidates.find((item) => item.name === 'imported-skill')?.conflict).toBe(
+    'exists-enabled',
+  );
 
   // 同名再次导入默认跳过冲突；来源身份不一致时拒绝，不写盘。
   const again = await service.importSkills({

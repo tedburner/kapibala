@@ -38,8 +38,8 @@ export function presentationScope(identity: ViewIdentity): string {
  * 不执行 Agent、不自行解除控制器锁；settle 仅由宿主在迭代与清理真正完成后调用。
  */
 export class SessionPresentation {
-  private readonly identity: ViewIdentity;
-  private readonly scope: string;
+  private identity: ViewIdentity;
+  private scope: string;
   private readonly known = new Set<string>();
   private readonly thinking = new Map<string, string>();
   private readonly tools = new Map<string, ViewBlock>();
@@ -56,6 +56,8 @@ export class SessionPresentation {
   private todosRevision = 0;
   /** 重试截断历史后需要整体替换一次消息列表；替换成功即关闭。 */
   private needsHistoryReplace: boolean;
+  /** 重试分叉产生的新活动分支 ID；随 `history_replaced` 原子发布到视图后清除。 */
+  private nextBranchId: string | undefined;
   /** 逐消息消耗的实时来源；缺省不附加 usage，保持未装配该能力的宿主行为不变。 */
   private readonly getUsage?: () => ReadonlyMap<string, ViewUsage>;
 
@@ -70,12 +72,15 @@ export class SessionPresentation {
       readonly getUsage?: () => ReadonlyMap<string, ViewUsage>;
       /** 历史刚被截断重建时置 true：首次同步整体替换视图，避免旧回答残留。 */
       readonly replaceHistory?: boolean;
+      /** 历史截断伴随的新分支 ID；在 `history_replaced` 中原子推进视图身份。 */
+      readonly nextBranchId?: string;
     },
   ) {
     this.identity = { ...store.snapshot().identity };
     this.scope = presentationScope(this.identity);
     this.getUsage = options?.getUsage;
     this.needsHistoryReplace = options?.replaceHistory === true;
+    this.nextBranchId = options?.nextBranchId;
     for (const message of store.snapshot().messages) this.known.add(message.id);
     this.todosRevision = store.snapshot().todos?.revision ?? 0;
     if (!this.emit({ type: 'operation_started' }))
@@ -236,6 +241,15 @@ export class SessionPresentation {
   }
 
   /**
+   * 重试尚未追加新用户消息即失败并已回滚到原分支时，取消待发布的分支与历史替换标记，
+   * 保证后续 `settle()` 校对历史时保持原分支身份与既有消息。
+   */
+  revertBranchTransition(): void {
+    this.needsHistoryReplace = false;
+    this.nextBranchId = undefined;
+  }
+
+  /**
    * 宿主确认控制器 finally 已完成后校对原历史，再解除展示忙碌状态。
    * 最后落盘/清理失败覆盖早先成功结果；无 canonical 的片段仍保留为临时中断。
    */
@@ -293,14 +307,27 @@ export class SessionPresentation {
    */
   private syncHistory(target?: CanonicalMessage): void {
     const history = this.getHistory();
-    const projected = projectHistory(history, this.scope, this.redact, {
+    const projectedIdentity = this.nextBranchId
+      ? { ...this.identity, branchId: this.nextBranchId }
+      : this.identity;
+    const projectedScope = presentationScope(projectedIdentity);
+    const projected = projectHistory(history, projectedScope, this.redact, {
       ...(this.artifacts ? { artifacts: this.artifacts } : {}),
       ...(this.getUsage ? { usageByMessageId: this.getUsage() } : {}),
     });
-    // 重试截断历史后，旧消息必须从视图里整体消失；替换成功后全部消息视为已下发，
+    // 重试截断历史后，旧消息必须从视图里整体消失；替换成功后同步推进分支身份并将全部消息视为已下发，
     // 后续 message_stop 仍按增量追加。emit 失败（视图已换代）时保留标记，下次同步再试。
     if (this.needsHistoryReplace) {
-      if (this.emit({ type: 'history_replaced', messages: projected })) {
+      if (
+        this.emit({
+          type: 'history_replaced',
+          messages: projected,
+          ...(this.nextBranchId ? { branchId: this.nextBranchId } : {}),
+        })
+      ) {
+        this.identity = projectedIdentity;
+        this.scope = projectedScope;
+        this.nextBranchId = undefined;
         this.needsHistoryReplace = false;
         this.known.clear();
         for (const message of projected) this.known.add(message.id);

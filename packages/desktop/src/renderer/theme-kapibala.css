@@ -109,6 +109,17 @@
   --color-kumo-danger: light-dark(#d1241b, #ff7b72);
   --color-kumo-warning: light-dark(#b45309, #f0b35c);
   --color-kumo-info: light-dark(#3f6f8a, #8cc7e0);
+  /* Streamdown 浮层（表格复制菜单、Mermaid 全屏弹窗与缩放控件）对齐 Kumo 语义表面与墨色。 */
+  --color-background: var(--color-kumo-base);
+  --color-foreground: var(--text-color-kumo-default);
+  --color-popover: var(--color-kumo-elevated);
+  --color-popover-foreground: var(--text-color-kumo-default);
+  --color-muted: var(--color-kumo-recessed);
+  --color-muted-foreground: var(--text-color-kumo-subtle);
+  --color-sidebar: var(--color-kumo-recessed);
+  --color-border: var(--color-kumo-line);
+  --color-primary: var(--color-kumo-brand);
+  --color-primary-foreground: var(--text-color-kumo-inverse);
 }
 html,
 body,
@@ -132,36 +143,421 @@ body {
   outline: 2px solid var(--color-kumo-focus);
   outline-offset: 2px;
 }
+/* ---------- 正文与思考过程排版：PI 单色层阶 + Streamdown 单卡片外壳 ---------- */
 .kapibala-prose {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-color-kumo-default);
   font-size: 15px;
   line-height: 1.7;
+  /* 用户气泡外层使用 pre-wrap 保留纯文本草稿断行，进入 Markdown 容器后必须恢复标准排版流。 */
+  white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .kapibala-prose p {
-  margin: 0 0 0.8em;
+  margin: 0.65em 0;
+}
+/* 用户消息常直接粘贴多行终端日志或单换行短句，保留段落内的软换行语义。 */
+.kapibala-user-bubble .kapibala-prose p {
+  white-space: pre-wrap;
+}
+.kapibala-prose p:first-child {
+  margin-top: 0;
 }
 .kapibala-prose p:last-child {
   margin-bottom: 0;
 }
-.kapibala-prose pre {
-  overflow-x: auto;
+.kapibala-prose strong,
+.kapibala-prose b {
+  color: var(--text-color-kumo-strong);
+  font-weight: 600;
 }
-.kapibala-prose a {
-  color: var(--text-color-kumo-link);
-  text-decoration: underline;
+.kapibala-prose del,
+.kapibala-prose s {
+  color: var(--text-color-kumo-subtle);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.kapibala-prose :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--text-color-kumo-strong);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.35;
+  text-wrap: balance;
+}
+.kapibala-prose h1 {
+  margin: 1.3em 0 0.45em;
+  font-size: 1.3em;
+  letter-spacing: -0.018em;
+}
+.kapibala-prose h2 {
+  margin: 1.2em 0 0.4em;
+  font-size: 1.15em;
+}
+.kapibala-prose h3 {
+  margin: 1.1em 0 0.35em;
+  font-size: 1.06em;
+}
+.kapibala-prose h4 {
+  margin: 1em 0 0.3em;
+  font-size: 1em;
+}
+.kapibala-prose :is(h5, h6) {
+  margin: 0.9em 0 0.3em;
+  color: var(--text-color-kumo-subtle);
+  font-size: 0.95em;
+  font-weight: 500;
+}
+.kapibala-prose :is(h1, h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
+}
+.kapibala-prose :is(h1 + h2, h2 + h3, h3 + h4, h4 + h5, h5 + h6) {
+  margin-top: 0.65em;
+}
+.kapibala-prose :is(h1, h2, h3, h4, h5, h6) + :is(p, ul, ol, blockquote) {
+  margin-top: 0.35em;
 }
 .kapibala-prose ul,
 .kapibala-prose ol {
-  padding-left: 1.5em;
+  margin: 0.55em 0 0.75em;
+  padding-left: 1.55em;
+  list-style-position: outside;
 }
-.kapibala-prose table {
-  border-collapse: collapse;
+.kapibala-prose ul {
+  list-style-type: disc;
+}
+.kapibala-prose ol {
+  list-style-type: decimal;
+  font-variant-numeric: tabular-nums;
+  padding-left: 1.7em;
+}
+.kapibala-prose li {
+  margin: 0.25em 0;
+  padding-left: 0.15em;
+}
+.kapibala-prose li::marker {
+  color: var(--text-color-kumo-subtle);
+  font-weight: 500;
+}
+.kapibala-prose li > p {
+  margin: 0.2em 0;
+}
+.kapibala-prose li > :is(ul, ol) {
+  margin: 0.25em 0 0.3em;
+}
+.kapibala-prose li:has(> input[type="checkbox"]),
+.kapibala-prose li:has(> p > input[type="checkbox"]) {
+  list-style-type: none;
+}
+.kapibala-prose input[type="checkbox"] {
+  margin: 0 0.45em 0 0;
+  vertical-align: -0.1em;
+  accent-color: var(--color-kumo-brand);
+}
+.kapibala-prose blockquote {
+  margin: 0.8em 0;
+  padding: 0.55em 0.9em;
+  border: 0;
+  border-left: 2px solid var(--color-kumo-line);
+  border-radius: 0 8px 8px 0;
+  background: var(--kapibala-tile);
+  color: var(--text-color-kumo-subtle);
+  font-style: normal;
+}
+.kapibala-prose blockquote > :first-child {
+  margin-top: 0;
+}
+.kapibala-prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+.kapibala-prose hr {
+  margin: 1.25em 0;
+  border: 0;
+  border-top: 1px solid var(--color-kumo-line);
+}
+.kapibala-prose a {
+  color: var(--text-color-kumo-strong);
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in oklab, var(--text-color-kumo-default) 32%, transparent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  transition: text-decoration-color 140ms ease, color 140ms ease;
+}
+.kapibala-prose a:hover {
+  color: var(--text-color-kumo-strong);
+  text-decoration-color: var(--text-color-kumo-default);
+}
+.kapibala-prose :not(pre) > code,
+.kapibala-prose [data-streamdown="inline-code"] {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  font-variant-ligatures: none;
+  padding: 0.14em 0.42em;
+  border: 0;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--text-color-kumo-default) 7%, transparent);
+  color: var(--text-color-kumo-strong);
+}
+.kapibala-prose a code {
+  color: inherit;
+  background: transparent;
+  padding: 0;
+}
+.kapibala-prose :is(h1, h2, h3, h4, h5, h6) code {
+  font-size: 0.9em;
+}
+.kapibala-prose pre {
+  overflow-x: auto;
+}
+/* 覆盖 Streamdown 代码块与 Mermaid 的双层边框，收敛为单层卡片 + 34px 轻顶栏；
+   显式关闭 content-visibility: auto，防止与 @tanstack/react-virtual 行高测量冲突产生滚动跳动。 */
+.kapibala-prose [data-streamdown="code-block"],
+.kapibala-prose [data-streamdown="mermaid-block"] {
+  content-visibility: visible !important;
+  contain-intrinsic-size: none !important;
+  position: relative;
+  margin: 0.85em 0;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 12px;
+  background: var(--color-kumo-base);
+  box-shadow: none;
+}
+.kapibala-prose [data-streamdown="code-block-header"],
+.kapibala-prose [data-streamdown="mermaid-block"] > div:first-child {
+  display: flex;
+  height: 34px;
+  min-height: 34px;
+  align-items: center;
+  padding: 0 9rem 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--color-kumo-hairline);
+  background: var(--kapibala-tile);
+  color: var(--text-color-kumo-subtle);
+  font-size: 12px;
+}
+.kapibala-prose [data-streamdown="code-block-header"] > span,
+.kapibala-prose [data-streamdown="mermaid-block"] > div:first-child > span {
+  margin-left: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  color: var(--text-color-kumo-subtle);
+}
+.kapibala-prose [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]),
+.kapibala-prose
+  [data-streamdown="mermaid-block"]
+  > div:has([data-streamdown="mermaid-block-actions"]) {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  height: 34px;
+  align-items: center;
+  padding: 0 6px;
+}
+.kapibala-prose [data-streamdown="code-block-actions"],
+.kapibala-prose [data-streamdown="mermaid-block-actions"] {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  opacity: 0.78;
+  transition: opacity 140ms ease;
+}
+.kapibala-prose [data-streamdown="code-block"]:hover [data-streamdown="code-block-actions"],
+.kapibala-prose [data-streamdown="code-block-actions"]:focus-within,
+.kapibala-prose [data-streamdown="mermaid-block"]:hover [data-streamdown="mermaid-block-actions"],
+.kapibala-prose [data-streamdown="mermaid-block-actions"]:focus-within {
+  opacity: 1;
+}
+.kapibala-prose [data-streamdown="code-block-actions"] > button:not(.kapibala-action),
+.kapibala-prose [data-streamdown="mermaid-block-actions"] > button {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-color-kumo-subtle);
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.kapibala-prose [data-streamdown="code-block-actions"] > button:not(.kapibala-action):hover,
+.kapibala-prose [data-streamdown="mermaid-block-actions"] > button:hover {
+  background: var(--color-kumo-tint);
+  color: var(--text-color-kumo-default);
+}
+.kapibala-prose [data-streamdown="code-block-actions"] > button:not(.kapibala-action):focus-visible,
+.kapibala-prose [data-streamdown="mermaid-block-actions"] > button:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 1px;
+}
+.kapibala-prose .kapibala-code-wrap-btn {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  color: var(--text-color-kumo-subtle);
+}
+.kapibala-prose .kapibala-code-shell[data-code-wrap="true"] .kapibala-code-wrap-btn {
+  background: color-mix(in oklab, var(--text-color-kumo-default) 10%, transparent);
+  color: var(--text-color-kumo-default);
+}
+.kapibala-prose [data-streamdown="code-block-body"] {
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.kapibala-prose [data-streamdown="code-block-body"] pre,
+.kapibala-prose [data-streamdown="code-block"] pre {
+  margin: 0;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.kapibala-prose .kapibala-code-shell[data-code-wrap="true"] [data-streamdown="code-block-body"],
+.kapibala-prose .kapibala-code-shell[data-code-wrap="true"] [data-streamdown="code-block"] pre,
+.kapibala-prose .kapibala-code-shell[data-code-wrap="true"] [data-streamdown="code-block"] code {
+  overflow-x: hidden;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word;
+}
+.kapibala-prose [data-streamdown="mermaid-block"] > div:last-child {
+  border: 0;
+  border-radius: 0;
+  background: var(--color-kumo-base);
+}
+/* GFM 表格：去竖线网格，统一为单层卡片 + 浅底表头 + 细横线行。 */
+.kapibala-prose [data-streamdown="table-wrapper"] {
+  position: relative;
+  margin: 0.85em 0;
+  padding: 0;
+  gap: 0;
+  /* 允许顶栏「复制表格」格式下拉菜单越出圆角边界展示，不被裁切。 */
+  overflow: visible;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 12px;
+  background: var(--color-kumo-base);
+  box-shadow: none;
+}
+.kapibala-prose [data-streamdown="table-wrapper"] > div:first-child {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  height: 30px;
+  min-height: 30px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 0 6px;
+  border: 0;
+  border-bottom: 1px solid var(--color-kumo-hairline);
+  border-radius: 12px 12px 0 0;
+  background: var(--kapibala-tile);
+}
+.kapibala-prose [data-streamdown="table-wrapper"] > div:last-child {
+  margin: 0;
+  overflow-x: auto;
+  border: 0;
+  border-radius: 0 0 12px 12px;
+}
+.kapibala-prose table,
+.kapibala-prose [data-streamdown="table"] {
+  width: 100%;
   max-width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.55;
+}
+.kapibala-prose thead {
+  background: var(--kapibala-tile);
 }
 .kapibala-prose th,
 .kapibala-prose td {
-  border: 1px solid var(--color-kumo-line);
-  padding: 0.5em;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--color-kumo-hairline);
+  text-align: left;
+  vertical-align: top;
+}
+.kapibala-prose th {
+  color: var(--text-color-kumo-strong);
+  font-weight: 600;
+}
+.kapibala-prose tbody tr:last-child td {
+  border-bottom: 0;
+}
+.kapibala-prose tbody tr:hover td {
+  background: var(--color-kumo-tint);
+}
+/* KaTeX 公式：块级公式超宽时内部横向滚动，不撑破对话列。 */
+.kapibala-prose .katex {
+  font-size: 1.02em;
+}
+.kapibala-prose .katex-display {
+  max-width: 100%;
+  margin: 0.85em 0;
+  padding: 0.55em 0.75em;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 8px;
+  background: var(--kapibala-tile);
+}
+/* 思考过程紧凑模式（compact）：退居过程层墨色，压平标题字阶，保留列表与行内代码结构。 */
+.kapibala-prose-compact {
+  color: var(--text-color-kumo-subtle);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.kapibala-prose-compact :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0.6em 0 0.25em;
+  color: var(--text-color-kumo-subtle);
+  font-size: 1em;
+  font-weight: 600;
+}
+.kapibala-prose-compact :is(strong, b) {
+  color: var(--text-color-kumo-default);
+}
+.kapibala-prose-compact :is(p, ul, ol, blockquote) {
+  margin: 0.35em 0;
+}
+.kapibala-prose-compact li {
+  margin: 0.15em 0;
+}
+.kapibala-prose-compact a {
+  color: var(--text-color-kumo-subtle);
+}
+.kapibala-prose-compact :not(pre) > code,
+.kapibala-prose-compact [data-streamdown="inline-code"] {
+  color: var(--text-color-kumo-subtle);
+  background: color-mix(in oklab, var(--text-color-kumo-default) 5%, transparent);
+}
+.kapibala-prose-compact [data-streamdown="code-block"] {
+  margin: 0.5em 0;
 }
 
 /* 减少动效统一覆盖浮层与折叠的库默认过渡；不影响键盘、焦点或滚动操作。 */
