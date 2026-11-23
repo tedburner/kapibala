@@ -185,10 +185,13 @@ test('Streamdown 正文排版、全语言高亮、折行开关、Mermaid、KaTeX
       .poll(() => app.evaluate(({ clipboard }) => clipboard.readText()))
       .toContain('let greeting = "hello kapibala";');
 
-    // Mermaid 代码块懒渲染出 SVG 流程图；点击带 `click A "#details"` 的节点后主进程不得误断控制通道。
-    const mermaidImg = reply.getByRole('img', { name: 'Mermaid 图表' });
+    // Mermaid 代码块基于 IntersectionObserver 懒渲染出 SVG 流程图：先滚入视口，避免小屏 CI（macOS）落在折叠线外；
+    // 点击带 `click A "#details"` 的节点后主进程不得误断控制通道。
+    const mermaidBlock = reply.locator('[data-streamdown="mermaid-block"]');
+    await mermaidBlock.scrollIntoViewIfNeeded();
+    const mermaidImg = mermaidBlock.getByRole('img', { name: 'Mermaid 图表' });
     await expect(mermaidImg.locator('svg')).toBeVisible({
-      timeout: 10_000,
+      timeout: 15_000,
     });
     const clickableNode = mermaidImg.locator('svg a').first();
     await expect(clickableNode).toBeVisible();

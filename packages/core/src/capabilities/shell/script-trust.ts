@@ -359,14 +359,14 @@ function collectCommandScriptTargets(
     if (rawWords === undefined) return 'unknown';
     const words = powershell ? expandPowerShellColonArgs(rawWords) : rawWords;
     if (words.length === 0) continue;
-    const cdUpdate = trackDirectoryChange(words, effectiveCwd, root);
+    const cdUpdate = trackDirectoryChange(words, effectiveCwd, root, powershell);
     if (cdUpdate !== undefined) {
       if (cdUpdate === 'unknown') cwdUnknown = true;
       else effectiveCwd = cdUpdate;
       continue;
     }
     if (cwdUnknown) return 'unknown';
-    const extracted = segmentTargets(words, effectiveCwd, root);
+    const extracted = segmentTargets(words, effectiveCwd, root, powershell);
     if (extracted === 'unknown') return 'unknown';
     for (const target of extracted) targets.add(target);
   }
@@ -393,11 +393,24 @@ function isSafeEnvAssignment(assignment: string): boolean {
   return true;
 }
 
+function resolveShellPath(cwd: string, target: string, powershell = false): string {
+  if (powershell || process.platform === 'win32') {
+    const normalizedCwd = cwd.replace(/\\/g, '/');
+    const normalizedTarget = target.replace(/\\/g, '/');
+    if (process.platform !== 'win32' && /^[A-Za-z]:\//.test(normalizedTarget)) {
+      return `/__kpbl_win32_drive__/${normalizedTarget}`;
+    }
+    return path.resolve(normalizedCwd, normalizedTarget);
+  }
+  return path.resolve(cwd, target);
+}
+
 /** 追踪段间 `cd` / `pushd` / `Set-Location` 的工作目录漂移；非切目录命令返回 undefined。 */
 function trackDirectoryChange(
   words: readonly string[],
   currentCwd: string,
   root: string,
+  powershell = false,
 ): string | 'unknown' | undefined {
   let index = 0;
   while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) {
@@ -425,7 +438,7 @@ function trackDirectoryChange(
   ) {
     return 'unknown';
   }
-  const resolved = path.resolve(currentCwd, target);
+  const resolved = resolveShellPath(currentCwd, target, powershell);
   const relative = path.relative(root, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative)) return 'unknown';
   return resolved;
@@ -436,6 +449,7 @@ function segmentTargets(
   words: readonly string[],
   cwd: string,
   root: string,
+  powershell = false,
 ): readonly string[] | 'unknown' {
   let index = 0;
   while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]!)) {
@@ -447,7 +461,7 @@ function segmentTargets(
   if (rawProgram === undefined) return 'unknown';
   // 直引路径程序（含 `./`、`/`、`\`）：不得按 basename 伪装成内置程序；按脚本路径校验。
   if (rawProgram.includes('/') || rawProgram.includes('\\')) {
-    return resolveTarget(rawProgram, cwd, root);
+    return resolveTarget(rawProgram, cwd, root, powershell);
   }
   const program = baseName(rawProgram);
   if (program === undefined) return 'unknown';
@@ -484,13 +498,13 @@ function segmentTargets(
         if (INTERPRETER_PRELOAD_FLAGS.has(flagName)) {
           const preloadValue = eq > 0 ? word.slice(eq + 1) : rest[++i];
           if (!preloadValue) return 'unknown';
-          const resolvedPreload = resolveAnyFileTarget(preloadValue, cwd, root);
+          const resolvedPreload = resolveAnyFileTarget(preloadValue, cwd, root, powershell);
           if (resolvedPreload === 'unknown') return 'unknown';
           collected.push(...resolvedPreload);
           continue;
         }
         if (word.startsWith('-r') && word.length > 2) {
-          const resolvedPreload = resolveAnyFileTarget(word.slice(2), cwd, root);
+          const resolvedPreload = resolveAnyFileTarget(word.slice(2), cwd, root, powershell);
           if (resolvedPreload === 'unknown') return 'unknown';
           collected.push(...resolvedPreload);
           continue;
@@ -514,7 +528,7 @@ function segmentTargets(
       collected.push(manifest);
       return collected;
     }
-    const resolvedMain = resolveTarget(mainScript, cwd, root);
+    const resolvedMain = resolveTarget(mainScript, cwd, root, powershell);
     if (resolvedMain === 'unknown') return 'unknown';
     collected.push(...resolvedMain);
     return collected;
@@ -533,7 +547,7 @@ function segmentTargets(
       ) {
         return 'unknown';
       }
-      const resolvedDir = path.resolve(targetCwd, dirTarget);
+      const resolvedDir = resolveShellPath(targetCwd, dirTarget, powershell);
       const rel = path.relative(root, resolvedDir);
       if (rel.startsWith('..') || path.isAbsolute(rel)) return 'unknown';
       targetCwd = resolvedDir;
@@ -551,7 +565,7 @@ function segmentTargets(
   }
 
   if (program in WORKSPACE_CONFIG_CANDIDATES) {
-    return resolveWorkspaceProgramConfigs(program, rest, cwd, root);
+    return resolveWorkspaceProgramConfigs(program, rest, cwd, root, powershell);
   }
 
   return [];
@@ -568,6 +582,7 @@ function resolveWorkspaceProgramConfigs(
   rest: readonly string[],
   cwd: string,
   root: string,
+  powershell = false,
 ): readonly string[] | 'unknown' {
   const configFlags = WORKSPACE_CONFIG_FLAGS[program];
   const explicit: string[] = [];
@@ -584,7 +599,7 @@ function resolveWorkspaceProgramConfigs(
       if (configFlags?.has(flag)) {
         const val = eq > 0 ? word.slice(eq + 1) : rest[++i];
         if (!val) return 'unknown';
-        const resolved = resolveAnyFileTarget(val, cwd, root);
+        const resolved = resolveAnyFileTarget(val, cwd, root, powershell);
         if (resolved === 'unknown') return 'unknown';
         explicit.push(...resolved);
         continue;
@@ -600,12 +615,12 @@ function resolveWorkspaceProgramConfigs(
         sawSubcommand = true;
         continue;
       }
-      const resolvedFile = resolveAnyFileTarget(word, cwd, root);
+      const resolvedFile = resolveAnyFileTarget(word, cwd, root, powershell);
       if (resolvedFile !== 'unknown') {
         positionalTargets.push(...resolvedFile);
         continue;
       }
-      const resolvedDir = resolveDirectoryFiles(word, cwd, root);
+      const resolvedDir = resolveDirectoryFiles(word, cwd, root, powershell);
       if (resolvedDir === 'unknown') return 'unknown';
       positionalTargets.push(...resolvedDir);
     }
@@ -647,9 +662,14 @@ function findNearestFiles(cwd: string, root: string, names: readonly string[]): 
  * 不存在的路径在 `git status -- <path>` 下输出为空，若不在这里拦下会被误判成 `clean`，
  * 因此必须显式要求文件存在。
  */
-function resolveTarget(script: string, cwd: string, root: string): readonly string[] | 'unknown' {
+function resolveTarget(
+  script: string,
+  cwd: string,
+  root: string,
+  powershell = false,
+): readonly string[] | 'unknown' {
   if (!SCRIPT_EXTENSION.test(script)) return 'unknown';
-  return resolveAnyFileTarget(script, cwd, root);
+  return resolveAnyFileTarget(script, cwd, root, powershell);
 }
 
 /** 解析任意受检文件（如 `--require` 模块或自定义 `Makefile`）：不限扩展名，但必须在工作区内真实存在。 */
@@ -657,6 +677,7 @@ function resolveAnyFileTarget(
   target: string,
   cwd: string,
   root: string,
+  powershell = false,
 ): readonly string[] | 'unknown' {
   if (
     target.includes('$') ||
@@ -665,7 +686,7 @@ function resolveAnyFileTarget(
     /[*?[]/.test(target)
   )
     return 'unknown';
-  const resolved = path.resolve(cwd, target);
+  const resolved = resolveShellPath(cwd, target, powershell);
   const relative = path.relative(root, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative)) return 'unknown';
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return 'unknown';
@@ -711,6 +732,7 @@ function resolveDirectoryFiles(
   targetDir: string,
   cwd: string,
   root: string,
+  powershell = false,
 ): readonly string[] | 'unknown' {
   if (
     targetDir.includes('$') ||
@@ -720,7 +742,7 @@ function resolveDirectoryFiles(
   ) {
     return 'unknown';
   }
-  const resolved = path.resolve(cwd, targetDir);
+  const resolved = resolveShellPath(cwd, targetDir, powershell);
   const rel = path.relative(root, resolved);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return 'unknown';
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return 'unknown';

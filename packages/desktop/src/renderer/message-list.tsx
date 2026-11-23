@@ -169,27 +169,32 @@ function useToolElapsed(tool: ViewTool | undefined): { text?: string; stale: boo
 
 function ToolRow({
   tool,
+  openPreviews,
+  onTogglePreview,
   onTool,
   onArtifact,
 }: {
   tool?: ViewTool;
+  openPreviews: Readonly<Record<string, boolean>>;
+  onTogglePreview(callId: string): void;
   onTool(callId: string, trigger: HTMLElement): void;
   onArtifact(callId: string, artifact: ViewArtifact, trigger: HTMLElement): void;
 }) {
-  // 只对内置 write_file 的目标为 html/htm/svg 时给预览入口；解析失败或超限时该值为空。
-  // 按 name/input 两段文本做记忆，避免流式事件换对象引用时重复解析整份入参。
+  // 只对已成功落盘的内置 write_file（html/htm/svg）给预览入口；运行中、拒绝或超限时该值为空。
+  // 按 name/input/status 做记忆，避免流式事件换对象引用时重复解析整份入参。
   const toolName = tool?.name;
   const toolInput = tool?.input ?? '';
+  const toolStatus = tool?.status;
   // 产物按路径去重：同一次调用重复下发同一路径时不重复渲染 chip。
   const artifacts = useMemo(
     () => [...new Map((tool?.artifacts ?? []).map((item) => [item.path, item])).values()],
     [tool?.artifacts],
   );
   const previewDoc = useMemo(
-    () => (toolName ? toolPreview(toolName, toolInput) : undefined),
-    [toolName, toolInput],
+    () => (toolName ? toolPreview(toolName, toolInput, toolStatus) : undefined),
+    [toolName, toolInput, toolStatus],
   );
-  const [showPreview, setShowPreview] = useState(false);
+  const showPreview = Boolean(tool?.callId && openPreviews[tool.callId]);
   const state = TOOL_STATES[tool?.status ?? 'running'];
   const elapsed = useToolElapsed(tool);
   // 限制单行预览长度与行数，完整的已脱敏内容仍由详情抽屉展示。
@@ -247,10 +252,10 @@ function ToolRow({
             {elapsed.text}
           </span>
         )}
-        {previewDoc && (
+        {previewDoc && tool && (
           <HtmlPreviewButton
             open={showPreview}
-            onClick={() => setShowPreview(!showPreview)}
+            onClick={() => onTogglePreview(tool.callId)}
             kind={previewDoc.label === 'SVG 文件预览' ? 'SVG' : 'HTML'}
           />
         )}
@@ -338,10 +343,14 @@ function ToolRow({
 
 function ToolGroup({
   blocks,
+  openPreviews,
+  onTogglePreview,
   onTool,
   onArtifact,
 }: {
   blocks: readonly ViewBlock[];
+  openPreviews: Readonly<Record<string, boolean>>;
+  onTogglePreview(callId: string): void;
   onTool(callId: string, trigger: HTMLElement): void;
   onArtifact(callId: string, artifact: ViewArtifact, trigger: HTMLElement): void;
 }) {
@@ -379,7 +388,14 @@ function ToolGroup({
         {/* 行间 2px 呼吸避免 hover 高亮块粘连；行内自带 px-2，图标锚点与组标题对齐在 8px。 */}
         <div className="flex flex-col gap-0.5 py-1">
           {blocks.map((block) => (
-            <ToolRow key={block.id} tool={block.tool} onTool={onTool} onArtifact={onArtifact} />
+            <ToolRow
+              key={block.id}
+              tool={block.tool}
+              openPreviews={openPreviews}
+              onTogglePreview={onTogglePreview}
+              onTool={onTool}
+              onArtifact={onArtifact}
+            />
           ))}
         </div>
       </Collapsible.Panel>
@@ -431,6 +447,17 @@ export function MessageList({
   const userIntent = useRef(false);
   const frame = useRef<number | undefined>(undefined);
   const [atBottom, setAtBottom] = useState(following.current);
+  // 工具 HTML/SVG 预览展开态按稳定的 callId 持有：临时消息落盘转正（provisionalId -> recordId）
+  // 会更换虚拟行 key，放在 ToolRow 局部 state 会在提交边界丢失已展开的 iframe；切换会话时整体清空卸载。
+  const [openPreviews, setOpenPreviews] = useState<Record<string, boolean>>({});
+  const [previewScope, setPreviewScope] = useState(memoryKey);
+  if (previewScope !== memoryKey) {
+    setPreviewScope(memoryKey);
+    setOpenPreviews({});
+  }
+  const togglePreview = (callId: string) => {
+    setOpenPreviews((prev) => ({ ...prev, [callId]: !prev[callId] }));
+  };
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => scrollRef.current,
@@ -562,6 +589,8 @@ export function MessageList({
                         <ToolGroup
                           key={group.blocks[0].id}
                           blocks={group.blocks}
+                          openPreviews={openPreviews}
+                          onTogglePreview={togglePreview}
                           onTool={onTool}
                           onArtifact={onArtifact}
                         />

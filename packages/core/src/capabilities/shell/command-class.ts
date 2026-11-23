@@ -588,7 +588,7 @@ export function findProtectedShellTargets(shell: ShellScope, rootDir: string): r
       if (candidate.includes('$') || candidate.includes('`') || candidate.startsWith('~')) continue;
       // glob 元字符会让 bash 先展开再写入，字面路径不代表真实目标，无法静态归因（分类器侧归 unknown）。
       if (containsGlobMeta(candidate)) continue;
-      const resolved = path.resolve(effectiveCwd, candidate);
+      const resolved = resolveCommandPath(effectiveCwd, candidate, isPowerShell);
       if (!isWithinRoot(resolved, root)) continue;
       const relative = path.relative(root, resolved).replace(/\\/g, '/');
       if (isProtectedWorkspacePath(relative)) found.add(relative);
@@ -608,6 +608,23 @@ function aggregate(classes: readonly ShellCommandClass[]): ShellCommandClass {
   if (classes.includes('workspace-write')) return 'workspace-write';
   if (classes.includes('vcs-write')) return 'vcs-write';
   return 'read';
+}
+
+/**
+ * 解析命令参数路径：PowerShell（含 Linux/macOS 上的跨平台 `pwsh`）与 Windows 宿主都把 `\`
+ * 视为目录分隔符，因此在交给 `path.resolve` 前先将 `\` 归一为 `/`；非 win32 主机遇到盘符绝对路径
+ * （如 `C:\outside`）时返回根外哨兵，避免被 `path.posix.resolve` 当成相对子目录拼入工作区。
+ */
+function resolveCommandPath(cwd: string, target: string, powershell = false): string {
+  if (powershell || process.platform === 'win32') {
+    const normalizedCwd = cwd.replace(/\\/g, '/');
+    const normalizedTarget = target.replace(/\\/g, '/');
+    if (process.platform !== 'win32' && /^[A-Za-z]:\//.test(normalizedTarget)) {
+      return `/__kpbl_win32_drive__/${normalizedTarget}`;
+    }
+    return path.resolve(normalizedCwd, normalizedTarget);
+  }
+  return path.resolve(cwd, target);
 }
 
 /** 工作区包含判定；`path.relative` 在 win32 上按大小写不敏感比较，越界一律拒绝。 */
@@ -840,7 +857,7 @@ function advanceSegmentCwd(
   ) {
     return 'unknown';
   }
-  return path.resolve(currentCwd, target);
+  return resolveCommandPath(currentCwd, target, powershell);
 }
 
 /** 校验前导 `KEY=VALUE` 环境变量赋值：禁止加载器/PATH 劫持键与路径/脚本类取值自动放行。 */
@@ -869,6 +886,7 @@ function classifyDirectPathProgram(
   cwd: string,
   rootDir: string,
   scriptTrust: ShellScope['scriptTrust'],
+  powershell = false,
 ): ShellCommandClass {
   if (
     rawProgram.includes('$') ||
@@ -878,7 +896,7 @@ function classifyDirectPathProgram(
   ) {
     return 'unknown';
   }
-  const resolved = path.resolve(cwd, rawProgram);
+  const resolved = resolveCommandPath(cwd, rawProgram, powershell);
   if (!isWithinRoot(resolved, rootDir)) return 'escape';
   if (SCRIPT_EXTENSION.test(rawProgram) && scriptTrust === 'clean') return 'workspace-write';
   return 'unknown';
@@ -1055,12 +1073,13 @@ function classifyRedirectTargets(
   scan: RedirectScan,
   cwd: string,
   rootDir: string,
+  powershell = false,
 ): ShellCommandClass | undefined {
   if (scan.heredoc || scan.processSubstitution) return 'unknown';
   for (const target of scan.targets) {
     if (target.includes('$') || target.includes('`') || target.startsWith('~')) return 'unknown';
     if (containsGlobMeta(target)) return 'unknown';
-    const resolved = path.resolve(cwd, target);
+    const resolved = resolveCommandPath(cwd, target, powershell);
     if (!isWithinRoot(resolved, rootDir)) return 'escape';
     if (isEscapeClassPath(toRelativePosix(resolved, rootDir))) return 'escape';
   }
@@ -1146,7 +1165,7 @@ function classifyPowerShellSegment(
   scriptTrust?: ShellScope['scriptTrust'],
 ): ShellCommandClass {
   const scan = scanRedirections(segment.text, true);
-  const redirect = classifyRedirectTargets(scan, cwd, rootDir);
+  const redirect = classifyRedirectTargets(scan, cwd, rootDir, true);
   if (redirect !== undefined) return redirect;
   if (segment.hadDollar) return 'unknown';
   const rawWords = splitWords(scan.command, true);
@@ -1197,31 +1216,31 @@ function classifyPowerShellWords(
   if (rawProgram === undefined) return 'unknown';
   if (rawProgram === '&' || rawProgram === '.') return 'unknown';
   if (rawProgram.includes('/') || rawProgram.includes('\\')) {
-    return classifyDirectPathProgram(rawProgram, cwd, rootDir, scriptTrust);
+    return classifyDirectPathProgram(rawProgram, cwd, rootDir, scriptTrust, true);
   }
   const program = baseName(rawProgram);
   if (program === undefined) return 'unknown';
   const rest = words.slice(1);
   if (program === 'cd' || program === 'set-location' || program === 'sl' || program === 'pushd') {
-    return classifyChangeDirectory(rest, cwd, rootDir);
+    return classifyChangeDirectory(rest, cwd, rootDir, true);
   }
   if (program === 'popd') return 'unknown';
   if (POWERSHELL_NETWORK.has(program)) return 'network';
   if (POWERSHELL_DESTRUCTIVE.has(program)) return 'destructive';
-  if (POWERSHELL_COPY.has(program)) return classifyCopy(rest, cwd, rootDir);
-  if (POWERSHELL_WRITE.has(program)) return classifyWriteTargets(rest, cwd, rootDir);
+  if (POWERSHELL_COPY.has(program)) return classifyCopy(rest, cwd, rootDir, true);
+  if (POWERSHELL_WRITE.has(program)) return classifyWriteTargets(rest, cwd, rootDir, true);
   if (POWERSHELL_UNKNOWN.has(program)) return 'unknown';
   if (program === 'pnpm' || program === 'npm' || program === 'yarn')
-    return classifyPackageManager(rest, cwd, rootDir, scriptTrust);
+    return classifyPackageManager(rest, cwd, rootDir, scriptTrust, true);
   if (INTERPRETER_PROGRAMS.has(program))
-    return classifyInterpreter(program, rest, cwd, rootDir, scriptTrust);
+    return classifyInterpreter(program, rest, cwd, rootDir, scriptTrust, true);
   if (WORKSPACE_PROGRAMS.has(program))
-    return classifyWorkspaceProgram(program, rest, cwd, rootDir, scriptTrust);
+    return classifyWorkspaceProgram(program, rest, cwd, rootDir, scriptTrust, true);
   if (POWERSHELL_READ.has(program)) {
     // PowerShell 自有的路径型读 cmdlet 不在 POSIX 的 READ_PATH_PROGRAMS 内，需单独集合；
     // 两者取并集保证 `cat` / `ls` 等跨解释器别名同样受路径越界检查。
     return READ_PATH_PROGRAMS.has(program) || POWERSHELL_READ_PATH.has(program)
-      ? classifyReadArguments(rest, cwd, rootDir)
+      ? classifyReadArguments(rest, cwd, rootDir, true)
       : 'read';
   }
   return 'unknown';
@@ -1232,11 +1251,12 @@ function classifyReadArguments(
   words: readonly string[],
   cwd: string,
   rootDir: string,
+  powershell = false,
 ): ShellCommandClass {
   for (const word of words) {
     if (!looksLikePath(word)) continue;
     if (word.includes('$') || word.includes('`') || word.startsWith('~')) return 'unknown';
-    if (!isWithinRoot(path.resolve(cwd, word), rootDir)) return 'escape';
+    if (!isWithinRoot(resolveCommandPath(cwd, word, powershell), rootDir)) return 'escape';
   }
   return 'read';
 }
@@ -1266,6 +1286,7 @@ function classifyWriteTargets(
   words: readonly string[],
   cwd: string,
   rootDir: string,
+  powershell = false,
 ): ShellCommandClass {
   let sawTarget = false;
   for (const word of words) {
@@ -1273,7 +1294,7 @@ function classifyWriteTargets(
     sawTarget = true;
     if (word.includes('$') || word.includes('`') || word.startsWith('~')) return 'unknown';
     if (containsGlobMeta(word)) return 'unknown';
-    const resolved = path.resolve(cwd, word);
+    const resolved = resolveCommandPath(cwd, word, powershell);
     if (!isWithinRoot(resolved, rootDir)) return 'escape';
     if (isEscapeClassPath(toRelativePosix(resolved, rootDir))) return 'escape';
   }
@@ -1285,18 +1306,23 @@ function classifyWriteTargets(
  * GNU `-t DIR` 的取值才是真实写入目标（最后一个位置参数是源）；选项无值配对无法判读；
  * 目标含 glob 元字符按 `unknown`，命中 escape 类敏感路径按 `escape`。
  */
-function classifyCopy(words: readonly string[], cwd: string, rootDir: string): ShellCommandClass {
+function classifyCopy(
+  words: readonly string[],
+  cwd: string,
+  rootDir: string,
+  powershell = false,
+): ShellCommandClass {
   const targetDirectory = gnuTargetDirectory(words);
   if (targetDirectory.present && targetDirectory.value === undefined) return 'unknown';
   for (const word of words) {
     if (word.startsWith('-')) continue;
     if (word.includes('$') || word.includes('`') || word.startsWith('~')) return 'unknown';
-    if (!isWithinRoot(path.resolve(cwd, word), rootDir)) return 'escape';
+    if (!isWithinRoot(resolveCommandPath(cwd, word, powershell), rootDir)) return 'escape';
   }
   const destination = targetDirectory.present ? targetDirectory.value! : lastNonOptionWord(words);
   if (destination === undefined) return 'unknown';
   if (containsGlobMeta(destination)) return 'unknown';
-  const resolved = path.resolve(cwd, destination);
+  const resolved = resolveCommandPath(cwd, destination, powershell);
   if (!isWithinRoot(resolved, rootDir)) return 'escape';
   if (isEscapeClassPath(toRelativePosix(resolved, rootDir))) return 'escape';
   return 'workspace-write';
@@ -1309,7 +1335,7 @@ function classifyFind(words: readonly string[], cwd: string, rootDir: string): S
   for (const word of words) {
     if (!looksLikePath(word)) continue;
     if (word.includes('$') || word.includes('`') || word.startsWith('~')) return 'unknown';
-    if (!isWithinRoot(path.resolve(cwd, word), rootDir)) return 'escape';
+    if (!isWithinRoot(resolveCommandPath(cwd, word), rootDir)) return 'escape';
   }
   return 'read';
 }
@@ -1319,12 +1345,13 @@ function classifyChangeDirectory(
   rest: readonly string[],
   cwd: string,
   rootDir: string,
+  powershell = false,
 ): ShellCommandClass {
   if (rest.length === 0 || rest.length > 1) return 'unknown';
   const target = rest[0]!;
   if (target.includes('$') || target.startsWith('-')) return 'unknown';
   if (target.startsWith('~')) return 'escape';
-  return isWithinRoot(path.resolve(cwd, target), rootDir) ? 'read' : 'escape';
+  return isWithinRoot(resolveCommandPath(cwd, target, powershell), rootDir) ? 'read' : 'escape';
 }
 
 /** 包管理器：校验 `-C`/`--dir`/`--prefix` 目录边界后取首个子命令；`exec` 与 `dlx`/`npx` 同判 `network`。 */
@@ -1333,6 +1360,7 @@ function classifyPackageManager(
   cwd: string,
   rootDir: string,
   scriptTrust: ShellScope['scriptTrust'],
+  powershell = false,
 ): ShellCommandClass {
   const parsed = parsePackageManagerInvocation(rest);
   if (parsed === 'unknown') return 'unknown';
@@ -1340,7 +1368,7 @@ function classifyPackageManager(
     if (dirTarget.includes('$') || dirTarget.includes('`')) return 'unknown';
     if (dirTarget.startsWith('~')) return 'escape';
     if (containsGlobMeta(dirTarget)) return 'unknown';
-    if (!isWithinRoot(path.resolve(cwd, dirTarget), rootDir)) return 'escape';
+    if (!isWithinRoot(resolveCommandPath(cwd, dirTarget, powershell), rootDir)) return 'escape';
   }
   const { subcommand } = parsed;
   if (subcommand === undefined) return 'unknown';
@@ -1363,6 +1391,7 @@ function classifyWorkspaceProgram(
   cwd: string,
   rootDir: string,
   scriptTrust: ShellScope['scriptTrust'],
+  powershell = false,
 ): ShellCommandClass {
   const configFlags = WORKSPACE_CONFIG_FLAGS[program];
   let hasExplicitConfig = false;
@@ -1379,7 +1408,7 @@ function classifyWorkspaceProgram(
       const val = eq > 0 ? word.slice(eq + 1) : rest[++i];
       if (!val || val.includes('$') || val.includes('`') || val.startsWith('~')) return 'unknown';
       if (containsGlobMeta(val)) return 'unknown';
-      if (!isWithinRoot(path.resolve(cwd, val), rootDir)) return 'escape';
+      if (!isWithinRoot(resolveCommandPath(cwd, val, powershell), rootDir)) return 'escape';
     }
   }
   if (program === 'make' || hasExplicitConfig) {
@@ -1444,6 +1473,7 @@ function classifyInterpreter(
   cwd: string,
   rootDir: string,
   scriptTrust: ShellScope['scriptTrust'],
+  powershell = false,
 ): ShellCommandClass {
   let effectiveRest = rest;
   if ((program === 'deno' || program === 'bun') && effectiveRest[0] === 'run') {
@@ -1477,7 +1507,7 @@ function classifyInterpreter(
         if (!preload || preload.includes('$') || preload.includes('`') || preload.startsWith('~'))
           return 'unknown';
         if (containsGlobMeta(preload)) return 'unknown';
-        if (!isWithinRoot(path.resolve(cwd, preload), rootDir)) return 'escape';
+        if (!isWithinRoot(resolveCommandPath(cwd, preload, powershell), rootDir)) return 'escape';
         continue;
       }
       if (word.startsWith('-r') && word.length > 2) {
@@ -1485,7 +1515,7 @@ function classifyInterpreter(
         if (preload.includes('$') || preload.includes('`') || preload.startsWith('~'))
           return 'unknown';
         if (containsGlobMeta(preload)) return 'unknown';
-        if (!isWithinRoot(path.resolve(cwd, preload), rootDir)) return 'escape';
+        if (!isWithinRoot(resolveCommandPath(cwd, preload, powershell), rootDir)) return 'escape';
         continue;
       }
       if (INTERPRETER_SAFE_BOOLEAN_FLAGS[program]?.has(word)) continue;
@@ -1498,7 +1528,7 @@ function classifyInterpreter(
   if (script === undefined) return 'unknown';
   if (script.includes('$') || script.includes('`') || script.startsWith('~')) return 'unknown';
   if (containsGlobMeta(script)) return 'unknown';
-  if (!isWithinRoot(path.resolve(cwd, script), rootDir)) return 'escape';
+  if (!isWithinRoot(resolveCommandPath(cwd, script, powershell), rootDir)) return 'escape';
   return scriptTrust === 'clean' ? 'workspace-write' : 'unknown';
 }
 

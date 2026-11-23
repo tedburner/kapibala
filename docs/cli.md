@@ -1,6 +1,6 @@
 # CLI 使用指南（kpbl）
 
-`kpbl` 是 Kapibala 的交互式命令行入口。本文是完整使用参考；安装与最小上手见 [README](../README.md#️-cli--kpbl)。
+`kpbl` 是 Kapibala 的交互式命令行入口。本文是完整使用参考；安装与最小上手见 [README](../README.md#交互式-cli)。
 
 ## 启动方式速览
 

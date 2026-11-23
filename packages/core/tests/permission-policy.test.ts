@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import path from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import { SessionApprovalCache } from '../src/capabilities/security/approval.js';
 import {
   PermissionPolicy,
@@ -560,6 +561,16 @@ describe('PermissionPolicy', () => {
       ),
     ).toBe('escape');
     expect(
+      classifyShellCommandClass(
+        {
+          command: 'Get-Content C:\\Windows\\win.ini',
+          interpreter: 'pwsh',
+          cwd: '/workspace',
+        },
+        '/workspace',
+      ),
+    ).toBe('escape');
+    expect(
       findProtectedShellTargets(
         {
           command: 'Copy-Item payload .git/hooks/pre-commit',
@@ -569,5 +580,69 @@ describe('PermissionPolicy', () => {
         '/workspace',
       ),
     ).toContain('.git/hooks/pre-commit');
+    expect(
+      findProtectedShellTargets(
+        {
+          command: 'Copy-Item payload .git\\hooks\\pre-commit',
+          interpreter: 'pwsh',
+          cwd: '/workspace',
+        },
+        '/workspace',
+      ),
+    ).toContain('.git/hooks/pre-commit');
+  });
+
+  it('normalizes PowerShell backslash and drive-letter paths under POSIX path semantics', () => {
+    const resolveSpy = vi.spyOn(path, 'resolve').mockImplementation(path.posix.resolve);
+    const relativeSpy = vi.spyOn(path, 'relative').mockImplementation(path.posix.relative);
+    const isAbsoluteSpy = vi.spyOn(path, 'isAbsolute').mockImplementation(path.posix.isAbsolute);
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    try {
+      expect(
+        classifyShellCommandClass(
+          {
+            command: 'Get-Content src\\index.ts',
+            interpreter: 'pwsh',
+            cwd: '/workspace',
+          },
+          '/workspace',
+        ),
+      ).toBe('read');
+      expect(
+        classifyShellCommandClass(
+          {
+            command: 'Get-Content src\\..\\..\\secret.txt',
+            interpreter: 'pwsh',
+            cwd: '/workspace',
+          },
+          '/workspace',
+        ),
+      ).toBe('escape');
+      expect(
+        classifyShellCommandClass(
+          {
+            command: 'Get-Content C:\\Windows\\win.ini',
+            interpreter: 'pwsh',
+            cwd: '/workspace',
+          },
+          '/workspace',
+        ),
+      ).toBe('escape');
+      expect(
+        findProtectedShellTargets(
+          {
+            command: 'Copy-Item payload .git\\hooks\\pre-commit',
+            interpreter: 'pwsh',
+            cwd: '/workspace',
+          },
+          '/workspace',
+        ),
+      ).toContain('.git/hooks/pre-commit');
+    } finally {
+      platformSpy.mockRestore();
+      isAbsoluteSpy.mockRestore();
+      relativeSpy.mockRestore();
+      resolveSpy.mockRestore();
+    }
   });
 });

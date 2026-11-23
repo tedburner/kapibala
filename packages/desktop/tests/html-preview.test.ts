@@ -88,4 +88,15 @@ describe('写文件入参提取', () => {
     expect(textPreviewLabel('a.html')).toBe('HTML 文件预览');
     expect(textPreviewLabel('b.svg')).toBe('SVG 文件预览');
   });
+
+  it('未完成落盘（running/failed/interrupted）的 write_file 不暴露预览入口，防止流式临时行抢先挂载后被卸载', () => {
+    const input = JSON.stringify({ path: 'preview.html', content: '<p>ok</p>' });
+    expect(toolPreview('write_file', input, 'running')).toBeUndefined();
+    expect(toolPreview('write_file', input, 'failed')).toBeUndefined();
+    expect(toolPreview('write_file', input, 'interrupted')).toBeUndefined();
+    expect(toolPreview('write_file', input, 'succeeded')).toEqual({
+      html: '<p>ok</p>',
+      label: 'HTML 文件预览',
+    });
+  });
 });

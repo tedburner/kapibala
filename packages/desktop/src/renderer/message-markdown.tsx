@@ -198,7 +198,7 @@ function FencedCodeBlock({
   const [preview, setPreview] = useState(false);
   const [wrapped, setWrapped] = useState(false);
   const normalized = language.trim().toLowerCase();
-  const previewKind = codePreviewKind(normalized, code.length, compact);
+  const previewKind = isIncomplete ? undefined : codePreviewKind(normalized, code.length, compact);
   if (clip.truncated) {
     return <PlainCodeBlock code={code} ariaLabel="复制代码" />;
   }
