@@ -22,7 +22,7 @@
 
 ## 1. 受控候选
 
-`.github/workflows/desktop-candidate.yml` 仅手动触发，不发布 npm 或 GitHub Release。首次需维护者审核并手动提交、推送到 main，使工作流可见。版本发布流程会同步根、Core、MCP、CLI、desktop 五份清单和 CLI_VERSION，版本计算仍只在 `scripts/release.ts`。
+`.github/workflows/desktop-candidate.yml` 仅手动触发，不发布 npm 或 GitHub Release。首次需维护者审核并手动提交、推送到 main，使工作流可见。版本发布流程会同步根、Core、MCP、CLI、host、desktop 六份清单和 `CLI_VERSION`，版本计算仍只在 `scripts/release.ts`。
 
 先完成发布文档，经维护者运行既有 `pnpm release 0.1.0` 交互升版，再手动推送 main 等待 Verify。以升版提交的完整 SHA 触发候选，暂不推送版本标签。入口要求分支为 main、输入 SHA 等于触发时 main HEAD，工作区干净；不能从任意 PR 或本机环境带入证书生成正式候选。main 后续变动时不能用变更后的工作流触发旧 SHA 构建，需明确重定候选或保留原冻结运行。
 

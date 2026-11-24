@@ -1,4 +1,4 @@
-# MCP 生态接入与受控执行边界（v0.0.6）
+# MCP 生态接入与受控执行边界
 
 Kapibala 采用独立扩展包 `@kiturone/kapibala-mcp` 受控接入 Model Context Protocol (MCP) 规范。通过同一个 `AgentSession` 消费外部服务暴露的 Tools 与 Prompts，同时维持 Headless Core 零外部依赖、权限审批、安全审计、完整工具事务及消息级持久化契约。
 
@@ -7,8 +7,8 @@ Kapibala 采用独立扩展包 `@kiturone/kapibala-mcp` 受控接入 Model Conte
 | 维度 | 当前已实现 / 本版范围 | 明确延期 / 不支持范围 |
 | --- | --- | --- |
 | **包结构** | 独立 `@kiturone/kapibala-mcp`，Core 运行时零依赖 | Core 内部不引入 SDK 或网络/进程依赖 |
-| **配置与命名** | `mcp.json` 判别联合、严格正则命名、整项覆盖、禁用不回退 | 不提供自动化向导修改外部配置文件 |
-| **启动安全** | 独立启动授权、会话缓存、Credential Alert、Windows 设备名防御 | 项目信任不等于免审启动；FullAccess 不豁免硬拒绝 |
+| **配置与命名** | `mcp.json` 判别联合、严格正则命名、整项覆盖、禁用不回退、受控 CRUD 与从外部工具一次性导入 | 不自动改写外部工具自身配置文件 |
+| **启动安全** | 逐服务器配置摘要批准（`mcp-approvals.json`）、会话缓存、Credential Alert、Windows 设备名防御 | 项目信任不等于免审启动；FullAccess 不豁免硬拒绝 |
 | **传输协议** | Stdio 进程与 Streamable HTTP（计划第 4、7 组） | 旧版 HTTP+SSE 弃用；不自动降级不安全传输 |
 | **能力发现** | Tools 有界目录、Prompts 模板任务准备（计划第 5、8 组） | 暂不提供 Resources 动态读取、OAuth 认证流、Sampling、Elicitation、MCP Apps |
 

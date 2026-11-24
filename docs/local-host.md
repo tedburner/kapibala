@@ -1,6 +1,6 @@
 # 本地宿主与连接模式
 
-v0.0.9 新增能力，v0.0.10 冻结其契约（协议仍为 1.0，客户端结果类型与恢复单位为整个连接）。从仓库使用时先在根目录执行 `pnpm dev:build`；安装发布版后可直接使用 `kpbl`，或 `npx @kiturone/kapibala-cli@0.0.9`。Core、CLI、MCP 仍是三个发布包，协议与客户端通过 CLI 子路径导出。
+本地守护进程与连接契约自 v0.0.9 引入、v0.0.10 稳定恢复单位，并于 v0.1.4 演进为**整数协议版本 `PROTOCOL_VERSION = 2` + 能力集合**（客户端结果类型化，恢复单位仍为整个连接）。从仓库使用时先在根目录执行 `pnpm dev:build`；安装发布版后可直接使用 `kpbl`，或 `npx @kiturone/kapibala-cli`。Core、CLI、MCP 是三个 npm 发布包，协议与客户端通过 CLI 子路径导出（唯一实现位于私有宿主层 `packages/host`）。
 
 ## 使用
 
@@ -23,7 +23,7 @@ node packages/cli/dist/bin.js daemon stop
 
 宿主按每个工作区独立加载现有 settings、模型、技能和 MCP，活动会话不热更新。缺密钥或项目尚未信任时返回 `CONFIG_REQUIRED` / `TRUST_REQUIRED`，先用直接 CLI 完成配置。RPC 不提供密钥写入或项目授权功能。
 
-MCP 在第一次受控运行时挂载，启动审批与工具审批分开。审批提示只展示可解释的目标：文件路径、绑定后的 shell 范围、`spawn_agent` / `wait_agent` / `cancel_agent` 的角色与任务摘要、`load_skill` 名称、MCP 启动服务的名称/来源/传输/目标，以及 MCP 工具的白名单定位字段（如 `path`、`query`）。Shell 审批显示执行器绑定的完整命令、工作目录和解释器，换行、制表符及终端控制字符以可见转义表示；字段超出预算或脱敏后无法完整说明执行目标时拒绝审批，不截断后放行。完整子代理 prompt、MCP 启动参数列表、env 与未列入白名单的 MCP 工具参数不会进入审批通道。含敏感词或无法安全说明的未知工具直接拒绝，不要求盲批。五种审批结果继续由 Core 的精确范围缓存裁决。
+MCP 启动需先通过逐服务器配置摘要批准（`~/.kapibala/mcp-approvals.json`，配置任一字段变动即重新待批），启动审批与工具调用审批分开。审批提示只展示可解释的目标：文件路径、绑定后的 shell 范围、`spawn_agent` / `wait_agent` / `cancel_agent` 的角色与任务摘要、`load_skill` 名称、MCP 启动服务的名称/来源/传输/目标，以及 MCP 工具的白名单定位字段（如 `path`、`query`）。Shell 审批显示执行器绑定的完整命令、工作目录和解释器，换行、制表符及终端控制字符以可见转义表示；字段超出预算或脱敏后无法完整说明执行目标时拒绝审批，不截断后放行。完整子代理 prompt、MCP 启动参数列表、env 与未列入白名单的 MCP 工具参数不会进入审批通道。含敏感词或无法安全说明的未知工具直接拒绝，不要求盲批。五种审批结果继续由 Core 的精确范围缓存裁决。
 
 会话历史、标题与审批提示共用同一套文本出口：当前配置的模型密钥会被替换，`token=`、`password=`、`Authorization`、Bearer、常见令牌前缀与 URL userinfo 等可识别凭据模式也会被打码。无法识别的任意无标签秘密不承诺全量扫描，用户仍需避免把凭据粘贴进对话或命令。
 
@@ -31,9 +31,9 @@ MCP 在第一次受控运行时挂载，启动审批与工具审批分开。审�
 
 ## 协议、预算与恢复
 
-协议是 JSON-RPC 2.0，版本 1.0 独立于产品版本；本版冻结该契约，方法、事件、结果 Schema 与错误分类的完整参考见 [本地宿主协议 1.0](local-protocol.md)。socket/pipe 使用私有凭证握手，token 不在 argv、日志或历史中。协议数据类型从 `@kiturone/kapibala-cli/protocol` 导入；Node 客户端和本地 socket 连接从 `@kiturone/kapibala-cli/client` 导入，导入本身不启动 CLI。
+协议是 JSON-RPC 2.0，当前整数代际 `PROTOCOL_VERSION = 2` 独立于产品版本；方法、事件、结果 Schema 与错误分类的完整参考见 [本地宿主协议 2](local-protocol.md)。socket/pipe 使用私有凭证握手，token 不在 argv、日志或历史中。协议数据类型从 `@kiturone/kapibala-cli/protocol` 导入；Node 客户端和本地 socket 连接从 `@kiturone/kapibala-cli/client` 导入，导入本身不启动 CLI。
 
-初始化时客户端在 `capabilities` 中声明本次依赖的能力；v1 支持 `sessions`、`approval`、`cancel`，任一能力不被支持都返回 `PROTOCOL_MISMATCH`，不做静默降级。服务端返回的 `limits` 必须为全部正值整数，且关键预算不得放大客户端自身的硬上限。
+初始化时客户端提交整数 `protocolVersion: 2` 并在 `capabilities` 中声明本次真正依赖的能力；当前服务端能力集合为 `sessions`、`approval`、`cancel`、`watch`、`evidence`。版本严格相等校验，旧 `{major, minMinor, maxMinor}` 报价在参数校验阶段即 `INVALID_PARAMS` 拒绝；任一声明能力不被支持返回 `PROTOCOL_MISMATCH`，不做静默降级。服务端返回的 `limits` 必须为全部正值整数，且关键预算不得放大客户端自身的硬上限。
 
 单帧 1MiB，初始化 5 秒，最多 16 连接、每连接 64 个在途请求、8 个打开会话、4 个活动运行，每会话最多 128 个待审批。审批 120 秒到期。每连接快照总预算 8MiB；发送队列 4MiB。慢连接被断开，不能静默丢事件后继续应用。
 
@@ -46,4 +46,4 @@ MCP 在第一次受控运行时挂载，启动审批与工具审批分开。审�
 
 daemon 运行目录默认是本机临时目录下的用户私有短路径，子进程 stderr 写入同目录的 0600 私有日志；`daemon status` 返回日志路径，并区分无实例、锁残留、元数据损坏、不可达与运行中。启动锁或元数据残留且无法完成实例握手时，启动会安全失败，不根据 PID 自动杀进程或删除 socket。需要检查目录和实际进程后手动处置陈旧文件；不要在活跃实例上删除运行目录。关闭清理失败不会报告干净停止。运行时或会话清理失败时保留存储锁；会话资源释放可重试，清理完成后才允许其它写者重新打开。运行迭代结束但 Core 仍忙时会报告失败并拒绝新运行，不以 settled 事件代表存储锁已释放。
 
-已验证范围与仍未取得的平台门禁见 [验收记录](verification/v0.0.10.md)，协议细节见 [本地宿主协议 1.0](local-protocol.md)，公开差异见 [SDK 兼容性说明](sdk-compatibility.md)。
+协议规范见 [本地宿主协议 2](local-protocol.md)，wire 升级边界见 [v0.1.4 迁移说明](migration/v0.1.4.md)，公开导出差异见 [SDK 兼容性说明](sdk-compatibility.md)，历史基线验收见 [v0.0.10 验收记录](verification/v0.0.10.md)。

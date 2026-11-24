@@ -22,7 +22,7 @@ Kapibala 采用统一规范的 `.kapibala` 目录与 `settings.json` 命名。�
     "planning": "deepseek-v4-pro",
     "execution": "deepseek-flash"
   },
-  "builtinCatalogVersion": 4,
+  "builtinCatalogVersion": 5,
   "profiles": [
     {
       "id": "deepseek-flash",
@@ -55,6 +55,6 @@ Kapibala 采用统一规范的 `.kapibala` 目录与 `settings.json` 命名。�
 | **通义千问** | `qwen3.8-max`<br>`qwen3.8-flash`<br>`qwen3.7-plus` | 1000k |
 | **Kimi** | `kimi-k3`<br>`kimi-k2.7-code` | 1000k<br>256k |
 | **智谱 GLM** | `glm-5.3`<br>`glm-5.3-flash` | 1000k |
-| **本地 Ollama** | `ollama`（`gpt-oss:20b`，免密钥） | 131k |
+| **本地 Ollama** | `ollama`（`gpt-oss:20b`，免密钥，默认停用） | 131k |
 
-清单版本号记录在 `settings.json` 的 `builtinCatalogVersion` 字段（由程序写入，无需手改）。启动时若发现它落后于当前版本，会**自动做一次目录升级**：已退役的模型 id 被**重定向**到现役档位（密钥一并带过去），仍在内置清单里的 Profile 同步协议、端点、模型名与上下文窗口，默认和角色引用随旧 ID 重映射。目录第 4 版把内置 Claude 改为 Messages、OpenAI 改为 Responses；缺省输出预算从目录继承，用户显式预算和自建 Profile 保留。升级**不会写入任何你从未启用过的内置模型**，配置原子替换失败时保留旧文件。
+清单版本号记录在 `settings.json` 的 `builtinCatalogVersion` 字段（由程序写入，无需手改）。启动时若发现它落后于当前版本，会**自动做一次目录升级**：已退役的模型 id 被**重定向**到现役档位（密钥一并带过去），仍在内置清单里的 Profile 同步协议、端点、模型名与上下文窗口，默认和角色引用随旧 ID 重映射。目录第 4 版把内置 Claude 改为 Messages、OpenAI 改为 Responses；目录第 5 版把本地 `ollama` 默认设为 `disabled: true`（需在桌面设置页或 `/model` 显式启用后再参与选择）；缺省输出预算从目录继承，用户显式预算和自建 Profile 保留。升级**不会写入任何你从未启用过的内置模型**，配置原子替换失败时保留旧文件。

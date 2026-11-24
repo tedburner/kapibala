@@ -165,4 +165,4 @@ pnpm build && node packages/cli/dist/bin.js
 
 在本仓库构建后，可使用 `kpbl daemon start` 启动本地宿主，`kpbl connect --workspace /absolute/project` 进入连接模式，`kpbl daemon stop` 等待清理并停止。非交互问答使用 `kpbl connect --workspace /absolute/project -p "解释项目结构"`；父进程托管使用 `kpbl serve --stdio`。
 
-默认 CLI 行为保持不变；能力范围与预算见 [本地宿主说明](local-host.md)，当前稳定契约与迁移边界见 [v0.0.10 验收](verification/v0.0.10.md) 及[迁移说明](migration/v0.0.10.md)。
+默认 CLI 行为保持不变；能力范围与预算见 [本地宿主说明](local-host.md)，当前协议契约与迁移边界见 [本地宿主协议 2](local-protocol.md)、[v0.1.4 迁移说明](migration/v0.1.4.md) 及 [SDK 兼容性说明](sdk-compatibility.md)。

@@ -350,7 +350,7 @@ async function release(root: string, options: ReleaseOptions): Promise<void> {
     console.log('[dry-run] 校验：pnpm verify（失败自动回滚版本改动）');
     console.log(`[dry-run] 提交：:bookmark: 发布 ${tag}`);
     console.log(`[dry-run] 标签：git tag -a ${tag} -m "Kapibala ${tag}"`);
-    console.log(`[dry-run] 后续手动推送：git push origin main && git push origin ${tag}`);
+    console.log(`[dry-run] 后续手动推送：git push origin main && git push origin refs/tags/${tag}`);
     return;
   }
 
@@ -408,7 +408,7 @@ async function release(root: string, options: ReleaseOptions): Promise<void> {
   console.log(`✅ 已创建发布提交并打上标签 ${tag}（未推送）。`);
   console.log('后续请手动推送；tag 推送将触发 Actions 自动完成 npm 发布与 GitHub Release：');
   console.log('  git push origin main');
-  console.log(`  git push origin ${tag}`);
+  console.log(`  git push origin refs/tags/${tag}`);
 }
 
 function printUsage(): void {
@@ -425,7 +425,7 @@ function printUsage(): void {
 说明：
   - 默认只递增补丁段：0.0.9 → 0.0.10；次版本/主版本通过显式参数选择
   - 发布前必须先写好 docs/releases/vX.Y.Z.md（--scaffold 可生成骨架）
-  - 本工具从不推送远端：git push origin main && git push origin vX.Y.Z 由你手动执行
+  - 本工具从不推送远端：git push origin main && git push origin refs/tags/vX.Y.Z 由你手动执行
   - tag 推送后 Actions 自动完成 verify、npm 发布与 GitHub Release`);
 }
 

@@ -69,7 +69,7 @@ CLI `/host` 新增导出类型 `LoadedSettings`（`settings`/`sourcePath`/`pendi
 | `SessionManager.create({ delegation? })`、`SessionMetadata.mode` / `delegation`、`SessionHeader.delegation`、`AgentTaskRecord` 委派字段、`AgentSession.getLeaseCoordinator()`、`isSessionMode()` | 新增可选面与只读访问器 | 无迁移动作；不使用委派时行为不变 |
 | `ViewTool.displayName` | 显示名由宿主统一解析下发，只影响 UI | 自定义渲染可直接使用；不得用于权限判定或落盘 |
 
-## v0.1.4 增量（已发布，2026-11-23）
+## v0.1.4 增量（已发布，2026-11-24）
 
 本版把本地 wire 从 `{major, minor}` 区间协商改为整数代际 `protocolVersion = 2` + 能力集合，属**破坏性变更**：
 v0.1.3 及更早的客户端会在初始化参数校验阶段以 `INVALID_PARAMS` 明确失败，官方不承诺旧客户端可连，

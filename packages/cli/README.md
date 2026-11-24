@@ -1,30 +1,26 @@
 # Kapibala CLI
 
-Kapibala 的交互式命令行工具，命令名为 `kpbl`。
+Kapibala 的交互式命令行工具与受控本地守护进程，命令名为 `kpbl`。
 
-需要 Node.js 20 或更高版本。
-
-使用 v0.0.3：
+环境要求：Node.js 20 或更高版本。
 
 ```bash
-npx @kiturone/kapibala-cli@0.0.3
-```
+# 免安装直接启动（首次运行自动进入向导配置模型厂商与 API Key）
+npx @kiturone/kapibala-cli
 
-也可以安装后运行：
-
-```bash
-npm install -g @kiturone/kapibala-cli@0.0.3
+# 或全局安装后在任意项目目录运行
+npm install -g @kiturone/kapibala-cli
 kpbl
 ```
 
-首次运行会引导配置模型和 API Key。查看命令选项：
+查看全部启动参数与子命令：
 
 ```bash
 kpbl --help
 ```
 
-完整文档见 [Kapibala 项目主页](https://github.com/tedburner/kapibala)。
+- **交互式编码工作流**：默认新建独立 JSONL 因果会话，支持 `/history`、`/resume`、`/branch`、`/fork`、跨会话消息引用 `/quote`、可续聊委派会话 `/delegate`、会话级文件/端口监视 `/watches`、任务清单 `/todos` 与证据看板 `/evidence`；
+- **风险分级权限**：支持 `approval` / `plan` / `auto` / `full-access` 四档模式，每条 `run_command` 经词法风险分级与路径硬禁区裁决（可用 `--disable-shell` 关闭）；
+- **扩展生态与本地宿主**：内置 MCP 服务管理与逐服务启动批准（`/mcp`）、按需技能与跨工具导入（`/skills`、`/skill import`），并提供 `kpbl daemon` / `kpbl connect` / `kpbl serve --stdio` 本地协议（wire v2）接入及 `@kiturone/kapibala-cli/protocol`、`/client`、`/view-model`、`/host` 子路径导出。
 
-v0.0.2 默认注册跨平台 `run_command`，每条命令按当前权限模式授权；可用 `--disable-shell` 关闭。命令使用当前系统用户权限，文件工具的 PathSandbox 不覆盖命令进程。升级说明见 [v0.0.2 迁移说明](https://github.com/tedburner/kapibala/blob/main/docs/migration/v0.0.2.md)。
-
-v0.0.3 默认新建会话，用 `/history` 浏览、`/resume [id]` 续答，也可用 `kpbl --continue` 或 `kpbl --resume <id>`。`/new` 与 `/clear` 保留旧文件；`/context` 查看预算，`/compact` 手动摘要。非 TTY 不等待菜单或自动批准。
+完整文档见 [Kapibala 项目主页](https://github.com/tedburner/kapibala)、[CLI 使用指南](https://github.com/tedburner/kapibala/blob/main/docs/cli.md) 与 [本地宿主协议规范](https://github.com/tedburner/kapibala/blob/main/docs/local-protocol.md)。
