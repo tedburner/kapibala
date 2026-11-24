@@ -288,3 +288,20 @@ export type {
   ExternalHarnessesConfigFile,
   ResolvedExternalHarnessEntry,
 } from './external/config.js';
+export {
+  EXTERNAL_SESSIONS_FILE_NAME,
+  EXTERNAL_SNAPSHOTS_DIR_NAME,
+  ExternalSessionRegistry,
+  MAX_EXTERNAL_ARCHIVE_BYTES,
+  MAX_EXTERNAL_ARCHIVE_MESSAGES,
+  MAX_RETAINED_EXTERNAL_SESSIONS,
+} from './external/registry.js';
+export type {
+  ExternalSessionArchive,
+  ExternalSessionRecord,
+} from './external/registry.js';
+export {
+  ExternalSessionService,
+  MAX_ACTIVE_EXTERNAL_PROCESSES,
+} from './external/service.js';
+export type { ExternalSessionServiceOptions } from './external/service.js';

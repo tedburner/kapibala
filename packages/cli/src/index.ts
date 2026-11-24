@@ -28,6 +28,7 @@ import {
 } from '@kiturone/kapibala-host/internal';
 import { readDelegationRequestEntries } from '@kiturone/kapibala-host/internal';
 import {
+  ExternalSessionService,
   WatchService,
   createWatchTools,
   importSkills,
@@ -228,6 +229,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   });
   let controller: ActiveSessionController | undefined;
   let agentRuntime: AgentRuntime | undefined;
+  let externalService: ExternalSessionService | undefined;
   const inputCoordinator = new CliInputCoordinator();
   try {
     const restoredHandle =
@@ -406,6 +408,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           );
       }
       const dispatcher = createDefaultCommandDispatcher();
+      externalService = new ExternalSessionService({
+        homeDir: os.homedir(),
+        isWorkspaceTrusted: (root) => isProjectTrusted(settings, root),
+      });
       const commandContext: CommandContext = {
         get session() {
           return active.session;
@@ -413,6 +419,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         controller: active,
         dispatcher,
         runtime: agentRuntime,
+        external: externalService,
         settings,
         settingsPath: sourcePath,
         projectRoot: manager.project.projectRoot,
@@ -479,6 +486,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       });
     } finally {
       setActiveWatchService(undefined);
+      if (externalService) await externalService.dispose();
       if (agentRuntime) await agentRuntime.close();
       if (controller) await controller.close();
       else await manager.close();

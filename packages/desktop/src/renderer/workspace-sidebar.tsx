@@ -8,6 +8,7 @@ import {
   PlusIcon,
   PushPinIcon,
   PushPinSlashIcon,
+  TerminalWindowIcon,
   TrashIcon,
 } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
@@ -16,8 +17,21 @@ import type { RuntimeSnapshot } from '../shared/observations.js';
 import { KubaiIcon } from './icons/KubaiIcon.js';
 
 type RuntimeItem = RuntimeSnapshot['items'][number];
+type ExternalSessionRow = Output<'external.list'>['items'][number];
 /** 会话行的最小身份：标题只用于菜单与弹窗文案，定位始终走空间 ID + 会话 ID。 */
 type SessionRow = { conversationId: string; title: string; pinned?: boolean };
+
+function externalStatusLabel(item: ExternalSessionRow): string {
+  if (item.pendingApprovalCount > 0 || item.status === 'waiting_approval') {
+    return `待审批 ${Math.max(1, item.pendingApprovalCount)}`;
+  }
+  if (item.status === 'starting') return '正在启动';
+  if (item.status === 'running') return '运行中';
+  if (item.status === 'cancelling') return '正在取消';
+  if (item.status === 'failed') return '失败';
+  if (item.status === 'ended') return '已结束';
+  return activityTime(item.updatedAt);
+}
 /** 将 Host 的轻量运行事实转成文字，不用颜色或消息订阅推断后台空闲。 */
 export function runtimeLabel(item?: RuntimeItem, valid = true): string {
   if (!valid) return '状态未知';
@@ -64,6 +78,12 @@ export function WorkspaceSidebar({
   onPage,
   onSettings,
   onRefreshRuntime,
+  externalSessions,
+  activeExternalSessionId,
+  onNewExternal,
+  onOpenExternal,
+  onCloseExternal,
+  onDeleteExternal,
 }: {
   spaces: readonly Workspace[];
   histories: Record<string, Output<'session.list'>>;
@@ -90,6 +110,14 @@ export function WorkspaceSidebar({
   onPage(space: Workspace, page: number): void;
   onSettings(): void;
   onRefreshRuntime(): void;
+  /** 各已信任空间的外部代理会话清单。 */
+  externalSessions?: Record<string, readonly ExternalSessionRow[]>;
+  /** 当前主视图选中的外部代理会话 ID；与本地 conversationId 互斥高亮。 */
+  activeExternalSessionId?: string;
+  onNewExternal?(space: Workspace): void;
+  onOpenExternal?(space: Workspace, sessionId: string): void;
+  onCloseExternal?(space: Workspace, sessionId: string): void;
+  onDeleteExternal?(space: Workspace, row: ExternalSessionRow): void;
 }) {
   const [version, setVersion] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -140,7 +168,16 @@ export function WorkspaceSidebar({
       .catch(() => {});
   }, []);
   const items = runtime?.items ?? [];
-  const running = items.filter((item) => item.phase !== 'idle').length;
+  const externalRunning = Object.values(externalSessions ?? {})
+    .flat()
+    .filter(
+      (item) =>
+        item.status === 'starting' ||
+        item.status === 'running' ||
+        item.status === 'waiting_approval' ||
+        item.status === 'cancelling',
+    ).length;
+  const running = items.filter((item) => item.phase !== 'idle').length + externalRunning;
   // 「临时对话」段只列仍有运行句柄的对话；空闲历史归入所属项目，避免同一对话出现两次。
   const temporary = items.filter((item) => item.phase !== 'idle' || item.cleanup === 'failed');
   const titleOfSession = (item: RuntimeItem) =>
@@ -152,7 +189,11 @@ export function WorkspaceSidebar({
   const visible = keyword
     ? spaces.filter(
         (space) =>
-          hit(space.name) || (search.lists[space.id]?.items ?? []).some((row) => hit(titleOf(row))),
+          hit(space.name) ||
+          (search.lists[space.id]?.items ?? []).some((row) => hit(titleOf(row))) ||
+          (externalSessions?.[space.id] ?? []).some(
+            (ext) => hit(ext.title || '外部任务') || hit(ext.harnessName),
+          ),
       )
     : spaces;
   const searching = Boolean(keyword && (search.loading || search.keyword !== keyword));
@@ -260,11 +301,27 @@ export function WorkspaceSidebar({
           const history =
             keyword && !hit(space.name) ? search.lists[space.id] : histories[space.id];
           const spaceItems = items.filter((item) => item.workspaceId === space.id);
+          const spaceExternals = externalSessions?.[space.id] ?? [];
+          const externalList =
+            keyword === ''
+              ? spaceExternals
+              : spaceExternals.filter(
+                  (ext) => hit(space.name) || hit(ext.title || '外部任务') || hit(ext.harnessName),
+                );
           const status = spaceItems.some((item) => item.cleanup === 'failed')
             ? '清理未完成'
-            : spaceItems.some((item) => item.approvals)
+            : spaceItems.some((item) => item.approvals) ||
+                spaceExternals.some(
+                  (ext) => ext.pendingApprovalCount > 0 || ext.status === 'waiting_approval',
+                )
               ? '待审批'
-              : spaceItems.some((item) => item.phase !== 'idle')
+              : spaceItems.some((item) => item.phase !== 'idle') ||
+                  spaceExternals.some(
+                    (ext) =>
+                      ext.status === 'starting' ||
+                      ext.status === 'running' ||
+                      ext.status === 'cancelling',
+                  )
                 ? '运行中'
                 : '';
           // 搜索命中的空间直接展开并把会话列表收窄到命中项；空间名命中时保留全部会话。
@@ -557,6 +614,125 @@ export function WorkspaceSidebar({
                       >
                         下一页
                       </Button>
+                    </div>
+                  )}
+                  {space.trusted && (onNewExternal || externalList.length > 0) && (
+                    <div className="mt-1 border-t border-kumo-hairline pt-1">
+                      <div className="flex items-center justify-between px-3 py-1">
+                        <span className="inline-flex items-center gap-1 text-2xs font-medium text-kumo-subtle">
+                          <TerminalWindowIcon size={12} className="shrink-0" />
+                          外部代理
+                        </span>
+                        {onNewExternal && (
+                          <Tooltip
+                            content={`在 ${space.name} 新建外部代理任务`}
+                            render={
+                              <Button
+                                className="kapibala-action h-6 w-6 text-kumo-subtle"
+                                variant="ghost"
+                                shape="square"
+                                size="sm"
+                                aria-label={`在 ${space.name} 新建外部代理任务`}
+                                disabled={busy}
+                                onClick={() => onNewExternal(space)}
+                              />
+                            }
+                          >
+                            <PlusIcon size={13} />
+                          </Tooltip>
+                        )}
+                      </div>
+                      {externalList.length > 0 && (
+                        <Sidebar.Menu className="kapibala-sidebar-conversations">
+                          {externalList.map((ext) => {
+                            const extActive =
+                              ext.status === 'starting' ||
+                              ext.status === 'running' ||
+                              ext.status === 'waiting_approval' ||
+                              ext.status === 'cancelling';
+                            const extTitle = ext.title || '外部任务';
+                            return (
+                              <Sidebar.MenuItem
+                                key={ext.id}
+                                className="group/ext relative flex min-w-0 items-center"
+                              >
+                                <Sidebar.MenuButton
+                                  className="kapibala-sidebar-conversation min-w-0 flex-1"
+                                  active={
+                                    space.id === activeWorkspaceId &&
+                                    activeExternalSessionId === ext.id
+                                  }
+                                  disabled={busy}
+                                  title={`${ext.harnessName} · ${extTitle}`}
+                                  aria-label={`${ext.harnessName} · ${extTitle}`}
+                                  onClick={() => onOpenExternal?.(space, ext.id)}
+                                >
+                                  <span className="shrink-0 rounded bg-kumo-recessed px-1 py-0.5 text-2xs text-kumo-subtle">
+                                    {ext.harnessName}
+                                  </span>
+                                  <span className="min-w-0 truncate">{extTitle}</span>
+                                  <span className="ml-auto flex shrink-0 items-center gap-1 text-xs text-kumo-subtle">
+                                    {extActive && (
+                                      <span
+                                        className={`size-1.5 rounded-full ${
+                                          ext.pendingApprovalCount > 0 ||
+                                          ext.status === 'waiting_approval'
+                                            ? 'bg-kumo-warning'
+                                            : 'bg-(--kapibala-signal)'
+                                        }`}
+                                        aria-hidden="true"
+                                      />
+                                    )}
+                                    {externalStatusLabel(ext)}
+                                  </span>
+                                </Sidebar.MenuButton>
+                                {(onCloseExternal || onDeleteExternal) && (
+                                  <DropdownMenu>
+                                    <DropdownMenu.Trigger
+                                      render={
+                                        <Button
+                                          className="kapibala-action pointer-events-none absolute right-0 shrink-0 bg-(--kapibala-sidebar-surface) opacity-0 transition-opacity [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/ext:pointer-events-auto group-focus-within/ext:opacity-100 group-hover/ext:pointer-events-auto group-hover/ext:opacity-100"
+                                          variant="ghost"
+                                          shape="square"
+                                          size="base"
+                                          aria-label={`${extTitle} 的外部会话操作`}
+                                        />
+                                      }
+                                    >
+                                      <DotsThreeIcon size={18} />
+                                    </DropdownMenu.Trigger>
+                                    <DropdownMenu.Content>
+                                      {onCloseExternal &&
+                                        ext.status !== 'ended' &&
+                                        ext.status !== 'failed' && (
+                                          <>
+                                            <DropdownMenu.Item
+                                              disabled={busy}
+                                              onClick={() => onCloseExternal(space, ext.id)}
+                                            >
+                                              关闭进程
+                                            </DropdownMenu.Item>
+                                            <DropdownMenu.Separator />
+                                          </>
+                                        )}
+                                      {onDeleteExternal && (
+                                        <DropdownMenu.Item
+                                          variant="danger"
+                                          disabled={busy || extActive}
+                                          onClick={() => onDeleteExternal(space, ext)}
+                                        >
+                                          <TrashIcon size={16} />
+                                          删除记录
+                                        </DropdownMenu.Item>
+                                      )}
+                                    </DropdownMenu.Content>
+                                  </DropdownMenu>
+                                )}
+                              </Sidebar.MenuItem>
+                            );
+                          })}
+                        </Sidebar.Menu>
+                      )}
                     </div>
                   )}
                 </Collapsible.Panel>

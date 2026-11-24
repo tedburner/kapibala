@@ -42,3 +42,13 @@ export type {
   ViewTool,
   ViewUsage,
 } from './types.js';
+export type {
+  ViewExternalApproval,
+  ViewExternalHarness,
+  ViewExternalHarnessProbe,
+  ViewExternalSession,
+  ViewExternalSessionStatus,
+  ViewExternalSnapshot,
+  ViewExternalTemplate,
+  ViewExternalTransport,
+} from './external.js';

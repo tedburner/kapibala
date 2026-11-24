@@ -1,3 +1,4 @@
+import { EXTERNAL_EVENT_SCHEMA } from './results.js';
 import {
   APPROVAL_RESPONSE_SCHEMA,
   EVENT_PAYLOAD_SCHEMAS,
@@ -5,6 +6,7 @@ import {
   type WireSchema,
 } from './schema.js';
 import type {
+  ExternalWireEvent,
   ValidationResult,
   WireError,
   WireEvent,
@@ -204,6 +206,14 @@ export function validateEvent(value: unknown): ValidationResult<WireEvent> {
   return { ok: true, value: value as unknown as WireEvent };
 }
 
+/** 校验 `external/event` 通知载荷。 */
+export function validateExternalEvent(value: unknown): ValidationResult<ExternalWireEvent> {
+  if (!isJsonData(value) || !matchesSchema(value, EXTERNAL_EVENT_SCHEMA)) {
+    return failure();
+  }
+  return { ok: true, value: value as unknown as ExternalWireEvent };
+}
+
 /** 统一消息入口，不接受 batch、任意 notification 或 JSON 以外的数据。 */
 export function validateMessage(value: unknown): ValidationResult<WireMessage> {
   if (!isJsonData(value) || !record(value)) return failure();
@@ -212,6 +222,13 @@ export function validateMessage(value: unknown): ValidationResult<WireMessage> {
     const event = validateEvent(value.params);
     return event.ok
       ? { ok: true, value: { jsonrpc: '2.0', method: 'session/event', params: event.value } }
+      : event;
+  }
+  if (value.method === 'external/event' && !has(value, 'id')) {
+    if (value.jsonrpc !== '2.0' || Object.keys(value).length !== 3) return failure();
+    const event = validateExternalEvent(value.params);
+    return event.ok
+      ? { ok: true, value: { jsonrpc: '2.0', method: 'external/event', params: event.value } }
       : event;
   }
   return has(value, 'method') ? validateRequest(value) : validateResponse(value);

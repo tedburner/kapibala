@@ -16,6 +16,7 @@ export const SERVER_CAPABILITIES = Object.freeze([
   'cancel',
   'watch',
   'evidence',
+  'external-session',
 ] as const);
 
 /** 协商后的能力名只能来自固定集合，避免调用方拼写差异被当作新能力接受。 */

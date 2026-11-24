@@ -264,6 +264,14 @@ export class ViewClient {
     if (event.type === 'watch.triggered') return;
     // 更新下载进度只服务设置页的独立订阅，不进入会话展示投影。
     if (event.type === 'update.downloadProgress') return;
+    // 外部代理事件由 App 独立订阅处理，不混入本地会话展示投影。
+    if (
+      event.type === 'external.listChanged' ||
+      event.type === 'external.snapshotChanged' ||
+      event.type === 'external.snapshotInvalidated' ||
+      event.type === 'external.attention'
+    )
+      return;
     const scope = this.scope;
     if (
       !scope ||

@@ -98,6 +98,20 @@ export class NativeNotices {
           this.sessions.has(event.sessionId) &&
           (this.pending.get(event.approvalId)?.expiresAt ?? 0) > Date.now(),
       );
+    } else if (event.type === 'external.attention') {
+      const title =
+        event.kind === 'approval_requested'
+          ? `${event.harnessName} 等待审批`
+          : event.kind === 'turn_failed'
+            ? `${event.harnessName} 任务失败`
+            : `${event.harnessName} 任务已完成`;
+      this.publish(
+        `ext:${event.sessionId}`,
+        `ext:${event.sessionId}:${event.kind}:${Date.now()}`,
+        title,
+        '打开 Kapibala 查看外部代理进展。',
+        () => true,
+      );
     }
   }
   private publish(

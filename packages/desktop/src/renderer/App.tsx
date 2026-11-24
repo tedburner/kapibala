@@ -42,11 +42,13 @@ import { flushSync } from 'react-dom';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
 import { collectViewArtifacts, latestViewArtifact } from './artifact-model.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
+import { ExternalSessionView } from './external-session-view.js';
 import { rankFileMatches } from './file-completion.js';
 import { HistoryListClient } from './history-list-client.js';
 import { KubaiIcon } from './icons/KubaiIcon.js';
 import { MessageList } from './message-list.js';
 import { MODE_NAMES } from './mode-labels.js';
+import { NewExternalDialog } from './new-external-dialog.js';
 import { ProjectDialog } from './project-dialog.js';
 import { SessionDeleteDialog, SessionRenameDialog, type SessionTarget } from './session-actions.js';
 import { SettingsDialog } from './settings-dialog.js';
@@ -204,6 +206,38 @@ export function App() {
   const [pendingDelete, setPendingDelete] = useState<SessionTarget>();
   /** 待改名的会话；弹窗自身维护草稿，这里只保存身份与当前标题。 */
   const [pendingRename, setPendingRename] = useState<SessionTarget>();
+  const [settingsInitialTab, setSettingsInitialTab] = useState<string>();
+  const [externalLists, setExternalLists] = useState<
+    Record<string, readonly Output<'external.list'>['items'][number][]>
+  >({});
+  const [activeExternal, setActiveExternal] = useState<{
+    workspaceId: string;
+    sessionId: string;
+    subscriptionId: string;
+    snapshot: Output<'external.snapshot'>;
+  }>();
+  const activeExternalRef = useRef<typeof activeExternal>(undefined);
+  activeExternalRef.current = activeExternal;
+  const [newExternalModal, setNewExternalModal] = useState<{
+    space: Workspace;
+    preferredHarnessId?: string;
+  }>();
+  const [pendingExternalDelete, setPendingExternalDelete] = useState<{
+    space: Workspace;
+    id: string;
+    title: string;
+    harnessName: string;
+  }>();
+  const [externalToasts, setExternalToasts] = useState<
+    readonly {
+      id: string;
+      workspaceId: string;
+      sessionId: string;
+      text: string;
+      level: 'info' | 'warning' | 'error';
+    }[]
+  >([]);
+  const spacesRef = useRef<Workspace[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [fullAccess, setFullAccess] = useState(false);
@@ -402,6 +436,34 @@ export function App() {
     },
     [historyClient],
   );
+  const refreshExternalList = useCallback(async (spaceId?: string) => {
+    const targets = spaceId
+      ? spacesRef.current.filter((item) => item.id === spaceId && item.trusted)
+      : spacesRef.current.filter((item) => item.trusted);
+    if (
+      spaceId &&
+      targets.length === 0 &&
+      current.current?.id === spaceId &&
+      current.current.trusted
+    ) {
+      targets.push(current.current);
+    }
+    for (const item of targets) {
+      try {
+        const result = await api.external.list(item.id);
+        setExternalLists((prev) => ({ ...prev, [item.id]: result.items }));
+      } catch {
+        // 空间失效或断连期间静默保留既有列表，由宿主恢复后重刷。
+      }
+    }
+  }, []);
+  const detachActiveExternal = useCallback(async () => {
+    const prev = activeExternalRef.current;
+    if (!prev) return;
+    activeExternalRef.current = undefined;
+    setActiveExternal(undefined);
+    await api.external.unsubscribe(prev.subscriptionId).catch(() => {});
+  }, []);
   const selectSpace = useCallback(
     async (space: Workspace | null) => {
       if (!space) return;
@@ -410,23 +472,27 @@ export function App() {
         return;
       }
       setDetails(undefined);
+      await detachActiveExternal();
       await client.clear();
       current.current = space;
       setWorkspace(space);
-      setSpaces((previous) =>
-        [space, ...previous.filter((item) => item.id !== space.id)].sort(
+      setSpaces((previous) => {
+        const next = [space, ...previous.filter((item) => item.id !== space.id)].sort(
           (a, b) => Number(b.kind === 'default') - Number(a.kind === 'default'),
-        ),
-      );
+        );
+        spacesRef.current = next;
+        return next;
+      });
       setOpened(undefined);
       setPendingProfile(undefined);
       setCatalog(undefined);
       setError('');
       await refreshHistory(space);
+      await refreshExternalList(space.id);
       await reloadCatalog();
       setRecent((await api.preferences.read()).recent);
     },
-    [refreshHistory, reloadCatalog],
+    [detachActiveExternal, refreshExternalList, refreshHistory, reloadCatalog],
   );
   const act = useCallback(
     async function act(task: () => Promise<void>) {
@@ -497,8 +563,14 @@ export function App() {
       setSpaces((previous) => {
         const known = new Set(previous.map((space) => space.root));
         const additions = restored.filter((space) => !known.has(space.root));
-        return additions.length > 0 ? [...previous, ...additions] : previous;
+        const next = additions.length > 0 ? [...previous, ...additions] : previous;
+        spacesRef.current = next;
+        return next;
       });
+      for (const space of restored) {
+        if (cancelled) return;
+        if (space.trusted) void refreshExternalList(space.id);
+      }
     };
     let recentItems: Output<'preferences.read'>['recent'] = [];
     void act(async () => {
@@ -515,7 +587,73 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [act, selectSpace]);
+  }, [act, refreshExternalList, selectSpace]);
+  useEffect(() => {
+    const off = api.onEvent((event) => {
+      if (event.type === 'external.listChanged') {
+        void refreshExternalList(event.workspaceId);
+        return;
+      }
+      if (event.type === 'external.snapshotChanged') {
+        setActiveExternal((prev) =>
+          prev && prev.subscriptionId === event.subscriptionId
+            ? { ...prev, snapshot: event.snapshot }
+            : prev,
+        );
+        return;
+      }
+      if (event.type === 'external.snapshotInvalidated') {
+        const cur = activeExternalRef.current;
+        if (!cur || cur.subscriptionId !== event.subscriptionId) return;
+        void api.external
+          .snapshot({ workspaceId: cur.workspaceId, sessionId: cur.sessionId })
+          .then((snapshot) => {
+            setActiveExternal((prev) =>
+              prev && prev.subscriptionId === event.subscriptionId ? { ...prev, snapshot } : prev,
+            );
+          })
+          .catch(() => {});
+        return;
+      }
+      if (event.type === 'external.attention') {
+        if (activeExternalRef.current?.sessionId === event.sessionId) return;
+        const text =
+          event.kind === 'approval_requested'
+            ? `${event.harnessName} 请求授权 · ${event.title || '外部任务'}`
+            : event.kind === 'turn_failed'
+              ? `${event.harnessName} 任务失败 · ${event.title || '外部任务'}`
+              : `${event.harnessName} 已完成本轮 · ${event.title || '外部任务'}`;
+        const level: 'info' | 'warning' | 'error' =
+          event.kind === 'turn_failed'
+            ? 'error'
+            : event.kind === 'approval_requested'
+              ? 'warning'
+              : 'info';
+        const toastId = crypto.randomUUID();
+        setExternalToasts((prev) =>
+          [
+            {
+              id: toastId,
+              workspaceId: event.workspaceId,
+              sessionId: event.sessionId,
+              text,
+              level,
+            },
+            ...prev,
+          ].slice(0, 4),
+        );
+        if (event.kind === 'turn_completed') {
+          window.setTimeout(() => {
+            setExternalToasts((prev) => prev.filter((item) => item.id !== toastId));
+          }, 5000);
+        }
+      }
+    });
+    return () => {
+      off();
+      void detachActiveExternal();
+    };
+  }, [detachActiveExternal, refreshExternalList]);
   useEffect(() => {
     const query = matchMedia('(min-width: 960px)');
     const change = () => ui.sidebar(query.matches);
@@ -558,6 +696,7 @@ export function App() {
   async function openConversation(conversationId?: string, space = workspace) {
     if (!space) return;
     if (space.id !== current.current?.id) await selectSpace(space);
+    else await detachActiveExternal();
     const result = conversationId
       ? await api.session.open({ workspaceId: space.id, conversationId })
       : await createSession(space);
@@ -570,6 +709,134 @@ export function App() {
     if (client.snapshot().approvals.some((item) => item.sessionId === result.conversationId))
       openApprovals(true);
     await refreshHistory(space);
+  }
+  async function openExternalSession(space: Workspace, sessionId: string) {
+    if (!space.trusted) {
+      setTrust(space);
+      return;
+    }
+    if (space.id !== current.current?.id) await selectSpace(space);
+    else {
+      ui.select(space.id, '');
+      setDetails(undefined);
+      setOpened(undefined);
+      await client.clear();
+      await detachActiveExternal();
+    }
+    const subscriptionId = crypto.randomUUID();
+    const snapshot = await api.external.subscribe({
+      workspaceId: space.id,
+      sessionId,
+      subscriptionId,
+    });
+    const next = { workspaceId: space.id, sessionId, subscriptionId, snapshot };
+    activeExternalRef.current = next;
+    setActiveExternal(next);
+    setExternalToasts((prev) => prev.filter((item) => item.sessionId !== sessionId));
+    await refreshExternalList(space.id);
+  }
+  async function createExternalTask(params: {
+    space: Workspace;
+    harnessId: string;
+    prompt?: string;
+  }) {
+    setNewExternalModal(undefined);
+    await act(async () => {
+      if (!params.space.trusted) {
+        setTrust(params.space);
+        return;
+      }
+      if (params.space.id !== current.current?.id) await selectSpace(params.space);
+      else {
+        ui.select(params.space.id, '');
+        setDetails(undefined);
+        setOpened(undefined);
+        await client.clear();
+        await detachActiveExternal();
+      }
+      const openedSnapshot = await api.external.open({
+        workspaceId: params.space.id,
+        harnessId: params.harnessId,
+        prompt: params.prompt,
+      });
+      const subscriptionId = crypto.randomUUID();
+      const snapshot = await api.external.subscribe({
+        workspaceId: params.space.id,
+        sessionId: openedSnapshot.session.id,
+        subscriptionId,
+      });
+      const next = {
+        workspaceId: params.space.id,
+        sessionId: openedSnapshot.session.id,
+        subscriptionId,
+        snapshot,
+      };
+      activeExternalRef.current = next;
+      setActiveExternal(next);
+      await refreshExternalList(params.space.id);
+    });
+  }
+  async function sendExternalPrompt(text: string) {
+    const cur = activeExternalRef.current;
+    if (!cur || !text.trim() || busy) return;
+    const draftKey = `ext:${cur.workspaceId}:${cur.sessionId}`;
+    await act(async () => {
+      const snapshot = await api.external.prompt({
+        workspaceId: cur.workspaceId,
+        sessionId: cur.sessionId,
+        text: text.trim(),
+      });
+      setActiveExternal((prev) =>
+        prev && prev.sessionId === cur.sessionId ? { ...prev, snapshot } : prev,
+      );
+      ui.draft(draftKey, '');
+      await refreshExternalList(cur.workspaceId);
+    });
+  }
+  async function approveExternal(approvalId: string, optionId?: string, cancel?: boolean) {
+    const cur = activeExternalRef.current;
+    if (!cur || busy) return;
+    await act(async () => {
+      await api.external.approve({
+        workspaceId: cur.workspaceId,
+        sessionId: cur.sessionId,
+        approvalId,
+        optionId,
+        cancel,
+      });
+    });
+  }
+  async function cancelExternal() {
+    const cur = activeExternalRef.current;
+    if (!cur) return;
+    await api.external
+      .cancel({ workspaceId: cur.workspaceId, sessionId: cur.sessionId })
+      .catch((reason) => report(failure(reason)));
+  }
+  async function closeExternalSession(space: Workspace, sessionId: string) {
+    await act(async () => {
+      await api.external.close({ workspaceId: space.id, sessionId });
+      if (activeExternalRef.current?.sessionId === sessionId) {
+        const snapshot = await api.external.snapshot({ workspaceId: space.id, sessionId });
+        setActiveExternal((prev) =>
+          prev && prev.sessionId === sessionId ? { ...prev, snapshot } : prev,
+        );
+      }
+      await refreshExternalList(space.id);
+    });
+  }
+  async function confirmDeleteExternal() {
+    const target = pendingExternalDelete;
+    if (!target) return;
+    setPendingExternalDelete(undefined);
+    await act(async () => {
+      await api.external.delete({ workspaceId: target.space.id, sessionId: target.id });
+      if (activeExternalRef.current?.sessionId === target.id) {
+        await detachActiveExternal();
+        setDetails(undefined);
+      }
+      await refreshExternalList(target.space.id);
+    });
   }
   async function configure(change: Parameters<DesktopAPI['session']['configure']>[0]) {
     if (!opened) return;
@@ -771,22 +1038,32 @@ export function App() {
       await client.start(scopeOf(opened), retryPrompt, { regenerate: true });
     });
   }
-  const currentTitle =
-    histories[workspace?.id ?? '']?.items.find(
-      (item) => item.conversationId === opened?.conversationId,
-    )?.title || '新对话';
+  const currentTitle = activeExternal
+    ? activeExternal.snapshot.session.title || '外部任务'
+    : histories[workspace?.id ?? '']?.items.find(
+        (item) => item.conversationId === opened?.conversationId,
+      )?.title || '新对话';
   // 顶栏只回答「现在处于什么状态」，绝对路径与内部计数留在详情和诊断里。
   const headerHint = !workspace
     ? '选择空间后开始'
-    : opened
-      ? runtimeLabel(runtimeItem, facts.runtimeValid !== false) || '可以继续对话'
-      : '新建对话或从历史继续';
+    : activeExternal
+      ? `外部代理 · ${activeExternal.snapshot.session.harnessName}`
+      : opened
+        ? runtimeLabel(runtimeItem, facts.runtimeValid !== false) || '可以继续对话'
+        : '新建对话或从历史继续';
+  const activeMessages = activeExternal ? activeExternal.snapshot.messages : messages;
   const detailTool =
     details?.kind === 'tool'
-      ? messages
+      ? activeMessages
           .flatMap((message) => message.blocks)
           .find((block) => block.tool?.callId === details.callId)?.tool
       : undefined;
+  const localWorkspaceBusy = Boolean(
+    activeExternal &&
+      (facts.runtime?.items ?? []).some(
+        (item) => item.workspaceId === activeExternal.workspaceId && item.phase !== 'idle',
+      ),
+  );
   // 输入卡在首页与对话页共用：只改变落点，不复制发送、模式与模型选择逻辑。
   const [commandList, setCommandList] = useState<Output<'run.commandList'>>();
   const [skillList, setSkillList] = useState<Output<'run.skillCatalog'>>();
@@ -1499,6 +1776,19 @@ export function App() {
         onPage={(space, page) => void act(() => refreshHistory(space, page))}
         onSettings={() => ui.settings(true)}
         onRefreshRuntime={() => void act(() => client.connectRuntime())}
+        externalSessions={externalLists}
+        activeExternalSessionId={activeExternal?.sessionId}
+        onNewExternal={(space) => setNewExternalModal({ space })}
+        onOpenExternal={(space, sessionId) => void act(() => openExternalSession(space, sessionId))}
+        onCloseExternal={(space, sessionId) => void closeExternalSession(space, sessionId)}
+        onDeleteExternal={(space, row) =>
+          setPendingExternalDelete({
+            space,
+            id: row.id,
+            title: row.title,
+            harnessName: row.harnessName,
+          })
+        }
         onClose={(item) =>
           void act(async () => {
             await api.session.close({
@@ -1523,12 +1813,29 @@ export function App() {
               <div className="min-w-0">
                 <p className="truncate text-[13px] font-medium">
                   {workspace?.name ?? '选择空间'}
-                  {opened ? ` / ${currentTitle}` : ''}
+                  {activeExternal || opened ? ` / ${currentTitle}` : ''}
                 </p>
                 <p className="truncate text-[11px] text-kumo-subtle">{headerHint}</p>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              {activeExternal && (
+                <Button
+                  className="kapibala-action"
+                  variant="ghost"
+                  shape="square"
+                  size="sm"
+                  aria-label="关闭当前外部会话视图"
+                  onClick={() =>
+                    void act(async () => {
+                      setDetails(undefined);
+                      await detachActiveExternal();
+                    })
+                  }
+                >
+                  <XIcon size={16} />
+                </Button>
+              )}
               {opened && latestArtifact && (
                 <Button
                   className="kapibala-action"
@@ -1625,7 +1932,52 @@ export function App() {
               </Button>
             </div>
           )}
-          {opened ? (
+          {activeExternal ? (
+            <ExternalSessionView
+              workspaceName={workspace?.name}
+              workspaceRoot={workspace?.root}
+              snapshot={activeExternal.snapshot}
+              draft={
+                ui.drafts[`ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`] ?? ''
+              }
+              busy={busy}
+              localBusy={localWorkspaceBusy}
+              wide={wide}
+              detailsOpen={Boolean(details)}
+              scrollRef={scrollRef}
+              onDraftChange={(value) =>
+                ui.draft(`ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`, value)
+              }
+              onSend={(text) => void sendExternalPrompt(text)}
+              onCancel={() => void cancelExternal()}
+              onApprove={(approvalId, optionId, cancel) =>
+                void approveExternal(approvalId, optionId, cancel)
+              }
+              onNewSameHarness={() => {
+                if (workspace) {
+                  setNewExternalModal({
+                    space: workspace,
+                    preferredHarnessId: activeExternal.snapshot.session.harnessId,
+                  });
+                }
+              }}
+              onTool={(callId, trigger) => {
+                detailTrigger.current = trigger;
+                setDetails({ kind: 'tool', callId });
+              }}
+              onArtifact={(callId, artifact, trigger) => {
+                detailTrigger.current = trigger;
+                setDetails({
+                  kind: 'artifact',
+                  callId,
+                  path: artifact.path,
+                  ext: artifact.ext,
+                  ...(artifact.size === undefined ? {} : { size: artifact.size }),
+                });
+              }}
+              report={report}
+            />
+          ) : opened ? (
             facts.state ? (
               <MessageList
                 key={`${opened.workspaceId}:${opened.conversationId}`}
@@ -1707,11 +2059,59 @@ export function App() {
           )}
           {/* 诊断通知改由右上角浮层承载：不再挤压对话流与输入区，出现即提醒，可逐条关闭。 */}
           <NoticeToasts
-            notices={facts.state?.notices ?? []}
+            notices={
+              activeExternal ? activeExternal.snapshot.notices : (facts.state?.notices ?? [])
+            }
             dismissed={ui.dismissedNotices}
             onDismiss={ui.dismissNotice}
           />
-          {opened && (
+          {externalToasts.length > 0 && (
+            <section
+              aria-label="外部代理提醒"
+              className="fixed right-5 bottom-24 z-30 flex w-80 max-w-[calc(100vw-2.5rem)] flex-col gap-2"
+            >
+              {externalToasts.map((toast) => (
+                <div
+                  key={toast.id}
+                  role={toast.level === 'error' ? 'alert' : 'status'}
+                  className="flex items-center gap-2 rounded-xl border border-kumo-line bg-kumo-elevated px-3.5 py-2.5 shadow-lg"
+                >
+                  <span className="min-w-0 flex-1 text-xs leading-5 break-words text-kumo-default">
+                    {toast.text}
+                  </span>
+                  <Button
+                    className="kapibala-action shrink-0"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setExternalToasts((prev) => prev.filter((item) => item.id !== toast.id));
+                      const targetSpace = spacesRef.current.find(
+                        (item) => item.id === toast.workspaceId,
+                      );
+                      if (targetSpace) {
+                        void act(() => openExternalSession(targetSpace, toast.sessionId));
+                      }
+                    }}
+                  >
+                    查看
+                  </Button>
+                  <Button
+                    className="kapibala-action shrink-0 text-kumo-subtle"
+                    variant="ghost"
+                    size="sm"
+                    shape="square"
+                    aria-label="忽略外部代理提醒"
+                    onClick={() =>
+                      setExternalToasts((prev) => prev.filter((item) => item.id !== toast.id))
+                    }
+                  >
+                    <XIcon size={14} />
+                  </Button>
+                </div>
+              ))}
+            </section>
+          )}
+          {!activeExternal && opened && (
             // 窄窗抽屉是覆盖式（modal）：主列不避让时 composer 连同发送按钮会被抽屉整段盖住。
             // 覆盖期间给底部输入坞让出抽屉宽度，输入卡收窄但完整可见；宽窗走占位布局不受影响。
             <footer
@@ -1743,6 +2143,53 @@ export function App() {
         />
       </div>
       <ProjectDialog open={projectOpen} onOpenChange={setProjectOpen} onCreated={selectSpace} />
+      <NewExternalDialog
+        space={newExternalModal?.space}
+        preferredHarnessId={newExternalModal?.preferredHarnessId}
+        busy={busy}
+        onClose={() => setNewExternalModal(undefined)}
+        onOpenSettings={() => {
+          setNewExternalModal(undefined);
+          setSettingsInitialTab('external');
+          ui.settings(true);
+        }}
+        onCreate={(params) => void createExternalTask(params)}
+      />
+      <LayerDialog
+        open={Boolean(pendingExternalDelete)}
+        onOpenChange={(open) => {
+          if (!open) setPendingExternalDelete(undefined);
+        }}
+      >
+        <LayerDialog.Content size="sm" closeLabel="取消删除外部会话">
+          <LayerDialog.Title>
+            <span data-kapibala-modal="true">删除外部会话记录？</span>
+          </LayerDialog.Title>
+          <LayerDialog.Description>
+            将从本地列表中移除「{pendingExternalDelete?.harnessName} ·{' '}
+            {pendingExternalDelete?.title || '外部任务'}」及其只读展示快照，此操作不可恢复。
+          </LayerDialog.Description>
+          <LayerDialog.Body>
+            <div className="flex justify-end gap-3">
+              <Button
+                className="kapibala-action"
+                variant="secondary"
+                onClick={() => setPendingExternalDelete(undefined)}
+              >
+                取消
+              </Button>
+              <Button
+                className="kapibala-action text-kumo-danger"
+                variant="secondary"
+                disabled={busy}
+                onClick={() => void confirmDeleteExternal()}
+              >
+                确认删除
+              </Button>
+            </div>
+          </LayerDialog.Body>
+        </LayerDialog.Content>
+      </LayerDialog>
       <SettingsDialog
         open={ui.settingsOpen}
         onOpenChange={ui.settings}
@@ -1751,11 +2198,15 @@ export function App() {
         report={report}
         hostDown={facts.error !== undefined || facts.runtimeValid === false}
         spaces={spaces}
-        workspaceId={opened?.workspaceId ?? spaces[0]?.id}
+        workspaceId={
+          activeExternal?.workspaceId ?? opened?.workspaceId ?? workspace?.id ?? spaces[0]?.id
+        }
         inspection={facts.inspection}
         archiveRevision={archiveRevision}
         onArchivedChanged={() => void refreshSpaces().catch((reason) => report(failure(reason)))}
         onRequestDelete={setPendingDelete}
+        initialTab={settingsInitialTab}
+        onInitialTabConsumed={() => setSettingsInitialTab(undefined)}
       />
       {facts.interactions[0] && (
         <div className="fixed inset-x-0 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-kumo-line bg-kumo-elevated p-4 shadow-xl">

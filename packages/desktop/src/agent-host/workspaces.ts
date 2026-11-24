@@ -111,6 +111,19 @@ export class Workspaces {
       maxReadBytes: LIMITS.history,
     });
   }
+  /** 按物理根目录反查已登记的工作区 ID（供外部会话通知精准归属侧栏分组）。 */
+  findIdByRoot(root: string): string | undefined {
+    let actual = root;
+    try {
+      actual = fs.realpathSync.native(root);
+    } catch {
+      /* keep root */
+    }
+    for (const item of this.records.values()) {
+      if (same(item.root, actual)) return item.id;
+    }
+    return undefined;
+  }
   private register(root: string, kind: Workspace['kind']): Workspace {
     root = fs.realpathSync.native(root);
     if (!fs.statSync(root).isDirectory()) throw new Error('WORKSPACE_UNAVAILABLE');

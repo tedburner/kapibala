@@ -10,11 +10,13 @@ import {
   PulseIcon,
   ShieldCheckIcon,
   ShuffleIcon,
+  TerminalWindowIcon,
   TrashIcon,
 } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Output, ProfileDraft, Workspace } from '../shared/contracts.js';
 import type { Inspection } from '../shared/observations.js';
+import { ExternalSettingsPanel } from './external-settings-panel.js';
 import type { SessionTarget } from './session-actions.js';
 
 type Catalog = Output<'settings.read'>;
@@ -91,6 +93,12 @@ const SETTINGS_TABS = [
     label: '默认模型与路由',
     icon: ShuffleIcon,
     subtitle: '为新建会话指定默认模型和各角色模型。',
+  },
+  {
+    value: 'external',
+    label: '外部代理',
+    icon: TerminalWindowIcon,
+    subtitle: '连接本机 Claude Code、Codex、Antigravity、OpenCode 等外部 CLI 代理。',
   },
   {
     value: 'permission',
@@ -229,6 +237,8 @@ export function SettingsDialog({
   onRequestDelete,
   hostDown = false,
   inspection,
+  initialTab,
+  onInitialTabConsumed,
 }: {
   open: boolean;
   onOpenChange(open: boolean): void;
@@ -249,6 +259,9 @@ export function SettingsDialog({
   hostDown?: boolean;
   /** 当前会话的运行时观察；MCP 连接状态与 `/mcp` 同源，未打开会话时缺省。 */
   inspection?: Inspection;
+  /** 外部入口直达某个设置分类（如新建外部会话弹窗直达「外部代理」）；打开并切换后立即回调清除。 */
+  initialTab?: string;
+  onInitialTabConsumed?(): void;
 }) {
   const [info, setInfo] = useState<Output<'app.getInfo'>>();
   /** 更新检查只在用户点按钮时发生；结果只保留最近一次，不做轮询或缓存。 */
@@ -263,6 +276,11 @@ export function SettingsDialog({
   const [updateDownload, setUpdateDownload] = useState<Output<'app.downloadUpdate'>>();
   const [downloading, setDownloading] = useState(false);
   const [tab, setTab] = useState('models');
+  useEffect(() => {
+    if (!open || !initialTab) return;
+    setTab(initialTab);
+    onInitialTabConsumed?.();
+  }, [open, initialTab, onInitialTabConsumed]);
   const [resMcp, setResMcp] = useState<McpCatalog>();
   const [resSkills, setResSkills] = useState<SkillsCatalog>();
   const [resDraft, setResDraft] = useState<McpFormDraft>();
@@ -1505,6 +1523,14 @@ export function SettingsDialog({
                       }
                     />
                   ))}
+                </Tabs.Panel>
+                <Tabs.Panel value="external" className="kapibala-settings-panel">
+                  <ExternalSettingsPanel
+                    active={open && tab === 'external'}
+                    workspaceId={workspaceId}
+                    hostDown={hostDown}
+                    report={report}
+                  />
                 </Tabs.Panel>
                 <Tabs.Panel value="permission" className="kapibala-settings-panel space-y-4">
                   <section className="space-y-2">

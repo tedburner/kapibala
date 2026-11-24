@@ -73,6 +73,25 @@ export interface RequestResults {
   'watch/list': { items: import('./types.js').WatchWireItem[] };
   'watch/cancel': { cancelled: true };
   'evidence/read': import('./types.js').EvidenceWire;
+  'external/harnesses': {
+    harnesses: import('./types.js').ExternalHarnessWireItem[];
+    templates: import('./types.js').ExternalTemplateWireItem[];
+  };
+  'external/harnessSave': { harnesses: import('./types.js').ExternalHarnessWireItem[] };
+  'external/harnessReset': { harnesses: import('./types.js').ExternalHarnessWireItem[] };
+  'external/harnessToggle': { harnesses: import('./types.js').ExternalHarnessWireItem[] };
+  'external/harnessDelete': { harnesses: import('./types.js').ExternalHarnessWireItem[] };
+  'external/harnessTest': import('./types.js').ExternalProbeWire;
+  'external/list': { items: import('./types.js').ExternalSessionWireItem[] };
+  'external/open': import('./types.js').ExternalSnapshotWire;
+  'external/attach': import('./types.js').ExternalSnapshotWire;
+  'external/detach': { detached: true };
+  'external/snapshot': import('./types.js').ExternalSnapshotWire;
+  'external/prompt': import('./types.js').ExternalSnapshotWire;
+  'external/approve': { resolved: true };
+  'external/cancel': { cancellationRequested: true };
+  'external/close': { closed: true };
+  'external/delete': { deleted: boolean };
   'host/shutdown': { stopped: true };
 }
 /** 根据原请求参数区分首块与续块，不能只凭方法或响应形状判断。 */
@@ -190,6 +209,151 @@ const evidence = object({
   delegations: array(evidenceDelegation),
 });
 
+const bool = { type: 'boolean' } as const;
+const externalTransport = {
+  type: 'string',
+  enum: ['acp', 'claude-cli', 'codex-app-server'],
+} as const;
+const externalStatus = {
+  type: 'string',
+  enum: ['starting', 'idle', 'running', 'waiting_approval', 'cancelling', 'ended', 'failed'],
+} as const;
+const externalProbe = object({
+  available: bool,
+  status: {
+    type: 'string',
+    enum: ['ready', 'needs_login', 'not_installed', 'invalid_shim', 'handshake_failed'],
+  },
+  agentName: nullable(text),
+  version: nullable(text),
+  loadSupported: bool,
+  reason: nullable(text),
+  loginHint: nullable(text),
+  installHint: nullable(text),
+});
+const externalHarnessItem = object({
+  id,
+  name: text,
+  transport: externalTransport,
+  command: text,
+  args: array(text),
+  envFrom: array(id),
+  builtin: bool,
+  registryId: nullable(id),
+  hasOverride: bool,
+  enabled: bool,
+  probe: nullable(externalProbe),
+});
+const externalTemplateItem = object({
+  registryId: id,
+  name: text,
+  description: text,
+  command: text,
+  args: array(text),
+  envFrom: array(id),
+  installHint: text,
+  loginHint: nullable(text),
+  website: nullable(text),
+});
+const externalSessionItem = object({
+  id,
+  harnessId: id,
+  harnessName: text,
+  transport: externalTransport,
+  workspaceRoot: text,
+  title: text,
+  status: externalStatus,
+  resumable: bool,
+  canContinue: bool,
+  hasArchive: bool,
+  pendingApprovalCount: integer,
+  modelLabel: nullable(text),
+  modeLabel: nullable(text),
+  createdAt: integer,
+  updatedAt: integer,
+  lastError: nullable(text),
+});
+const externalApprovalItem = object({
+  approvalId: id,
+  sessionId: id,
+  toolCallId: id,
+  toolTitle: text,
+  target: nullable(text),
+  warning: nullable(text),
+  options: array(object({ optionId: id, label: text, kind: text })),
+  expiresAt: integer,
+});
+const externalTool = object({
+  callId: id,
+  name: text,
+  displayName: text,
+  invocation: text,
+  verb: nullable(text),
+  chip: nullable(text),
+  mono: bool,
+  input: text,
+  status: { type: 'string', enum: ['running', 'succeeded', 'failed', 'interrupted'] },
+  result: nullable(text),
+});
+const externalBlock = object({
+  id: text,
+  kind: { type: 'string', enum: ['text', 'thinking', 'tool'] },
+  text,
+  state: { type: 'string', enum: ['streaming', 'completed', 'interrupted'] },
+  revision: integer,
+  tool: nullable(externalTool),
+});
+const externalMessage = object({
+  id: text,
+  role: { type: 'string', enum: ['user', 'assistant', 'system', 'tool'] },
+  state: { type: 'string', enum: ['streaming', 'completed', 'interrupted'] },
+  persisted: bool,
+  blocks: array(externalBlock),
+  usage: nullable(
+    object({
+      promptTokens: integer,
+      completionTokens: integer,
+      totalTokens: integer,
+    }),
+  ),
+});
+const externalSnapshot = object({
+  session: externalSessionItem,
+  sequence: integer,
+  truncatedArchive: bool,
+  messages: array(externalMessage),
+  approvals: array(externalApprovalItem),
+  plan: nullable(
+    object({
+      items: array(
+        object({
+          id: text,
+          title: text,
+          status: {
+            type: 'string',
+            enum: ['pending', 'in_progress', 'completed', 'cancelled'],
+          },
+        }),
+      ),
+      updatedAt: nullable(integer),
+      revision: integer,
+    }),
+  ),
+  notices: array(
+    object({
+      id: text,
+      level: { type: 'string', enum: ['info', 'warning', 'error'] },
+      text,
+    }),
+  ),
+});
+/** `external/event` 通知载荷白名单 Schema。 */
+export const EXTERNAL_EVENT_SCHEMA = object({
+  sessionId: id,
+  sequence: integer,
+  snapshot: externalSnapshot,
+});
+
 /** 结果变体目录保留现有 wire 字段，首块和续块不能互相代替。 */
 export const RESULT_SCHEMAS = {
   initialize: object({
@@ -216,6 +380,19 @@ export const RESULT_SCHEMAS = {
   'watch/list': object({ items: array(watchItem) }),
   'watch/cancel': object({ cancelled: yes }),
   'evidence/read': evidence,
+  'external/harnesses': object({
+    harnesses: array(externalHarnessItem),
+    templates: array(externalTemplateItem),
+  }),
+  'external/harnessList': object({ harnesses: array(externalHarnessItem) }),
+  'external/harnessTest': externalProbe,
+  'external/list': object({ items: array(externalSessionItem) }),
+  'external/snapshot': externalSnapshot,
+  'external/detach': object({ detached: yes }),
+  'external/approve': object({ resolved: yes }),
+  'external/cancel': object({ cancellationRequested: yes }),
+  'external/close': object({ closed: yes }),
+  'external/delete': object({ deleted: bool }),
   'host/shutdown': object({ stopped: yes }),
 } as const satisfies Record<string, WireSchema>;
 const fixed =
@@ -240,6 +417,22 @@ export const RESULT_SELECTORS = {
   'watch/list': fixed('watch/list'),
   'watch/cancel': fixed('watch/cancel'),
   'evidence/read': fixed('evidence/read'),
+  'external/harnesses': fixed('external/harnesses'),
+  'external/harnessSave': fixed('external/harnessList'),
+  'external/harnessReset': fixed('external/harnessList'),
+  'external/harnessToggle': fixed('external/harnessList'),
+  'external/harnessDelete': fixed('external/harnessList'),
+  'external/harnessTest': fixed('external/harnessTest'),
+  'external/list': fixed('external/list'),
+  'external/open': fixed('external/snapshot'),
+  'external/attach': fixed('external/snapshot'),
+  'external/detach': fixed('external/detach'),
+  'external/snapshot': fixed('external/snapshot'),
+  'external/prompt': fixed('external/snapshot'),
+  'external/approve': fixed('external/approve'),
+  'external/cancel': fixed('external/cancel'),
+  'external/close': fixed('external/close'),
+  'external/delete': fixed('external/delete'),
   'host/shutdown': fixed('host/shutdown'),
 } satisfies { [M in WireMethod]: (params: RequestParams[M]) => keyof typeof RESULT_SCHEMAS };
 

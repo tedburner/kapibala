@@ -4,6 +4,7 @@ import type {
   ApprovalPrompt,
   ClientResult,
   ClientSnapshot,
+  ExternalWireEvent,
   ProtocolLimits,
   ProtocolOffer,
   RequestParams,
@@ -64,6 +65,7 @@ export class LocalClient {
     { controller: AbortController; sessionId: string }
   >();
   private readonly subscribers = new Set<(event: WireEvent) => void>();
+  private readonly externalSubscribers = new Set<(event: ExternalWireEvent) => void>();
   private readonly cursors = new Map<string, Cursor>();
   private limits: ProtocolLimits = DEFAULT_LIMITS;
   private snapshotBytes = 0;
@@ -140,6 +142,16 @@ export class LocalClient {
         cursor.seq = event.seq;
         this.publish(event);
       },
+      externalEvent: (event) => {
+        if (this.failure) return;
+        for (const subscriber of this.externalSubscribers) {
+          try {
+            subscriber(event);
+          } catch {
+            /* 外部会话展示订阅异常不改变协议状态 */
+          }
+        }
+      },
       closed: async () => {
         this.invalidate(new Error('RPC closed'));
       },
@@ -174,6 +186,7 @@ export class LocalClient {
     this.attaching.clear();
     this.cursors.clear();
     this.subscribers.clear();
+    this.externalSubscribers.clear();
     this.snapshotBytes = 0;
     this.peer?.abort(this.failure);
   }
@@ -318,6 +331,14 @@ export class LocalClient {
     this.subscribers.add(listener);
     return () => {
       this.subscribers.delete(listener);
+    };
+  }
+
+  /** 订阅外部代理会话事件流（需握手时声明 `'external-session'` 且调用 `external/attach`）。 */
+  subscribeExternal(listener: (event: ExternalWireEvent) => void): () => void {
+    this.externalSubscribers.add(listener);
+    return () => {
+      this.externalSubscribers.delete(listener);
     };
   }
 

@@ -1,5 +1,5 @@
 {
-  "capabilities": ["sessions", "approval", "cancel", "watch", "evidence"],
+  "capabilities": ["sessions", "approval", "cancel", "watch", "evidence", "external-session"],
   "errors": [
     "PROTOCOL_MISMATCH",
     "UNAUTHORIZED",
@@ -192,6 +192,22 @@
   "methods": [
     "approval/request",
     "evidence/read",
+    "external/approve",
+    "external/attach",
+    "external/cancel",
+    "external/close",
+    "external/delete",
+    "external/detach",
+    "external/harnessDelete",
+    "external/harnessReset",
+    "external/harnessSave",
+    "external/harnessTest",
+    "external/harnessToggle",
+    "external/harnesses",
+    "external/list",
+    "external/open",
+    "external/prompt",
+    "external/snapshot",
     "host/shutdown",
     "initialize",
     "ping",
@@ -270,6 +286,266 @@
       "type": "object"
     },
     "evidence/read": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"],
+      "type": "object"
+    },
+    "external/approve": {
+      "additionalProperties": false,
+      "properties": {
+        "approvalId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "cancel": {
+          "type": "boolean"
+        },
+        "optionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "approvalId"],
+      "type": "object"
+    },
+    "external/attach": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"],
+      "type": "object"
+    },
+    "external/cancel": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"],
+      "type": "object"
+    },
+    "external/close": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"],
+      "type": "object"
+    },
+    "external/delete": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"],
+      "type": "object"
+    },
+    "external/detach": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"],
+      "type": "object"
+    },
+    "external/harnessDelete": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["id"],
+      "type": "object"
+    },
+    "external/harnessReset": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["id"],
+      "type": "object"
+    },
+    "external/harnessSave": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "items": {
+            "maxLength": 16384,
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array"
+        },
+        "builtin": {
+          "type": "boolean"
+        },
+        "command": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "envFrom": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "registryId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["id", "builtin"],
+      "type": "object"
+    },
+    "external/harnessTest": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["id"],
+      "type": "object"
+    },
+    "external/harnessToggle": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["id", "enabled"],
+      "type": "object"
+    },
+    "external/harnesses": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "external/list": {
+      "additionalProperties": false,
+      "properties": {
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot"],
+      "type": "object"
+    },
+    "external/open": {
+      "additionalProperties": false,
+      "properties": {
+        "harnessId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot", "harnessId"],
+      "type": "object"
+    },
+    "external/prompt": {
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "text"],
+      "type": "object"
+    },
+    "external/snapshot": {
       "additionalProperties": false,
       "properties": {
         "sessionId": {
@@ -549,6 +825,22 @@
   "resultSelections": {
     "approval/request": ["approval/request"],
     "evidence/read": ["evidence/read"],
+    "external/approve": ["external/approve"],
+    "external/attach": ["external/snapshot"],
+    "external/cancel": ["external/cancel"],
+    "external/close": ["external/close"],
+    "external/delete": ["external/delete"],
+    "external/detach": ["external/detach"],
+    "external/harnessDelete": ["external/harnessList"],
+    "external/harnessReset": ["external/harnessList"],
+    "external/harnessSave": ["external/harnessList"],
+    "external/harnessTest": ["external/harnessTest"],
+    "external/harnessToggle": ["external/harnessList"],
+    "external/harnesses": ["external/harnesses"],
+    "external/list": ["external/list"],
+    "external/open": ["external/snapshot"],
+    "external/prompt": ["external/snapshot"],
+    "external/snapshot": ["external/snapshot"],
     "host/shutdown": ["host/shutdown"],
     "initialize": ["initialize"],
     "ping": ["ping"],
@@ -789,6 +1081,1133 @@
         }
       },
       "required": ["summary", "changes", "references", "mcp", "delegations"],
+      "type": "object"
+    },
+    "external/approve": {
+      "additionalProperties": false,
+      "properties": {
+        "resolved": {
+          "enum": [true],
+          "type": "boolean"
+        }
+      },
+      "required": ["resolved"],
+      "type": "object"
+    },
+    "external/cancel": {
+      "additionalProperties": false,
+      "properties": {
+        "cancellationRequested": {
+          "enum": [true],
+          "type": "boolean"
+        }
+      },
+      "required": ["cancellationRequested"],
+      "type": "object"
+    },
+    "external/close": {
+      "additionalProperties": false,
+      "properties": {
+        "closed": {
+          "enum": [true],
+          "type": "boolean"
+        }
+      },
+      "required": ["closed"],
+      "type": "object"
+    },
+    "external/delete": {
+      "additionalProperties": false,
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "required": ["deleted"],
+      "type": "object"
+    },
+    "external/detach": {
+      "additionalProperties": false,
+      "properties": {
+        "detached": {
+          "enum": [true],
+          "type": "boolean"
+        }
+      },
+      "required": ["detached"],
+      "type": "object"
+    },
+    "external/harnessList": {
+      "additionalProperties": false,
+      "properties": {
+        "harnesses": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "args": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100000,
+                "type": "array"
+              },
+              "builtin": {
+                "type": "boolean"
+              },
+              "command": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "envFrom": {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 100000,
+                "type": "array"
+              },
+              "hasOverride": {
+                "type": "boolean"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "probe": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "agentName": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "available": {
+                        "type": "boolean"
+                      },
+                      "installHint": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "loadSupported": {
+                        "type": "boolean"
+                      },
+                      "loginHint": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "status": {
+                        "enum": [
+                          "ready",
+                          "needs_login",
+                          "not_installed",
+                          "invalid_shim",
+                          "handshake_failed"
+                        ],
+                        "type": "string"
+                      },
+                      "version": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "available",
+                      "status",
+                      "agentName",
+                      "version",
+                      "loadSupported",
+                      "reason",
+                      "loginHint",
+                      "installHint"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "registryId": {
+                "anyOf": [
+                  {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "transport": {
+                "enum": ["acp", "claude-cli", "codex-app-server"],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "transport",
+              "command",
+              "args",
+              "envFrom",
+              "builtin",
+              "registryId",
+              "hasOverride",
+              "enabled",
+              "probe"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        }
+      },
+      "required": ["harnesses"],
+      "type": "object"
+    },
+    "external/harnessTest": {
+      "additionalProperties": false,
+      "properties": {
+        "agentName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "installHint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "loadSupported": {
+          "type": "boolean"
+        },
+        "loginHint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": ["ready", "needs_login", "not_installed", "invalid_shim", "handshake_failed"],
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "available",
+        "status",
+        "agentName",
+        "version",
+        "loadSupported",
+        "reason",
+        "loginHint",
+        "installHint"
+      ],
+      "type": "object"
+    },
+    "external/harnesses": {
+      "additionalProperties": false,
+      "properties": {
+        "harnesses": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "args": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100000,
+                "type": "array"
+              },
+              "builtin": {
+                "type": "boolean"
+              },
+              "command": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "envFrom": {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 100000,
+                "type": "array"
+              },
+              "hasOverride": {
+                "type": "boolean"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "probe": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "agentName": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "available": {
+                        "type": "boolean"
+                      },
+                      "installHint": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "loadSupported": {
+                        "type": "boolean"
+                      },
+                      "loginHint": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "status": {
+                        "enum": [
+                          "ready",
+                          "needs_login",
+                          "not_installed",
+                          "invalid_shim",
+                          "handshake_failed"
+                        ],
+                        "type": "string"
+                      },
+                      "version": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "available",
+                      "status",
+                      "agentName",
+                      "version",
+                      "loadSupported",
+                      "reason",
+                      "loginHint",
+                      "installHint"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "registryId": {
+                "anyOf": [
+                  {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "transport": {
+                "enum": ["acp", "claude-cli", "codex-app-server"],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "transport",
+              "command",
+              "args",
+              "envFrom",
+              "builtin",
+              "registryId",
+              "hasOverride",
+              "enabled",
+              "probe"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "templates": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "args": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100000,
+                "type": "array"
+              },
+              "command": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "envFrom": {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 100000,
+                "type": "array"
+              },
+              "installHint": {
+                "type": "string"
+              },
+              "loginHint": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "registryId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "website": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "registryId",
+              "name",
+              "description",
+              "command",
+              "args",
+              "envFrom",
+              "installHint",
+              "loginHint",
+              "website"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        }
+      },
+      "required": ["harnesses", "templates"],
+      "type": "object"
+    },
+    "external/list": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "canContinue": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "harnessId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "harnessName": {
+                "type": "string"
+              },
+              "hasArchive": {
+                "type": "boolean"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "lastError": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "modeLabel": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "modelLabel": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pendingApprovalCount": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "resumable": {
+                "type": "boolean"
+              },
+              "status": {
+                "enum": [
+                  "starting",
+                  "idle",
+                  "running",
+                  "waiting_approval",
+                  "cancelling",
+                  "ended",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "transport": {
+                "enum": ["acp", "claude-cli", "codex-app-server"],
+                "type": "string"
+              },
+              "updatedAt": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workspaceRoot": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "harnessId",
+              "harnessName",
+              "transport",
+              "workspaceRoot",
+              "title",
+              "status",
+              "resumable",
+              "canContinue",
+              "hasArchive",
+              "pendingApprovalCount",
+              "modelLabel",
+              "modeLabel",
+              "createdAt",
+              "updatedAt",
+              "lastError"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        }
+      },
+      "required": ["items"],
+      "type": "object"
+    },
+    "external/snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "approvals": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "approvalId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "expiresAt": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "options": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "optionId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": ["optionId", "label", "kind"],
+                  "type": "object"
+                },
+                "maxItems": 100000,
+                "type": "array"
+              },
+              "sessionId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "target": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "toolCallId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "toolTitle": {
+                "type": "string"
+              },
+              "warning": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "approvalId",
+              "sessionId",
+              "toolCallId",
+              "toolTitle",
+              "target",
+              "warning",
+              "options",
+              "expiresAt"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "messages": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "blocks": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": ["text", "thinking", "tool"],
+                      "type": "string"
+                    },
+                    "revision": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "state": {
+                      "enum": ["streaming", "completed", "interrupted"],
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "tool": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "callId": {
+                              "maxLength": 256,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "chip": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "displayName": {
+                              "type": "string"
+                            },
+                            "input": {
+                              "type": "string"
+                            },
+                            "invocation": {
+                              "type": "string"
+                            },
+                            "mono": {
+                              "type": "boolean"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "result": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "status": {
+                              "enum": ["running", "succeeded", "failed", "interrupted"],
+                              "type": "string"
+                            },
+                            "verb": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "callId",
+                            "name",
+                            "displayName",
+                            "invocation",
+                            "verb",
+                            "chip",
+                            "mono",
+                            "input",
+                            "status",
+                            "result"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": ["id", "kind", "text", "state", "revision", "tool"],
+                  "type": "object"
+                },
+                "maxItems": 100000,
+                "type": "array"
+              },
+              "id": {
+                "type": "string"
+              },
+              "persisted": {
+                "type": "boolean"
+              },
+              "role": {
+                "enum": ["user", "assistant", "system", "tool"],
+                "type": "string"
+              },
+              "state": {
+                "enum": ["streaming", "completed", "interrupted"],
+                "type": "string"
+              },
+              "usage": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "completionTokens": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "promptTokens": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "totalTokens": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": ["promptTokens", "completionTokens", "totalTokens"],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["id", "role", "state", "persisted", "blocks", "usage"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "notices": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "level": {
+                "enum": ["info", "warning", "error"],
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "level", "text"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "items": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "enum": ["pending", "in_progress", "completed", "cancelled"],
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["id", "title", "status"],
+                    "type": "object"
+                  },
+                  "maxItems": 100000,
+                  "type": "array"
+                },
+                "revision": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "updatedAt": {
+                  "anyOf": [
+                    {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": ["items", "updatedAt", "revision"],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sequence": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "additionalProperties": false,
+          "properties": {
+            "canContinue": {
+              "type": "boolean"
+            },
+            "createdAt": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "harnessId": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "harnessName": {
+              "type": "string"
+            },
+            "hasArchive": {
+              "type": "boolean"
+            },
+            "id": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "lastError": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "modeLabel": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "modelLabel": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pendingApprovalCount": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "resumable": {
+              "type": "boolean"
+            },
+            "status": {
+              "enum": [
+                "starting",
+                "idle",
+                "running",
+                "waiting_approval",
+                "cancelling",
+                "ended",
+                "failed"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "transport": {
+              "enum": ["acp", "claude-cli", "codex-app-server"],
+              "type": "string"
+            },
+            "updatedAt": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspaceRoot": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "harnessId",
+            "harnessName",
+            "transport",
+            "workspaceRoot",
+            "title",
+            "status",
+            "resumable",
+            "canContinue",
+            "hasArchive",
+            "pendingApprovalCount",
+            "modelLabel",
+            "modeLabel",
+            "createdAt",
+            "updatedAt",
+            "lastError"
+          ],
+          "type": "object"
+        },
+        "truncatedArchive": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session",
+        "sequence",
+        "truncatedArchive",
+        "messages",
+        "approvals",
+        "plan",
+        "notices"
+      ],
       "type": "object"
     },
     "host/shutdown": {
