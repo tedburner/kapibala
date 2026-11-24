@@ -18,7 +18,11 @@ function files(directory: string): string[] {
 function insist(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
 }
-/** 分入口验证桌面安全边界与组件约束；产物模式额外确认 sandbox Preload 无 Node 依赖泄漏。 */
+/**
+ * 静态校验桌面四进程导入边界、语义主题 Token、依赖白名单与主进程安全守卫；
+ * 允许渲染层按需混用既有组件库与语义化原生交互控件，仅拦截硬编码色值、未登记 UI 库及跨进程越权导入。
+ * `artifacts = true` 时额外校验已构建渲染产物无特权依赖且 sandbox Preload 仅保留 electron 外部 require。
+ */
 export function checkDesktop(artifacts = false): void {
   for (const file of files(path.join(desktop, 'src')).filter((item) =>
     /\.[cm]?[jt]sx?$/.test(item),
@@ -112,10 +116,6 @@ export function checkDesktop(artifacts = false): void {
       );
     if (relative.startsWith('renderer/') && /\.tsx$/.test(file)) {
       insist(
-        !/<(?:button|input|textarea|select|dialog)\b/.test(source),
-        `${relative}: use Kumo interactive components`,
-      );
-      insist(
         !/#(?:[0-9a-fA-F]{3}){1,2}\b|\b(?:rgb|hsl)a?\(/.test(source),
         `${relative}: colors must use semantic theme tokens`,
       );
@@ -176,15 +176,17 @@ export function checkDesktop(artifacts = false): void {
     ),
     'Unapproved desktop development dependency',
   );
-  const css = fs.readFileSync(path.join(desktop, 'src/renderer/index.css'), 'utf8');
-  insist(
-    css.indexOf('@cloudflare/kumo/styles') < css.indexOf('tailwindcss'),
-    'Kumo styles must precede Tailwind',
-  );
-  insist(
-    css.includes('../../node_modules/@cloudflare/kumo/dist'),
-    'Kumo distribution needs explicit Tailwind source',
-  );
+  if (manifest.dependencies['@cloudflare/kumo']) {
+    const css = fs.readFileSync(path.join(desktop, 'src/renderer/index.css'), 'utf8');
+    insist(
+      css.indexOf('@cloudflare/kumo/styles') < css.indexOf('tailwindcss'),
+      'Kumo styles must precede Tailwind',
+    );
+    insist(
+      css.includes('../../node_modules/@cloudflare/kumo/dist'),
+      'Kumo distribution needs explicit Tailwind source',
+    );
+  }
   const theme = fs.readFileSync(path.join(desktop, 'src/renderer/theme-kapibala.css'), 'utf8');
   insist(
     theme.includes('isolation: isolate') && theme.includes(':root[data-mode="dark"]'),

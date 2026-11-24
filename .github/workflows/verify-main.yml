@@ -3,6 +3,18 @@ name: Verify main
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'packages/*/README.md'
+      - 'AGENTS.md'
+      - '**/AGENTS.md'
+      - 'CLAUDE.md'
+      - '**/CLAUDE.md'
+      - 'docs/**'
+      - 'openspec/**'
+      - '.agents/**'
+      - '.claude/**'
+      - '.gitignore'
 
 permissions:
   contents: read

@@ -26,7 +26,7 @@ pnpm verify
 | `pnpm dev:desktop` | 构建 Core、MCP、CLI `/host` 与 `/view-model` 后启动 Electron；共享源码变化触发依赖重建和受控重启，不能继续运行旧 dist |
 | `pnpm verify:desktop` | 依次构建共享层和桌面、分入口类型检查、源码与 Preload 产物边界、桌面单测、真实 Electron E2E；隔离 homeDirectory、userData、项目和环境凭证 |
 | `pnpm build:desktop` | 构建共享层及四个桌面入口，不启动窗口 |
-| `pnpm check-desktop --artifacts` | 检查源码进程边界、Kumo/Tailwind/主题契约，以及已构建的 CJS Preload 和入口完整性 |
+| `pnpm check-desktop --artifacts` | 检查源码进程边界、UI 依赖白名单与语义主题契约，以及已构建的 CJS Preload 和入口完整性 |
 | `pnpm pack:desktop` | 验证桌面后生成当前平台测试包，检查生产依赖闭包、启动安装副本并输出校验和与许可附件；不签发正式候选、不发布 |
 
 首次安装执行 `pnpm install --frozen-lockfile`。锁定的 Electron 45 使用显式运行时安装入口：`pnpm --filter @kiturone/kapibala-desktop exec install-electron`，随后运行 `pnpm dev:desktop`。不关闭下载校验，也不把桌面 Node 要求传到 CLI 的 engines。
@@ -124,9 +124,9 @@ packages/desktop/
   src/agent-host/    会话、配置、审批、脱敏、展示传输
   src/shared/        DTO、运行时 schema、固定预算，无 Node/Electron 导入
   src/renderer/      React 页面、纯 ViewModel 与公开 DTO
-  src/renderer/ui/   无现成 Kumo 组件时的领域组合
+  src/renderer/ui/   工作台自建可访问交互组件与领域组合
   src/renderer/stores/  presentation 展示状态与 ui 易失视图状态
-  src/renderer/theme-kapibala.css  Kumo 语义 token 覆盖
+  src/renderer/theme-kapibala.css  桌面语义主题 token 与组件样式桥接
   src/renderer/index.css           样式入口与导入顺序
   tests/            契约、状态、配置和生命周期单测
   e2e/              确定性 Provider、真实窗口和故障夹具
@@ -149,7 +149,7 @@ UI 依赖按角色唯一，阶段 B 的基础断言集中在 `scripts/check-desk
 
 | 角色 | 允许 | 禁止 |
 |---|---|---|
-| 组件与交互原语 | Kumo 及其导出的 primitives | Radix、shadcn/ui、MUI、Ant Design、Chakra、自写 focus trap 或 portal 管理 |
+| 组件与交互原语 | Kumo 及其导出的 primitives、语义化原生交互控件（配齐可访问名与焦点样式，不强制绑定单一组件库） | 未经评估混装 Radix、shadcn/ui、MUI、Ant Design、Chakra 等第二套组件库，或缺失无障碍语义的裸 `div` 交互 |
 | 图标 | `@phosphor-icons/react` | lucide、heroicons、font-awesome、手写图标路径（品牌 logo 除外） |
 | 动画 | Kumo 内置过渡，含 Sidebar 布局过渡；自写时使用同主版本 Motion 且仅动画 transform/opacity | 直装 framer-motion、react-spring、GSAP、Anime.js；应用源码新增 `transition: all` 或叠加同属性动画 |
 | 布局与拖拽 | Kumo Sidebar、CSS Grid/Flex | 首版引入 react-resizable-panels 或 dnd-kit（无对应需求） |
@@ -223,7 +223,7 @@ shared 先定义业务请求/响应、业务错误和通知的运行时 schema�
 
 界面层级与留白节奏的增量约定见 [006 桌面视觉精修](design/006-desktop-visual-refinement.md)：它在不改 004 章节编号与布局骨架的前提下细化 token 档位、轮聚合、执行组、composer 单卡和设置左导航。两者冲突时以 004 的结构决策为准，006 只解释执行细节。
 
-写任何界面前先查 Kumo 是否已有对应组件或 primitive；有现成实现时禁止自写等价行为，尤其是焦点约束、Escape/外部点击关闭、portal 层级、滚动锁定、组合框过滤、Toast 队列和复制反馈。没有现成组件时才在 `renderer/ui/` 组合领域组件，并在文件头注释写明缺口。主题只改 `theme-kapibala.css`，不在组件内写色值。
+常规设置表单、模态弹窗与下拉菜单可按需复用现有 Kumo 组件或 primitives（保留焦点约束、Escape/外部点击关闭、portal 层级与滚动锁定）；会话流、工具行、富输入区、右侧预览/Diff 等工作台界面不强制套用 Kumo 样式包装，样式或结构受限时直接在 `renderer/ui/` 用无头原语或语义化原生控件（配齐 `aria-*` 与键盘焦点）实现。主题色值只走 `theme-kapibala.css` 语义变量，不在组件内硬编码色值。
 
 “添加项目”先打开“创建项目”表单：项目名称（1–80 字符，不含控制字符）、只读设备“此电脑”、原生源文件夹选择区、取消与创建按钮。名称仅作为客户端显示别名，不改目录名；目录物理根仍是唯一身份，同根最近项目复用稳定入口。选择目录不写最近项目、不读取项目配置、不创建会话。点击创建时刷新信任状态；未信任目录再打开“信任此文件夹吗？”对话框，展示最终物理根与权限说明。取消信任返回原表单，保留名称与目录；明确同意后才由 Host 校验 token、登记信任并保存项目入口。已被 CLI 撤销的信任不得凭旧 UI 状态恢复。打开最近项目或重载时恢复别名，不自动请求模型。双层弹窗的焦点、Escape 与滚动仍由 Kumo LayerDialog 管理。
 
@@ -302,7 +302,7 @@ E2E 在 app ready 前设置隔离 Electron userData，在任何 Host、Session �
 
 开发提交前核对本批改动、CLI 回归、公共导出声明、桌面入口和实际失败路径。只改文档时检查相对链接、术语及待实现标记即可，不将文档静态检查记作产品验收。
 
-新增依赖只进入需要它的包；`packages/*` 已被 workspace 覆盖，不额外修改 glob。Renderer 新增任何依赖前先确认 Kumo 是否已覆盖该角色，然后更新 004 第 6.1 节选型表并审许可证、包体与运行时影响；同一角色出现第二个库即停止并回到设计。不把库源码复制进仓库，确需修上游缺陷时只用 `pnpm patch`，同时记录 upstream issue 与移除条件。Electron 下载/安装脚本按 pnpm allowBuilds 单独授权；不要全局允许依赖构建。具体版本在实施时核对支持范围并锁定，本指南不预写未验证版本号。打包时生成第三方许可证清单，并确认没有把 Kumo 的 Cloudflare 品牌组件、示例页或演示资源打进应用。
+新增依赖只进入需要它的包；`packages/*` 已被 workspace 覆盖，不额外修改 glob。Renderer 新增 UI/图标依赖前先评估现有依赖与原生控件是否已满足，确需引入时同步 `scripts/check-desktop.ts` 白名单并审许可证、包体与运行时影响，禁止同一角色无序混装多套库。不把库源码复制进仓库，确需修上游缺陷时只用 `pnpm patch`，同时记录 upstream issue 与移除条件。Electron 下载/安装脚本按 pnpm allowBuilds 单独授权；不要全局允许依赖构建。具体版本在实施时核对支持范围并锁定，本指南不预写未验证版本号。打包时生成第三方许可证清单，并确认没有把组件库的品牌组件、示例页或演示资源打进应用。
 
 正式发布继续使用 [发布证据](release-evidence.md)和 004 第 11 节流程：升版提交完整 SHA → 人工推送 main 并等待 Verify → 候选签名构建 → 逐平台安装验收及哈希审核 → 人工推送标签 → 验证并发布同一批附件。Release 不重新构建桌面包，desktop 保持 private，npm 仍只有原三包。
 

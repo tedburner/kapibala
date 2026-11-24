@@ -1,15 +1,26 @@
 name: Verify
 
 on:
-  push:
-    branches-ignore: [main]
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**'
   pull_request:
     paths-ignore:
       - 'README.md'
+      - 'packages/*/README.md'
+      - 'AGENTS.md'
+      - '**/AGENTS.md'
+      - 'CLAUDE.md'
+      - '**/CLAUDE.md'
       - 'docs/**'
+      - 'openspec/**'
+      - '.agents/**'
+      - '.claude/**'
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '可选：指定待验证的分支、标签或 Commit SHA（留空则验证所选分支当前 HEAD）'
+        required: false
+        default: ''
+        type: string
   workflow_call:
     inputs:
       ref:

@@ -26,7 +26,7 @@
 - **不自动 git add / commit**，改动保留在工作区由用户审核后手动提交。
 - **版本分支开发（2026-11-16 起的约定）**：**一个版本一个分支，分支命名固定 `v<版本号>`**（如 `v0.1.3`）；该版本的所有需求默认都在对应版本分支上开发，**不按单个需求切分支**，除非用户明确要求新开分支。建分支用 `pnpm flow branch v<版本号>`；`pnpm flow feat <topic>`（支持 `fix` / `chore` / `docs`，topic 省略时自动生成「日期-时分」名）仅在用户明确要求按需求切分支时使用。合并回主干用 `git merge --no-ff v<版本号>`，main 始终保持可发布。
 - **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。默认仅递增补丁段（2026-10-21 约定：`0.0.9 → 0.0.10`，不逢十自动向次版本进位），次版本/主版本由显式参数选择；同步七处版本号（根、Core、MCP、CLI、host、desktop 的 6 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 v<版本号>`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明须先写好 `docs/releases/v<版本号>.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）；执行发布或排障重试前读 `docs/releases/publishing.md`。
-- **推送永远手动**：先 `git push origin main` 并等 main 的 Verify 工作流通过，再 `git push origin refs/tags/v<版本号>`（提前暴露门禁失败，避免移动已推送的标签；因版本分支与标签同名，须显式带 `refs/tags/` 消除 refspec 歧义）；tag 推送触发 Actions（verify → npm trusted publishing → GitHub Release）。
+- **推送永远手动**：先 `git push origin main` 并等 main 的 `Verify main` 工作流通过（开发分支日常 `push` 不自动跑 CI，按需在 Actions 手动跑 `Verify` 或提 PR），再 `git push origin refs/tags/v<版本号>`（提前暴露门禁失败，避免移动已推送的标签；因版本分支与标签同名，须显式带 `refs/tags/` 消除 refspec 歧义）；tag 推送触发 Actions（verify → npm trusted publishing → GitHub Release）。
 - **发布门禁分两层**：自动门禁（`pnpm verify` + `verify` 工作流全矩阵 + PR soak 冒烟 10 轮 + 三包 registry 安装 smoke）始终强制；release/nightly 档长跑自 2026-11-20 起退出发布路径，仅由 Soak 工作流定时或手动运行并归档证据，不再阻断发布；人工验收证据（`pnpm verify:release-evidence` 的六类专项与桌面专项）自 2026-11-14 起**默认跳过**，工作流只打印 warning，`KPBL_RELEASE_STRICT=true` 即恢复同 SHA 审核清单强制校验。桌面附件默认不附带，`KPBL_DESKTOP_RELEASE=true` 恢复严格附件流程。跳过不等于通过：文档与 Release 不得宣称人工专项、签名或跨平台安装验收已完成，禁止伪造通过证据。口径见 `docs/release-evidence.md` 与 `docs/desktop-release.md`。
 
 ## 编码约定
@@ -35,9 +35,10 @@
   - **NO**：`/** 更新模型 API 密钥。 */`
   - **OK**：`/** 写入模型密钥并清理同 credentialGroup 冗余副本；原始全局配置损坏时抛错中止，防回写合并结果物化内置模型。 */`
 - 品牌拼写只允许 **`Kapibala`**（禁止少一个 i 的旧拼法）；配置目录 **`.kapibala`**；错误基类 `KapibalaError`；默认 `agentName` 为 `'Kapibala'`。
+- **桌面 UI 组件分层（2026-11-24 起的约定）**：桌面端（`packages/desktop`）**不强制绑定 `@cloudflare/kumo` 等预设样式组件库**；常规设置表单/弹窗/菜单可按需复用现有 Kumo 组件，会话流、工具行、富输入区、右侧预览/Diff 等工作台界面在样式或结构受限时直接使用无头原语或语义化原生控件（配齐 `aria-*`/键盘焦点与 `theme-kapibala.css` 语义 Token），禁止为迁就组件库硬套包装或堆 `!important` 覆盖（细则见 `packages/desktop/AGENTS.md`）。
 
 ## 按需阅读索引（触发对应任务时必读）
 
 - **当前基线与版本路线图**：当前最新已发布版本为 `v0.1.4`（本地 wire `PROTOCOL_VERSION = 2`）；查历史版本交付范围或后续排期时读 `docs/RELEASES.md`，开发 `v0.1.5` 第三方 ACP 接入时读 `docs/design/015-v0.1.5-acp-external-harness.md`。
 - **契约与子系统文档**：改 Core/MCP/CLI 公共导出时读 `docs/sdk-compatibility.md` 与 `scripts/fixtures/public-api/migration.json`；改本地客户端协议时读 `docs/local-protocol.md`；改技能体系时读 `docs/skills.md`。
-- **跨包高危联动**：从任意包修改内置模型目录、厂商元数据、API Key 读写或全局配置持久化前，必读 `packages/host/AGENTS.md`；修改品牌 SVG/PNG 或 README 双主题抬头图前，必读 `assets/AGENTS.md`。
+- **跨包高危联动**：从任意包修改内置模型目录、厂商元数据、API Key 读写或全局配置持久化前，必读 `packages/host/AGENTS.md`；修改品牌 SVG/PNG 或 README 双主题抬头图前，必读 `assets/AGENTS.md`；模型升级巡检或精简 Agent 上下文与 Skills 时，必读 `docs/context-pruning-playbook.md`。

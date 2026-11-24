@@ -8,7 +8,7 @@
   **心如止水，稳定如初 —— AI Agent Harness**
 
   <p>
-    <a href="https://github.com/tedburner/kapibala/actions/workflows/verify.yml"><img src="https://github.com/tedburner/kapibala/actions/workflows/verify.yml/badge.svg" alt="Verify" /></a>
+    <a href="https://github.com/tedburner/kapibala/actions/workflows/verify-main.yml"><img src="https://github.com/tedburner/kapibala/actions/workflows/verify-main.yml/badge.svg?branch=main" alt="Verify main" /></a>
     <a href="https://www.npmjs.com/package/@kiturone/kapibala-cli"><img src="https://img.shields.io/npm/v/@kiturone/kapibala-cli?label=cli&color=0969da" alt="CLI Version" /></a>
     <a href="https://www.npmjs.com/package/@kiturone/kapibala"><img src="https://img.shields.io/npm/v/@kiturone/kapibala?label=core%20sdk&color=0969da" alt="Core SDK Version" /></a>
     <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D20.0-2da44e?logo=node.js&logoColor=white" alt="Node.js" /></a>
@@ -185,7 +185,7 @@ try {
 | `packages/mcp` | [`@kiturone/kapibala-mcp`](https://www.npmjs.com/package/@kiturone/kapibala-mcp) | npm 公共包 | MCP 客户端插件：Stdio / Streamable HTTP 传输、进程树回收、按源原子上下线与受控 Prompt |
 | `packages/host` | `@kiturone/kapibala-host` | 私有共享层 | 跨端宿主真源：版本化协议契约、0 Node 依赖纯 `ViewModel`、受管会话装配、外部监视与资源导入 |
 | `packages/cli` | [`@kiturone/kapibala-cli`](https://www.npmjs.com/package/@kiturone/kapibala-cli) | npm 公共包 | 命令行工具 `kpbl`：交互式 REPL、40+ Slash 命令、冷启动向导、本地守护进程与客户端 SDK 转发出口 |
-| `packages/desktop` | `@kiturone/kapibala-desktop` | GitHub Release | Electron 桌面工作台：Main / Agent Host / 沙箱 Renderer 三进程隔离，基于 Kumo 与 Streamdown 构建 |
+| `packages/desktop` | `@kiturone/kapibala-desktop` | GitHub Release | Electron 桌面工作台：Main / Preload / Agent Host / 沙箱 Renderer 隔离，基于 React、Streamdown 与语义化主题构建 |
 
 ## 本地开发
 
