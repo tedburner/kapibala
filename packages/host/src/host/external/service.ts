@@ -30,6 +30,8 @@ import {
 } from './config.js';
 import { AcpStdioDriver } from './drivers/acp/acp-driver.js';
 import { ExternalTranscriptProjector } from './drivers/acp/projector.js';
+import { ClaudeCliDriver } from './drivers/claude-cli.js';
+import { CodexAppServerDriver } from './drivers/codex-app-server.js';
 import { ACP_REGISTRY_TEMPLATES } from './presets.js';
 import { type ExternalSessionRecord, ExternalSessionRegistry } from './registry.js';
 import {
@@ -123,8 +125,27 @@ export class ExternalSessionService {
         homeDir: this.homeDir,
         hostEnv: options.hostEnv,
       }),
+      'claude-cli': new ClaudeCliDriver({
+        homeDir: this.homeDir,
+        hostEnv: options.hostEnv,
+      }),
+      'codex-app-server': new CodexAppServerDriver({
+        homeDir: this.homeDir,
+        hostEnv: options.hostEnv,
+      }),
       ...options.drivers,
     };
+  }
+
+  /** 返回当前所有存活外部会话子进程的 PID 列表（供诊断与零孤儿进程校验）。 */
+  getActiveSessionPids(): number[] {
+    const pids: number[] = [];
+    for (const slot of this.liveSlots.values()) {
+      if (typeof slot.handle.pid === 'number' && slot.handle.pid > 0) {
+        pids.push(slot.handle.pid);
+      }
+    }
+    return pids;
   }
 
   /** 注册或替换指定传输类型的驱动（供 M3 注入 `claude-cli` / `codex-app-server` 或单测替身）。 */
@@ -761,6 +782,8 @@ export class ExternalSessionService {
       }
       case 'config_updated': {
         this.updateSlotRecord(slot, {
+          ...(event.nativeSessionId ? { nativeSessionId: event.nativeSessionId } : {}),
+          ...(event.resumable !== undefined ? { resumable: event.resumable } : {}),
           ...(event.modelLabel ? { modelLabel: event.modelLabel } : {}),
           ...(event.modeLabel ? { modeLabel: event.modeLabel } : {}),
         });

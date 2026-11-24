@@ -28,8 +28,13 @@ const home = path.resolve(option('home'));
 const runtime = path.resolve(option('runtime'));
 const resultPath = path.resolve(option('result'));
 
+const nodeBinDir = path.dirname(process.execPath);
+const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
 const env = {
   ...process.env,
+  [pathKey]: process.env[pathKey]
+    ? `${nodeBinDir}${path.delimiter}${process.env[pathKey]}`
+    : nodeBinDir,
   HOME: home,
   USERPROFILE: home,
   KPBL_LOCAL_HOME: home,
@@ -55,6 +60,7 @@ fs.writeFileSync(
       },
     ],
     permissionMode: 'Approval',
+    ...(process.platform === 'win32' ? { shell: { preference: 'powershell' } } : {}),
   }),
 );
 

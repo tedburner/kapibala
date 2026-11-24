@@ -691,7 +691,7 @@ export function WorkspaceSidebar({
                                     <DropdownMenu.Trigger
                                       render={
                                         <Button
-                                          className="kapibala-action pointer-events-none absolute right-0 shrink-0 bg-(--kapibala-sidebar-surface) opacity-0 transition-opacity [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/ext:pointer-events-auto group-focus-within/ext:opacity-100 group-hover/ext:pointer-events-auto group-hover/ext:opacity-100"
+                                          className="kapibala-action z-10 shrink-0 opacity-0 transition-opacity [@media(hover:none)]:opacity-100 focus-visible:opacity-100 group-focus-within/ext:opacity-100 group-hover/ext:opacity-100"
                                           variant="ghost"
                                           shape="square"
                                           size="base"

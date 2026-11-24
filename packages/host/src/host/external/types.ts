@@ -140,6 +140,8 @@ export type ExternalEvent =
   | { readonly type: 'plan_updated'; readonly items: readonly ViewTodoItem[] }
   | {
       readonly type: 'config_updated';
+      readonly nativeSessionId?: string;
+      readonly resumable?: boolean;
       readonly modelLabel?: string;
       readonly modeLabel?: string;
     }

@@ -620,6 +620,7 @@ export function ExternalSettingsPanel({
                       <Input
                         id={`ext-override-cmd-${item.id}`}
                         size="sm"
+                        className="w-full"
                         aria-label={`${item.name} 可执行路径`}
                         placeholder={item.command}
                         value={overrideDraft.command}
@@ -637,6 +638,7 @@ export function ExternalSettingsPanel({
                       </label>
                       <InputArea
                         id={`ext-override-args-${item.id}`}
+                        className="w-full"
                         aria-label={`${item.name} 启动参数`}
                         minRows={2}
                         maxRows={5}
@@ -656,6 +658,7 @@ export function ExternalSettingsPanel({
                       <Input
                         id={`ext-override-env-${item.id}`}
                         size="sm"
+                        className="w-full"
                         aria-label={`${item.name} 转发环境变量名`}
                         placeholder="例如 DEEPSEEK_API_KEY, HTTPS_PROXY"
                         value={overrideDraft.envFromText}
@@ -806,6 +809,7 @@ export function ExternalSettingsPanel({
                 <Input
                   id="ext-custom-name"
                   size="sm"
+                  className="w-full"
                   aria-label="自定义代理显示名称"
                   placeholder="例如 Cline CLI"
                   value={customDraft.name}
@@ -831,6 +835,7 @@ export function ExternalSettingsPanel({
                 <Input
                   id="ext-custom-id"
                   size="sm"
+                  className="w-full"
                   aria-label="自定义代理标识 ID"
                   placeholder="例如 cline-acp"
                   disabled={customDraft.idLocked}
@@ -855,6 +860,7 @@ export function ExternalSettingsPanel({
               <Input
                 id="ext-custom-command"
                 size="sm"
+                className="w-full"
                 aria-label="自定义代理可执行命令"
                 placeholder="例如 cline 或 C:\tools\my-agent.exe"
                 value={customDraft.command}
@@ -870,6 +876,7 @@ export function ExternalSettingsPanel({
               </label>
               <InputArea
                 id="ext-custom-args"
+                className="w-full"
                 aria-label="自定义代理启动参数"
                 minRows={2}
                 maxRows={5}
@@ -888,6 +895,7 @@ export function ExternalSettingsPanel({
               <Input
                 id="ext-custom-env"
                 size="sm"
+                className="w-full"
                 aria-label="自定义代理转发环境变量名"
                 placeholder="例如 OPENAI_API_KEY, ANTHROPIC_API_KEY"
                 value={customDraft.envFromText}

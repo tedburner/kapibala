@@ -164,7 +164,20 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
 
       const authMethodId = pickAuthMethodId(flavor, init.authMethods);
       if (authMethodId) {
-        await channel.request('authenticate', { methodId: authMethodId }, { timeoutMs, signal });
+        try {
+          await channel.request('authenticate', { methodId: authMethodId }, { timeoutMs, signal });
+        } catch (authErr) {
+          const authMsg = authErr instanceof Error ? authErr.message : String(authErr);
+          return {
+            available: false,
+            ...(init.agentName ? { agentName: init.agentName } : {}),
+            ...(init.version ? { version: init.version } : {}),
+            loadSupported: Boolean(init.loadMethod),
+            status: 'needs_login',
+            reason: `已完成协议握手，但认证未通过（${authMsg}）`,
+            ...(flavor.loginHint ? { loginHint: flavor.loginHint } : {}),
+          };
+        }
       }
 
       return {

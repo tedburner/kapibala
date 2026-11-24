@@ -152,6 +152,7 @@ export function NewExternalDialog({
                   </label>
                   <InputArea
                     id="new-external-initial-prompt"
+                    className="w-full"
                     aria-label="外部代理首轮任务"
                     minRows={2}
                     maxRows={5}

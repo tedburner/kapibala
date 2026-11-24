@@ -757,14 +757,14 @@ export function App() {
       const openedSnapshot = await api.external.open({
         workspaceId: params.space.id,
         harnessId: params.harnessId,
-        prompt: params.prompt,
       });
       const subscriptionId = crypto.randomUUID();
-      const snapshot = await api.external.subscribe({
+      const subscribed = await api.external.subscribe({
         workspaceId: params.space.id,
         sessionId: openedSnapshot.session.id,
         subscriptionId,
       });
+      let snapshot = subscribed;
       const next = {
         workspaceId: params.space.id,
         sessionId: openedSnapshot.session.id,
@@ -773,6 +773,19 @@ export function App() {
       };
       activeExternalRef.current = next;
       setActiveExternal(next);
+      setExternalToasts((prev) =>
+        prev.filter((item) => item.sessionId !== openedSnapshot.session.id),
+      );
+      if (params.prompt?.trim()) {
+        snapshot = await api.external.prompt({
+          workspaceId: params.space.id,
+          sessionId: openedSnapshot.session.id,
+          text: params.prompt.trim(),
+        });
+        setActiveExternal((prev) =>
+          prev && prev.sessionId === openedSnapshot.session.id ? { ...prev, snapshot } : prev,
+        );
+      }
       await refreshExternalList(params.space.id);
     });
   }
@@ -2065,50 +2078,52 @@ export function App() {
             dismissed={ui.dismissedNotices}
             onDismiss={ui.dismissNotice}
           />
-          {externalToasts.length > 0 && (
+          {externalToasts.some((toast) => toast.sessionId !== activeExternal?.sessionId) && (
             <section
               aria-label="外部代理提醒"
-              className="fixed right-5 bottom-24 z-30 flex w-80 max-w-[calc(100vw-2.5rem)] flex-col gap-2"
+              className="fixed top-14 right-4 z-30 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2"
             >
-              {externalToasts.map((toast) => (
-                <div
-                  key={toast.id}
-                  role={toast.level === 'error' ? 'alert' : 'status'}
-                  className="flex items-center gap-2 rounded-xl border border-kumo-line bg-kumo-elevated px-3.5 py-2.5 shadow-lg"
-                >
-                  <span className="min-w-0 flex-1 text-xs leading-5 break-words text-kumo-default">
-                    {toast.text}
-                  </span>
-                  <Button
-                    className="kapibala-action shrink-0"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => {
-                      setExternalToasts((prev) => prev.filter((item) => item.id !== toast.id));
-                      const targetSpace = spacesRef.current.find(
-                        (item) => item.id === toast.workspaceId,
-                      );
-                      if (targetSpace) {
-                        void act(() => openExternalSession(targetSpace, toast.sessionId));
+              {externalToasts
+                .filter((toast) => toast.sessionId !== activeExternal?.sessionId)
+                .map((toast) => (
+                  <div
+                    key={toast.id}
+                    role={toast.level === 'error' ? 'alert' : 'status'}
+                    className="flex items-center gap-2 rounded-xl border border-kumo-line bg-kumo-elevated px-3.5 py-2.5 shadow-lg"
+                  >
+                    <span className="min-w-0 flex-1 text-xs leading-5 break-words text-kumo-default">
+                      {toast.text}
+                    </span>
+                    <Button
+                      className="kapibala-action shrink-0"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        setExternalToasts((prev) => prev.filter((item) => item.id !== toast.id));
+                        const targetSpace = spacesRef.current.find(
+                          (item) => item.id === toast.workspaceId,
+                        );
+                        if (targetSpace) {
+                          void act(() => openExternalSession(targetSpace, toast.sessionId));
+                        }
+                      }}
+                    >
+                      查看
+                    </Button>
+                    <Button
+                      className="kapibala-action shrink-0 text-kumo-subtle"
+                      variant="ghost"
+                      size="sm"
+                      shape="square"
+                      aria-label="忽略外部代理提醒"
+                      onClick={() =>
+                        setExternalToasts((prev) => prev.filter((item) => item.id !== toast.id))
                       }
-                    }}
-                  >
-                    查看
-                  </Button>
-                  <Button
-                    className="kapibala-action shrink-0 text-kumo-subtle"
-                    variant="ghost"
-                    size="sm"
-                    shape="square"
-                    aria-label="忽略外部代理提醒"
-                    onClick={() =>
-                      setExternalToasts((prev) => prev.filter((item) => item.id !== toast.id))
-                    }
-                  >
-                    <XIcon size={14} />
-                  </Button>
-                </div>
-              ))}
+                    >
+                      <XIcon size={14} />
+                    </Button>
+                  </div>
+                ))}
             </section>
           )}
           {!activeExternal && opened && (

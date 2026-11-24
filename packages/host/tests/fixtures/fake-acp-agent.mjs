@@ -128,6 +128,18 @@ if (mode === 'tui-flood') {
         });
         return;
       }
+      if (mode === 'generic') {
+        send({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            protocolVersion: 1,
+            agentInfo: { name: 'custom-generic-agent', version: '1.0.0' },
+            agentCapabilities: { loadSession: false },
+          },
+        });
+        return;
+      }
       send({
         jsonrpc: '2.0',
         id: msg.id,

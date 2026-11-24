@@ -156,11 +156,13 @@ function mapPlanStatus(raw: unknown): ViewTodoStatus {
   if (raw === 'in_progress' || raw === 'completed' || raw === 'cancelled' || raw === 'pending') {
     return raw;
   }
+  if (raw === 'inProgress') return 'in_progress';
+  if (raw === 'canceled') return 'cancelled';
   return 'pending';
 }
 
 /**
- * 归一化 ACP `plan` 更新为宿主标准 `ViewTodoItem[]`（双读 `entries` 与 `plan` 数组字段）。
+ * 归一化外部代理计划更新为宿主标准 `ViewTodoItem[]`（同时兼容 ACP `entries`/`content`、Claude `todos`/`content` 与 Codex `plan`/`step`）。
  */
 export function normalizeAcpPlanUpdate(update: Record<string, unknown>): ViewTodoItem[] {
   const rawList = Array.isArray(update.entries)
@@ -177,7 +179,9 @@ export function normalizeAcpPlanUpdate(update: Record<string, unknown>): ViewTod
         ? entry.content
         : typeof entry.title === 'string'
           ? entry.title
-          : '';
+          : typeof entry.step === 'string'
+            ? entry.step
+            : '';
     const title = sanitizeDisplayText(redactCommonSecrets(sanitizeUntrustedOutput(rawTitle)), 200);
     if (!title) continue;
     const id =

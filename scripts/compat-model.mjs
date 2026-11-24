@@ -64,7 +64,7 @@ export async function startCompatModelServer() {
       return;
     }
     if (input.includes('compat-tree')) {
-      // 进程树验收脚本由探针写入工作区；这里只决定要执行的命令，不内置平台分支。
+      // 进程树验收脚本由探针写入工作区并把当前 Node 目录前置进 PATH；使用裸 `node` 同时兼容 POSIX sh、Git Bash 与 Windows PowerShell（含带空格安装路径）。
       send({
         index: 0,
         delta: {
@@ -76,7 +76,7 @@ export async function startCompatModelServer() {
               function: {
                 name: 'run_command',
                 arguments: JSON.stringify({
-                  command: `"${process.execPath}" compat-tree.cjs`,
+                  command: 'node compat-tree.cjs',
                   timeout_ms: 600000,
                 }),
               },

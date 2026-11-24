@@ -245,6 +245,10 @@ export type {
 } from './external/ndjson-channel.js';
 export { AcpStdioDriver } from './external/drivers/acp/acp-driver.js';
 export type { AcpStdioDriverOptions } from './external/drivers/acp/acp-driver.js';
+export { ClaudeCliDriver } from './external/drivers/claude-cli.js';
+export type { ClaudeCliDriverOptions } from './external/drivers/claude-cli.js';
+export { CodexAppServerDriver } from './external/drivers/codex-app-server.js';
+export type { CodexAppServerDriverOptions } from './external/drivers/codex-app-server.js';
 export {
   isAcpAuthRequiredError,
   resolveAcpFlavor,

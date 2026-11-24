@@ -37,8 +37,13 @@ const recycleEvery = Number(option('recycle-every', '10'));
 const treeEvery = Number(option('tree-every', '10'));
 const sampleEvery = Number(option('sample-every', '1'));
 
+const nodeBinDir = path.dirname(process.execPath);
+const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
 const env = {
   ...process.env,
+  [pathKey]: process.env[pathKey]
+    ? `${nodeBinDir}${path.delimiter}${process.env[pathKey]}`
+    : nodeBinDir,
   HOME: home,
   USERPROFILE: home,
   KPBL_LOCAL_HOME: home,
@@ -65,6 +70,7 @@ fs.writeFileSync(
       },
     ],
     permissionMode: 'Approval',
+    ...(process.platform === 'win32' ? { shell: { preference: 'powershell' } } : {}),
   }),
 );
 
