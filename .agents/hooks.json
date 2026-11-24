@@ -1,0 +1,11 @@
+{
+  "nested-agents-injector": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ./hooks/inject-nested-agents.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}

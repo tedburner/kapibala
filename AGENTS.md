@@ -1,118 +1,43 @@
 # AGENTS.md — Kapibala Agent 工作约定
 
-## 定位
+## 定位与跨包边界
 
-Kapibala（CLI 命令 `kpbl`）：从零构建的 TypeScript AI Agent Harness + 交互式 CLI。
-pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖）+ `packages/host`（`@kiturone/kapibala-host`，私有可复用宿主层，不进 npm 发布集）+ `packages/cli`（bin: `kpbl`）+ `packages/desktop`（Electron 桌面端）。
-设计基线：`docs/design/001-agent-framework-design.md`（**用户本人维护，勿擅改章节编号与交叉引用**）。
+- Kapibala（CLI 命令 `kpbl`）：从零构建的 TypeScript AI Agent Harness + 交互式 CLI。
+- pnpm monorepo：`packages/core`（`@kiturone/kapibala`，运行时 0 依赖，保持 Headless 禁读写终端与 `process.cwd()`）+ `packages/host`（`@kiturone/kapibala-host`，私有可复用宿主层，不进 npm 发布集；协议/视图模型/传输/客户端/装配唯一真源，CLI 同名子路径仅做兼容转发 barrel）+ `packages/cli`（bin: `kpbl`）+ `packages/desktop`（Electron 桌面端）。各子目录细则由对应 `AGENTS.md` 按需自动加载。
+- 设计基线：`docs/design/001-agent-framework-design.md`（**用户本人维护，勿擅改章节编号与交叉引用**）。
 
-## 怎么跑
+## 开发与验证门禁
 
-- **一键入口：`pnpm dev`**（= `node scripts/dev.mjs`）→ 依赖安装(按需) → 工作区链接自愈 → 编译 → 校验 → 启动 REPL。
-  该脚本是跨平台唯一真源；`scripts/dev.sh`（mac/Linux/Git Bash）与 `scripts/dev.cmd`（Windows，可双击）只是转发参数的薄壳。
-  常用参数：`--no-verify`（跳过校验）、`--no-build`、`--clean`、`--no-start`（构建+校验后不启动，= `pnpm dev:build`）、
-  `--verify-only`（只跑校验，等价于 `pnpm verify`）、`-p "问题"`（单次问答）、`--global`（注册 kpbl）。详见 `node scripts/dev.mjs --help`。
-- ⚠️ **`--verify-only` 必须与 `pnpm verify` 同源**（typecheck → test → lint，含 check-secrets）。
-  早前该分支只跑 typecheck + test 却输出「校验全部通过」，会漏掉 lint 错误与密钥泄露 —— 修过一次，别再退化。
-- `pnpm dev:cli` 是 `tsup --watch`，**只监听重建、不启动 REPL**；启动请用 `pnpm dev` 或直接 `node packages/cli/dist/bin.js`。
-- **验证门禁：`pnpm verify` = typecheck → test（先 `pnpm build` 再 vitest）→ lint**。注意 tsup/esbuild 不做类型检查，`pnpm build` 绿 ≠ 类型没问题；test 前置构建是为了桌面集成测试依赖的 core/CLI host dist 制品保持新鲜，单独 `pnpm test` 同样会先构建。
+- **一键入口：`pnpm dev`**（= `node scripts/dev.mjs`，跨平台唯一真源；`scripts/dev.sh` 与 `scripts/dev.cmd` 仅薄壳转发）：按需装依赖 → 工作区链接自愈 → 编译 → 校验 → 启动 REPL。只构建校验不启动用 `pnpm dev:build`；更多参数查 `node scripts/dev.mjs --help`。
+- `pnpm dev:cli` 是 `tsup --watch`，**只监听重建、不启动 REPL**；启动请用 `pnpm dev` 或 `node packages/cli/dist/bin.js`。
+- **完成门禁：`pnpm verify`**（= `typecheck → test → lint`，`--verify-only` 必须与之同源，防静默漏掉 lint 与密钥扫描）。注意 tsup/esbuild 不做类型检查，`pnpm build` 绿 ≠ 类型通过；`pnpm test` 自带前置构建以保鲜桌面集成测试依赖的 dist 制品。桌面改动额外跑 `pnpm verify:desktop`。
 - 密钥扫描 `pnpm check-secrets` 已并入 lint 流程，严禁提交真实 API Key。
+- 根构建入口 `pnpm build` / `build:desktop` / `dev:desktop` 分别是 `scripts/build.mjs` 与 `scripts/dev-desktop.mjs`，它们在清洗过的环境里再拉起下一层命令 —— 否则宿主删除守卫会把打包器清理 dist 当成批量删除拦下（报错指向无关的 `.js.map`，看起来像打包器坏了）。
 
-### 已知环境坑（Windows）
+### 已知环境坑（Windows 与宿主进程）
 
-- **workspace 软链会退化成空目录**：本机 pnpm 为 workspace 依赖（如 `@kiturone/kapibala`）创建链接时「成功」返回，但产物是空目录而非真实链接，
-  运行时表现为 `ERR_MODULE_NOT_FOUND`。普通（非 workspace）依赖的链接不受影响。
-  `scripts/dev.mjs` 的「工作区链接」步骤会检测这种空目录并用 junction 重建（无需管理员权限），因此**跑一次 `pnpm dev` 即可自愈**。
+- **workspace 软链会退化成空目录**：本机 pnpm 为 workspace 依赖（如 `@kiturone/kapibala`）创建链接时「成功」返回，但产物是空目录而非真实链接，运行时表现为 `ERR_MODULE_NOT_FOUND`。普通（非 workspace）依赖不受影响；**跑一次 `pnpm dev` 即可用 junction 自愈**（无需管理员权限）。
 - **`.cmd` 必须保持纯 ASCII**：cmd.exe 在 `chcp` 生效前按 OEM 代码页（zh-CN 下为 GBK）解析文件，任何非 ASCII 字节都会破坏语法。
+- ⚠️ **Windows 项目路径身份统一走 `fs.realpathSync.native`**：JS `realpathSync` 保留 8.3 短名，与 `normalizeProjectPath` 的长路径信任身份失配（v0.0.4 指令目录、v0.0.5 项目信任各踩中一次）。新增任何与信任/项目根比较的路径解析都必须用 native 语义。
+- **子进程环境禁全量继承 `process.env`**：宿主会注入 `NODE_OPTIONS` 与 `ELECTRON_RUN_AS_NODE=1` 导致 Electron 崩溃或退化为纯 Node；启动 Electron 走 `desktopLaunchEnv()` 白名单，运行工具链走 `toolchainEnv()` 过滤（详见 `packages/desktop/AGENTS.md` 与 `scripts/AGENTS.md`）。
 
-## 分支与发布流程
+## 提交、分支与发布红线
 
+- **不自动 git add / commit**，改动保留在工作区由用户审核后手动提交。
 - **版本分支开发（2026-11-16 起的约定）**：**一个版本一个分支，分支命名固定 `v<版本号>`**（如 `v0.1.3`）；该版本的所有需求默认都在对应版本分支上开发，**不按单个需求切分支**，除非用户明确要求新开分支。建分支用 `pnpm flow branch v<版本号>`；`pnpm flow feat <topic>`（支持 `fix` / `chore` / `docs`，topic 省略时自动生成「日期-时分」名）仅在用户明确要求按需求切分支时使用。合并回主干用 `git merge --no-ff v<版本号>`，main 始终保持可发布。
-- **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。默认仅递增补丁段（`0.0.9 → 0.0.10`，不自动向次版本进位），次版本/主版本由显式参数选择；同步七处版本号（根、Core、MCP、CLI、host、desktop 的 6 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 vX.Y.Z`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明必须先写好 `docs/releases/vX.Y.Z.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）。
-- **推送永远手动**：先 `git push origin main` 并等 main 的 Verify 工作流通过，再 `git push origin refs/tags/vX.Y.Z`（提前暴露门禁失败，避免移动已推送的标签；因版本分支与标签同名 `vX.Y.Z`，须显式带 `refs/tags/` 消除 refspec 歧义）；tag 推送触发 Actions（verify → npm trusted publishing → GitHub Release）。
-- 版本推演与工作区版本读取的唯一实现在 `scripts/release.ts`（`nextVersion` / `readWorkspaceVersion`），不要在别处另写逻辑；分支与发布编排在 `scripts/flow.ts`。
+- **发布统一走 `pnpm release [version]`**（= `pnpm flow release`）：要求在 main 且工作区干净、不落后远端。默认仅递增补丁段（2026-10-21 约定：`0.0.9 → 0.0.10`，不逢十自动向次版本进位），次版本/主版本由显式参数选择；同步七处版本号（根、Core、MCP、CLI、host、desktop 的 6 个 package.json + `CLI_VERSION`）、跑 `pnpm verify`，**交互确认后**创建发布提交（`:bookmark: 发布 v<版本号>`，内容仅限版本号与既有发布文档，是「不自动 commit」约定的唯一例外）与附注标签。发布说明须先写好 `docs/releases/v<版本号>.md`（缺失时 `pnpm flow release --scaffold` 生成骨架，补全后手动提交）；执行发布或排障重试前读 `docs/releases/publishing.md`。
+- **推送永远手动**：先 `git push origin main` 并等 main 的 Verify 工作流通过，再 `git push origin refs/tags/v<版本号>`（提前暴露门禁失败，避免移动已推送的标签；因版本分支与标签同名，须显式带 `refs/tags/` 消除 refspec 歧义）；tag 推送触发 Actions（verify → npm trusted publishing → GitHub Release）。
 - **发布门禁分两层**：自动门禁（`pnpm verify` + `verify` 工作流全矩阵 + PR soak 冒烟 10 轮 + 三包 registry 安装 smoke）始终强制；release/nightly 档长跑自 2026-11-20 起退出发布路径，仅由 Soak 工作流定时或手动运行并归档证据，不再阻断发布；人工验收证据（`pnpm verify:release-evidence` 的六类专项与桌面专项）自 2026-11-14 起**默认跳过**，工作流只打印 warning，`KPBL_RELEASE_STRICT=true` 即恢复同 SHA 审核清单强制校验。桌面附件默认不附带，`KPBL_DESKTOP_RELEASE=true` 恢复严格附件流程。跳过不等于通过：文档与 Release 不得宣称人工专项、签名或跨平台安装验收已完成，禁止伪造通过证据。口径见 `docs/release-evidence.md` 与 `docs/desktop-release.md`。
 
-## 核心不变量
+## 编码约定
 
-- **历史必须闭合**：assistant 的 `tool_use` 一旦进入历史，对应 `tool_result` 必须紧跟其后（设计文档 §4.3 / §4.4）。loop 内任何 `break` / `throw` 必须发生在该不变量满足之后。
-- 落盘是**消息级**：user / assistant / tool_result 三类消息都要经 `MessageStore.append` 落盘。
-- **会话控制记录要三处同步、两处重建**：新增全局控制记录类型（如 `archive_state` / `pin_state`）时，必须同时改 `SessionRecordType` 联合、`SessionStore` 内的类型集合与 `isGlobalControlRecordType`，并在**两份**元数据重建实现里处理——`SessionManager.buildMetadata` 与 `CrossProjectSessionCatalog` 的内联扫描。漏掉任一份，sidecar 重建会静默丢失该状态（`archived`、`pinned` 各踩中过一次）。控制记录不推进上下文叶子，也不改变正文活动时间。
-- **工作区身份必须显式传入**：`AgentSession` 构造必须给出绝对 `workspaceRoot`，兼容仅提供绝对 `rootDir` 的旧输入；两者至少有一项（都缺失抛 `WORKSPACE_ROOT_REQUIRED`），同时提供但物理身份冲突时拒绝。`packages/core/src` 严禁读取 `process.cwd()`（架构门禁拦截）；沙箱与写租约（`WorkspaceLeaseCoordinator`）按会话持有，不做全局单例。
-- 消费者提前结束事件迭代时，必须取消并等待在途工具清理、闭合并落盘工具事务后再释放 Session 锁；已完成的工具保留真实结果。
-- **Core 必须保持 Headless**：`packages/core/src` 不得依赖 CLI、直接读写终端或包含 ANSI/UI 渲染；所有宿主通过 `AgentSession` / `SessionEvent` 复用同一 Agent Harness。`pnpm check-architecture` 已并入 lint，新增宿主能力不得绕过该门禁。
-
-- **宿主层包边界（`packages/host`）**：协议（protocol）、视图模型（view-model）、传输（transport）、客户端（client）与
-  managed session 装配（host/）的唯一真源在宿主层包；CLI 的同名子路径导出只是**兼容转发 barrel**（构建时经 tsconfig paths
-  从宿主源码内联进 dist，npm 消费者不感知私有包）。CLI 应用层（commands/local-host/tui/入口）经
-  `@kiturone/kapibala-host/internal` 消费装配面（显式命名导出清单，禁用 `export *`——多模块重导出同名符号会被 ESM
-  静默丢弃，已踩过）；desktop 分层准入（check-desktop 门禁拦截）：renderer 只允许
-  `@kiturone/kapibala-host/view-model`，agent-host 允许 `host|view-model|internal` 与命令系统
-  `@kiturone/kapibala-cli/commands`（唯一 CLI 反向依赖例外），其余一律拦截。
-  新增宿主能力时改宿主包与门禁锚点，不要往 CLI 兼容 barrel 里塞实现。
-
-## 约定
-
-- **注释约定（强制）**：所有导出符号（class / function / interface / type / const / enum）必须有简体中文 JSDoc，写**约束、边界、为什么**
-  （保证什么、不做什么、何时失败、调用方注意什么），风格参照现有代码；类的重要公开方法、易误解的字段与复杂私有逻辑块同样需要注释。
-  **新增功能代码必须随实现同步带注释**，不留无注释的导出面；禁止复述代码的空话注释、禁止引用 review/PR/日期。
-  修改行为时同步修订受影响注释 —— 注释与代码语义不符按 bug 处理。
+- **注释约定（强制，禁「复述腔」）**：所有导出符号（class / function / interface / type / const / enum）、重要公开方法、易误解字段与复杂私有逻辑块必须随实现同步配简体中文 JSDoc，写清**前置约束、失败边界与设计取舍**；改行为必同步改注释（注释与代码语义不符按 bug 处理），禁止引用 review/PR/日期。
+  - **NO**：`/** 更新模型 API 密钥。 */`
+  - **OK**：`/** 写入模型密钥并清理同 credentialGroup 冗余副本；原始全局配置损坏时抛错中止，防回写合并结果物化内置模型。 */`
 - 品牌拼写只允许 **`Kapibala`**（禁止少一个 i 的旧拼法）；配置目录 **`.kapibala`**；错误基类 `KapibalaError`；默认 `agentName` 为 `'Kapibala'`。
-- `/model` 的厂商族推断统一走 `packages/host/src/host/settings.ts` 的 `detectProviderFamily`，不要在命令层另写启发式；密钥解析走同族回退（`FAMILY_KEY_ENV`），不做跨厂商兜底。
-- **密钥按厂商族共用（一个厂商只需配一次）**：分组键统一走 `credentialGroup()` —— 可识别厂商按 family 归组，`unknown` 退化到按端点 host 隔离（否则多个自建网关会串用同一把 key）；分组展示名走 `describeCredentialGroup()`。
-- 同一分组内**只保留一份密钥**：读取走 `resolveApiKeyDetailed(profile, settings)`（第 2 级即"同厂商族已存密钥"），写入走 `updateProfileApiKey()`（自动清理同组冗余副本）。新增任何密钥读取/写入入口都不要绕过这两个函数，否则会出现「更新了 A 的密钥、B 仍在用旧密钥」的静默不一致。
-- **UI 可访问名与文案是桌面 e2e 的选择器契约**：改 `aria-label` / 按钮文案必须同步
-  `packages/desktop/e2e`（`getByRole(name)` 精确匹配），否则 CI 在 click/断言处 30s 超时。
-  v0.1.3 设置页「关闭设置」→「返回应用」踩中过一次；新增命令（如 `/delegate`）也要检查
-  命令补全用例的输入前缀是否产生歧义。
-- **不自动 git add / commit**，改动保留在工作区由用户审核后手动提交。
-- **进程启动环境必须显式构造，禁止全量继承 `process.env`**：宿主（IDE / 沙箱包装器）会注入
-  `NODE_OPTIONS=--require=<vendor shim>` 与 `ELECTRON_RUN_AS_NODE=1`，前者把宿主的原生模块塞进
-  Electron 主进程（GPU 进程反复崩溃直至 SIGTRAP），后者让 GUI 二进制退化成纯 Node（启动即报
-  `does not provide an export named 'BrowserWindow'`）。启动 Electron 走
-  `packages/desktop/scripts/launch-env.mjs` 的 `desktopLaunchEnv()` 白名单（不枚举黑名单，天然免疫
-  未来新增的注入变量）；运行构建工具链走 `scripts/process-env.mjs` 的 `toolchainEnv()` 过滤
-  （只摘外部预加载钩子，保留 `--max-old-space-size` 与 HOME）。`pnpm check-desktop` 会拦截
-  `env: { ...process.env }` 与缺省用白名单的桌面启动脚本。
-- 根构建入口 `pnpm build` / `build:desktop` / `dev:desktop` 分别是 `scripts/build.mjs` 与
-  `scripts/dev-desktop.mjs`，它们在清洗过的环境里再拉起下一层命令 —— 否则宿主删除守卫会把打包器
-  清理 dist 当成批量删除拦下（报错指向无关的 `.js.map`，看起来像打包器坏了）。
 
-## 内置模型清单（`packages/host/src/host/settings.ts`）
+## 按需阅读索引（触发对应任务时必读）
 
-- `BUILTIN_PROFILES` 是唯一的内置模型真源（真源文件 `packages/host/src/host/settings.ts`，经 `@kiturone/kapibala-host/host` 公共导出）（现为 8 家厂商 / 20 个模型），默认模型 `DEFAULT_MODEL_ID = 'deepseek-flash'`。
-  厂商展示元数据（名称 / 描述 / 索要密钥的提示语）在 `packages/host/src/host/providers.ts`，**`/model` 菜单与冷启动向导都从这里取**，
-  不要在命令层或向导里再硬编码一份模型 id 清单 —— 那会退化成模型换代后 `BUILTIN_PROFILES.find(...)!` 的运行时崩溃（已发生过一次）。
-- ⚠️ **改动 `BUILTIN_PROFILES` 必须同步两件事**：
-  1. `BUILTIN_CATALOG_VERSION` **+1**（不加版本号，`migrateBuiltinCatalog` 不会触发，老用户菜单里会一直挂着已退役的模型）；
-  2. 每个被删掉的 id 都要在 `LEGACY_PROFILE_REDIRECT` 里补一条重定向。
-- ⚠️ `loadSettings` 是「**全局覆盖内置**」的浅合并：只改 `BUILTIN_PROFILES` **不会影响**已经落盘的 `~/.kapibala/settings.json`。
-  存量配置靠启动时的 `migrateGlobalSettingsCatalog()` 升级（见 `packages/cli/src/index.ts` 步骤 0，失败不阻断启动）。
-- ⚠️ **「读全局 → 改一处 → 写回」必须用 `loadGlobalSettingsForWrite()`，不能用 `loadSettings()`**。
-  `loadSettings` 的返回值已与内置清单合并，整份写回会把用户从未启用过的内置模型物化进配置文件（实测 profile 数 9 → 10）。
-  `loadGlobalSettingsForWrite()` 在文件不存在时使用不含内置 profile 的 `createUserSettingsSkeleton()`，文件损坏或非法时中止写入；`readRawGlobalSettings()` 仅用于迁移等允许自行处理缺失/非法状态的只读流程。
-- `migrateBuiltinCatalog()` 是纯函数，只做三件事：**重定向**旧 id（密钥一并带过去，绝不丢）、**同步**已存 profile 的目录字段（`apiKey` 原样保留）、
-  **重映射** `defaultModel` / `modelRouting` 里的旧引用。它**刻意不新增**内置 profile —— 内置模型由代码侧提供，写进用户文件只会得到一份过期的快照。
-
-## 标识资源（assets/）
-
-- **单一真源 `assets/capybara.svg`**（贴纸风头像，640×600）。`logo / logo-dark / icon / logo-sign` 四个 SVG 由 `.workbuddy/build-assets.py` 从它派生，`.workbuddy/render.sh` 用 headless Chrome 出 PNG（`.workbuddy/` 已 gitignore，生成脚本不入库）。**改造型只改真源再重跑两个脚本，不要直接改派生文件。**
-- 造型铁律：口鼻必须是"上窄下宽"的钝形深色块（水豚最关键辨识特征）；不要大面积奶油色口鼻斑（会读成泰迪熊）；头不要撑满画面（会读成河马）。
-- README 抬头 `<picture>` + `prefers-color-scheme` 双主题（dark 版仅字标换暖白 `#F0E4D6`）；tagline 固定：**心如止水，稳定如初 —— AI Agent Harness**。
-
-## 当前状态（2026-11-24）
-
-- **v0.1.0 已发布（未签名个人自用版，2026-11-14）**：桌面 Harness 已合并 main 并以 `v0.1.0` 标签发布，main 从 `v0.0.10` 前进一版。能力范围：Core 历史读取预算与 `projectRootMode: 'exact'`、CLI host 公共投影层与 `mutateGlobalSettings` 配置事务、Electron 桌面客户端（`packages/desktop`，不新增 npm 发布包）、桌面候选构建与发布证据链路。新增门禁：`pnpm check-desktop`（已并入 lint）、`pnpm verify:desktop`（构建+类型+check-desktop --artifacts+单测+e2e）与 desktop-candidate workflow；人工验收证据（六类专项与桌面专项）自 2026-11-14 起默认跳过，`KPBL_RELEASE_STRICT=true` 恢复，口径见 `docs/release-evidence.md`。协议会话注入 `~/.kapibala/AGENTS.md` 的迁移边界见 `docs/migration/v0.1.0.md`。
-- **v0.1.1 已发布（2026-11-15）**：桌面包改为随 Release 自动发布——`release.yml` 的 `desktop-unsigned` 作业在四个原生 runner 上产出未签名测试包并上传，另有 `desktop_only` 手动补跑入口；打包链路修掉三处在干净机器才暴露的缺陷（`--offline` 解析不了 registry 元数据、工作区成员名单硬编码、Windows e2e 路径断言）。实际交付 mac arm64 / mac x64 / Linux x86_64 三平台，Windows 安装副本 smoke 在全新安装首启时超 30 秒被判死连接，补丁见 v0.1.2。
-- **v0.1.2 已发布（2026-11-15）**：修复 Windows 安装副本两个确定性失败——① 8.3 短名 `~` 的 URL 编码不一致致控制端口永不投递（`normalizeUrl`）；② 受限 GUI PATH 下 `detectShell` 抛错阻断 `session.create`（宿主 `registerBuiltinTools` 解释器降级为惰性 fallback，smoke PATH 补 PowerShell 目录）。另含冷启动握手兜底 30s → 90s、`GITHUB_OUTPUT` 提前写入、Release 附件去 `desktop-<target>__` 前缀、smoke 失败上传 `test-results/` 诊断产物。⚠️ **npm 与桌面附件内容分叉**：npm 三包 0.1.2 在 shell 兜底修复前发布且不可覆盖，Release 四平台安装包已用修复提交 `1c1d106` 重建上架（tag 已前移）；CLI 环境总有 shell，分叉影响可忽略，修复随 v0.1.3 进 npm，不单独发补丁版。验收与抖动记录见 `docs/releases/v0.1.2.md`。
-- **v0.1.3 已发布（2026-11-20）**：跨会话引用（`/quote`）、可续聊委派会话（`/delegate` / `/delegations`）、工具显示名与工具行层级（U1.1 / U1.2 / U1.4）之外，本版分支同批交付设置页厂商分组与模型级启停（测试连接 / 启用停用 / 删除）、桌面 HTML 预览与 Markdown 图片渲染、会话锁自愈、host 模型探测、Auto 模式只读命令放行与会话级批准缓存、shell 大输出全局受管目录（`~/.kapibala/tool-results/`）与沙箱只读豁免、CLI 启动优化与 dev userData 隔离。本地 wire 保持 1.0（v0.1.3 时点口径，自 v0.1.4 起演进为整数 `PROTOCOL_VERSION = 2`，见下方 v0.1.4 条目；设计 007 的 R3.x 协议扩展与桌面 mention 未实施）；U1.3 / U1.5 / U1.6 整组顺延 v0.1.4。发布前分支 Verify 全绿（run 44698746827），Release run 44711148909 全绿并发布 npm 三包与四平台桌面测试包；验收与已知限制见 `docs/releases/v0.1.3.md`。
-- **v0.1.4 已发布（2026-11-24）**：七主题（会话监视 / 技能导入 / 证据看板 / MCP 管理与分发更新 / 产物预览 / 任务面板 / 权限判定 P0）与工具行增强组收口交付，桌面正文与思考块同步升级至 `streamdown` 生态（全语言按需高亮、代码块折行开关与 HTML/SVG 预览、Mermaid 严格模式、KaTeX 公式及单 `$`/单 `~` 误判守卫）；本地协议升为整数 `PROTOCOL_VERSION = 2` + 能力集合（旧 `{major,minor}` 报价在握手层即 `INVALID_PARAMS` 拒绝），`process_exit` 触发源经评审摘除。main Verify 全绿（run 45199417032），Release run 45312764353 全绿并发布 npm 三包与四平台桌面未签名测试包；发布与迁移边界见 `docs/releases/v0.1.4.md`、`docs/migration/v0.1.4.md`（评审记录见 `docs/verification/v0.1.4-code-review-2026-11-22.md`）。后续路线图：`v0.1.5` 专攻对标 T3 Code 的第三方 ACP 外部代理接入（Core 零改动，见 `docs/design/015-v0.1.5-acp-external-harness.md`），`v0.1.6` 推进 Git Worktree 并行隔离与文件级检查点回滚，`016` P1（三级审批记忆与规则页）与多模态输入排入 `v0.1.7`（总表见 `docs/RELEASES.md`）。
-- 版本编号约定于 2026-10-21 更新：采用三段稳定版本，minor/patch 均允许多位整数；默认 `v0.0.9 → v0.0.10`，不逢十进位。稳定整合版为 **v0.0.10**，Electron 桌面客户端为 **v0.1.0**，其打包修复补丁为 **v0.1.1**（四平台自动打包）、**v0.1.2**（Windows 安装副本 URL 挂死 + 受限 PATH shell 探测阻断）均为 2026-11-15；原 v0.1.1 双主题规划（跨会话引用 + 多任务派发，设计 005）顺延为 **v0.1.3**，并携带 v0.1.2 的 shell 兜底修复进 npm（消除 tag/npm 分叉）；历史文档中的旧编号不作为现役发布规则。
-- v0.0.1 既有能力与后续路线图见 `docs/RELEASES.md`，不在规则文件重复维护能力清单。
-- **v0.0.10 稳定整合版已于 2026-10-23 发布到 npm 与 GitHub Release**（实际版本号以包清单与 `CLI_VERSION` 为准，升版只由 `pnpm release` 完成）。公开差异的唯一真源是 `docs/sdk-compatibility.md` + `scripts/fixtures/public-api/migration.json`；协议细节 `docs/local-protocol.md`、迁移动作 `docs/migration/v0.0.10.md`、证据与 pending 阻断 `docs/verification/v0.0.10.md`、发布说明 `docs/releases/v0.0.10.md`。三类专项门禁：`pnpm verify:compat`（v0.0.9 tarball × 候选构建四组合）、`pnpm verify:platform`（当前 OS 真实进程 + 三包隔离安装）、`pnpm verify:soak`（PR 10 轮随 verify 必跑；nightly/release 档自 2026-11-20 起仅定时或手动趋势运行，其中 release 档在 `KPBL_RELEASE_STRICT=true` 的严格证据口径下仍需手动运行并由维护者审核）；新增宿主或传输能力时必须同步其断言，不允许用短档或模拟测试替代 Node 20、Windows ACL/ConPTY、POSIX PTY 的真实进程证据。
-- v0.0.5 已于 2026-10-11 发布到 npm 与 GitHub Release：技能体系与过程输出折叠已落地——有界发现/信任、L2.5 目录预算、`load_skill` / `list_skills` / `read_skill_resource` 共享加载、allowed-tools 只收紧、`skillSource` v1 落盘、`/skills` 与 `/skill` 命令、Ctrl+O 与 `--output-detail`。迁移边界见 `docs/migration/v0.0.5.md`，使用与宿主边界见 `docs/skills.md`，远端发布验收（含两次 CI 修复）见 `docs/verification/v0.0.5.md`。
-- ⚠️ **Windows 项目路径身份统一走 `fs.realpathSync.native`**：JS `realpathSync` 保留 8.3 短名，与 `normalizeProjectPath` 的长路径信任身份失配（v0.0.4 指令目录、v0.0.5 项目信任各踩中一次）。新增任何与信任/项目根比较的路径解析都必须用 native 语义。
-- v0.0.4 已于 2026-10-07 发布到 npm 与 GitHub Release：原生 Anthropic Messages / OpenAI Responses 与 Chat Completions 兼容层接入同一 AgentSession，`planning` / `execution` / `fast` 场景路由与可覆盖输出预算已落地。迁移边界见 `docs/migration/v0.0.4.md`，远端发布验收见 `docs/verification/v0.0.4.md`。
-- v0.0.3 已于 2026-09-27 发布到 npm 与 GitHub Release：独立历史会话、显式续答、消息生命周期、完整轮次保护、保守两级压缩和 Core 六大领域重构已实现。迁移边界见 `docs/migration/v0.0.3.md`，远端发布验收与真实模型限制见 `docs/verification/v0.0.3.md`。
-- 本地门禁与 Windows/POSIX 真实进程验收记录统一见 `docs/verification/v0.0.3.md`；保留 shell、权限、审计与 Headless 回归门禁。三组真实工具任务小规模质量验收已完成，证据与费用限制见 `docs/verification/v0.0.3-live-quality.md`；不把小样本验证当作通用质量保证或发布完成。
-- v0.0.3 已定义**失败轮次、连续同角色消息与完整工具事务**的 canonical 规范化规则；原历史独立于模型投影，恢复缺失结果记录为 OUTCOME_UNKNOWN，不重放工具。该合法序列已由 v0.0.4 的原生 Anthropic / OpenAI Responses Provider 与 Chat 兼容层共同消费，新协议接入继续遵循。
+- **当前基线与版本路线图**：当前最新已发布版本为 `v0.1.4`（本地 wire `PROTOCOL_VERSION = 2`）；查历史版本交付范围或后续排期时读 `docs/RELEASES.md`，开发 `v0.1.5` 第三方 ACP 接入时读 `docs/design/015-v0.1.5-acp-external-harness.md`。
+- **契约与子系统文档**：改 Core/MCP/CLI 公共导出时读 `docs/sdk-compatibility.md` 与 `scripts/fixtures/public-api/migration.json`；改本地客户端协议时读 `docs/local-protocol.md`；改技能体系时读 `docs/skills.md`。
+- **跨包高危联动**：从任意包修改内置模型目录、厂商元数据、API Key 读写或全局配置持久化前，必读 `packages/host/AGENTS.md`；修改品牌 SVG/PNG 或 README 双主题抬头图前，必读 `assets/AGENTS.md`。

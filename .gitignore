@@ -29,6 +29,7 @@ pnpm-debug.log*
 *.env
 *.env.local
 *.local
+.claude/settings.local.json
 *.key
 *.pem
 *.token
