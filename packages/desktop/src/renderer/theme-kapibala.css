@@ -723,8 +723,61 @@ body {
   padding: 10px 15px;
 }
 .kapibala-tool-group {
-  border-radius: 12px;
-  background: var(--kapibala-tile);
+  border-radius: 8px;
+}
+/* 扁平工作日志行与左侧缩进导轨（对标 t3code WorkLog / paseo IndentRail）：去重型灰底卡片，仅靠细线与缩进表达层级。 */
+.kapibala-work-row {
+  min-height: 28px;
+  border-radius: 6px;
+}
+.kapibala-work-row:hover {
+  background: var(--color-kumo-tint);
+}
+.kapibala-indent-rail {
+  margin-left: 9px;
+  padding-left: 12px;
+  border-left: 1px solid var(--color-kumo-line);
+}
+@keyframes kapibala-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes kapibala-shimmer {
+  0% {
+    background-position: 200% 50%;
+  }
+  100% {
+    background-position: -100% 50%;
+  }
+}
+.kapibala-spin {
+  animation: kapibala-spin 0.9s linear infinite;
+}
+.kapibala-shimmer-text {
+  background-image: linear-gradient(
+    90deg,
+    var(--text-color-kumo-subtle) 0%,
+    var(--text-color-kumo-subtle) 35%,
+    var(--text-color-kumo-default) 50%,
+    var(--text-color-kumo-subtle) 65%,
+    var(--text-color-kumo-subtle) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: kapibala-shimmer 2.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kapibala-spin {
+    animation: none;
+  }
+  .kapibala-shimmer-text {
+    animation: none;
+    background-image: none;
+    color: var(--text-color-kumo-subtle);
+  }
 }
 .kapibala-composer-dock {
   display: flex;

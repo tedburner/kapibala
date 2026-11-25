@@ -96,6 +96,13 @@ test('任务面板：pill 进度、浮层四态与底栏状态条', async () => 
     await expect(pill).toContainText('任务 1/5');
     await expect(pill).toContainText('写代码');
     await expect(pill).toContainText('+1');
+    // 任务胶囊水平居中对齐于内容列上方，不再偏向左侧。
+    const pillAlign = await pill.evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      const parentBox = el.parentElement!.getBoundingClientRect();
+      return Math.abs(box.left + box.width / 2 - (parentBox.left + parentBox.width / 2));
+    });
+    expect(pillAlign).toBeLessThan(4);
 
     await pill.click();
     const panel = page.getByRole('region', { name: '任务清单', exact: true });

@@ -24,7 +24,7 @@ import { KapibalaError } from '../errors/index.js';
 import type { CanonicalMessage, ContentBlock } from '../types/index.js';
 import { readJsonlLines } from './jsonl-lines.js';
 import type { SessionMetadata } from './session-manager.js';
-import { normalizedProjectRoot } from './session-manager.js';
+import { normalizedProjectRoot, sanitizeSessionTitle } from './session-manager.js';
 import {
   MAIN_BRANCH_ID,
   SESSION_SCHEMA_VERSION_V1,
@@ -807,16 +807,18 @@ export class CrossProjectSessionCatalog {
             if (title === '新会话' && rec.payload.role === 'user') {
               const content = rec.payload.content as ContentBlock[];
               if (Array.isArray(content)) {
-                const txt = content
+                const firstLine = content
                   .filter((b) => b.type === 'text')
                   .map((b) => b.text)
-                  .join(' ')
-                  .trim();
-                if (txt) title = txt.slice(0, 80);
+                  .join('\n')
+                  .split(/\r?\n/)
+                  .map((l) => l.trim())
+                  .find((l) => l.length > 0);
+                if (firstLine) title = sanitizeSessionTitle(firstLine, 80);
               }
             }
           } else if (rec.type === 'title') {
-            title = String(rec.payload.title);
+            title = sanitizeSessionTitle(String(rec.payload.title));
           } else if (rec.type === 'archive_state') {
             archived = Boolean(rec.payload.archived);
           } else if (rec.type === 'pin_state') {

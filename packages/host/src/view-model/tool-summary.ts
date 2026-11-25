@@ -19,42 +19,55 @@ const SEARCH_VERBS: Readonly<Record<string, string>> = {
 };
 
 /**
- * 把连续同类工具调用汇总为一行；混合工具或空列表退回「执行 N 步」。
- * 纯函数、零 I/O：只读取 `ViewTool` 的公开字段，运行中的数量不改变汇总口径。
+ * 把连续或多步工具调用汇总为自然语言短句。
+ * 纯函数、零 I/O：单类工具直出精确计数；混合工具按动作类别拼合前 3 段（自动略过夹杂的 `todo_write` 记账噪音），
+ * 类别超过 3 类时追加总步数，避免机械回退成无信息的「执行 N 步」。
  */
 export function summarizeToolGroup(tools: readonly ViewTool[]): ToolGroupSummary | undefined {
   if (tools.length === 0) return undefined;
   const failed = tools.filter((tool) => tool.status === 'failed').length;
   const total = tools.length;
+  const failSuffix = failed > 0 ? `，${failed} 次失败` : '';
   const names = new Set(tools.map((tool) => tool.name));
-  if (names.size !== 1) return { text: `执行 ${total} 步`, total, failed };
-  const tool = tools[0];
-  const fileVerb = FILE_VERBS[tool.name];
-  if (fileVerb) {
-    return {
-      text: `${fileVerb} ${total} 个文件${failed > 0 ? `，${failed} 次失败` : ''}`,
-      total,
-      failed,
-    };
+  if (names.size === 1) {
+    const tool = tools[0];
+    const fileVerb = FILE_VERBS[tool.name];
+    if (fileVerb) return { text: `${fileVerb} ${total} 个文件${failSuffix}`, total, failed };
+    const searchVerb = SEARCH_VERBS[tool.name];
+    if (searchVerb) return { text: `${searchVerb} ${total} 次${failSuffix}`, total, failed };
+    if (tool.name === 'run_command') {
+      return { text: `运行 ${total} 次${failSuffix}`, total, failed };
+    }
+    return { text: `${tool.displayName} ${total} 次${failSuffix}`, total, failed };
   }
-  const searchVerb = SEARCH_VERBS[tool.name];
-  if (searchVerb) {
-    return {
-      text: `${searchVerb} ${total} 次${failed > 0 ? `，${failed} 次失败` : ''}`,
-      total,
-      failed,
-    };
-  }
-  if (tool.name === 'run_command') {
-    return {
-      text: `运行 ${total} 次${failed > 0 ? `，${failed} 次失败` : ''}`,
-      total,
-      failed,
-    };
-  }
-  return {
-    text: `${tool.displayName} ${total} 次${failed > 0 ? `，${failed} 次失败` : ''}`,
-    total,
-    failed,
+
+  // 混合工具：过滤与实质工作混排的 todo_write（除非全部都是 todo_write），按首次出现顺序归并类别短句。
+  const substantive = tools.filter((tool) => tool.name !== 'todo_write');
+  const source = substantive.length > 0 ? substantive : tools;
+  const buckets = new Map<string, { count: number; render: (n: number) => string }>();
+  const touch = (key: string, render: (n: number) => string) => {
+    const existing = buckets.get(key);
+    if (existing) existing.count += 1;
+    else buckets.set(key, { count: 1, render });
   };
+  for (const tool of source) {
+    const fileVerb = FILE_VERBS[tool.name];
+    if (fileVerb) {
+      touch(`file:${tool.name}`, (n) => `${fileVerb} ${n} 个文件`);
+      continue;
+    }
+    if (SEARCH_VERBS[tool.name]) {
+      touch('search', (n) => `搜索 ${n} 次`);
+      continue;
+    }
+    if (tool.name === 'run_command') {
+      touch('command', (n) => `运行 ${n} 条命令`);
+      continue;
+    }
+    touch(`other:${tool.name}`, (n) => `${tool.displayName} ${n} 次`);
+  }
+  const clauses = [...buckets.values()].map((item) => item.render(item.count));
+  const joined =
+    clauses.length <= 3 ? clauses.join('、') : `${clauses.slice(0, 2).join('、')} 等 ${total} 步`;
+  return { text: `${joined}${failSuffix}`, total, failed };
 }

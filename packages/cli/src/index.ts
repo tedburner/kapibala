@@ -335,6 +335,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const factory = async (handle: import('@kiturone/kapibala').ManagedSession) => {
         const created = new AgentSession({
           leaseCoordinator,
+          loggingDirectory: path.join(os.homedir(), '.kapibala'),
+          auditRecoveryDirectory: path.join(os.homedir(), '.kapibala/audit'),
           defaultProfile: models.defaultBinding.profile,
           skills: getCliSkillOptions(settings, { projectRoot: manager.project.projectRoot }),
           defaultProvider: models.defaultBinding.provider,

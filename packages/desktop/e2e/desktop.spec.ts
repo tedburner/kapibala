@@ -135,9 +135,16 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(page.getByRole('textbox', { name: '发送消息' })).toBeEnabled();
     // 默认模型未配置密钥时，展示的回退模型必须真实用于首个请求。
     await page.getByRole('button', { name: /新对话模型/ }).click();
-    await expect(page.getByRole('menuitem', { name: '本地验收模型' })).toBeVisible();
-    await expect(page.getByRole('menuitem', { name: '未配置的验收模型' })).toHaveCount(0);
-    await page.getByRole('menuitem', { name: '本地验收模型' }).click();
+    const pickerSearch = page.getByRole('combobox', { name: '搜索代理或模型' });
+    await expect(pickerSearch).toBeFocused();
+    await page.getByRole('button', { name: 'Kapibala', exact: true }).click();
+    await expect(page.getByRole('option', { name: '本地验收模型' })).toBeVisible();
+    await pickerSearch.fill('unconfigured');
+    await expect(page.getByText('没有匹配的代理或模型')).toBeVisible();
+    await expect(page.getByRole('option', { name: '未配置的验收模型' })).toHaveCount(0);
+    await pickerSearch.fill('fixture');
+    await expect(page.getByRole('option', { name: '本地验收模型' })).toBeVisible();
+    await pickerSearch.press('Enter');
     // 选择即落盘为全局默认：重启后仍沿用该模型，而不是回落到初始默认值。
     await expect
       .poll(() =>

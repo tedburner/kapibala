@@ -29,8 +29,16 @@ describe('summarizeToolGroup', () => {
     expect(summary).toMatchObject({ text: '运行 3 次，1 次失败', total: 3, failed: 1 });
   });
 
-  it('falls back to step count for mixed tools and empty input', () => {
-    expect(summarizeToolGroup([tool('read_file'), tool('run_command')])?.text).toBe('执行 2 步');
+  it('summarizes mixed tools into natural clauses and omits interleaved todo_write noise', () => {
+    expect(
+      summarizeToolGroup([
+        tool('read_file'),
+        tool('read_file'),
+        tool('todo_write'),
+        tool('edit_file'),
+        tool('run_command'),
+      ])?.text,
+    ).toBe('已读取 2 个文件、已编辑 1 个文件、运行 1 条命令');
     expect(summarizeToolGroup([])).toBeUndefined();
   });
 });

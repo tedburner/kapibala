@@ -269,19 +269,36 @@ export const editFileTool = defineTool({
       throw new ToolError(`File not found: ${input.path}`);
     }
 
-    if (!input.targetContent) {
-      throw new ToolError('Target content must not be empty');
+    if (typeof input.targetContent !== 'string' || !input.targetContent) {
+      throw new ToolError('Target content must be a non-empty string');
+    }
+    if (typeof input.replacementContent !== 'string') {
+      throw new ToolError('Replacement content must be a string');
     }
 
     const content = fs.readFileSync(safePath, 'utf-8');
-    if (!content.includes(input.targetContent)) {
+    let actualTarget = input.targetContent;
+    let actualReplacement = input.replacementContent;
+    if (
+      !content.includes(actualTarget) &&
+      content.includes('\r\n') &&
+      !actualTarget.includes('\r\n')
+    ) {
+      // Windows/遗留仓库文件常为 CRLF，而模型入参固定发送 LF：仅在转换后能命中时回退，并保持原文件 CRLF 行尾。
+      const crlfTarget = actualTarget.replace(/\n/g, '\r\n');
+      if (content.includes(crlfTarget)) {
+        actualTarget = crlfTarget;
+        actualReplacement = actualReplacement.replace(/\r?\n/g, '\r\n');
+      }
+    }
+    if (!content.includes(actualTarget)) {
       throw new ToolError(
-        `Target content not found in ${input.path}. Ensure exact indentation and characters.`,
+        `Target content not found in ${input.path}. Read the relevant lines first and ensure exact indentation and characters.`,
       );
     }
 
     // 统计出现次数，若出现多次则要求精确
-    const occurrences = content.split(input.targetContent).length - 1;
+    const occurrences = content.split(actualTarget).length - 1;
     if (occurrences > 1) {
       throw new ToolError(
         `Target content occurs ${occurrences} times in ${input.path}. Please provide more surrounding context to match uniquely.`,
@@ -290,7 +307,7 @@ export const editFileTool = defineTool({
 
     // 必须用函数形式提供 replacement：字符串形式会把 $& / $` / $' / $$ 当特殊模式展开，
     // 导致写入内容被静默污染(例如替换目标里写 '$$' 会变成 '$')。
-    const newContent = content.replace(input.targetContent, () => input.replacementContent);
+    const newContent = content.replace(actualTarget, () => actualReplacement);
     fs.writeFileSync(safePath, newContent, 'utf-8');
     return {
       content: `Successfully replaced target content in ${input.path}`,
@@ -322,6 +339,9 @@ export const globTool = defineTool({
     required: ['pattern'],
   },
   async execute(input: { pattern: string; subDirectory?: string }, ctx) {
+    if (typeof input.pattern !== 'string' || !input.pattern.trim()) {
+      throw new ToolError('Search pattern must not be empty');
+    }
     const sandbox = resolveToolSandbox(ctx);
     // 枚举根与相对化基准都取沙箱的 native 物理根：宿主传入的 rootDir 可能是 Windows 8.3 短名或
     // 软链接别名，与 resolveSafePath 的长路径身份混用会让 path.relative 产出 "../.." 逃逸串。
@@ -382,11 +402,18 @@ export const grepTool = defineTool({
         type: 'string',
         description: 'File or directory path to search within.',
       },
+      include: {
+        type: 'string',
+        description: 'Optional filename/path glob filter (e.g. "*.xml", "pom.xml", "src/**/*.ts").',
+      },
     },
     required: ['pattern'],
   },
   async execute(input: { pattern: string; path?: string }, ctx) {
     if (ctx.signal?.aborted) throw new AbortError();
+    if (typeof input.pattern !== 'string' || !input.pattern.trim()) {
+      throw new ToolError('Search pattern must not be empty');
+    }
     const sandbox = resolveToolSandbox(ctx);
     // 与 list_dir 同理：命中行的相对路径必须以沙箱 native 物理根为基准，否则短名/软链接别名根
     // 会渲染成 "../../…" 这种对模型无意义且无法回读的路径。
@@ -397,7 +424,9 @@ export const grepTool = defineTool({
       throw new ToolError(`Path not found: ${input.path ?? '.'}`);
     }
 
-    if (!input.pattern.trim()) throw new ToolError('Search pattern must not be empty');
+    const rawInclude = (input as { include?: unknown }).include;
+    const includeFilter =
+      typeof rawInclude === 'string' && rawInclude.trim() ? rawInclude.trim() : undefined;
     const needle = input.pattern.toLowerCase();
     const matches: string[] = [];
     const maxMatches = 50;
@@ -472,6 +501,12 @@ export const grepTool = defineTool({
         if (entry.isDirectory()) {
           await walk(fullPath);
         } else {
+          if (includeFilter) {
+            const relPath = path.relative(relBase, fullPath).replace(/\\/g, '/');
+            if (!simpleMatch(entry.name, includeFilter) && !simpleMatch(relPath, includeFilter)) {
+              continue;
+            }
+          }
           await searchFile(fullPath);
         }
         if (matches.length >= maxMatches) return;

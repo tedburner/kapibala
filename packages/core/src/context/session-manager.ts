@@ -190,10 +190,14 @@ export interface SessionManagerOptions {
   onDiagnostic?: (message: string) => void;
 }
 
-/** 将终端控制字符转成可见转义，并按 Unicode code point 限长。 */
+/**
+ * 清洗会话标题与列表摘要：常规空白（换行/回车/制表符）折叠为单空格避免顶栏裸露 `\u000a`，
+ * 其余终端控制字符与双向覆盖控制符仍转成可见转义防注入，并按 Unicode code point 限长。
+ */
 export function sanitizeSessionTitle(title: string, maximum = 200): string {
+  const normalized = title.replace(/[\r\n\t]/g, ' ');
   return Array.from(
-    Array.from(title)
+    Array.from(normalized)
       .map((c) => {
         const code = c.codePointAt(0)!;
         return code < 32 ||
@@ -207,6 +211,17 @@ export function sanitizeSessionTitle(title: string, maximum = 200): string {
   )
     .slice(0, maximum)
     .join('');
+}
+
+/** 从首条用户消息提取默认标题：优先取首个非空行，剥离换行残缀后再清洗限长。 */
+function deriveFirstUserTitle(text: string, maximum = 80): string | undefined {
+  const firstLine = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstLine) return undefined;
+  const cleaned = sanitizeSessionTitle(firstLine, maximum);
+  return cleaned || undefined;
 }
 
 /**
@@ -1256,12 +1271,12 @@ export class SessionManager {
       meta.contentRevision = record.recordId;
       if (!meta.customTitle && meta.title === '新会话' && record.payload.role === 'user') {
         const content = record.payload.content as CanonicalMessage['content'];
-        const first = content
+        const raw = content
           .filter((b) => b.type === 'text')
           .map((b) => b.text)
-          .join(' ')
-          .trim();
-        if (first) meta.title = sanitizeSessionTitle(first, 80);
+          .join('\n');
+        const derived = deriveFirstUserTitle(raw, 80);
+        if (derived) meta.title = derived;
       }
     } else if (record.type === 'title') {
       meta.customTitle = sanitizeSessionTitle(String(record.payload.title));

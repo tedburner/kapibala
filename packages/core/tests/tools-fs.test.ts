@@ -208,6 +208,24 @@ describe('builtin fs tools', () => {
       );
       expect(result.diff).toEqual({ additions: 3, deletions: 1 });
     });
+
+    it('原文件为 CRLF 而 targetContent 为 LF 时应自适应替换并保留 CRLF 行尾', async () => {
+      fs.writeFileSync(
+        path.join(rootDir, 'pom.xml'),
+        '<project>\r\n  <version>1.0.0</version>\r\n</project>\r\n',
+      );
+      await editFileTool.execute(
+        {
+          path: 'pom.xml',
+          targetContent: '<project>\n  <version>1.0.0</version>\n</project>',
+          replacementContent: '<project>\n  <version>1.0.1</version>\n</project>',
+        },
+        { rootDir },
+      );
+      expect(fs.readFileSync(path.join(rootDir, 'pom.xml'), 'utf-8')).toBe(
+        '<project>\r\n  <version>1.0.1</version>\r\n</project>\r\n',
+      );
+    });
   });
 
   describe('glob', () => {
@@ -348,6 +366,16 @@ describe('builtin fs tools', () => {
       await expect(
         grepTool.execute({ pattern: 'a', path: 'missing' }, { rootDir }),
       ).rejects.toThrow(ToolError);
+    });
+
+    it('支持按 include 文件名通配符过滤搜索目标', async () => {
+      fs.writeFileSync(path.join(rootDir, 'pom.xml'), '<guava.version>33.4.8</guava.version>');
+      fs.writeFileSync(path.join(rootDir, 'notes.txt'), '<guava.version>33.4.8</guava.version>');
+      const onlyXml = await grepTool.execute(
+        { pattern: 'guava.version', include: '*.xml' } as { pattern: string; path?: string },
+        { rootDir },
+      );
+      expect(onlyXml).toBe('pom.xml:1: <guava.version>33.4.8</guava.version>');
     });
   });
 

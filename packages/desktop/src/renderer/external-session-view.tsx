@@ -237,6 +237,17 @@ export function ExternalSessionView({
           key={`external:${session.id}`}
           memoryKey={`external:${session.id}`}
           messages={snapshot.messages}
+          operation={
+            session.status === 'cancelling'
+              ? { id: session.id, phase: 'cancelling' }
+              : activeRun
+                ? { id: session.id, phase: 'running' }
+                : session.status === 'failed'
+                  ? { id: session.id, phase: 'idle', result: 'failed' }
+                  : undefined
+          }
+          latestErrorNotice={session.lastError}
+          onContinue={session.canContinue && !activeRun && !busy ? () => onSend('继续') : undefined}
           onRetry={() => {}}
           root={workspaceRoot}
           scrollRef={scrollRef}

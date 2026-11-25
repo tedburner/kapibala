@@ -8,7 +8,6 @@ import {
   PlusIcon,
   PushPinIcon,
   PushPinSlashIcon,
-  TerminalWindowIcon,
   TrashIcon,
 } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
@@ -80,7 +79,6 @@ export function WorkspaceSidebar({
   onRefreshRuntime,
   externalSessions,
   activeExternalSessionId,
-  onNewExternal,
   onOpenExternal,
   onCloseExternal,
   onDeleteExternal,
@@ -95,7 +93,7 @@ export function WorkspaceSidebar({
   onSpace(space: Workspace): void;
   onDefault(): void;
   onNew(): void;
-  /** 直接在该空间新建对话；调用方负责先完成空间选中与信任流程，未信任空间不展示该入口。 */
+  /** 在该空间打开新对话草稿；未信任空间不展示该入口。 */
   onNewInSpace(space: Workspace): void;
   onOpen(space: Workspace, conversationId: string): void;
   onClose(item: RuntimeItem): void;
@@ -114,7 +112,6 @@ export function WorkspaceSidebar({
   externalSessions?: Record<string, readonly ExternalSessionRow[]>;
   /** 当前主视图选中的外部代理会话 ID；与本地 conversationId 互斥高亮。 */
   activeExternalSessionId?: string;
-  onNewExternal?(space: Workspace): void;
   onOpenExternal?(space: Workspace, sessionId: string): void;
   onCloseExternal?(space: Workspace, sessionId: string): void;
   onDeleteExternal?(space: Workspace, row: ExternalSessionRow): void;
@@ -616,124 +613,95 @@ export function WorkspaceSidebar({
                       </Button>
                     </div>
                   )}
-                  {space.trusted && (onNewExternal || externalList.length > 0) && (
-                    <div className="mt-1 border-t border-kumo-hairline pt-1">
-                      <div className="flex items-center justify-between px-3 py-1">
-                        <span className="inline-flex items-center gap-1 text-2xs font-medium text-kumo-subtle">
-                          <TerminalWindowIcon size={12} className="shrink-0" />
-                          外部代理
-                        </span>
-                        {onNewExternal && (
-                          <Tooltip
-                            content={`在 ${space.name} 新建外部代理任务`}
-                            render={
-                              <Button
-                                className="kapibala-action h-6 w-6 text-kumo-subtle"
-                                variant="ghost"
-                                shape="square"
-                                size="sm"
-                                aria-label={`在 ${space.name} 新建外部代理任务`}
-                                disabled={busy}
-                                onClick={() => onNewExternal(space)}
-                              />
-                            }
+                  {space.trusted && externalList.length > 0 && (
+                    <Sidebar.Menu className="kapibala-sidebar-conversations">
+                      {externalList.map((ext) => {
+                        const extActive =
+                          ext.status === 'starting' ||
+                          ext.status === 'running' ||
+                          ext.status === 'waiting_approval' ||
+                          ext.status === 'cancelling';
+                        const extTitle = ext.title || '外部任务';
+                        return (
+                          <Sidebar.MenuItem
+                            key={ext.id}
+                            className="group/ext relative flex min-w-0 items-center"
                           >
-                            <PlusIcon size={13} />
-                          </Tooltip>
-                        )}
-                      </div>
-                      {externalList.length > 0 && (
-                        <Sidebar.Menu className="kapibala-sidebar-conversations">
-                          {externalList.map((ext) => {
-                            const extActive =
-                              ext.status === 'starting' ||
-                              ext.status === 'running' ||
-                              ext.status === 'waiting_approval' ||
-                              ext.status === 'cancelling';
-                            const extTitle = ext.title || '外部任务';
-                            return (
-                              <Sidebar.MenuItem
-                                key={ext.id}
-                                className="group/ext relative flex min-w-0 items-center"
-                              >
-                                <Sidebar.MenuButton
-                                  className="kapibala-sidebar-conversation min-w-0 flex-1"
-                                  active={
-                                    space.id === activeWorkspaceId &&
-                                    activeExternalSessionId === ext.id
-                                  }
-                                  disabled={busy}
-                                  title={`${ext.harnessName} · ${extTitle}`}
-                                  aria-label={`${ext.harnessName} · ${extTitle}`}
-                                  onClick={() => onOpenExternal?.(space, ext.id)}
-                                >
-                                  <span className="shrink-0 rounded bg-kumo-recessed px-1 py-0.5 text-2xs text-kumo-subtle">
-                                    {ext.harnessName}
-                                  </span>
-                                  <span className="min-w-0 truncate">{extTitle}</span>
-                                  <span className="ml-auto flex shrink-0 items-center gap-1 text-xs text-kumo-subtle">
-                                    {extActive && (
-                                      <span
-                                        className={`size-1.5 rounded-full ${
-                                          ext.pendingApprovalCount > 0 ||
-                                          ext.status === 'waiting_approval'
-                                            ? 'bg-kumo-warning'
-                                            : 'bg-(--kapibala-signal)'
-                                        }`}
-                                        aria-hidden="true"
-                                      />
-                                    )}
-                                    {externalStatusLabel(ext)}
-                                  </span>
-                                </Sidebar.MenuButton>
-                                {(onCloseExternal || onDeleteExternal) && (
-                                  <DropdownMenu>
-                                    <DropdownMenu.Trigger
-                                      render={
-                                        <Button
-                                          className="kapibala-action z-10 shrink-0 opacity-0 transition-opacity [@media(hover:none)]:opacity-100 focus-visible:opacity-100 group-focus-within/ext:opacity-100 group-hover/ext:opacity-100"
-                                          variant="ghost"
-                                          shape="square"
-                                          size="base"
-                                          aria-label={`${extTitle} 的外部会话操作`}
-                                        />
-                                      }
-                                    >
-                                      <DotsThreeIcon size={18} />
-                                    </DropdownMenu.Trigger>
-                                    <DropdownMenu.Content>
-                                      {onCloseExternal &&
-                                        ext.status !== 'ended' &&
-                                        ext.status !== 'failed' && (
-                                          <>
-                                            <DropdownMenu.Item
-                                              disabled={busy}
-                                              onClick={() => onCloseExternal(space, ext.id)}
-                                            >
-                                              关闭进程
-                                            </DropdownMenu.Item>
-                                            <DropdownMenu.Separator />
-                                          </>
-                                        )}
-                                      {onDeleteExternal && (
-                                        <DropdownMenu.Item
-                                          variant="danger"
-                                          disabled={busy || extActive}
-                                          onClick={() => onDeleteExternal(space, ext)}
-                                        >
-                                          <TrashIcon size={16} />
-                                          删除记录
-                                        </DropdownMenu.Item>
-                                      )}
-                                    </DropdownMenu.Content>
-                                  </DropdownMenu>
+                            <Sidebar.MenuButton
+                              className="kapibala-sidebar-conversation min-w-0 flex-1"
+                              active={
+                                space.id === activeWorkspaceId && activeExternalSessionId === ext.id
+                              }
+                              disabled={busy}
+                              title={`${ext.harnessName} · ${extTitle}`}
+                              aria-label={`${ext.harnessName} · ${extTitle}`}
+                              onClick={() => onOpenExternal?.(space, ext.id)}
+                            >
+                              <span className="shrink-0 rounded bg-kumo-recessed px-1 py-0.5 text-2xs text-kumo-subtle">
+                                {ext.harnessName}
+                              </span>
+                              <span className="min-w-0 truncate">{extTitle}</span>
+                              <span className="ml-auto flex shrink-0 items-center gap-1 text-xs text-kumo-subtle">
+                                {extActive && (
+                                  <span
+                                    className={`size-1.5 rounded-full ${
+                                      ext.pendingApprovalCount > 0 ||
+                                      ext.status === 'waiting_approval'
+                                        ? 'bg-kumo-warning'
+                                        : 'bg-(--kapibala-signal)'
+                                    }`}
+                                    aria-hidden="true"
+                                  />
                                 )}
-                              </Sidebar.MenuItem>
-                            );
-                          })}
-                        </Sidebar.Menu>
-                      )}
-                    </div>
+                                {externalStatusLabel(ext)}
+                              </span>
+                            </Sidebar.MenuButton>
+                            {(onCloseExternal || onDeleteExternal) && (
+                              <DropdownMenu>
+                                <DropdownMenu.Trigger
+                                  render={
+                                    <Button
+                                      className="kapibala-action z-10 shrink-0 opacity-0 transition-opacity [@media(hover:none)]:opacity-100 focus-visible:opacity-100 group-focus-within/ext:opacity-100 group-hover/ext:opacity-100"
+                                      variant="ghost"
+                                      shape="square"
+                                      size="base"
+                                      aria-label={`${extTitle} 的外部会话操作`}
+                                    />
+                                  }
+                                >
+                                  <DotsThreeIcon size={18} />
+                                </DropdownMenu.Trigger>
+                                <DropdownMenu.Content>
+                                  {onCloseExternal &&
+                                    ext.status !== 'ended' &&
+                                    ext.status !== 'failed' && (
+                                      <>
+                                        <DropdownMenu.Item
+                                          disabled={busy}
+                                          onClick={() => onCloseExternal(space, ext.id)}
+                                        >
+                                          关闭进程
+                                        </DropdownMenu.Item>
+                                        <DropdownMenu.Separator />
+                                      </>
+                                    )}
+                                  {onDeleteExternal && (
+                                    <DropdownMenu.Item
+                                      variant="danger"
+                                      disabled={busy || extActive}
+                                      onClick={() => onDeleteExternal(space, ext)}
+                                    >
+                                      <TrashIcon size={16} />
+                                      删除记录
+                                    </DropdownMenu.Item>
+                                  )}
+                                </DropdownMenu.Content>
+                              </DropdownMenu>
+                            )}
+                          </Sidebar.MenuItem>
+                        );
+                      })}
+                    </Sidebar.Menu>
                   )}
                 </Collapsible.Panel>
               </Collapsible.Root>

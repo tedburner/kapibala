@@ -114,8 +114,8 @@ test.describe
       expect(saved.custom?.['e2e-acp']?.name).toBe('本地验收 ACP');
     });
 
-    test('侧栏新建外部代理任务、内联审批交互、任务进度 pill 与关闭后只读归档门禁', async () => {
-      // 预置仅启用本地受控自定义 ACP 代理，确保新建弹窗默认聚焦可离线确定性运行的代理
+    test('输入框选择外部代理并发送首轮，侧栏保留会话，审批与只读归档可用', async () => {
+      // 预置仅启用本地受控自定义 ACP 代理，离线验证输入框直发。
       const extDir = path.join(home, '.kapibala/external');
       fs.mkdirSync(extDir, { recursive: true });
       fs.writeFileSync(
@@ -160,11 +160,27 @@ test.describe
       });
       page = await firstWindow(app);
 
-      // 在默认空间新建外部代理任务并投递触发审批的首轮任务
-      await page.getByRole('button', { name: '在 默认空间 新建外部代理任务', exact: true }).click();
-      await expect(page.getByText(/新建外部代理任务/)).toBeVisible();
-      await page.getByLabel('外部代理首轮任务').fill('NEED_APPROVAL');
-      await page.getByRole('button', { name: '创建外部任务' }).click();
+      await expect(page.getByRole('button', { name: '会话空间：默认空间' })).toBeVisible();
+      await expect(page.getByText('外部代理', { exact: true })).toHaveCount(0);
+      await page.getByRole('button', { name: '新建对话', exact: true }).click();
+      const input = page.getByRole('textbox', { name: '发送消息' });
+      await input.fill('NEED_APPROVAL');
+      const picker = page.getByRole('button', { name: /新对话模型或代理/ });
+      await picker.press('Enter');
+      const search = page.getByRole('combobox', { name: '搜索代理或模型' });
+      await expect(search).toBeFocused();
+      await page.getByRole('button', { name: '本地验收 ACP', exact: true }).click();
+      await expect(page.getByRole('option', { name: '使用默认模型', exact: true })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(picker).toBeFocused();
+      await picker.press('Enter');
+      await search.fill('验收 ACP');
+      await expect(page.getByRole('option', { name: '本地验收 ACP', exact: true })).toBeVisible();
+      await search.press('Enter');
+      await expect(input).toHaveValue('NEED_APPROVAL');
+      await expect(page.getByRole('button', { name: '新对话代理：本地验收 ACP' })).toBeVisible();
+      await expect(page.getByText(/还没有可用模型，请先在/)).toHaveCount(0);
+      await input.press('Enter');
 
       // 校验顶部边界提示、计划 pill 与内联外部审批卡
       await expect(page.getByText('外部代理 · 遵循该工具自有权限与登录态')).toBeVisible({
@@ -172,6 +188,14 @@ test.describe
       });
       const approvalSection = page.getByRole('region', { name: '外部代理待处理审批' });
       await expect(approvalSection).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.getByRole('button', { name: '本地验收 ACP · NEED_APPROVAL', exact: true }),
+      ).toBeVisible();
+      const localSessions = await page.evaluate(async () => {
+        const workspace = await window.kapibala.workspace.openDefault();
+        return window.kapibala.session.list(workspace.id);
+      });
+      expect(localSessions.items).toHaveLength(0);
       await expect(approvalSection.getByText(/外部代理请求授权：/)).toBeVisible();
       await expect(page.getByRole('button', { name: '任务清单', exact: true })).toContainText(
         '任务 0/2',
@@ -198,8 +222,9 @@ test.describe
         'placeholder',
         '当前为外部代理只读历史归档，如需继续请新建外部会话',
       );
-      await expect(
-        page.getByRole('button', { name: '新建 本地验收 ACP 会话', exact: true }),
-      ).toBeVisible();
+      await page.getByRole('button', { name: '新建 本地验收 ACP 会话', exact: true }).click();
+      await expect(page.getByRole('button', { name: '新对话代理：本地验收 ACP' })).toBeVisible();
+      await expect(input).toBeEnabled();
+      await expect(input).toHaveValue('');
     });
   });

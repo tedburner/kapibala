@@ -415,11 +415,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
         if (!tc.id || !tc.name || ids.has(tc.id))
           throw invalidResponse('Model response contained missing or duplicate tool identities');
         ids.add(tc.id);
+        let parsedInput: Record<string, unknown>;
+        try {
+          parsedInput = parseToolArguments(tc.argumentChunks.join(''));
+        } catch (err) {
+          if (finishReason === 'length') {
+            throw invalidResponse(
+              'Model output reached maxTokens limit while generating tool arguments; increase maxOutputTokens in model settings',
+            );
+          }
+          throw err;
+        }
         return {
           type: 'tool_call_finish',
           id: tc.id,
           name: tc.name,
-          input: parseToolArguments(tc.argumentChunks.join('')),
+          input: parsedInput,
         } as const;
       });
       for (const tool of completedTools) yield tool;

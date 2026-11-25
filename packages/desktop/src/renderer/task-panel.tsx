@@ -69,7 +69,7 @@ export function TaskPanel({ todos }: { todos?: ViewTodoState }) {
   return (
     <div
       ref={rootRef}
-      className="relative mx-auto flex w-full max-w-[var(--kapibala-content-max)] justify-start"
+      className="relative mx-auto flex w-full max-w-[var(--kapibala-content-max)] justify-center"
     >
       {open && (
         <section
@@ -105,13 +105,13 @@ export function TaskPanel({ todos }: { todos?: ViewTodoState }) {
         // 可访问名固定为「任务清单」，不随开合态切换（见组件注释）；状态只由 aria-expanded 表达。
         aria-label="任务清单"
         aria-expanded={open}
-        className="flex h-auto items-center gap-1.5 rounded-full border border-kumo-line px-3 py-1 text-xs text-kumo-subtle"
+        className="flex h-auto max-w-full min-w-0 items-center gap-1.5 rounded-full border border-kumo-line bg-kumo-base px-3 py-1 text-xs text-kumo-subtle"
         onClick={() => setOpen((value) => !value)}
         onKeyDown={(event) => {
           if (event.key === 'Escape') setOpen(false);
         }}
       >
-        <span className="tabular-nums">
+        <span className="shrink-0 tabular-nums">
           任务 {completed}/{total}
         </span>
         {suffix && <span className="min-w-0 truncate">{suffix}</span>}

@@ -81,7 +81,7 @@ export class AgentLoop {
     this.tools = options.tools;
     this.hooks = options.hooks;
     this.systemPrompt = options.systemPrompt;
-    this.maxSteps = options.maxSteps ?? 20;
+    this.maxSteps = options.maxSteps ?? 60;
     this.maxConsecutiveErrors = options.maxConsecutiveErrors ?? 3;
     this.signal = options.signal;
     this.eventLogger = options.eventLogger;

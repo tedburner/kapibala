@@ -170,16 +170,22 @@ export class PathSandbox {
 
     // 词法检查：规范化相对路径判定
     if (!isPathInside(this.workspaceRoot, resolvedPath)) {
-      throw new ToolError(
-        `Access denied: path '${targetPath}' escapes root directory '${this.workspaceRoot}'`,
+      throw Object.assign(
+        new ToolError(
+          `Access denied: path '${targetPath}' escapes root directory '${this.workspaceRoot}'`,
+        ),
+        { safeMessage: `Access denied: path '${targetPath}' escapes workspace root` },
       );
     }
 
     // 物理检查：必须对"目标尚不存在"的路径同样生效
     const physicalPath = this.toPhysicalPath(resolvedPath);
     if (!isPathInside(this.realRootDir, physicalPath)) {
-      throw new ToolError(
-        `Access denied: path '${targetPath}' resolves outside root directory '${this.workspaceRoot}' (via symlink)`,
+      throw Object.assign(
+        new ToolError(
+          `Access denied: path '${targetPath}' resolves outside root directory '${this.workspaceRoot}' (via symlink)`,
+        ),
+        { safeMessage: `Access denied: path '${targetPath}' resolves outside workspace root` },
       );
     }
 
@@ -233,8 +239,11 @@ export class PathSandbox {
         // 而 writeFileSync 这类调用会顺着它在外部落盘，因此必须直接拒绝。
         const real = tryNativeRealpath(probe);
         if (real === undefined) {
-          throw new ToolError(
-            `Access denied: cannot resolve real path for '${resolvedPath}' (broken or unresolvable symlink)`,
+          throw Object.assign(
+            new ToolError(
+              `Access denied: cannot resolve real path for '${resolvedPath}' (broken or unresolvable symlink)`,
+            ),
+            { safeMessage: 'Access denied: broken or unresolvable symlink along target path' },
           );
         }
         return pendingSegments.length > 0 ? path.join(real, ...pendingSegments) : real;

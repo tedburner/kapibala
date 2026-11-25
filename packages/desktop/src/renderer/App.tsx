@@ -41,6 +41,7 @@ import {
 import { flushSync } from 'react-dom';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
 import { collectViewArtifacts, latestViewArtifact } from './artifact-model.js';
+import { ComposerModelPicker } from './composer-model-picker.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
 import { ExternalSessionView } from './external-session-view.js';
 import { rankFileMatches } from './file-completion.js';
@@ -48,7 +49,6 @@ import { HistoryListClient } from './history-list-client.js';
 import { KubaiIcon } from './icons/KubaiIcon.js';
 import { MessageList } from './message-list.js';
 import { MODE_NAMES } from './mode-labels.js';
-import { NewExternalDialog } from './new-external-dialog.js';
 import { ProjectDialog } from './project-dialog.js';
 import { SessionDeleteDialog, SessionRenameDialog, type SessionTarget } from './session-actions.js';
 import { SettingsDialog } from './settings-dialog.js';
@@ -59,6 +59,12 @@ import { WorkspaceSidebar, runtimeLabel } from './workspace-sidebar.js';
 
 type Opened = Output<'session.open'>;
 type Catalog = Output<'settings.read'>;
+/** 输入框只依赖代理的稳定标识和显示名称，命令配置始终由宿主解析。 */
+type HarnessEntry = Pick<
+  Output<'external.harnesses'>['harnesses'][number],
+  'id' | 'name' | 'transport'
+>;
+type HarnessChoice = Pick<HarnessEntry, 'id' | 'name'>;
 /** 单个输入作用域（会话或 ':new'）的已发送历史与 ↑/↓ 浏览位置。 */
 type PromptHistory = { entries: string[]; index: number; draft?: string };
 const api: DesktopAPI = window.kapibala;
@@ -219,10 +225,12 @@ export function App() {
   const activeExternalRef = useRef<typeof activeExternal>(undefined);
   activeExternalRef.current = activeExternal;
   const externalNavGen = useRef(0);
-  const [newExternalModal, setNewExternalModal] = useState<{
-    space: Workspace;
-    preferredHarnessId?: string;
+  const [harnessCatalog, setHarnessCatalog] = useState<{
+    workspaceId: string;
+    choices: readonly HarnessEntry[];
+    failed?: true;
   }>();
+  const [pendingHarness, setPendingHarness] = useState<HarnessChoice>();
   const [pendingExternalDelete, setPendingExternalDelete] = useState<{
     space: Workspace;
     id: string;
@@ -243,8 +251,9 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [fullAccess, setFullAccess] = useState(false);
   // 新对话在创建前没有会话配置，先把用户选的模型暂存；创建成功后立即 configure 再启动，
-  // 避免「输入区显示 A 模型、实际用 B 模型」的静默不一致。空间切换不清空该选择。
+  // 避免「输入区显示 A 模型、实际用 B 模型」的静默不一致。
   const [pendingProfile, setPendingProfile] = useState<string>();
+  const [pendingMode, setPendingMode] = useState<Mode>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const detailTrigger = useRef<HTMLElement | null>(null);
@@ -308,14 +317,46 @@ export function App() {
   const composerModel = opened
     ? selectedModel
     : (usableModels.find((model) => model.id === pendingProfile) ?? defaultModel);
-  // 未打开会话时发送会创建新会话，只要求宿主连接健康、目标空间已信任且至少有一个可用模型；
+  const composerMode = opened?.configuration.mode ?? pendingMode ?? catalog?.permissionMode;
+  const composerHarness = opened ? undefined : pendingHarness;
+  const trustedWorkspaceId = workspace?.trusted ? workspace.id : undefined;
+  const currentHarnessCatalog =
+    harnessCatalog?.workspaceId === trustedWorkspaceId ? harnessCatalog : undefined;
+  const availableHarnesses = currentHarnessCatalog?.choices ?? [];
+  const selectedHarnessAvailable = availableHarnesses.some(
+    (item) => item.id === composerHarness?.id,
+  );
+  // 切换空间或离开设置时重新读取，忽略上一空间或设置打开前尚未返回的结果。
+  useEffect(() => {
+    if (!trustedWorkspaceId || ui.settingsOpen) return;
+    let cancelled = false;
+    void api.external
+      .harnesses(trustedWorkspaceId)
+      .then(({ harnesses }) => {
+        if (!cancelled)
+          setHarnessCatalog({
+            workspaceId: trustedWorkspaceId,
+            choices: harnesses
+              .filter((item) => item.enabled)
+              .map(({ id, name, transport }) => ({ id, name, transport })),
+          });
+      })
+      .catch(() => {
+        if (!cancelled)
+          setHarnessCatalog({ workspaceId: trustedWorkspaceId, choices: [], failed: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [trustedWorkspaceId, ui.settingsOpen]);
+  // 新对话只校验当前选择的执行入口；外部代理使用自有凭证，不依赖本地模型配置。
   // 已打开会话沿用运行事实门控，不因收尾状态重复触发任务。
   const canSend = opened
     ? Boolean(draft.trim()) && facts.valid && readyToSend && !running
     : Boolean(draft.trim()) &&
       Boolean(workspace?.trusted) &&
       facts.runtimeValid === true &&
-      Boolean(composerModel);
+      (composerHarness ? selectedHarnessAvailable : Boolean(composerModel));
   // 快照到消息列表的推导按引用记忆：自动预览 effect 只应在快照真正变化时重跑，
   // 不能因为草稿输入等无关渲染反复扫描历史。
   const messages = useMemo(() => (facts.state ? selectMessages(facts.state) : []), [facts.state]);
@@ -487,6 +528,8 @@ export function App() {
       });
       setOpened(undefined);
       setPendingProfile(undefined);
+      setPendingMode(undefined);
+      setPendingHarness(undefined);
       setCatalog(undefined);
       setError('');
       await refreshHistory(space);
@@ -687,30 +730,56 @@ export function App() {
         void refreshHistory(space).catch((reason) => report(failure(reason)));
     }
   }, [facts.runtime, spaces, refreshHistory, report]);
-  // 新对话的唯一创建入口：先按用户暂存的模型配置会话，再交给界面。
-  // 「新建对话」按钮与「直接输入后发送」都必须走这里，否则会出现选择被丢弃的静默不一致。
+  /** 提交本地草稿时按输入框选定的模型和模式创建会话，配置成功后才发起任务。 */
   async function createSession(space: Workspace) {
     // 提交界面实际展示的可用模型，而非失效的临时选择或无凭证的默认值。
     const profileId = composerModel?.id;
     const result = await api.session.create(space.id, profileId);
-    if (!profileId || profileId === result.configuration.profileId) {
-      setPendingProfile(undefined);
-      return result;
-    }
-    const configuration = await api.session.configure({
-      ...scopeOf(result),
-      profileId,
-    });
+    const requestedProfile = profileId !== result.configuration.profileId ? profileId : undefined;
+    const requestedMode = pendingMode !== result.configuration.mode ? pendingMode : undefined;
+    const configuration =
+      requestedProfile || requestedMode
+        ? await api.session.configure({
+            ...scopeOf(result),
+            ...(requestedProfile ? { profileId: requestedProfile } : {}),
+            ...(requestedMode ? { mode: requestedMode } : {}),
+            ...(requestedMode === 'FullAccess' ? { confirmFullAccess: true } : {}),
+          })
+        : result.configuration;
     setPendingProfile(undefined);
+    setPendingMode(undefined);
+    ui.select(space.id, result.conversationId);
+    setOpened({ ...result, configuration });
+    await client.select(scopeOf(result));
+    await client.whenReady();
     return { ...result, configuration };
   }
-  async function openConversation(conversationId?: string, space = workspace) {
+
+  /** 打开新对话草稿，保留输入内容，待确认发送时才创建所选代理的会话。 */
+  async function showNewConversation(space: Workspace | undefined, harness?: HarnessChoice) {
+    if (!space) return;
+    if (!space.trusted) {
+      setTrust(space);
+      return;
+    }
+    if (space.id !== current.current?.id) await selectSpace(space);
+    else {
+      ui.select(space.id, '');
+      setDetails(undefined);
+      setOpened(undefined);
+      await client.clear();
+      await detachActiveExternal();
+    }
+    setPendingHarness(harness);
+    setPendingMode(undefined);
+    requestAnimationFrame(() => composerInput.current?.focus());
+  }
+
+  async function openConversation(conversationId: string, space = workspace) {
     if (!space) return;
     if (space.id !== current.current?.id) await selectSpace(space);
     else await detachActiveExternal();
-    const result = conversationId
-      ? await api.session.open({ workspaceId: space.id, conversationId })
-      : await createSession(space);
+    const result = await api.session.open({ workspaceId: space.id, conversationId });
     ui.select(space.id, result.conversationId);
     setDetails(undefined);
     setOpened(result);
@@ -750,60 +819,6 @@ export function App() {
     setActiveExternal(next);
     setExternalToasts((prev) => prev.filter((item) => item.sessionId !== sessionId));
     await refreshExternalList(space.id);
-  }
-  async function createExternalTask(params: {
-    space: Workspace;
-    harnessId: string;
-    prompt?: string;
-  }) {
-    setNewExternalModal(undefined);
-    await act(async () => {
-      if (!params.space.trusted) {
-        setTrust(params.space);
-        return;
-      }
-      if (params.space.id !== current.current?.id) await selectSpace(params.space);
-      else {
-        ui.select(params.space.id, '');
-        setDetails(undefined);
-        setOpened(undefined);
-        await client.clear();
-        await detachActiveExternal();
-      }
-      const openedSnapshot = await api.external.open({
-        workspaceId: params.space.id,
-        harnessId: params.harnessId,
-      });
-      const subscriptionId = crypto.randomUUID();
-      const subscribed = await api.external.subscribe({
-        workspaceId: params.space.id,
-        sessionId: openedSnapshot.session.id,
-        subscriptionId,
-      });
-      let snapshot = subscribed;
-      const next = {
-        workspaceId: params.space.id,
-        sessionId: openedSnapshot.session.id,
-        subscriptionId,
-        snapshot,
-      };
-      activeExternalRef.current = next;
-      setActiveExternal(next);
-      setExternalToasts((prev) =>
-        prev.filter((item) => item.sessionId !== openedSnapshot.session.id),
-      );
-      if (params.prompt?.trim()) {
-        snapshot = await api.external.prompt({
-          workspaceId: params.space.id,
-          sessionId: openedSnapshot.session.id,
-          text: params.prompt.trim(),
-        });
-        setActiveExternal((prev) =>
-          prev && prev.sessionId === openedSnapshot.session.id ? { ...prev, snapshot } : prev,
-        );
-      }
-      await refreshExternalList(params.space.id);
-    });
   }
   async function sendExternalPrompt(text: string) {
     const cur = activeExternalRef.current;
@@ -945,6 +960,7 @@ export function App() {
       .catch((reason) => report(failure(reason)));
     if (!opened) {
       setPendingProfile(profileId);
+      setPendingHarness(undefined);
       return;
     }
     void act(() => configure({ ...scopeOf(opened), profileId }));
@@ -1005,6 +1021,22 @@ export function App() {
   async function send() {
     const input = draft.trim();
     if (!input || busy) return;
+    if (!opened && (!workspace?.trusted || !facts.runtimeValid)) return;
+    if (!opened && workspace && composerHarness) {
+      if (!selectedHarnessAvailable) return;
+      await act(async () => {
+        // 宿主原子承接首轮：先验工作区并发，启动失败时保留草稿，接受后再订阅消息流。
+        const snapshot = await api.external.open({
+          workspaceId: workspace.id,
+          harnessId: composerHarness.id,
+          prompt: input,
+        });
+        ui.draft(':new', '');
+        setPendingHarness(undefined);
+        await openExternalSession(workspace, snapshot.session.id);
+      });
+      return;
+    }
     // 斜杠输入不再发给模型：会话内走与 CLI 同源的命令系统，反馈以命令消息呈现。
     // `/skill <名称>` 无任务直发由宿主层承接（合成启动任务走收据管线），此处不拦。
     if (input.startsWith('/')) {
@@ -1014,13 +1046,12 @@ export function App() {
       }
       await act(async () => {
         const result = await api.run.command({
-          workspaceId: opened.workspaceId,
-          sessionId: opened.sessionId,
+          ...scopeOf(opened),
           input,
         });
         if (!result.handled) report(`未知命令：${input.split(/\s+/)[0]}`);
         else if (result.feedback.length) pushFeedback(result.feedback);
-        ui.draft(`${opened.workspaceId}:${opened.conversationId}`, '');
+        ui.draft(draftScope, '');
         rememberPrompt(input);
       });
       return;
@@ -1036,7 +1067,7 @@ export function App() {
     }
     // 未打开会话：发送即以当前所选空间创建会话并启动任务，不插入中间确认步骤；
     // 项目空间未信任时仍必须先走信任确认，不能静默代用户授权。
-    if (!workspace?.trusted || !facts.runtimeValid) return;
+    if (!workspace?.trusted) return;
     // 没有可用模型时创建会话只会拿到一个必然失败的运行，先让用户去配置密钥。
     if (!composerModel) {
       report('还没有可用模型，请先在设置中为模型填写密钥。');
@@ -1044,10 +1075,6 @@ export function App() {
     }
     await act(async () => {
       const result = await createSession(workspace);
-      ui.select(workspace.id, result.conversationId);
-      setOpened(result);
-      await client.select(scopeOf(result));
-      await client.whenReady();
       await client.start(scopeOf(result), input);
       ui.draft(':new', '');
       // 首页发出的第一问同时记到新会话作用域：进入会话后 ↑ 仍能召回它。
@@ -1213,6 +1240,10 @@ export function App() {
    * 只列技能名，出现任务段（第二个空白后的内容）后不再弹出。
    */
   useEffect(() => {
+    if (composerHarness) {
+      setCompletion(undefined);
+      return;
+    }
     const skillTail = /^\/skill\s+(\S*)$/.exec(draft);
     if (skillTail) {
       const prefix = skillTail[1].toLowerCase();
@@ -1266,7 +1297,7 @@ export function App() {
       return;
     }
     setCompletion(undefined);
-  }, [draft, commandList, fileList, skillList]);
+  }, [composerHarness, draft, commandList, fileList, skillList]);
 
   /** 补全确认：命令替换整段草稿，文件替换最后一个 @ 触发段。 */
   function acceptCompletion(current: NonNullable<typeof completion>): void {
@@ -1380,15 +1411,17 @@ export function App() {
       )}
       {/* 触发符激活但零匹配时也要出现面板：搜索「看起来坏了」比「无匹配」更伤可用性。
           覆盖两种触发形态（/ 前缀、/skill 名字段）；任务段态与 @ 态不在此列。 */}
-      {!completion && (/^\/\S*$/.test(draft) || /^\/skill\s+\S*$/.test(draft)) && (
-        <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
-          <div className="rounded-lg border border-kumo-line bg-kumo-recessed p-1 shadow-lg">
-            <p className="px-2 py-1 text-xs text-kumo-subtle">
-              无匹配的命令或技能；继续输入可缩小范围。
-            </p>
+      {!composerHarness &&
+        !completion &&
+        (/^\/\S*$/.test(draft) || /^\/skill\s+\S*$/.test(draft)) && (
+          <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
+            <div className="rounded-lg border border-kumo-line bg-kumo-recessed p-1 shadow-lg">
+              <p className="px-2 py-1 text-xs text-kumo-subtle">
+                无匹配的命令或技能；继续输入可缩小范围。
+              </p>
+            </div>
           </div>
-        </div>
-      )}
+        )}
       {commandFeedbacks.length > 0 && (
         <div className="mx-auto flex w-full max-w-[var(--kapibala-content-max)] flex-col gap-2">
           {commandFeedbacks.map((entry) => (
@@ -1571,7 +1604,7 @@ export function App() {
                 <span className="min-w-0 truncate">{gitBranch}</span>
               </Button>
             )}
-            {opened && (
+            {composerMode && !composerHarness && (
               <DropdownMenu>
                 <DropdownMenu.Trigger
                   render={
@@ -1580,12 +1613,10 @@ export function App() {
                       variant="ghost"
                       size="sm"
                       disabled={Boolean(running) || busy}
-                      aria-label={`会话模式：${MODE_NAMES[opened.configuration.mode]}`}
+                      aria-label={`会话模式：${MODE_NAMES[composerMode]}`}
                     >
-                      <ModeGlyph mode={opened.configuration.mode} size={18} />
-                      <span className="min-w-0 truncate">
-                        {MODE_NAMES[opened.configuration.mode]}
-                      </span>
+                      <ModeGlyph mode={composerMode} size={18} />
+                      <span className="min-w-0 truncate">{MODE_NAMES[composerMode]}</span>
                       <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
                     </Button>
                   }
@@ -1597,7 +1628,8 @@ export function App() {
                       <DropdownMenu.Item
                         onClick={() => {
                           if (mode === 'FullAccess') setFullAccess(true);
-                          else void act(() => configure({ ...scopeOf(opened), mode }));
+                          else if (opened) void act(() => configure({ ...scopeOf(opened), mode }));
+                          else setPendingMode(mode);
                         }}
                       >
                         <ModeGlyph mode={mode} />
@@ -1607,78 +1639,94 @@ export function App() {
                             {MODE_HINTS[mode]}
                           </span>
                         </span>
-                        {opened.configuration.mode === mode && <CheckIcon size={14} />}
+                        {composerMode === mode && <CheckIcon size={14} />}
                       </DropdownMenu.Item>
                     </Fragment>
                   ))}
                 </DropdownMenu.Content>
               </DropdownMenu>
             )}
-            <DropdownMenu>
-              <DropdownMenu.Trigger
-                render={
-                  <Button
-                    className="kapibala-action kapibala-chip max-w-56"
-                    variant="ghost"
-                    size="sm"
-                    disabled={Boolean(running) || busy}
-                    aria-label={
-                      opened
-                        ? `当前会话模型：${composerModel?.name ?? '选择模型'}`
-                        : `新对话模型：${composerModel?.name ?? '选择模型'}`
-                    }
-                  >
-                    <span className="min-w-0 truncate">{composerModel?.name ?? '未配置模型'}</span>
-                    <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
-                  </Button>
+            {opened ? (
+              <DropdownMenu>
+                <DropdownMenu.Trigger
+                  render={
+                    <Button
+                      className="kapibala-action kapibala-chip max-w-56"
+                      variant="ghost"
+                      size="sm"
+                      disabled={Boolean(running) || busy}
+                      aria-label={`当前会话模型：${composerModel?.name ?? '选择模型'}`}
+                    >
+                      <span className="min-w-0 truncate">
+                        {composerModel?.name ?? '未配置模型'}
+                      </span>
+                      <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
+                    </Button>
+                  }
+                />
+                <DropdownMenu.Content className="max-h-[min(20rem,var(--available-height))]">
+                  <DropdownMenu.Sub>
+                    <DropdownMenu.SubTrigger>
+                      会话角色：{ROLE_NAMES[opened.configuration.role]}
+                    </DropdownMenu.SubTrigger>
+                    <DropdownMenu.SubContent>
+                      {(
+                        [
+                          ['default', '默认'],
+                          ['planning', '规划'],
+                          ['execution', '执行'],
+                          ['fast', '快速'],
+                        ] as const
+                      ).map(([role, name]) => (
+                        <DropdownMenu.Item
+                          key={role}
+                          onClick={() => void act(() => configure({ ...scopeOf(opened), role }))}
+                        >
+                          <span className="min-w-0 flex-1">{name}</span>
+                          {opened.configuration.role === role && <CheckIcon size={14} />}
+                        </DropdownMenu.Item>
+                      ))}
+                    </DropdownMenu.SubContent>
+                  </DropdownMenu.Sub>
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Group>
+                    <DropdownMenu.Label>本会话模型</DropdownMenu.Label>
+                    {usableModels.map((model) => (
+                      <DropdownMenu.Item key={model.id} onClick={() => chooseModel(model.id)}>
+                        <span className="min-w-0 flex-1 truncate">{model.name}</span>
+                        {model.id === composerModel?.id && <CheckIcon size={14} />}
+                      </DropdownMenu.Item>
+                    ))}
+                    {usableModels.length === 0 && (
+                      <DropdownMenu.Item onClick={() => ui.settings(true)}>
+                        <span className="min-w-0 flex-1 truncate">还没有可用模型，去设置</span>
+                      </DropdownMenu.Item>
+                    )}
+                  </DropdownMenu.Group>
+                </DropdownMenu.Content>
+              </DropdownMenu>
+            ) : (
+              <ComposerModelPicker
+                models={usableModels}
+                providers={catalog?.providers ?? []}
+                harnesses={availableHarnesses}
+                model={composerModel}
+                harness={composerHarness}
+                disabled={busy}
+                harnessesFailed={currentHarnessCatalog?.failed}
+                onModel={chooseModel}
+                onHarness={setPendingHarness}
+                onSettings={() => ui.settings(true)}
+                onExternalSettings={
+                  trustedWorkspaceId
+                    ? () => {
+                        setSettingsInitialTab('external');
+                        ui.settings(true);
+                      }
+                    : undefined
                 }
               />
-              {/* 内置清单有二十个模型，限制高度让其内部滚动，避免菜单铺满整窗。 */}
-              <DropdownMenu.Content className="max-h-[min(20rem,var(--available-height))]">
-                {opened && (
-                  <>
-                    <DropdownMenu.Sub>
-                      <DropdownMenu.SubTrigger>
-                        会话角色：{ROLE_NAMES[opened.configuration.role]}
-                      </DropdownMenu.SubTrigger>
-                      <DropdownMenu.SubContent>
-                        {(
-                          [
-                            ['default', '默认'],
-                            ['planning', '规划'],
-                            ['execution', '执行'],
-                            ['fast', '快速'],
-                          ] as const
-                        ).map(([role, name]) => (
-                          <DropdownMenu.Item
-                            key={role}
-                            onClick={() => void act(() => configure({ ...scopeOf(opened), role }))}
-                          >
-                            <span className="min-w-0 flex-1">{name}</span>
-                            {opened.configuration.role === role && <CheckIcon size={14} />}
-                          </DropdownMenu.Item>
-                        ))}
-                      </DropdownMenu.SubContent>
-                    </DropdownMenu.Sub>
-                    <DropdownMenu.Separator />
-                  </>
-                )}
-                <DropdownMenu.Group>
-                  <DropdownMenu.Label>{opened ? '本会话模型' : '选择模型'}</DropdownMenu.Label>
-                  {usableModels.map((model) => (
-                    <DropdownMenu.Item key={model.id} onClick={() => chooseModel(model.id)}>
-                      <span className="min-w-0 flex-1 truncate">{model.name}</span>
-                      {model.id === composerModel?.id && <CheckIcon size={14} />}
-                    </DropdownMenu.Item>
-                  ))}
-                  {usableModels.length === 0 && (
-                    <DropdownMenu.Item onClick={() => ui.settings(true)}>
-                      <span className="min-w-0 flex-1 truncate">还没有可用模型，去设置</span>
-                    </DropdownMenu.Item>
-                  )}
-                </DropdownMenu.Group>
-              </DropdownMenu.Content>
-            </DropdownMenu>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             {running ? (
@@ -1723,14 +1771,23 @@ export function App() {
         </div>
         {/* 阻断原因（空间未信任 / 没有可用模型）收进卡片底部的脚注行：给出处理入口，
             不再悬挂在卡片外与输入坞争抢视觉；没有阻断时不占位，卡片高度不额外膨胀。 */}
-        {((!opened && workspace && !workspace.trusted) || usableModels.length === 0) && (
+        {((!opened && workspace && !workspace.trusted) ||
+          composerHarness ||
+          usableModels.length === 0) && (
           <div className="mt-2 border-t border-kumo-hairline px-2 pt-2">
             {!opened && workspace && !workspace.trusted && (
               <p className="kapibala-composer-hint text-kumo-warning">
                 当前空间尚未信任，确认信任后才能发送。
               </p>
             )}
-            {usableModels.length === 0 && (
+            {composerHarness && (
+              <p className="kapibala-composer-hint text-kumo-subtle">
+                {selectedHarnessAvailable
+                  ? '外部代理使用该工具自有的权限与登录状态。'
+                  : '当前外部代理不可用，请重新选择或在设置中启用。'}
+              </p>
+            )}
+            {!composerHarness && usableModels.length === 0 && (
               <p className="kapibala-composer-hint flex flex-wrap items-center gap-1 text-kumo-warning">
                 <span>还没有可用模型，请先在</span>
                 <Button
@@ -1783,8 +1840,8 @@ export function App() {
           })
         }
         onDefault={() => void act(async () => selectSpace(await api.workspace.openDefault()))}
-        onNew={() => void act(() => openConversation())}
-        onNewInSpace={(space) => void act(() => openConversation(undefined, space))}
+        onNew={() => void act(() => showNewConversation(workspace))}
+        onNewInSpace={(space) => void act(() => showNewConversation(space))}
         onOpen={(space, conversationId) => void act(() => openConversation(conversationId, space))}
         onRename={(space, row) =>
           setPendingRename({
@@ -1807,7 +1864,6 @@ export function App() {
         onRefreshRuntime={() => void act(() => client.connectRuntime())}
         externalSessions={externalLists}
         activeExternalSessionId={activeExternal?.sessionId}
-        onNewExternal={(space) => setNewExternalModal({ space })}
         onOpenExternal={(space, sessionId) => void act(() => openExternalSession(space, sessionId))}
         onCloseExternal={(space, sessionId) => void closeExternalSession(space, sessionId)}
         onDeleteExternal={(space, row) =>
@@ -1983,12 +2039,10 @@ export function App() {
                 void approveExternal(approvalId, optionId, cancel)
               }
               onNewSameHarness={() => {
-                if (workspace) {
-                  setNewExternalModal({
-                    space: workspace,
-                    preferredHarnessId: activeExternal.snapshot.session.harnessId,
-                  });
-                }
+                const { harnessId, harnessName } = activeExternal.snapshot.session;
+                void act(() =>
+                  showNewConversation(workspace, { id: harnessId, name: harnessName }),
+                );
               }}
               onTool={(callId, trigger) => {
                 detailTrigger.current = trigger;
@@ -2012,6 +2066,25 @@ export function App() {
                 key={`${opened.workspaceId}:${opened.conversationId}`}
                 memoryKey={`${opened.workspaceId}:${opened.conversationId}`}
                 messages={messages}
+                operation={
+                  facts.state.operation?.phase && facts.state.operation.phase !== 'idle'
+                    ? facts.state.operation
+                    : run && run.phase !== 'idle'
+                      ? { id: run.sessionId, phase: run.phase }
+                      : facts.state.operation
+                }
+                latestErrorNotice={
+                  [...facts.state.notices].reverse().find((item) => item.level === 'error')?.text
+                }
+                onContinue={
+                  facts.valid && readyToSend && !running && !busy
+                    ? () => {
+                        void act(async () => {
+                          await client.start(scopeOf(opened), '继续');
+                        });
+                      }
+                    : undefined
+                }
                 retryableMessageId={retryableMessageId}
                 onRetry={() => void retry()}
                 root={workspace?.root}
@@ -2174,18 +2247,6 @@ export function App() {
         />
       </div>
       <ProjectDialog open={projectOpen} onOpenChange={setProjectOpen} onCreated={selectSpace} />
-      <NewExternalDialog
-        space={newExternalModal?.space}
-        preferredHarnessId={newExternalModal?.preferredHarnessId}
-        busy={busy}
-        onClose={() => setNewExternalModal(undefined)}
-        onOpenSettings={() => {
-          setNewExternalModal(undefined);
-          setSettingsInitialTab('external');
-          ui.settings(true);
-        }}
-        onCreate={(params) => void createExternalTask(params)}
-      />
       <LayerDialog
         open={Boolean(pendingExternalDelete)}
         onOpenChange={(open) => {
@@ -2518,6 +2579,7 @@ export function App() {
                       mode: 'FullAccess',
                       confirmFullAccess: true,
                     });
+                  else setPendingMode('FullAccess');
                   setFullAccess(false);
                 })
               }
