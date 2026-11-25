@@ -16,7 +16,13 @@ export type ViewExternalSessionStatus =
 /** 设置页或 CLI 执行外部代理单次握手探测后的只读状态摘要。 */
 export interface ViewExternalHarnessProbe {
   readonly available: boolean;
-  readonly status: 'ready' | 'needs_login' | 'not_installed' | 'invalid_shim' | 'handshake_failed';
+  readonly status:
+    | 'ready'
+    | 'auth_unverified'
+    | 'needs_login'
+    | 'not_installed'
+    | 'invalid_shim'
+    | 'handshake_failed';
   readonly agentName?: string;
   readonly version?: string;
   readonly loadSupported: boolean;

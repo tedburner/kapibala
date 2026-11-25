@@ -52,6 +52,35 @@ export const DESKTOP_ENV_KEYS = [
 ];
 
 /**
+ * 从当前桌面 home 的代理配置读取已声明变量。以单独的值载荷传给 Agent Host，
+ * 避免把动态变量名作为 Electron 启动环境键；配置读取失败时桌面仍可启动并报告配置错误。
+ */
+export async function desktopExternalLaunchEnv(base, homeDir) {
+  const { buildExternalLaunchEnv, listResolvedExternalHarnesses } = await import(
+    '@kiturone/kapibala-host/internal'
+  );
+  try {
+    const envFrom = [
+      ...new Set(
+        listResolvedExternalHarnesses({ homeDir }).flatMap(
+          ({ definition }) => definition.envFrom ?? [],
+        ),
+      ),
+    ]
+      .filter((name) => name.toUpperCase() !== 'KPBL_EXTERNAL_FORWARDED_ENV')
+      .filter((name) => !DESKTOP_ENV_KEYS.some((key) => key.toUpperCase() === name.toUpperCase()));
+    const { env, forwardedVars } = buildExternalLaunchEnv({ hostEnv: base, envFrom });
+    const entries = forwardedVars.flatMap((name) => {
+      const value = env[name];
+      return value === undefined ? [] : [[name, value]];
+    });
+    return entries.length ? { KPBL_EXTERNAL_FORWARDED_ENV: JSON.stringify(entries) } : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
  * 构造 Electron 应用的启动环境。
  *
  * @param base 宿主环境（通常就是 `process.env`），只从中挑白名单内的变量，空值跳过。

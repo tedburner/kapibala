@@ -65,6 +65,8 @@ interface OpeningReservation {
   readonly workspaceRoot: string;
   readonly title: string;
   readonly abort: AbortController;
+  readonly settled: Promise<void>;
+  readonly slot: LiveSessionSlot;
 }
 
 interface LiveSessionSlot {
@@ -77,6 +79,7 @@ interface LiveSessionSlot {
   sequence: number;
   coalesceTimer?: ReturnType<typeof setTimeout>;
   idleTimer?: ReturnType<typeof setTimeout>;
+  closing?: Promise<void>;
   truncatedArchive: boolean;
   readonly secrets: readonly string[];
 }
@@ -395,34 +398,16 @@ export class ExternalSessionService {
       createdAt: now,
       updatedAt: now,
     };
-    this.registry.upsertRecord(initialRecord);
-    this.notifyListChanged(nativeRoot);
-
-    try {
-      const slot = await this.spawnAndBindSlot({
-        record: initialRecord,
-        def,
-        driver,
-        secrets,
-        signal,
-      });
-      this.armIdleTimer(slot);
-      const snap = this.buildLiveSnapshot(slot);
-      this.notifyListChanged(nativeRoot);
-      this.emitSnapshot(slot);
-      return snap;
-    } catch (err) {
-      const rawErr = err instanceof Error ? err.message : String(err);
-      const errText = sanitizeDisplayText(redactText(rawErr, secrets), 300) ?? '启动失败';
-      this.registry.upsertRecord({
-        ...initialRecord,
-        status: 'failed',
-        updatedAt: Date.now(),
-        lastError: errText,
-      });
-      this.notifyListChanged(nativeRoot);
-      throw err;
-    }
+    const slot = await this.spawnAndBindSlot({
+      record: initialRecord,
+      def,
+      driver,
+      secrets,
+      signal,
+    });
+    if (!slot.closing) this.armIdleTimer(slot);
+    this.flushSlotImmediate(slot);
+    return this.buildLiveSnapshot(slot);
   }
 
   /** 一步式创建外部代理会话并立即发送首轮任务文本；同工作区忙时前置拦截，避免泄漏空闲子进程。 */
@@ -535,6 +520,9 @@ export class ExternalSessionService {
       }
       this.requireTrustedWorkspace(record.workspaceRoot);
       this.verifyExpectedWorkspace(record.workspaceRoot, input.expectedWorkspaceRoot);
+      if (record.owner) {
+        throw new ExternalHarnessError('EXTERNAL_SESSION_BUSY', '外部会话由另一个宿主持有');
+      }
       if (!this.canContinueRecord(record)) {
         throw new ExternalHarnessError(
           'EXTERNAL_PROTOCOL_ERROR',
@@ -546,21 +534,11 @@ export class ExternalSessionService {
 
       const def = this.requireEnabledHarnessDefinition(record.harnessId);
       const driver = this.requireDriver(def.transport);
-      const existingArchive = this.registry.readArchive(resolvedId);
-
-      slot = await this.spawnAndBindSlot({
-        record,
-        def,
-        driver,
-        nativeSessionId: record.nativeSessionId,
-        existingArchiveMessages: existingArchive?.messages,
-        truncatedArchive: Boolean(existingArchive?.truncated),
-        signal,
-      });
+      slot = await this.spawnAndBindSlot({ record, def, driver, resume: true, signal });
     } else {
       this.requireTrustedWorkspace(slot.record.workspaceRoot);
       this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
-      if (slot.record.status !== 'idle') {
+      if (slot.closing || slot.record.status !== 'idle') {
         throw new ExternalHarnessError(
           'EXTERNAL_SESSION_BUSY',
           '当前外部会话正在执行或等待审批，不能并发发送新轮次',
@@ -570,6 +548,9 @@ export class ExternalSessionService {
     }
 
     const activeSlot = slot;
+    if (activeSlot.closing || this.liveSlots.get(resolvedId) !== activeSlot) {
+      throw new ExternalHarnessError('EXTERNAL_ABORTED', '外部会话已关闭');
+    }
     this.clearIdleTimer(activeSlot);
 
     // 仅在未设置自定义标题且首轮尚无历史消息时，以脱敏后的首轮用户输入更新标题
@@ -593,6 +574,12 @@ export class ExternalSessionService {
     const completion = (async (): Promise<ViewExternalSnapshot> => {
       try {
         const turnRes = await activeSlot.handle.prompt(promptText, signal);
+        if (activeSlot.closing) {
+          await activeSlot.closing;
+          return this.buildLiveSnapshot(activeSlot);
+        }
+        if (this.liveSlots.get(resolvedId) !== activeSlot)
+          return this.buildLiveSnapshot(activeSlot);
         if (turnRes.stopReason === 'cancelled') {
           activeSlot.projector.interruptTurn();
           activeSlot.operation = { id: opId, phase: 'idle', result: 'aborted' };
@@ -602,15 +589,8 @@ export class ExternalSessionService {
         }
 
         if (turnRes.processTerminated) {
-          if (this.liveSlots.get(activeSlot.record.id) === activeSlot) {
-            this.liveSlots.delete(activeSlot.record.id);
-          }
-          this.clearSlotTimers(activeSlot);
-          this.cancelAllSlotApprovals(activeSlot);
-          this.updateSlotRecord(activeSlot, { status: 'ended' });
-          this.persistSlotArchive(activeSlot);
-          this.flushSlotImmediate(activeSlot);
-        } else if (this.liveSlots.get(activeSlot.record.id) === activeSlot) {
+          this.finishSlot(activeSlot, { status: 'ended' });
+        } else {
           this.updateSlotRecord(activeSlot, { status: 'idle' });
           this.persistSlotArchive(activeSlot);
           this.armIdleTimer(activeSlot);
@@ -624,6 +604,11 @@ export class ExternalSessionService {
         }
         return this.getSnapshot(activeSlot.record.id);
       } catch (err) {
+        if (activeSlot.closing) {
+          await activeSlot.closing;
+          return this.buildLiveSnapshot(activeSlot);
+        }
+        if (this.liveSlots.get(resolvedId) !== activeSlot) throw err;
         activeSlot.projector.interruptTurn();
         const safeErr =
           sanitizeDisplayText(
@@ -636,14 +621,14 @@ export class ExternalSessionService {
           level: 'error',
           text: safeErr,
         });
-        const stillAlive = this.liveSlots.get(activeSlot.record.id) === activeSlot;
-        this.updateSlotRecord(activeSlot, {
-          status: stillAlive ? 'idle' : 'failed',
-          lastError: safeErr,
-        });
-        this.persistSlotArchive(activeSlot);
-        if (stillAlive) this.armIdleTimer(activeSlot);
-        this.flushSlotImmediate(activeSlot);
+        if (err instanceof ExternalHarnessError && err.processTerminated) {
+          this.finishSlot(activeSlot, { status: 'failed', lastError: safeErr });
+        } else {
+          this.updateSlotRecord(activeSlot, { status: 'idle', lastError: safeErr });
+          this.persistSlotArchive(activeSlot);
+          this.armIdleTimer(activeSlot);
+          this.flushSlotImmediate(activeSlot);
+        }
         this.options.onAttentionEvent?.({
           kind: 'turn_failed',
           session: this.toViewSession(activeSlot.record),
@@ -665,7 +650,7 @@ export class ExternalSessionService {
   }): Promise<void> {
     const resolvedId = this.resolveSessionId(input.sessionId, input.expectedWorkspaceRoot);
     const slot = this.liveSlots.get(resolvedId);
-    if (!slot) {
+    if (!slot || slot.closing) {
       throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', '外部会话已关闭，审批单已失效');
     }
     this.requireTrustedWorkspace(slot.record.workspaceRoot);
@@ -717,6 +702,7 @@ export class ExternalSessionService {
     const slot = this.liveSlots.get(resolvedId);
     if (!slot) return;
     this.verifyExpectedWorkspace(slot.record.workspaceRoot, expectedWorkspaceRoot);
+    if (slot.closing) return;
     if (
       slot.record.status !== 'running' &&
       slot.record.status !== 'waiting_approval' &&
@@ -740,30 +726,36 @@ export class ExternalSessionService {
     if (opening) {
       this.verifyExpectedWorkspace(opening.workspaceRoot, expectedWorkspaceRoot);
       opening.abort.abort();
+      await opening.settled;
+      return;
     }
     const slot = this.liveSlots.get(resolvedId);
     if (!slot) {
       const rec = this.registry.getRecord(resolvedId);
       if (rec) {
         this.verifyExpectedWorkspace(rec.workspaceRoot, expectedWorkspaceRoot);
-        if (rec.status !== 'ended' && rec.status !== 'failed') {
-          this.registry.upsertRecord({ ...rec, status: 'ended', updatedAt: Date.now() });
-          this.notifyListChanged(rec.workspaceRoot);
+        if (rec.owner) {
+          throw new ExternalHarnessError('EXTERNAL_SESSION_BUSY', '外部会话由另一个宿主持有');
         }
       }
       return;
     }
     this.verifyExpectedWorkspace(slot.record.workspaceRoot, expectedWorkspaceRoot);
 
-    this.liveSlots.delete(resolvedId);
-    this.clearSlotTimers(slot);
-    this.cancelAllSlotApprovals(slot);
-    slot.projector.interruptTurn();
-    slot.operation = undefined;
-    this.updateSlotRecord(slot, { status: 'ended' });
-    this.persistSlotArchive(slot);
-    await slot.handle.close();
-    this.flushSlotImmediate(slot);
+    slot.closing ??= Promise.resolve()
+      .then(async () => {
+        this.clearSlotTimers(slot);
+        this.cancelAllSlotApprovals(slot);
+        await slot.handle.close();
+        slot.projector.interruptTurn();
+        slot.operation = undefined;
+        this.finishSlot(slot, { status: 'ended', lastError: undefined });
+      })
+      .catch((err) => {
+        slot.closing = undefined;
+        throw err;
+      });
+    await slot.closing;
   }
 
   /** 删除外部会话记录及其只读快照文件（若仍在运行先自动关闭子进程再删除）。 */
@@ -815,12 +807,15 @@ export class ExternalSessionService {
   /** 宿主停机清理：中止在途握手、保存所有活动会话快照并两段式回收全部外部子进程树，确保零孤儿残留。 */
   async dispose(): Promise<void> {
     this.disposed = true;
-    for (const entry of this.openingSessions.values()) {
+    const opening = [...this.openingSessions.values()];
+    for (const entry of opening) {
       entry.abort.abort();
     }
-    this.openingSessions.clear();
     const activeIds = [...this.liveSlots.keys()];
-    await Promise.allSettled(activeIds.map((id) => this.closeSession(id)));
+    await Promise.allSettled([
+      ...opening.map((entry) => entry.settled),
+      ...activeIds.map((id) => this.closeSession(id)),
+    ]);
     this.listSubscribers.clear();
     this.sessionSubscribers.clear();
   }
@@ -840,9 +835,7 @@ export class ExternalSessionService {
     readonly def: ExternalHarnessDefinition;
     readonly driver: ExternalHarnessDriver;
     readonly secrets?: readonly string[];
-    readonly nativeSessionId?: string;
-    readonly existingArchiveMessages?: readonly import('../../view-model/index.js').ViewMessage[];
-    readonly truncatedArchive?: boolean;
+    readonly resume?: boolean;
     readonly signal?: AbortSignal;
   }): Promise<LiveSessionSlot> {
     if (this.liveSlots.has(params.record.id) || this.openingSessions.has(params.record.id)) {
@@ -854,18 +847,21 @@ export class ExternalSessionService {
 
     const secrets = params.secrets ?? this.collectSecrets(params.record.workspaceRoot, params.def);
     const projector = new ExternalTranscriptProjector(params.record.id, secrets);
-    if (params.existingArchiveMessages && params.existingArchiveMessages.length > 0) {
-      projector.replaceMessages(params.existingArchiveMessages);
-    }
+    const claimed = this.registry.upsertRecord(
+      { ...params.record, status: 'starting', updatedAt: Date.now() },
+      params.resume,
+    );
+    const existingArchive = params.resume ? this.registry.readArchive(claimed.id) : undefined;
+    if (existingArchive?.messages.length) projector.replaceMessages(existingArchive.messages);
 
     const slot: LiveSessionSlot = {
-      record: params.record,
+      record: claimed,
       handle: undefined as unknown as ExternalDriverSessionHandle,
       projector,
       approvals: new Map(),
       notices: [],
       sequence: 0,
-      truncatedArchive: Boolean(params.truncatedArchive),
+      truncatedArchive: Boolean(existingArchive?.truncated),
       secrets,
     };
 
@@ -879,29 +875,37 @@ export class ExternalSessionService {
       params.signal?.addEventListener('abort', onParentAbort, { once: true });
     }
 
+    let settleOpening!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      settleOpening = resolve;
+    });
     this.openingSessions.set(params.record.id, {
       workspaceRoot: params.record.workspaceRoot,
       title: params.record.title,
       abort: openingAbort,
+      settled,
+      slot,
     });
+    this.notifyListChanged(claimed.workspaceRoot);
 
     try {
       const opened = await params.driver.open({
         def: params.def,
         workspaceRoot: params.record.workspaceRoot,
-        ...(params.nativeSessionId ? { nativeSessionId: params.nativeSessionId } : {}),
+        ...(params.resume && claimed.nativeSessionId
+          ? { nativeSessionId: claimed.nativeSessionId }
+          : {}),
         signal: openingAbort.signal,
         onEvent: (event) => this.handleDriverEvent(slot, event),
       });
+      slot.handle = opened.handle;
 
       if (this.disposed || openingAbort.signal.aborted) {
-        await opened.handle.close().catch(() => {});
         throw new ExternalHarnessError('EXTERNAL_ABORTED', '外部会话启动已取消');
       }
 
-      slot.handle = opened.handle;
       if (
-        (!params.existingArchiveMessages || params.existingArchiveMessages.length === 0) &&
+        !existingArchive?.messages.length &&
         opened.replayedMessages &&
         opened.replayedMessages.length > 0
       ) {
@@ -909,7 +913,7 @@ export class ExternalSessionService {
       }
 
       const updatedRecord: ExternalSessionRecord = {
-        ...params.record,
+        ...slot.record,
         status: 'idle',
         ...(opened.nativeSessionId
           ? { nativeSessionId: opened.nativeSessionId }
@@ -929,17 +933,37 @@ export class ExternalSessionService {
             : {}),
         updatedAt: Date.now(),
       };
-      slot.record = updatedRecord;
-      this.registry.upsertRecord(updatedRecord);
+      slot.record = this.registry.upsertRecord(updatedRecord);
       this.liveSlots.set(updatedRecord.id, slot);
       return slot;
+    } catch (err) {
+      await slot.handle?.close().catch(() => {});
+      this.clearSlotTimers(slot);
+      this.cancelAllSlotApprovals(slot);
+      const aborted = openingAbort.signal.aborted;
+      const rawErr = err instanceof Error ? err.message : String(err);
+      this.updateSlotRecord(slot, {
+        status: aborted ? 'ended' : 'failed',
+        lastError: aborted ? undefined : sanitizeDisplayText(redactText(rawErr, secrets), 300),
+      });
+      this.notifyListChanged(claimed.workspaceRoot);
+      throw err;
     } finally {
       params.signal?.removeEventListener('abort', onParentAbort);
       this.openingSessions.delete(params.record.id);
+      settleOpening();
     }
   }
 
   private handleDriverEvent(slot: LiveSessionSlot, event: ExternalEvent): void {
+    if (
+      slot.closing ||
+      (this.liveSlots.get(slot.record.id) !== slot &&
+        this.openingSessions.get(slot.record.id)?.slot !== slot)
+    ) {
+      if (event.type === 'approval_requested') event.respond({ outcome: 'cancelled' });
+      return;
+    }
     switch (event.type) {
       case 'text_delta':
       case 'thought_delta':
@@ -1034,21 +1058,22 @@ export class ExternalSessionService {
       }
       case 'closed': {
         if (this.liveSlots.get(slot.record.id) !== slot) return;
-        this.liveSlots.delete(slot.record.id);
-        this.clearSlotTimers(slot);
-        this.cancelAllSlotApprovals(slot);
+        const running = slot.operation?.phase === 'running';
         slot.projector.interruptTurn();
         slot.operation = undefined;
-        const crashed = event.code !== 0 && event.code !== null;
+        const crashed = running || (event.code !== 0 && event.code !== null);
         const errTail = event.stderrTail
           ? sanitizeDisplayText(redactText(event.stderrTail, slot.secrets), 240)
           : undefined;
-        this.updateSlotRecord(slot, {
+        this.finishSlot(slot, {
           status: crashed ? 'failed' : 'ended',
-          ...(crashed && errTail ? { lastError: errTail } : {}),
+          lastError: crashed ? (errTail ?? '外部代理进程已退出') : undefined,
         });
-        this.persistSlotArchive(slot);
-        this.flushSlotImmediate(slot);
+        if (running)
+          this.options.onAttentionEvent?.({
+            kind: 'turn_failed',
+            session: this.toViewSession(slot.record),
+          });
         return;
       }
     }
@@ -1162,8 +1187,20 @@ export class ExternalSessionService {
       ...patch,
       updatedAt: Date.now(),
     };
-    slot.record = next;
-    this.registry.upsertRecord(next);
+    slot.record = this.registry.upsertRecord(next);
+  }
+
+  /** 子进程已收口后先归档，再释放持久归属，防止新宿主读取上一轮的旧快照。 */
+  private finishSlot(
+    slot: LiveSessionSlot,
+    patch: { readonly status: 'ended' | 'failed'; readonly lastError?: string },
+  ): void {
+    this.clearSlotTimers(slot);
+    this.cancelAllSlotApprovals(slot);
+    this.persistSlotArchive(slot);
+    this.updateSlotRecord(slot, patch);
+    this.liveSlots.delete(slot.record.id);
+    this.flushSlotImmediate(slot);
   }
 
   private buildLiveSnapshot(slot: LiveSessionSlot): ViewExternalSnapshot {
@@ -1181,7 +1218,9 @@ export class ExternalSessionService {
   }
 
   private canContinueRecord(record: ExternalSessionRecord): boolean {
-    if (this.liveSlots.has(record.id)) return true;
+    const live = this.liveSlots.get(record.id);
+    if (live) return !live.closing;
+    if (record.owner) return false;
     if (!record.resumable || !record.nativeSessionId) return false;
     const entry = listResolvedExternalHarnesses({ homeDir: this.homeDir }).find(
       (i) => i.definition.id === record.harnessId,

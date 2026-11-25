@@ -222,7 +222,14 @@ const externalProbe = object({
   available: bool,
   status: {
     type: 'string',
-    enum: ['ready', 'needs_login', 'not_installed', 'invalid_shim', 'handshake_failed'],
+    enum: [
+      'ready',
+      'auth_unverified',
+      'needs_login',
+      'not_installed',
+      'invalid_shim',
+      'handshake_failed',
+    ],
   },
   agentName: nullable(text),
   version: nullable(text),

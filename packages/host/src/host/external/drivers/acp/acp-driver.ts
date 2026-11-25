@@ -194,6 +194,18 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         }
       }
 
+      if (flavor.id === 'dsh' && !authMethodId) {
+        return {
+          available: false,
+          ...(init.agentName ? { agentName: init.agentName } : {}),
+          ...(init.version ? { version: init.version } : {}),
+          loadSupported: Boolean(init.loadMethod),
+          status: 'auth_unverified',
+          reason: 'ACP 握手成功。DeepSeek Harness 会在首轮调用时检查模型凭据。',
+          ...(flavor.loginHint ? { loginHint: flavor.loginHint } : {}),
+        };
+      }
+
       return {
         available: true,
         ...(init.agentName ? { agentName: init.agentName } : {}),
@@ -636,6 +648,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
               throw new ExternalHarnessError(
                 'EXTERNAL_TIMEOUT',
                 `外部代理 '${def.name}' 超过 ${Math.round(watchdogLimitMs / 1000)} 秒无响应，已自动终止`,
+                { processTerminated: true },
               );
             }
             if (cancelRequested) {
@@ -643,6 +656,15 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
               channel.close();
               await proc.close();
               return { stopReason: 'cancelled', processTerminated: true };
+            }
+            if (err instanceof Error && isAcpAuthRequiredError(err.message)) {
+              throw new ExternalHarnessError(
+                'EXTERNAL_AUTH_REQUIRED',
+                '外部代理缺少有效的模型凭据',
+                {
+                  loginHint: flavor.loginHint,
+                },
+              );
             }
             throw err;
           } finally {

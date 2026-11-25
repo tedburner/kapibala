@@ -558,7 +558,12 @@ export class PiRpcDriver implements ExternalHarnessDriver {
       }
 
       const stateData = asRecord(stateResp.data);
-      let hasModel = Boolean(asRecord(stateData?.model));
+      const model = asRecord(stateData?.model);
+      let hasModel =
+        typeof model?.id === 'string' &&
+        model.id.length > 0 &&
+        model.id !== 'unknown' &&
+        model.provider !== 'unknown';
       if (!hasModel) {
         const modelsResp = await callProbe('probe_models', 'get_available_models');
         const modelsData = asRecord(modelsResp.data);
@@ -1239,9 +1244,9 @@ export class PiRpcDriver implements ExternalHarnessDriver {
               const timeoutErr = new ExternalHarnessError(
                 'EXTERNAL_TIMEOUT',
                 `Pi 超过 ${Math.round(turnWatchdogMs / 1000)} 秒无响应进展，已中止当前轮次`,
+                { processTerminated: true },
               );
               void proc.close().finally(() => {
-                input.onEvent({ type: 'closed', code: 1, signal: null });
                 reject(timeoutErr);
               });
             }

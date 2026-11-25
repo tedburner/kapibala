@@ -108,8 +108,8 @@ describe('AcpStdioDriver 真实子进程契约测试', () => {
     const driver = new AcpStdioDriver();
 
     const dshRes = await driver.inspect(makeFakeHarness('dsh-resume', { flavor: 'dsh' }), cwd);
-    expect(dshRes.available).toBe(true);
-    expect(dshRes.status).toBe('ready');
+    expect(dshRes.available).toBe(false);
+    expect(dshRes.status).toBe('auth_unverified');
     expect(dshRes.agentName).toBe('deepseek-harness');
     expect(dshRes.version).toBe('0.2.0-rc.2');
     expect(dshRes.loadSupported).toBe(true);

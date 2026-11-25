@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { toolchainEnv } from '../../../scripts/process-env.mjs';
-import { desktopLaunchEnv } from './launch-env.mjs';
+import { desktopExternalLaunchEnv, desktopLaunchEnv } from './launch-env.mjs';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repository = path.resolve(desktop, '../..');
@@ -103,6 +103,7 @@ const launched = spawn(binary, [], {
   // 打包产物同样是 Electron 进程：白名单构造，宿主注入的 ELECTRON_RUN_AS_NODE 会让它退化成纯 Node。
   env: desktopLaunchEnv(process.env, {
     KPBL_DESKTOP_E2E: '1',
+    ...(await desktopExternalLaunchEnv(process.env, home)),
     KPBL_DESKTOP_HOME: home,
     KPBL_DESKTOP_USER_DATA: userData,
   }),

@@ -8,7 +8,7 @@ import { build, resolveConfig } from 'electron-vite';
 import { createServer } from 'vite';
 import { toolchainEnv } from '../../../scripts/process-env.mjs';
 import { developmentExecutable } from './dev-runtime.mjs';
-import { desktopLaunchEnv } from './launch-env.mjs';
+import { desktopExternalLaunchEnv, desktopLaunchEnv } from './launch-env.mjs';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repository = path.resolve(desktop, '../..');
@@ -254,11 +254,13 @@ async function stopChild() {
     });
   });
 }
-function launch() {
+async function launch() {
+  const externalEnv = await desktopExternalLaunchEnv(process.env);
   child = spawn(executable, [desktop, `--user-data-dir=${devUserData}`], {
     cwd: desktop,
     // 白名单构造：宿主的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE 绝不能进主进程（会让应用启动即退出）。
     env: desktopLaunchEnv(process.env, {
+      ...externalEnv,
       ELECTRON_RENDERER_URL: server.resolvedUrls.local[0].replace(/\/$/, ''),
       KPBL_DESKTOP_DEV_TOKEN: token,
     }),
@@ -283,7 +285,7 @@ async function rebuild() {
         await stopChild();
         await sharedBuild();
         await build({ root: desktop });
-        if (!dirty && !stopping) launch();
+        if (!dirty && !stopping) await launch();
       }
     } catch (error) {
       console.error(error.message);
@@ -326,7 +328,7 @@ const server = await createServer({
 });
 await server.listen();
 server.printUrls();
-launch();
+await launch();
 for (const relative of watched) {
   const target = path.join(repository, relative);
   watchers.push(fs.watch(target, { recursive: fs.statSync(target).isDirectory() }, changed));

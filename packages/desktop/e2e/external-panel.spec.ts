@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type ElectronApplication, _electron as electron, expect, test } from '@playwright/test';
-import { desktopLaunchEnv } from '../scripts/launch-env.mjs';
+import { desktopExternalLaunchEnv, desktopLaunchEnv } from '../scripts/launch-env.mjs';
 
 const entry = path.resolve('.');
 const fakeAcpScript = path.resolve('../host/tests/fixtures/fake-acp-agent.mjs');
@@ -136,12 +136,29 @@ test.describe
             'e2e-acp': {
               name: '本地验收 ACP',
               command: process.execPath,
-              args: [fakeAcpScript, '--mode=generic'],
+              args: [fakeAcpScript, '--mode=generic', '--require-review-env'],
+              envFrom: ['KPBL_E2E_EXTERNAL_VALUE'],
               enabled: true,
             },
           },
         }),
       );
+
+      // 用开发/试包启动器同一入口重新取值，验证声明变量从启动脚本到 ACP 子进程。
+      const externalEnv = await desktopExternalLaunchEnv(
+        {
+          ...process.env,
+          KPBL_E2E_EXTERNAL_VALUE: 'review-value',
+          KPBL_E2E_UNDECLARED_VALUE: 'discard-me',
+        },
+        home,
+      );
+      await stop(app);
+      app = await electron.launch({
+        args: [entry],
+        env: { ...environment(home, userData), ...externalEnv },
+      });
+      page = await firstWindow(app);
 
       // 在默认空间新建外部代理任务并投递触发审批的首轮任务
       await page.getByRole('button', { name: '在 默认空间 新建外部代理任务', exact: true }).click();

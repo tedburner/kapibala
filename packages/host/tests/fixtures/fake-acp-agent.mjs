@@ -15,6 +15,15 @@ import readline from 'node:readline';
 const modeArg = process.argv.find((arg) => arg.startsWith('--mode='));
 const mode = modeArg ? modeArg.slice('--mode='.length) : 'normal';
 
+if (
+  process.argv.includes('--require-review-env') &&
+  (process.env.KPBL_E2E_EXTERNAL_VALUE !== 'review-value' ||
+    process.env.KPBL_E2E_UNDECLARED_VALUE !== undefined)
+) {
+  process.stderr.write('Configured external environment was not isolated\n');
+  process.exit(1);
+}
+
 function send(obj) {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 }

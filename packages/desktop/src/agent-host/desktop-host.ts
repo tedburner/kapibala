@@ -127,6 +127,7 @@ export class DesktopHost {
     home: string,
     private readonly notify: (event: Notification, lane?: Lane) => Promise<void>,
     private readonly assemble = createManagedSession,
+    externalHostEnv?: NodeJS.ProcessEnv,
   ) {
     this.runtimeStream = new LatestSnapshot(
       (subscriptionId, snapshot) =>
@@ -143,6 +144,7 @@ export class DesktopHost {
     this.resources = new ResourceService(this.workspaces);
     this.external = new ExternalSessionService({
       homeDir: this.workspaces.home,
+      hostEnv: externalHostEnv,
       onAttentionEvent: (evt) => {
         if (this.dead) return;
         const wsId = this.workspaces.findIdByRoot(evt.session.workspaceRoot);

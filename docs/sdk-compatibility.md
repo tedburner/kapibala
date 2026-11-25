@@ -96,6 +96,8 @@ wire 1 的 `{major, minMinor, maxMinor}`，新端报价从候选构建的 `PROTO
 
 本版聚焦宿主层「外部代理（External Harness）」独立会话域（通用 `acp-stdio`、`claude-cli`、`codex-app-server` 与 `pi-rpc` 四套传输驱动），**`@kiturone/kapibala`（Core）与 `@kiturone/kapibala-mcp` 零改动**，本地宿主协议**保持整数 `PROTOCOL_VERSION = 2` 不变**，仅通过能力集合增量扩展 `'external-session'`，对既有 v0.1.4 客户端非破坏兼容。详见 [v0.1.5 迁移说明](migration/v0.1.5.md)。
 
+`ExternalProbeWire` 与 `ViewExternalHarnessProbe` 的状态包含 `auth_unverified`，供客户端展示外部代理认证尚未核验的情形。
+
 | 变化 | 影响 | 迁移方式 |
 |---|---|---|
 | `SERVER_CAPABILITIES` 新增 `'external-session'`，`PROTOCOL_VERSION` 保持 `2` | 不声明 `'external-session'` 的 v0.1.4 客户端照常握手并使用全部本地会话能力；调用 `external/*` 方法需在握手中显式声明 `'external-session'` | 需要消费外部代理 RPC 的客户端在 `ProtocolOffer.capabilities` 中加入 `'external-session'` |

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildExternalLaunchEnv } from '../src/host/external/env.js';
@@ -73,6 +74,7 @@ describe('buildExternalLaunchEnv', () => {
 });
 
 describe('resolveExternalCommand', () => {
+  const windowsIt = it.runIf(process.platform === 'win32');
   it('拒绝包含路径分隔符的相对路径与 Windows 保留设备名，防执行工作区脚本', () => {
     const root = makeTempDir('kpbl-ext-cmd-rel-');
     expect(() =>
@@ -112,7 +114,7 @@ describe('resolveExternalCommand', () => {
     }
   });
 
-  it('Windows 同目录下优先命中原生 .exe，忽略同名 .cmd 垫片', () => {
+  windowsIt('Windows 同目录下优先命中原生 .exe，忽略同名 .cmd 垫片', () => {
     const binDir = makeTempDir('kpbl-ext-exe-prio-');
     const exePath = path.join(binDir, 'codex.exe');
     const cmdPath = path.join(binDir, 'codex.cmd');
@@ -132,80 +134,86 @@ describe('resolveExternalCommand', () => {
     expect(resolved.unwrapKind).toBe('direct');
   });
 
-  it('Windows 解包形态 1：将指向 node_modules 内二进制 .exe 的 .cmd 垫片静态解包为直启 .exe', () => {
-    const npmDir = makeTempDir('kpbl-ext-cmd-exe-');
-    const targetExe = path.join(npmDir, 'node_modules', 'opencode-ai', 'bin', 'opencode.exe');
-    fs.mkdirSync(path.dirname(targetExe), { recursive: true });
-    fs.writeFileSync(targetExe, 'MZ-opencode');
-    const shimPath = path.join(npmDir, 'opencode.cmd');
-    fs.writeFileSync(
-      shimPath,
-      [
-        '@ECHO off',
-        'SET dp0=%~dp0',
-        'SET "_prog=node"',
-        'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe"   %*',
-      ].join('\r\n'),
-    );
+  windowsIt(
+    'Windows 解包形态 1：将指向 node_modules 内二进制 .exe 的 .cmd 垫片静态解包为直启 .exe',
+    () => {
+      const npmDir = makeTempDir('kpbl-ext-cmd-exe-');
+      const targetExe = path.join(npmDir, 'node_modules', 'opencode-ai', 'bin', 'opencode.exe');
+      fs.mkdirSync(path.dirname(targetExe), { recursive: true });
+      fs.writeFileSync(targetExe, 'MZ-opencode');
+      const shimPath = path.join(npmDir, 'opencode.cmd');
+      fs.writeFileSync(
+        shimPath,
+        [
+          '@ECHO off',
+          'SET dp0=%~dp0',
+          'SET "_prog=node"',
+          'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe"   %*',
+        ].join('\r\n'),
+      );
 
-    const resolved = resolveExternalCommand({
-      command: 'opencode',
-      args: ['acp'],
-      platform: 'win32',
-      envPath: npmDir,
-      homeDir: npmDir,
-    });
+      const resolved = resolveExternalCommand({
+        command: 'opencode',
+        args: ['acp'],
+        platform: 'win32',
+        envPath: npmDir,
+        homeDir: npmDir,
+      });
 
-    expect(resolved.executable).toBe(fs.realpathSync.native(targetExe));
-    expect(resolved.args).toEqual(['acp']);
-    expect(resolved.unwrapKind).toBe('cmd-exe');
-  });
+      expect(resolved.executable).toBe(fs.realpathSync.native(targetExe));
+      expect(resolved.args).toEqual(['acp']);
+      expect(resolved.unwrapKind).toBe('cmd-exe');
+    },
+  );
 
-  it('Windows 解包形态 2 与 3：将指向 .js 与无后缀 node shebang 脚本的 .cmd 解包为 node 直启', () => {
-    const npmDir = makeTempDir('kpbl-ext-cmd-js-');
-    const fakeNode = path.join(npmDir, 'node.exe');
-    fs.writeFileSync(fakeNode, 'MZ-node');
+  windowsIt(
+    'Windows 解包形态 2 与 3：将指向 .js 与无后缀 node shebang 脚本的 .cmd 解包为 node 直启',
+    () => {
+      const npmDir = makeTempDir('kpbl-ext-cmd-js-');
+      const fakeNode = path.join(npmDir, 'node.exe');
+      fs.writeFileSync(fakeNode, 'MZ-node');
 
-    const dshJs = path.join(npmDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
-    fs.mkdirSync(path.dirname(dshJs), { recursive: true });
-    fs.writeFileSync(dshJs, 'console.log("dsh");\n');
-    fs.writeFileSync(
-      path.join(npmDir, 'dsh.cmd'),
-      '@ECHO off\r\nSET dp0=%~dp0\r\n"%_prog%"  "%dp0%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\n',
-    );
+      const dshJs = path.join(npmDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+      fs.mkdirSync(path.dirname(dshJs), { recursive: true });
+      fs.writeFileSync(dshJs, 'console.log("dsh");\n');
+      fs.writeFileSync(
+        path.join(npmDir, 'dsh.cmd'),
+        '@ECHO off\r\nSET dp0=%~dp0\r\n"%_prog%"  "%dp0%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\n',
+      );
 
-    const resolvedJs = resolveExternalCommand({
-      command: 'dsh',
-      args: ['--profile', 'acp'],
-      platform: 'win32',
-      envPath: npmDir,
-      homeDir: npmDir,
-    });
-    expect(resolvedJs.executable).toBe(fs.realpathSync.native(fakeNode));
-    expect(resolvedJs.args).toEqual([fs.realpathSync.native(dshJs), '--profile', 'acp']);
-    expect(resolvedJs.unwrapKind).toBe('cmd-node-script');
+      const resolvedJs = resolveExternalCommand({
+        command: 'dsh',
+        args: ['--profile', 'acp'],
+        platform: 'win32',
+        envPath: npmDir,
+        homeDir: npmDir,
+      });
+      expect(resolvedJs.executable).toBe(fs.realpathSync.native(fakeNode));
+      expect(resolvedJs.args).toEqual([fs.realpathSync.native(dshJs), '--profile', 'acp']);
+      expect(resolvedJs.unwrapKind).toBe('cmd-node-script');
 
-    const shebangScript = path.join(npmDir, 'node_modules', 'demo-cli', 'bin', 'demo');
-    fs.mkdirSync(path.dirname(shebangScript), { recursive: true });
-    fs.writeFileSync(shebangScript, '#!/usr/bin/env node\nconsole.log("ok");\n');
-    fs.writeFileSync(
-      path.join(npmDir, 'demo.cmd'),
-      '@ECHO off\r\n"%~dp0\\node_modules\\demo-cli\\bin\\demo" %*\r\n',
-    );
+      const shebangScript = path.join(npmDir, 'node_modules', 'demo-cli', 'bin', 'demo');
+      fs.mkdirSync(path.dirname(shebangScript), { recursive: true });
+      fs.writeFileSync(shebangScript, '#!/usr/bin/env node\nconsole.log("ok");\n');
+      fs.writeFileSync(
+        path.join(npmDir, 'demo.cmd'),
+        '@ECHO off\r\n"%~dp0\\node_modules\\demo-cli\\bin\\demo" %*\r\n',
+      );
 
-    const resolvedShebang = resolveExternalCommand({
-      command: 'demo',
-      args: ['--acp'],
-      platform: 'win32',
-      envPath: npmDir,
-      homeDir: npmDir,
-    });
-    expect(resolvedShebang.executable).toBe(fs.realpathSync.native(fakeNode));
-    expect(resolvedShebang.args).toEqual([fs.realpathSync.native(shebangScript), '--acp']);
-    expect(resolvedShebang.unwrapKind).toBe('cmd-shebang-node');
-  });
+      const resolvedShebang = resolveExternalCommand({
+        command: 'demo',
+        args: ['--acp'],
+        platform: 'win32',
+        envPath: npmDir,
+        homeDir: npmDir,
+      });
+      expect(resolvedShebang.executable).toBe(fs.realpathSync.native(fakeNode));
+      expect(resolvedShebang.args).toEqual([fs.realpathSync.native(shebangScript), '--acp']);
+      expect(resolvedShebang.unwrapKind).toBe('cmd-shebang-node');
+    },
+  );
 
-  it('拦截目录穿越逃出 node_modules 的恶意 .cmd 以及任意自定义批处理脚本', () => {
+  windowsIt('拦截目录穿越逃出 node_modules 的恶意 .cmd 以及任意自定义批处理脚本', () => {
     const root = makeTempDir('kpbl-ext-cmd-escape-');
     const npmDir = path.join(root, 'npm');
     fs.mkdirSync(path.join(npmDir, 'node_modules'), { recursive: true });
@@ -250,13 +258,12 @@ describe('resolveExternalCommand', () => {
     const home = makeTempDir('kpbl-ext-gui-fallback-');
     const localBin = path.join(home, '.local', 'bin');
     fs.mkdirSync(localBin, { recursive: true });
-    const target = path.join(localBin, 'claude.exe');
+    const target = path.join(localBin, process.platform === 'win32' ? 'claude.exe' : 'claude');
     fs.writeFileSync(target, 'MZ-claude');
 
     const resolved = resolveExternalCommand({
       command: 'claude',
       args: ['-p'],
-      platform: 'win32',
       envPath: '',
       homeDir: home,
     });
@@ -348,6 +355,8 @@ describe('NdjsonChannel', () => {
     const readable = new PassThrough();
     const writable = new PassThrough();
     const streamObjects: Record<string, unknown>[] = [];
+    const lines = createInterface({ input: writable, crlfDelay: Number.POSITIVE_INFINITY });
+    const outgoing = lines[Symbol.asyncIterator]();
 
     const channel = new NdjsonChannel(readable, writable, {
       onMessage: (msg) => streamObjects.push(msg),
@@ -358,10 +367,7 @@ describe('NdjsonChannel', () => {
       { cwd: '/tmp' },
       { omitJsonRpcVersion: true },
     );
-    const firstOut = JSON.parse((writable.read() as Buffer).toString('utf8').trim()) as Record<
-      string,
-      unknown
-    >;
+    const firstOut = JSON.parse((await outgoing.next()).value) as Record<string, unknown>;
     expect(firstOut.jsonrpc).toBeUndefined();
 
     readable.write(`${JSON.stringify({ id: firstOut.id, result: { threadId: 'thr_1' } })}\n`);
@@ -375,7 +381,7 @@ describe('NdjsonChannel', () => {
     readable.write(`${JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1' })}\n`);
 
     await new Promise((resolve) => setImmediate(resolve));
-    const errReply = JSON.parse((writable.read() as Buffer).toString('utf8').trim()) as {
+    const errReply = JSON.parse((await outgoing.next()).value) as {
       id: string;
       error: { code: number };
     };
@@ -386,19 +392,15 @@ describe('NdjsonChannel', () => {
     // 乱序 JSON-RPC 响应：先返回第 2 个请求，再返回第 1 个请求，各自准确关联不串包
     const reqA = channel.request<string>('step/one');
     const reqB = channel.request<string>('step/two');
-    const outgoing = (writable.read() as Buffer)
-      .toString('utf8')
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as { id: number; method: string });
-    expect(outgoing).toHaveLength(2);
-    readable.write(
-      `${JSON.stringify({ jsonrpc: '2.0', id: outgoing[1]!.id, result: 'second' })}\n`,
-    );
-    readable.write(`${JSON.stringify({ jsonrpc: '2.0', id: outgoing[0]!.id, result: 'first' })}\n`);
+    const one = JSON.parse((await outgoing.next()).value) as { id: number; method: string };
+    const two = JSON.parse((await outgoing.next()).value) as { id: number; method: string };
+    expect([one.method, two.method]).toEqual(['step/one', 'step/two']);
+    readable.write(`${JSON.stringify({ jsonrpc: '2.0', id: two.id, result: 'second' })}\n`);
+    readable.write(`${JSON.stringify({ jsonrpc: '2.0', id: one.id, result: 'first' })}\n`);
     expect(await Promise.all([reqA, reqB])).toEqual(['first', 'second']);
 
     channel.close();
+    lines.close();
   });
 });
 

@@ -298,86 +298,91 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       platform: this.options.platform,
     });
 
-    const proc = ExternalProcessSupervisor.spawn({
-      executable: resolvedCmd.executable,
-      args: [...resolvedCmd.args, '--version'],
-      cwd,
-      env: launchEnv.env,
-    });
-
-    let stdoutText = '';
-    proc.stdout.on('data', (chunk: Buffer | string) => {
-      if (stdoutText.length >= 8192) return;
-      stdoutText += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    });
-
-    const timeoutMs = this.options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const onAbort = (): void => {
-      void proc.close();
+    const deadline = Date.now() + (this.options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS);
+    // CLI 认证状态只读；共享同一探测预算，输出仅用于提取版本与认证布尔值。
+    const probe = async (args: string[]) => {
+      if (signal?.aborted) throw new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消');
+      const proc = ExternalProcessSupervisor.spawn({
+        executable: resolvedCmd.executable,
+        args: [...resolvedCmd.args, ...args],
+        cwd,
+        env: launchEnv.env,
+      });
+      let stdout = '';
+      proc.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.subarray(0, Math.max(0, 8192 - stdout.length)).toString('utf8');
+      });
+      const abort = () => void proc.close();
+      signal?.addEventListener('abort', abort, { once: true });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const exit = await Promise.race([
+          proc.waitForClose(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => {
+                reject(new ExternalHarnessError('EXTERNAL_TIMEOUT', 'Claude Code 探测超时'));
+              },
+              Math.max(1, deadline - Date.now()),
+            );
+            timer.unref?.();
+          }),
+        ]);
+        if (signal?.aborted) throw new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消');
+        return { code: exit.code, stdout };
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+        await proc.close();
+      }
     };
-    signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
-      const exit = await Promise.race([
-        proc.waitForClose(),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            reject(new ExternalHarnessError('EXTERNAL_TIMEOUT', '执行 claude --version 超时'));
-          }, timeoutMs);
-          timer.unref?.();
-        }),
-      ]);
-
-      const combined = redactCommonSecrets(
-        sanitizeUntrustedOutput(`${stdoutText}\n${proc.getStderrTail()}`),
-      ).trim();
-
-      if (isClaudeAuthErrorText(combined)) {
+      const versionResult = await probe(['--version']);
+      if (versionResult.code !== 0) {
+        throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', 'Claude Code 版本探测未成功退出');
+      }
+      const version = parseVersionToken(versionResult.stdout);
+      const identity = {
+        agentName: 'Claude Code',
+        ...(version ? { version } : {}),
+        loadSupported: true,
+      };
+      const auth = await probe(['auth', 'status', '--json']);
+      let loggedIn: unknown;
+      try {
+        loggedIn = asRecord(JSON.parse(auth.stdout))?.loggedIn;
+      } catch {
+        // 旧版或包装器可能未实现结构化认证探测。
+      }
+      if (loggedIn === true && auth.code === 0) {
+        return { ...identity, available: true, status: 'ready' };
+      }
+      if (loggedIn === false) {
         return {
+          ...identity,
           available: false,
-          agentName: 'Claude Code',
-          loadSupported: false,
           status: 'needs_login',
-          reason: sanitizeDisplayText(combined, 200) ?? 'Claude Code 尚未完成登录授权',
+          reason: 'Claude Code 尚未完成登录授权',
           loginHint: CLAUDE_LOGIN_HINT,
         };
       }
-
-      if (exit.code === 0) {
-        const version = parseVersionToken(combined);
-        return {
-          available: true,
-          agentName: 'Claude Code',
-          ...(version ? { version } : {}),
-          loadSupported: true,
-          status: 'ready',
-        };
-      }
-
       return {
+        ...identity,
         available: false,
-        loadSupported: false,
-        status: 'handshake_failed',
-        reason:
-          sanitizeDisplayText(combined, 240) ??
-          `claude --version 异常退出（code=${exit.code ?? 'null'}）`,
+        status: 'auth_unverified',
+        reason: '当前 Claude Code 未返回可识别的认证状态。',
         loginHint: CLAUDE_LOGIN_HINT,
-        installHint: CLAUDE_INSTALL_HINT,
       };
     } catch (err) {
       return {
         available: false,
         loadSupported: false,
         status: 'handshake_failed',
-        reason: err instanceof Error ? err.message : '探测 Claude Code 失败',
+        reason: err instanceof ExternalHarnessError ? err.safeMessage : '探测 Claude Code 失败',
         loginHint: CLAUDE_LOGIN_HINT,
         installHint: CLAUDE_INSTALL_HINT,
       };
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      await proc.close();
     }
   }
 
@@ -972,10 +977,10 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
               const timeoutErr = new ExternalHarnessError(
                 'EXTERNAL_TIMEOUT',
                 `Claude Code 超过 ${Math.round(turnWatchdogMs / 1000)} 秒无响应进展，已中止当前轮次`,
+                { processTerminated: true },
               );
               closingByClient = true;
               void proc.close().finally(() => {
-                input.onEvent({ type: 'closed', code: 1, signal: null });
                 reject(timeoutErr);
               });
             }

@@ -119,6 +119,9 @@ function probeBadge(probe?: ProbeResult): { label: string; className: string } {
   if (probe.status === 'needs_login') {
     return { label: '需登录', className: 'bg-kumo-recessed text-kumo-warning' };
   }
+  if (probe.status === 'auth_unverified') {
+    return { label: '认证未核验', className: 'bg-kumo-recessed text-kumo-warning' };
+  }
   if (probe.status === 'not_installed') {
     return { label: '未安装', className: 'bg-kumo-recessed text-kumo-subtle' };
   }

@@ -686,7 +686,14 @@ const externalSessionStatus = z.enum([
 const externalProbe = z
   .object({
     available: z.boolean(),
-    status: z.enum(['ready', 'needs_login', 'not_installed', 'invalid_shim', 'handshake_failed']),
+    status: z.enum([
+      'ready',
+      'auth_unverified',
+      'needs_login',
+      'not_installed',
+      'invalid_shim',
+      'handshake_failed',
+    ]),
     agentName: text.optional(),
     version: text.optional(),
     loadSupported: z.boolean(),

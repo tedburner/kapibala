@@ -128,7 +128,13 @@ export interface EvidenceWire {
 /** 外部代理探测结论的本地 wire 形状（可空事实统一用 `null` 表达）。 */
 export interface ExternalProbeWire {
   available: boolean;
-  status: 'ready' | 'needs_login' | 'not_installed' | 'invalid_shim' | 'handshake_failed';
+  status:
+    | 'ready'
+    | 'auth_unverified'
+    | 'needs_login'
+    | 'not_installed'
+    | 'invalid_shim'
+    | 'handshake_failed';
   agentName: string | null;
   version: string | null;
   loadSupported: boolean;

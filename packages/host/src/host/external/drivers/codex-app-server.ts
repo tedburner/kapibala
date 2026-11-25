@@ -979,10 +979,10 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
               const timeoutErr = new ExternalHarnessError(
                 'EXTERNAL_TIMEOUT',
                 `Codex 超过 ${Math.round(turnWatchdogMs / 1000)} 秒无响应进展，已中止当前轮次`,
+                { processTerminated: true },
               );
               closingByClient = true;
               void proc.close().finally(() => {
-                input.onEvent({ type: 'closed', code: 1, signal: null });
                 reject(timeoutErr);
               });
             }

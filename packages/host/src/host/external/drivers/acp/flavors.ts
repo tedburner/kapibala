@@ -139,7 +139,7 @@ export function isAcpAuthRequiredError(message: string, rpcCode?: number): boole
   if (rpcCode === -32000 && /auth|login|credential|token|oauth|api[_ -]?key/i.test(message)) {
     return true;
   }
-  return /(?:authentication\s+required|not\s+logged\s+in|please\s+login|oauth.*expired|missing.*api[_ -]?key|unauthorized|invalid\s+api\s+key)/i.test(
+  return /(?:authentication\s+required|not\s+logged\s+in|please\s+login|oauth.*expired|missing.*api[_ -]?key|no\s+api\s+key\s+for\s+provider|unauthorized|invalid\s+api\s+key)/i.test(
     message,
   );
 }

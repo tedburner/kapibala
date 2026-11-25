@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { AcpStdioDriver } from '../src/host/external/drivers/acp/acp-driver.js';
 import { ExternalSessionRegistry } from '../src/host/external/registry.js';
 import { ExternalSessionService } from '../src/host/external/service.js';
 import { createUserSettingsSkeleton, trustProject } from '../src/host/settings.js';
@@ -149,6 +150,83 @@ describe('ExternalSessionRegistry 只读快照归档与容量边界', () => {
 });
 
 describe('ExternalSessionService 会话编排、审批、空闲回收与 configDigest 连续性门禁', () => {
+  function createServicePair() {
+    const homeDir = makeTempDir('kpbl-ext-shared-home-');
+    const workspaceRoot = makeTempDir('kpbl-ext-shared-ws-');
+    const attention: string[] = [];
+    const options = { homeDir, isWorkspaceTrusted: (root: string) => root === workspaceRoot };
+    const service = new ExternalSessionService({
+      ...options,
+      drivers: { acp: new AcpStdioDriver({ turnWatchdogMs: 500 }) },
+      onAttentionEvent: (event) => attention.push(event.kind),
+    });
+    const other = new ExternalSessionService(options);
+    activeServices.push(service, other);
+    service.saveCustomHarness({
+      id: 'fake-opencode',
+      name: 'Fake OpenCode',
+      command: process.execPath,
+      args: [fixtureScript, '--mode=normal'],
+      flavor: 'opencode',
+      enabled: true,
+    });
+    return { service, other, attention, workspaceRoot, harnessId: 'fake-opencode' };
+  }
+
+  it('第二个宿主可查看共享归档，且在当前宿主关闭前无法续写或删除会话', async () => {
+    const { service, other, workspaceRoot, harnessId } = createServicePair();
+    const { session } = await service.openSession({ workspaceRoot, harnessId });
+    expect(other.listSessions(workspaceRoot)).toEqual([
+      expect.objectContaining({ id: session.id, status: 'idle', canContinue: false }),
+    ]);
+    await expect(
+      other.promptSession({ sessionId: session.id, text: '续写' }),
+    ).rejects.toMatchObject({
+      code: 'EXTERNAL_SESSION_BUSY',
+    });
+    await expect(other.deleteSession(session.id)).rejects.toMatchObject({
+      code: 'EXTERNAL_SESSION_BUSY',
+    });
+    await service.closeSession(session.id);
+    const resumed = other.promptSession({ sessionId: session.id, text: '关闭后续写' });
+    await expect(
+      service.promptSession({ sessionId: session.id, text: '争抢恢复' }),
+    ).rejects.toMatchObject({
+      code: 'EXTERNAL_SESSION_BUSY',
+    });
+    await expect(resumed).resolves.toMatchObject({ session: { status: 'idle' } });
+  });
+
+  it('无响应时释放子进程槽位，并从归档恢复下一轮', async () => {
+    const { service, workspaceRoot, harnessId } = createServicePair();
+    const { session } = await service.openSession({ workspaceRoot, harnessId });
+    await expect(
+      service.promptSession({ sessionId: session.id, text: 'HANG_FOREVER' }),
+    ).rejects.toMatchObject({
+      code: 'EXTERNAL_TIMEOUT',
+    });
+    expect(service.getActiveSessionPids()).toEqual([]);
+    expect(service.getSnapshot(session.id).session).toMatchObject({
+      status: 'failed',
+      canContinue: true,
+    });
+    await expect(
+      service.promptSession({ sessionId: session.id, text: '超时后继续' }),
+    ).resolves.toMatchObject({
+      session: { status: 'idle' },
+    });
+  });
+
+  it('运行中主动关闭后保留结束归档，并抑制旧轮次的失败通知', async () => {
+    const { service, attention, workspaceRoot, harnessId } = createServicePair();
+    const { session } = await service.openSession({ workspaceRoot, harnessId });
+    await service.dispatchPrompt({ sessionId: session.id, text: 'HANG_FOREVER' });
+    await service.closeSession(session.id);
+    expect(service.getSnapshot(session.id).session.status).toBe('ended');
+    expect(attention).not.toContain('turn_failed');
+    expect(service.getActiveSessionPids()).toEqual([]);
+  });
+
   it('未信任工作区硬拒全部外部会话启动与探测请求', async () => {
     const homeDir = makeTempDir('kpbl-ext-svc-untrust-home-');
     const untrustedWs = makeTempDir('kpbl-ext-svc-untrust-ws-');

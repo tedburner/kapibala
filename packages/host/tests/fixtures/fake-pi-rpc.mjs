@@ -104,7 +104,7 @@ rl.on('line', async (line) => {
       data: {
         sessionId,
         model: unauthenticated
-          ? null
+          ? { provider: 'unknown', id: 'unknown', name: 'unknown' }
           : {
               provider: 'anthropic',
               id: 'claude-sonnet-4-6',

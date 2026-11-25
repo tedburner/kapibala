@@ -3,12 +3,14 @@ import readline from 'node:readline';
 const args = process.argv.slice(2);
 
 if (args.includes('--version')) {
-  if (args.includes('--auth-fail')) {
-    process.stderr.write('Error: Not logged in. Please run claude auth login\n');
-    process.exit(1);
-  }
   process.stdout.write('2.1.325 (Claude Code)\n');
   process.exit(0);
+}
+
+if (args.includes('auth') && args.includes('status')) {
+  const loggedIn = !args.includes('--auth-fail');
+  process.stdout.write(`${JSON.stringify({ loggedIn })}\n`);
+  process.exit(loggedIn ? 0 : 1);
 }
 
 const resumeIdx = args.indexOf('--resume');

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isProcessAlive } from '@kiturone/kapibala-mcp';
 import type {
   ViewExternalSessionStatus,
   ViewMessage,
@@ -49,6 +50,8 @@ export interface ExternalSessionRecord {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly lastError?: string;
+  /** 活跃子进程的宿主身份；同进程内不同服务实例也必须分别认领。 */
+  readonly owner?: { readonly pid: number; readonly id: string };
 }
 
 /** 持久化在 `snapshots/<sha256(id)>.json` 中的有界脱敏只读展示归档。 */
@@ -78,13 +81,13 @@ function isLiveStatus(status: ViewExternalSessionStatus): boolean {
  * 隔离与安全不变量：
  * - 所有文件严格落在 `~/.kapibala/external/`（目录 `0700`、文件 `0600`），与 Core `SessionManager` 零交集；
  * - 内部记录表统一采用无原型字典（`Object.create(null)` + `Object.hasOwn`），阻断 `constructor` 等原型键污染；
- * - 宿主首次加载登记簿时，将上一次宿主退出遗留的非终态归一为 `'ended'`，并校验 `nativeSessionId` 合法性；
+ * - 读时将缺少归属或宿主已退出的非终态视作 `'ended'`；写时在锁内核验归属并保存归一结果；
  * - 快照文件名采用 `sha256(sessionId).json`，落盘前统一脱敏并强制钳制在 680KiB 单帧安全预算以内。
  */
 export class ExternalSessionRegistry {
   readonly sessionsFilePath: string;
   readonly snapshotsDirPath: string;
-  private startupNormalized = false;
+  private readonly owner = { pid: process.pid, id: randomUUID() };
 
   constructor(options: { readonly homeDir?: string } = {}) {
     const baseDir = getExternalStateDirPath(options.homeDir);
@@ -94,7 +97,6 @@ export class ExternalSessionRegistry {
 
   /** 按更新时间倒序列出全部（或指定工作区根下的）外部会话记录。 */
   listRecords(workspaceRoot?: string): ExternalSessionRecord[] {
-    this.ensureStartupNormalized();
     const targetNorm = workspaceRoot ? normalizeProjectRoot(workspaceRoot) : undefined;
     return Object.values(this.readRecordsMap())
       .filter((rec) => (targetNorm ? normalizeProjectRoot(rec.workspaceRoot) === targetNorm : true))
@@ -104,25 +106,28 @@ export class ExternalSessionRegistry {
   /** 按精确 ID 读取单条外部会话记录（阻断原型属性命中）。 */
   getRecord(id: string): ExternalSessionRecord | undefined {
     if (!id || isReservedObjectPropertyName(id)) return undefined;
-    this.ensureStartupNormalized();
     const records = this.readRecordsMap();
     return Object.hasOwn(records, id) ? records[id] : undefined;
   }
 
   /**
-   * 新增或更新外部会话记录。
+   * 新增或更新外部会话记录。活跃状态在锁内认领，其他存活宿主持有时拒绝写入。
    *
    * 容量回收策略：当全局已满 50 条记录且新增会话时，自动淘汰更新时间最早的终态（`ended` / `failed`）记录及其快照，
    * 避免历史已移除工作区的旧记录占满配额导致当前工作区死锁；仅当 50 条全为活跃会话时抛 `EXTERNAL_CAPACITY`。
    */
-  upsertRecord(record: ExternalSessionRecord): ExternalSessionRecord {
+  upsertRecord(record: ExternalSessionRecord, resume = false): ExternalSessionRecord {
     if (!record.id || isReservedObjectPropertyName(record.id)) {
       throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `非法的外部会话 ID：${record.id}`);
     }
-    this.ensureStartupNormalized();
     const evictedIds: string[] = [];
     const saved = this.mutateRecords((records) => {
-      if (!Object.hasOwn(records, record.id)) {
+      const existing = records[record.id];
+      this.assertWritable(existing);
+      if (resume && !existing) {
+        throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', '外部会话已被删除');
+      }
+      if (!existing) {
         while (Object.keys(records).length >= MAX_RETAINED_EXTERNAL_SESSIONS) {
           const oldestTerminal = Object.values(records)
             .filter((item) => !isLiveStatus(item.status))
@@ -137,8 +142,14 @@ export class ExternalSessionRegistry {
           evictedIds.push(oldestTerminal.id);
         }
       }
-      records[record.id] = record;
-      return record;
+      const next = {
+        ...(resume ? existing! : record),
+        status: record.status,
+        updatedAt: record.updatedAt,
+        owner: isLiveStatus(record.status) ? this.owner : undefined,
+      };
+      records[record.id] = next;
+      return next;
     });
     for (const evictedId of evictedIds) {
       try {
@@ -153,17 +164,19 @@ export class ExternalSessionRegistry {
   /** 删除指定外部会话记录并同步清理对应的只读展示快照文件。 */
   deleteRecord(id: string): boolean {
     if (!id || isReservedObjectPropertyName(id)) return false;
-    this.ensureStartupNormalized();
     const removed = this.mutateRecords((records) => {
       if (!Object.hasOwn(records, id)) return false;
+      this.assertWritable(records[id]);
       delete records[id];
       return true;
     });
     const archiveFile = this.archivePathOf(id);
-    try {
-      fs.unlinkSync(archiveFile);
-    } catch {
-      /* 快照不存在时忽略 */
+    if (removed) {
+      try {
+        fs.unlinkSync(archiveFile);
+      } catch {
+        /* 快照不存在时忽略 */
+      }
     }
     return removed;
   }
@@ -337,23 +350,10 @@ export class ExternalSessionRegistry {
     return path.join(this.snapshotsDirPath, `${digest}.json`);
   }
 
-  private ensureStartupNormalized(): void {
-    if (this.startupNormalized) return;
-    this.startupNormalized = true;
-    if (!fs.existsSync(this.sessionsFilePath)) return;
-    try {
-      this.mutateRecords((records) => {
-        for (const [id, rec] of Object.entries(records)) {
-          if (isLiveStatus(rec.status)) {
-            records[id] = {
-              ...rec,
-              status: 'ended',
-            };
-          }
-        }
-      });
-    } catch {
-      /* 锁竞争或损坏留待显式读写处理 */
+  /** 在登记簿写锁内拒绝更新或删除其他宿主持有的活跃会话。 */
+  private assertWritable(record: ExternalSessionRecord | undefined): void {
+    if (record?.owner && record.owner.id !== this.owner.id) {
+      throw new ExternalHarnessError('EXTERNAL_SESSION_BUSY', '外部会话由另一个宿主持有');
     }
   }
 
@@ -404,8 +404,15 @@ export class ExternalSessionRegistry {
       const validNativeId = isValidNativeSessionId(item.nativeSessionId)
         ? item.nativeSessionId.trim()
         : undefined;
+      const owner = item.owner;
+      const live = isLiveStatus(item.status as ViewExternalSessionStatus);
+      // 旧登记簿没有归属字段；无归属的历史按原有启动恢复语义归档。
+      const activeOwner =
+        live && typeof owner?.id === 'string' && isProcessAlive(owner.pid) ? owner : undefined;
       map[id] = {
         ...(item as ExternalSessionRecord),
+        ...(live && !activeOwner ? { status: 'ended' } : {}),
+        owner: activeOwner,
         nativeSessionId: validNativeId,
         resumable: Boolean(item.resumable && validNativeId),
       };

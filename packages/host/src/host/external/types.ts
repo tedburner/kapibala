@@ -34,6 +34,8 @@ export class ExternalHarnessError extends KapibalaError {
   override readonly code: ExternalErrorCode;
   readonly loginHint?: string;
   readonly installHint?: string;
+  /** 驱动确认子进程已回收时置真，编排层据此释放会话槽位。 */
+  readonly processTerminated: boolean;
 
   constructor(
     code: ExternalErrorCode,
@@ -43,6 +45,7 @@ export class ExternalHarnessError extends KapibalaError {
       safeMessage?: string;
       loginHint?: string;
       installHint?: string;
+      processTerminated?: boolean;
       cause?: unknown;
     },
   ) {
@@ -55,6 +58,7 @@ export class ExternalHarnessError extends KapibalaError {
     this.code = code;
     this.loginHint = options?.loginHint;
     this.installHint = options?.installHint;
+    this.processTerminated = options?.processTerminated === true;
     if (options?.cause !== undefined) {
       this.cause = options.cause;
     }
@@ -108,6 +112,7 @@ export interface ExternalHarnessDefinition {
 /** 设置页与 CLI `/external harness test` 的探测结论分类。 */
 export type ExternalInspectStatus =
   | 'ready'
+  | 'auth_unverified'
   | 'needs_login'
   | 'not_installed'
   | 'invalid_shim'

@@ -1233,6 +1233,7 @@
                       "status": {
                         "enum": [
                           "ready",
+                          "auth_unverified",
                           "needs_login",
                           "not_installed",
                           "invalid_shim",
@@ -1357,7 +1358,14 @@
           ]
         },
         "status": {
-          "enum": ["ready", "needs_login", "not_installed", "invalid_shim", "handshake_failed"],
+          "enum": [
+            "ready",
+            "auth_unverified",
+            "needs_login",
+            "not_installed",
+            "invalid_shim",
+            "handshake_failed"
+          ],
           "type": "string"
         },
         "version": {
@@ -1480,6 +1488,7 @@
                       "status": {
                         "enum": [
                           "ready",
+                          "auth_unverified",
                           "needs_login",
                           "not_installed",
                           "invalid_shim",
