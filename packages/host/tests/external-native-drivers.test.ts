@@ -9,6 +9,7 @@ import {
   type ExternalEvent,
   type ExternalHarnessError,
   ExternalSessionService,
+  PiRpcDriver,
   saveBuiltinHarnessOverride,
   upsertCustomExternalHarness,
 } from '../src/host/internal.js';
@@ -17,6 +18,7 @@ import { createUserSettingsSkeleton, trustProject } from '../src/host/settings.j
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fakeClaudeScript = path.join(__dirname, 'fixtures', 'fake-claude-cli.mjs');
 const fakeCodexScript = path.join(__dirname, 'fixtures', 'fake-codex-app-server.mjs');
+const fakePiScript = path.join(__dirname, 'fixtures', 'fake-pi-rpc.mjs');
 const fakeAcpScript = path.join(__dirname, 'fixtures', 'fake-acp-agent.mjs');
 
 function isPidAlive(pid: number): boolean {
@@ -434,5 +436,202 @@ describe('ClaudeCliDriver, CodexAppServerDriver & Multi-Workspace Concurrency (M
     await new Promise((r) => setTimeout(r, 60));
     const snap = service.getSnapshot(opened.session.id);
     expect(snap.session.status).toBe('failed');
+  });
+
+  it('PiRpcDriver 挂载真实受管审批守卫扩展，完整覆盖探测、只读免审、bash 允许/会话放行/拒绝、abort 取消与 --session-id 恢复', async () => {
+    const homeDir = makeTempDir('kpbl-m3-pi-home-');
+    const cwd = makeTempDir('kpbl-m3-pi-ws-');
+    const driver = new PiRpcDriver({ homeDir, hostEnv: {} });
+
+    const readyProbe = await driver.inspect(
+      {
+        id: 'pi',
+        name: 'Pi Coding Agent',
+        transport: 'pi-rpc',
+        command: process.execPath,
+        args: [fakePiScript],
+        enabled: true,
+      },
+      cwd,
+    );
+    expect(readyProbe.available).toBe(true);
+    expect(readyProbe.status).toBe('ready');
+    expect(readyProbe.version).toBe('1.6.0');
+    expect(readyProbe.loadSupported).toBe(true);
+
+    const loginProbe = await driver.inspect(
+      {
+        id: 'pi',
+        name: 'Pi Coding Agent',
+        transport: 'pi-rpc',
+        command: process.execPath,
+        args: [fakePiScript, '--unauthenticated'],
+        enabled: true,
+      },
+      cwd,
+    );
+    expect(loginProbe.available).toBe(false);
+    expect(loginProbe.status).toBe('needs_login');
+
+    let approvalCount = 0;
+    const texts: string[] = [];
+    const opened = await driver.open({
+      def: {
+        id: 'pi',
+        name: 'Pi Coding Agent',
+        transport: 'pi-rpc',
+        command: process.execPath,
+        args: [fakePiScript],
+        enabled: true,
+      },
+      workspaceRoot: cwd,
+      onEvent: (ev) => {
+        if (ev.type === 'text_delta') texts.push(ev.text);
+        if (ev.type === 'approval_requested') {
+          approvalCount += 1;
+          if (approvalCount === 1) {
+            ev.respond({ outcome: 'selected', optionId: 'reject_once' });
+          } else {
+            ev.respond({ outcome: 'selected', optionId: 'allow_session' });
+          }
+        }
+      },
+    });
+    closeHandles.push(() => opened.handle.close());
+    expect(opened.resumable).toBe(true);
+    expect(opened.nativeSessionId).toBe('11111111-2222-4333-8444-555555555555');
+
+    // 1. 只读工具 read 不触发审批直接放行
+    texts.length = 0;
+    await opened.handle.prompt('READ_ONLY_TOOL');
+    expect(approvalCount).toBe(0);
+    expect(texts.join('')).toContain('Read README without approval.');
+
+    // 2. 写执行工具 bash 第 1 次被拒绝，扩展返回 { block: true }
+    texts.length = 0;
+    await opened.handle.prompt('WRITE_APPROVAL_1');
+    expect(approvalCount).toBe(1);
+    expect(texts.join('')).toContain('Pi tool blocked:');
+
+    // 3. 第 2 次选择 allow_session 放行，第 3 次同类工具在同一会话免重复弹窗
+    texts.length = 0;
+    await opened.handle.prompt('WRITE_APPROVAL_2');
+    expect(approvalCount).toBe(2);
+    expect(texts.join('')).toContain('Pi bash executed!');
+
+    texts.length = 0;
+    await opened.handle.prompt('WRITE_APPROVAL_3');
+    expect(approvalCount).toBe(2);
+    expect(texts.join('')).toContain('Pi bash executed!');
+
+    // 4. abort 取消在途轮次
+    const slowTurn = opened.handle.prompt('WAIT_ABORT');
+    await new Promise((r) => setTimeout(r, 60));
+    await opened.handle.cancel();
+    const cancelRes = await slowTurn;
+    expect(cancelRes.stopReason).toBe('cancelled');
+
+    const savedId = opened.nativeSessionId!;
+    await opened.handle.close();
+
+    // 5. --session-id 恢复同一会话，且拦截恶意的 -flag 注入型会话 ID
+    await expect(
+      driver.open({
+        def: {
+          id: 'pi',
+          name: 'Pi Coding Agent',
+          transport: 'pi-rpc',
+          command: process.execPath,
+          args: [fakePiScript],
+          enabled: true,
+        },
+        workspaceRoot: cwd,
+        nativeSessionId: '--dangerously-skip-permissions',
+        onEvent: () => {},
+      }),
+    ).rejects.toMatchObject({ code: 'EXTERNAL_PROTOCOL_ERROR' });
+
+    const resumedTexts: string[] = [];
+    const resumed = await driver.open({
+      def: {
+        id: 'pi',
+        name: 'Pi Coding Agent',
+        transport: 'pi-rpc',
+        command: process.execPath,
+        args: [fakePiScript],
+        enabled: true,
+      },
+      workspaceRoot: cwd,
+      nativeSessionId: savedId,
+      onEvent: (ev) => {
+        if (ev.type === 'text_delta') resumedTexts.push(ev.text);
+      },
+    });
+    closeHandles.push(() => resumed.handle.close());
+    await resumed.handle.prompt('continue in pi');
+    expect(resumedTexts.join('')).toContain(`[pi-resumed:${savedId}] Pi reply: continue in pi`);
+    await resumed.handle.close();
+  });
+
+  it('Claude 多步工具调用不丢失后续非流式文本、拦截非法 --resume 参数，且 Codex 支持在 turn/start 返回前提前取消', async () => {
+    const cwd = makeTempDir('kpbl-m3-edge-');
+    const claudeDriver = new ClaudeCliDriver({ hostEnv: {} });
+
+    await expect(
+      claudeDriver.open({
+        def: {
+          id: 'claude-code',
+          name: 'Claude Code',
+          transport: 'claude-cli',
+          command: process.execPath,
+          args: [fakeClaudeScript],
+          enabled: true,
+        },
+        workspaceRoot: cwd,
+        nativeSessionId: '-p',
+        onEvent: () => {},
+      }),
+    ).rejects.toMatchObject({ code: 'EXTERNAL_PROTOCOL_ERROR' });
+
+    const claudeTexts: string[] = [];
+    const claudeOpened = await claudeDriver.open({
+      def: {
+        id: 'claude-code',
+        name: 'Claude Code',
+        transport: 'claude-cli',
+        command: process.execPath,
+        args: [fakeClaudeScript],
+        enabled: true,
+      },
+      workspaceRoot: cwd,
+      onEvent: (ev) => {
+        if (ev.type === 'text_delta') claudeTexts.push(ev.text);
+      },
+    });
+    closeHandles.push(() => claudeOpened.handle.close());
+    await claudeOpened.handle.prompt('run multistep check');
+    expect(claudeTexts.join('')).toBe('Step1 streamed. Step2 non-streamed!');
+    await claudeOpened.handle.close();
+
+    const codexDriver = new CodexAppServerDriver({ hostEnv: {} });
+    const codexOpened = await codexDriver.open({
+      def: {
+        id: 'codex',
+        name: 'Codex',
+        transport: 'codex-app-server',
+        command: process.execPath,
+        args: [fakeCodexScript],
+        enabled: true,
+      },
+      workspaceRoot: cwd,
+      onEvent: () => {},
+    });
+    closeHandles.push(() => codexOpened.handle.close());
+    const earlyCancelPromise = codexOpened.handle.prompt('delayed-start turn');
+    await new Promise((r) => setTimeout(r, 25));
+    await codexOpened.handle.cancel();
+    const earlyCancelRes = await earlyCancelPromise;
+    expect(earlyCancelRes.stopReason).toBe('cancelled');
+    await codexOpened.handle.close();
   });
 });

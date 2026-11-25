@@ -141,7 +141,7 @@ export interface ExternalProbeWire {
 export interface ExternalHarnessWireItem {
   id: string;
   name: string;
-  transport: 'acp' | 'claude-cli' | 'codex-app-server';
+  transport: 'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc';
   command: string;
   args: string[];
   envFrom: string[];
@@ -170,7 +170,7 @@ export interface ExternalSessionWireItem {
   id: string;
   harnessId: string;
   harnessName: string;
-  transport: 'acp' | 'claude-cli' | 'codex-app-server';
+  transport: 'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc';
   workspaceRoot: string;
   title: string;
   status: 'starting' | 'idle' | 'running' | 'waiting_approval' | 'cancelling' | 'ended' | 'failed';

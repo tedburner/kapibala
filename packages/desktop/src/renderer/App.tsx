@@ -218,6 +218,7 @@ export function App() {
   }>();
   const activeExternalRef = useRef<typeof activeExternal>(undefined);
   activeExternalRef.current = activeExternal;
+  const externalNavGen = useRef(0);
   const [newExternalModal, setNewExternalModal] = useState<{
     space: Workspace;
     preferredHarnessId?: string;
@@ -458,6 +459,7 @@ export function App() {
     }
   }, []);
   const detachActiveExternal = useCallback(async () => {
+    externalNavGen.current += 1;
     const prev = activeExternalRef.current;
     if (!prev) return;
     activeExternalRef.current = undefined;
@@ -605,12 +607,21 @@ export function App() {
       if (event.type === 'external.snapshotInvalidated') {
         const cur = activeExternalRef.current;
         if (!cur || cur.subscriptionId !== event.subscriptionId) return;
+        const nextSubId = crypto.randomUUID();
         void api.external
-          .snapshot({ workspaceId: cur.workspaceId, sessionId: cur.sessionId })
+          .subscribe({
+            workspaceId: cur.workspaceId,
+            sessionId: cur.sessionId,
+            subscriptionId: nextSubId,
+          })
           .then((snapshot) => {
-            setActiveExternal((prev) =>
-              prev && prev.subscriptionId === event.subscriptionId ? { ...prev, snapshot } : prev,
-            );
+            if (activeExternalRef.current?.subscriptionId !== event.subscriptionId) {
+              void api.external.unsubscribe(nextSubId).catch(() => {});
+              return;
+            }
+            const updated = { ...cur, subscriptionId: nextSubId, snapshot };
+            activeExternalRef.current = updated;
+            setActiveExternal(updated);
           })
           .catch(() => {});
         return;
@@ -723,12 +734,17 @@ export function App() {
       await client.clear();
       await detachActiveExternal();
     }
+    const navToken = ++externalNavGen.current;
     const subscriptionId = crypto.randomUUID();
     const snapshot = await api.external.subscribe({
       workspaceId: space.id,
       sessionId,
       subscriptionId,
     });
+    if (navToken !== externalNavGen.current) {
+      await api.external.unsubscribe(subscriptionId).catch(() => {});
+      return;
+    }
     const next = { workspaceId: space.id, sessionId, subscriptionId, snapshot };
     activeExternalRef.current = next;
     setActiveExternal(next);

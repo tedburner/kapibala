@@ -248,7 +248,8 @@ function unwrapWindowsCmdShim(
   }
 
   const content = fs.readFileSync(shimPhysicalPath, 'utf8');
-  const shimDir = path.dirname(shimPhysicalPath);
+  const shimDir = path.win32.dirname(shimPhysicalPath);
+  const shimBaseName = path.win32.basename(shimPhysicalPath);
   const lines = content.split(/\r?\n/);
 
   let rawTargetToken: string | undefined;
@@ -286,7 +287,7 @@ function unwrapWindowsCmdShim(
   if (!rawTargetToken) {
     throw new ExternalHarnessError(
       'EXTERNAL_UNSUPPORTED_SHIM',
-      `不支持执行非标准批处理脚本 '${path.basename(shimPhysicalPath)}'；请直接填写原生 .exe 路径或标准 npm/pnpm 安装的命令`,
+      `不支持执行非标准批处理脚本 '${shimBaseName}'；请直接填写原生 .exe 路径或标准 npm/pnpm 安装的命令`,
     );
   }
 
@@ -301,16 +302,17 @@ function unwrapWindowsCmdShim(
     ? path.win32.dirname(shimDir)
     : path.win32.join(shimDir, 'node_modules');
   const pnpmGlobalRoot = path.win32.join(shimDir, 'global');
+  const isPnpmGlobalShim =
+    isContainedIn(lexicalTarget, pnpmGlobalRoot, 'win32') &&
+    lexicalTarget.toLowerCase().includes('\\node_modules\\');
 
   const lexicallyValid =
-    isContainedIn(lexicalTarget, managedNodeModulesRoot, 'win32') ||
-    (isContainedIn(lexicalTarget, pnpmGlobalRoot, 'win32') &&
-      lexicalTarget.toLowerCase().includes('\\node_modules\\'));
+    isContainedIn(lexicalTarget, managedNodeModulesRoot, 'win32') || isPnpmGlobalShim;
 
   if (!lexicallyValid) {
     throw new ExternalHarnessError(
       'EXTERNAL_UNSUPPORTED_SHIM',
-      `拒绝执行越出受管 node_modules 目录的垫片目标：${path.basename(shimPhysicalPath)}`,
+      `拒绝执行越出受管 node_modules 目录的垫片目标：${shimBaseName}`,
     );
   }
 
@@ -318,29 +320,30 @@ function unwrapWindowsCmdShim(
   if (!physicalTarget) {
     throw new ExternalHarnessError(
       'EXTERNAL_UNSUPPORTED_SHIM',
-      `垫片 '${path.basename(shimPhysicalPath)}' 指向的目标文件不存在`,
+      `垫片 '${shimBaseName}' 指向的目标文件不存在`,
     );
   }
 
-  // 二次物理边界核验：若非 pnpm 全局 store 软链场景，拦截指向父目录任意二进制的恶意符号链接。
-  const allowedPhysicalParent = isDotBin ? path.dirname(shimDir) : shimDir;
+  // 二次物理边界核验：常规 npm 垫片目标必须落于受管父目录内，仅 pnpm 全局虚拟仓允许跨盘指向 `.pnpm` 下的 node_modules。
+  const allowedPhysicalParent = isDotBin ? path.win32.dirname(shimDir) : shimDir;
+  const normalizedPhysicalTarget = physicalTarget.replace(/\//g, '\\').toLowerCase();
   if (
     !isContainedIn(physicalTarget, allowedPhysicalParent, 'win32') &&
-    !physicalTarget.toLowerCase().includes('\\node_modules\\')
+    !(isPnpmGlobalShim && normalizedPhysicalTarget.includes('\\node_modules\\'))
   ) {
     throw new ExternalHarnessError(
       'EXTERNAL_UNSUPPORTED_SHIM',
-      `垫片 '${path.basename(shimPhysicalPath)}' 的物理目标越出受管目录边界`,
+      `垫片 '${shimBaseName}' 的物理目标越出受管目录边界`,
     );
   }
 
-  const ext = path.extname(physicalTarget).toLowerCase();
+  const ext = path.win32.extname(physicalTarget).toLowerCase();
   if (ext === '.exe') {
     return {
       executable: physicalTarget,
       args: [...userArgs],
       unwrapKind: 'cmd-exe',
-      extraPathDirs: [shimDir, path.dirname(physicalTarget)],
+      extraPathDirs: [shimDir, path.win32.dirname(physicalTarget)],
     };
   }
 
@@ -350,7 +353,7 @@ function unwrapWindowsCmdShim(
       executable: nodeExe,
       args: [physicalTarget, ...userArgs],
       unwrapKind: 'cmd-node-script',
-      extraPathDirs: [shimDir, path.dirname(nodeExe)],
+      extraPathDirs: [shimDir, path.win32.dirname(nodeExe)],
     };
   }
 
@@ -360,13 +363,13 @@ function unwrapWindowsCmdShim(
       executable: nodeExe,
       args: [physicalTarget, ...userArgs],
       unwrapKind: 'cmd-shebang-node',
-      extraPathDirs: [shimDir, path.dirname(nodeExe)],
+      extraPathDirs: [shimDir, path.win32.dirname(nodeExe)],
     };
   }
 
   throw new ExternalHarnessError(
     'EXTERNAL_UNSUPPORTED_SHIM',
-    `垫片 '${path.basename(shimPhysicalPath)}' 指向不受支持的目标类型 '${ext || '无扩展名'}'`,
+    `垫片 '${shimBaseName}' 指向不受支持的目标类型 '${ext || '无扩展名'}'`,
   );
 }
 
@@ -416,7 +419,11 @@ export function resolveExternalCommand(
 
   const envPath =
     options.envPath ?? (isWin ? (hostEnv.PATH ?? hostEnv.Path ?? '') : (hostEnv.PATH ?? ''));
-  const explicitDirs = envPath.split(pathApi.delimiter).filter(Boolean);
+  // 仅接纳严格绝对路径的 PATH 段，杜绝 `.` 或 `./node_modules/.bin` 借宿主 process.cwd() 执行工作区二进制。
+  const explicitDirs = envPath
+    .split(pathApi.delimiter)
+    .map((dir) => dir.trim())
+    .filter((dir) => Boolean(dir) && isStrictAbsolutePath(dir, platform));
   const fallbackDirs = getStandardCliFallbackDirs({ platform, homeDir, hostEnv });
   const allSearchDirs = [...explicitDirs, ...fallbackDirs];
 
@@ -644,13 +651,19 @@ export class ExternalProcessSupervisor {
 
   /** 以严格 `shell: false, windowsHide: true` 启动受监管的外部代理子进程。 */
   static spawn(options: SpawnExternalProcessOptions): ExternalProcessSupervisor {
-    const nativeCwd = (() => {
-      try {
-        return fs.realpathSync.native(options.cwd);
-      } catch {
-        return path.resolve(options.cwd);
+    let nativeCwd: string;
+    try {
+      nativeCwd = fs.realpathSync.native(options.cwd);
+      if (!fs.statSync(nativeCwd).isDirectory()) {
+        throw new Error('not a directory');
       }
-    })();
+    } catch (cause) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_UNTRUSTED_WORKSPACE',
+        `外部代理工作目录不可用或已失效：${options.cwd}`,
+        { cause },
+      );
+    }
 
     const child = spawn(options.executable, [...options.args], {
       cwd: nativeCwd,

@@ -8,6 +8,7 @@ type HarnessItem = Output<'external.harnesses'>['harnesses'][number];
 function transportLabel(transport: HarnessItem['transport']): string {
   if (transport === 'acp') return '原生 ACP';
   if (transport === 'claude-cli') return '原生 CLI 直连';
+  if (transport === 'pi-rpc') return 'Pi 原生直连';
   return '原生 App-Server';
 }
 
@@ -101,8 +102,8 @@ export function NewExternalDialog({
               <div className="space-y-3 rounded-lg border border-kumo-line bg-kumo-recessed p-4 text-sm">
                 <p className="text-kumo-default">当前没有已启用的外部代理。</p>
                 <p className="text-xs text-kumo-subtle">
-                  可在设置页开启内置代理（Claude Code、Codex、Antigravity、OpenCode 等）或添加自定义
-                  ACP 命令。
+                  可在设置页开启内置代理（Claude Code、Codex、Pi、Antigravity、OpenCode
+                  等）或添加自定义 ACP 命令。
                 </p>
                 <Button
                   className="kapibala-action"

@@ -197,7 +197,12 @@ export type {
   SkillImportSourceView,
   SkillImportStatus,
 } from './resource/skill-import.js';
-export { ExternalHarnessError } from './external/types.js';
+export {
+  ExternalHarnessError,
+  SAFE_NATIVE_SESSION_ID_PATTERN,
+  isReservedObjectPropertyName,
+  isValidNativeSessionId,
+} from './external/types.js';
 export type {
   ExternalApprovalDecision,
   ExternalApprovalOption,
@@ -216,6 +221,7 @@ export {
   ENV_VAR_NAME_PATTERN,
   FORBIDDEN_EXTERNAL_ENV_KEYS,
   buildExternalLaunchEnv,
+  resolveForwardedEnvSecrets,
 } from './external/env.js';
 export type {
   BuildExternalLaunchEnvOptions,
@@ -249,6 +255,12 @@ export { ClaudeCliDriver } from './external/drivers/claude-cli.js';
 export type { ClaudeCliDriverOptions } from './external/drivers/claude-cli.js';
 export { CodexAppServerDriver } from './external/drivers/codex-app-server.js';
 export type { CodexAppServerDriverOptions } from './external/drivers/codex-app-server.js';
+export {
+  PiRpcDriver,
+  buildPiLaunchArgs,
+  ensurePiApprovalGuardExtension,
+} from './external/drivers/pi-rpc.js';
+export type { PiRpcDriverOptions } from './external/drivers/pi-rpc.js';
 export {
   isAcpAuthRequiredError,
   resolveAcpFlavor,

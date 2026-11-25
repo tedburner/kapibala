@@ -104,6 +104,7 @@ function suggestHarnessId(name: string): string {
 function transportBadgeText(transport: HarnessItem['transport']): string {
   if (transport === 'acp') return '原生 ACP';
   if (transport === 'claude-cli') return '原生 CLI 直连';
+  if (transport === 'pi-rpc') return 'Pi 原生直连';
   return '原生 App-Server';
 }
 
@@ -269,7 +270,7 @@ export function ExternalSettingsPanel({
         window.kapibala.external.saveHarness({
           id: item.id,
           builtin: true,
-          command: overrideDraft.command.trim() || undefined,
+          command: overrideDraft.command.trim(),
           args: parseArgsLines(overrideDraft.argsText),
           envFrom: parsedEnv.names,
           enabled: item.enabled,
@@ -278,6 +279,10 @@ export function ExternalSettingsPanel({
       );
       if (!mountedRef.current) return;
       setHarnesses(updated.harnesses);
+      setProbes((prev) => {
+        const { [item.id]: _dropped, ...rest } = prev;
+        return rest;
+      });
       setOverrideDraft(undefined);
       setNotice(`已保存 ${item.name} 的配置覆盖。`);
     } catch (error) {
@@ -301,6 +306,10 @@ export function ExternalSettingsPanel({
       );
       if (!mountedRef.current) return;
       setHarnesses(updated.harnesses);
+      setProbes((prev) => {
+        const { [item.id]: _dropped, ...rest } = prev;
+        return rest;
+      });
       if (overrideDraft?.id === item.id) setOverrideDraft(undefined);
       setNotice(`已恢复 ${item.name} 的默认配置。`);
     } catch (error) {

@@ -47,6 +47,16 @@ export const BUILTIN_EXTERNAL_HARNESSES: readonly ExternalHarnessDefinition[] = 
     enabled: true,
   },
   {
+    id: 'pi',
+    name: 'Pi Coding Agent',
+    transport: 'pi-rpc',
+    command: 'pi',
+    args: [],
+    envFrom: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'DEEPSEEK_API_KEY'],
+    builtin: true,
+    enabled: true,
+  },
+  {
     id: 'antigravity',
     name: 'Antigravity',
     transport: 'acp',

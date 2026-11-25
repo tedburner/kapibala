@@ -251,6 +251,9 @@ if (mode === 'tui-flood') {
     }
 
     if (msg.method === 'session/cancel') {
+      if (mode === 'hang-ignore-cancel') {
+        return;
+      }
       if (activePromptId !== null) {
         const promptId = activePromptId;
         activePromptId = null;
@@ -266,6 +269,58 @@ if (mode === 'tui-flood') {
     if (msg.method === 'session/prompt') {
       const text = msg.params?.prompt?.[0]?.text ?? '';
       const sessionId = msg.params?.sessionId ?? 'ses_demo_1';
+
+      if (text === 'HANG_FOREVER') {
+        activePromptId = msg.id;
+        return;
+      }
+
+      if (text === 'HUGE_OUTPUT') {
+        const bigBlob = 'X'.repeat(1_250_000);
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId: 'call_huge_1',
+              title: 'Dump Huge Log',
+              kind: 'execute',
+              status: 'completed',
+              rawOutput: { combinedOutput: bigBlob },
+            },
+          },
+        });
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'Token check: Authorization: Bearer ' },
+            },
+          },
+        });
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'superSecretSplitBearerValue123456 done.' },
+            },
+          },
+        });
+        send({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { stopReason: 'end_turn' },
+        });
+        return;
+      }
 
       if (text === 'WAIT_CANCEL') {
         activePromptId = msg.id;

@@ -187,6 +187,15 @@ export class RpcEndpoint {
       } catch (error) {
         reply = { kind: 'reply', requestId: request.requestId, ok: false, error: safeError(error) };
       }
+      const maxReplyBytes = (lane === 'data' ? LIMITS.frame : LIMITS.controlWindow) - 512;
+      if (new TextEncoder().encode(JSON.stringify(reply)).byteLength > maxReplyBytes) {
+        reply = {
+          kind: 'reply',
+          requestId: request.requestId,
+          ok: false,
+          error: safeError(new Error('SNAPSHOT_TOO_LARGE')),
+        };
+      }
       await this.peer.send(reply, lane);
     })()
       .catch(() => this.peer.close('OUTPUT_CONGESTED'))

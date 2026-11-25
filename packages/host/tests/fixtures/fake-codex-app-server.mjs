@@ -127,6 +127,25 @@ rl.on('line', (line) => {
     const turnId = `turn-${Date.now()}`;
     activeTurnId = turnId;
 
+    if (text.includes('delayed-start')) {
+      setTimeout(() => {
+        send({
+          id: frame.id,
+          result: {
+            turn: { id: turnId, status: 'inProgress', items: [] },
+          },
+        });
+      }, 90);
+      slowTimer = setTimeout(() => {
+        activeTurnId = null;
+        send({
+          method: 'turn/completed',
+          params: { threadId, turn: { id: turnId, status: 'completed' } },
+        });
+      }, 30_000);
+      return;
+    }
+
     send({
       id: frame.id,
       result: {

@@ -1,5 +1,4 @@
 import type {
-  ViewBlock,
   ViewMessage,
   ViewTodoItem,
   ViewTodoState,
@@ -10,10 +9,25 @@ import { redactText } from '../../../redaction.js';
 import { sanitizeUntrustedOutput } from '../../../ui/text-safety.js';
 import type { ExternalEvent } from '../../types.js';
 
+/** 单个外部文本/思考/工具结果块的最大保留字符数（对齐桌面 `LIMITS.displayBudget = 64KiB`）。 */
+const MAX_BLOCK_TEXT_CHARS = 64 * 1024;
+/** 实时投影保留的最大消息条数，确保序列化后远低于单帧 10 万 JSON 节点上限。 */
+const MAX_LIVE_MESSAGES = 160;
+/**
+ * 实时投影累计文本预算（620 KiB UTF-8）。
+ *
+ * 设计取舍：桌面 `BoundedPeer` 与本地 Wire `StdioTransport` 单帧硬上限均为 `1 MiB`（1,048,576 字节）；
+ * 外部会话未做分块快照，因此投影层主动控制总负载在 ~620 KiB 以内（加上 JSON 键名开销仍稳处于 750 KiB 以下），
+ * 超限时从头部裁剪早期消息并置 `truncated = true`，彻底杜绝 `OUTPUT_CONGESTED` 断连。
+ */
+const MAX_LIVE_TRANSCRIPT_BYTES = 620 * 1024;
+
 interface MutableBlock {
   id: string;
   kind: 'text' | 'thinking' | 'tool';
   text: string;
+  /** 仅在流式拼接期间保留净化后、脱敏前的有限缓冲，确保跨 chunk 拆分的密钥拼接后可被完整识别脱敏。 */
+  rawCleanBuffer?: string;
   state: 'streaming' | 'completed' | 'interrupted';
   revision: number;
   tool?: ViewTool;
@@ -28,11 +42,38 @@ interface MutableMessage {
   usage?: ViewUsage;
 }
 
+function clampBlockText(value: string): { text: string; truncated: boolean } {
+  if (value.length <= MAX_BLOCK_TEXT_CHARS) {
+    return { text: value, truncated: false };
+  }
+  return {
+    text: `${value.slice(0, MAX_BLOCK_TEXT_CHARS)}\n…[输出过长已截断]`,
+    truncated: true,
+  };
+}
+
+function estimateMessageBytes(msg: MutableMessage): number {
+  let bytes = 128 + Buffer.byteLength(msg.id, 'utf8');
+  for (const b of msg.blocks) {
+    bytes += 96 + Buffer.byteLength(b.text, 'utf8');
+    if (b.tool) {
+      bytes +=
+        160 +
+        Buffer.byteLength(b.tool.invocation, 'utf8') +
+        Buffer.byteLength(b.tool.input, 'utf8') +
+        (b.tool.result ? Buffer.byteLength(b.tool.result, 'utf8') : 0);
+    }
+  }
+  return bytes;
+}
+
 /**
- * 协议中立的外部会话消息流与计划投影器。
+ * 外部代理会话事件流到 `ViewMessage[]` / `ViewTodoState` 的有状态投影器。
  *
- * 复用设计：直接产出与本地会话 100% 同构的 `ViewMessage[]` 与 `ViewTodoState`，
- * 使桌面端 Streamdown Markdown、思考折叠块、工具耗时行与任务清单浮层零分叉复用。
+ * 关键保证：
+ * 1. **跨分片密钥脱敏**：流式文本/思考块按累积缓冲整体执行 `redactText`，防止跨两个 `text_delta` 切分的 API Key 逃逸；
+ * 2. **冷恢复 ID 单调递增**：`replaceMessages` 自动扫描历史消息尾号推进 `messageCounter`，杜绝续聊时产生重复 `ViewMessage.id`；
+ * 3. **单帧 `< 1 MiB` 自适应裁剪**：单块 64KiB 封顶 + 全局 620KiB 滑动窗口裁剪并记录 `wasTruncated()`，保障桌面 IPC 与 Wire 通道永不因大输出断连。
  */
 export class ExternalTranscriptProjector {
   private readonly messages: MutableMessage[] = [];
@@ -44,18 +85,25 @@ export class ExternalTranscriptProjector {
   private planRevision = 0;
   private messageCounter = 0;
   private pendingEchoRemainder = '';
+  private truncated = false;
 
   constructor(
     private readonly scopeId: string,
     private readonly secrets: readonly string[] = [],
   ) {}
 
+  /** 当前会话投影是否曾因单块超长或总帧预算发生过裁剪。 */
+  wasTruncated(): boolean {
+    return this.truncated;
+  }
+
   /**
    * 在发起实时 `prompt(text)` 前写入用户消息，并开启对部分 ACP 代理回显 `user_message_chunk` 的前缀去重窗口。
    */
   beginUserTurn(rawText: string): ViewMessage {
     this.sealStreamingMessages('completed');
-    const safeText = this.cleanText(rawText);
+    const clamped = clampBlockText(this.cleanText(rawText));
+    if (clamped.truncated) this.truncated = true;
     this.pendingEchoRemainder = rawText;
 
     const msgId = this.nextMessageId('user');
@@ -68,13 +116,14 @@ export class ExternalTranscriptProjector {
         {
           id: `${msgId}:b0`,
           kind: 'text',
-          text: safeText,
+          text: clamped.text,
           state: 'completed',
           revision: 0,
         },
       ],
     };
     this.messages.push(message);
+    this.enforceBudget();
     return this.freezeMessage(message);
   }
 
@@ -127,23 +176,44 @@ export class ExternalTranscriptProjector {
     this.sealStreamingMessages('interrupted');
   }
 
-  /** 用恢复阶段重放得到的历史整体初始化投影器。 */
-  replaceMessages(messages: readonly ViewMessage[]): void {
+  /** 用恢复阶段重放或本地归档的消息整体初始化投影器，同时推进消息序号计数器并补齐脱敏。 */
+  replaceMessages(messages: readonly ViewMessage[], alreadyTruncated = false): void {
     this.messages.length = 0;
     this.toolBlockLocation.clear();
+    if (alreadyTruncated) {
+      this.truncated = true;
+    }
+    let maxParsedCounter = this.messageCounter;
+    const prefix = `${this.scopeId}:`;
+
     for (const msg of messages) {
+      if (msg.id.startsWith(prefix)) {
+        const lastColon = msg.id.lastIndexOf(':');
+        if (lastColon > prefix.length) {
+          const parsedNum = Number.parseInt(msg.id.slice(lastColon + 1), 10);
+          if (Number.isSafeInteger(parsedNum) && parsedNum > maxParsedCounter) {
+            maxParsedCounter = parsedNum;
+          }
+        }
+      }
       const msgIndex = this.messages.length;
       const clonedBlocks: MutableBlock[] = msg.blocks.map((b, bIndex) => {
-        if (b.kind === 'tool' && b.tool) {
-          this.toolBlockLocation.set(b.tool.callId, { messageIndex: msgIndex, blockIndex: bIndex });
+        const sanitizedTool = b.tool ? this.sanitizeToolFields(b.tool) : undefined;
+        if (b.kind === 'tool' && sanitizedTool) {
+          this.toolBlockLocation.set(sanitizedTool.callId, {
+            messageIndex: msgIndex,
+            blockIndex: bIndex,
+          });
         }
+        const clampedText = clampBlockText(this.cleanText(b.text));
+        if (clampedText.truncated) this.truncated = true;
         return {
           id: b.id,
           kind: b.kind,
-          text: b.text,
+          text: clampedText.text,
           state: b.state,
           revision: b.revision,
-          ...(b.tool ? { tool: { ...b.tool } } : {}),
+          ...(sanitizedTool ? { tool: sanitizedTool } : {}),
         };
       });
       this.messages.push({
@@ -155,6 +225,9 @@ export class ExternalTranscriptProjector {
         ...(msg.usage ? { usage: { ...msg.usage } } : {}),
       });
     }
+
+    this.messageCounter = Math.max(maxParsedCounter, messages.length);
+    this.enforceBudget();
   }
 
   /** 读取当前不可变消息快照副本。 */
@@ -194,8 +267,8 @@ export class ExternalTranscriptProjector {
     rawChunk: string,
     completedImmediately: boolean,
   ): void {
-    const safeChunk = this.cleanText(rawChunk);
-    if (!safeChunk) return;
+    const cleanChunk = sanitizeUntrustedOutput(rawChunk);
+    if (!cleanChunk) return;
 
     let targetMsg = this.messages.at(-1);
     if (
@@ -203,7 +276,6 @@ export class ExternalTranscriptProjector {
       targetMsg.role !== role ||
       (!completedImmediately && targetMsg.state !== 'streaming')
     ) {
-      // 重放模式下连续同角色 chunk 仍归并到同一条消息；切换角色时收口上一条并新建消息。
       if (!targetMsg || targetMsg.role !== role) {
         if (targetMsg && targetMsg.state === 'streaming') {
           this.sealMessage(targetMsg, 'completed');
@@ -222,33 +294,61 @@ export class ExternalTranscriptProjector {
 
     const lastBlock = targetMsg.blocks.at(-1);
     if (lastBlock && lastBlock.kind === kind) {
-      lastBlock.text += safeChunk;
+      const baseRaw = lastBlock.rawCleanBuffer ?? lastBlock.text;
+      if (baseRaw.length < MAX_BLOCK_TEXT_CHARS) {
+        const combinedRaw = baseRaw + cleanChunk;
+        const clamped = clampBlockText(combinedRaw);
+        if (clamped.truncated) this.truncated = true;
+        lastBlock.rawCleanBuffer = completedImmediately ? undefined : clamped.text;
+        lastBlock.text = redactText(clamped.text, this.secrets);
+      } else {
+        this.truncated = true;
+      }
       lastBlock.revision += 1;
       lastBlock.state = completedImmediately ? 'completed' : 'streaming';
+      this.enforceBudget();
       return;
     }
 
     if (lastBlock && lastBlock.kind !== 'tool' && lastBlock.state === 'streaming') {
+      lastBlock.rawCleanBuffer = undefined;
       lastBlock.state = 'completed';
     }
 
+    const clamped = clampBlockText(cleanChunk);
+    if (clamped.truncated) this.truncated = true;
     targetMsg.blocks.push({
       id: `${targetMsg.id}:b${targetMsg.blocks.length}`,
       kind,
-      text: safeChunk,
+      text: redactText(clamped.text, this.secrets),
+      ...(completedImmediately ? {} : { rawCleanBuffer: clamped.text }),
       state: completedImmediately ? 'completed' : 'streaming',
       revision: 0,
     });
+    this.enforceBudget();
+  }
+
+  private sanitizeToolFields(rawTool: ViewTool): ViewTool {
+    const safeCallId = rawTool.callId.slice(0, 256) || 'tool';
+    const inv = clampBlockText(this.cleanText(rawTool.invocation));
+    const inp = clampBlockText(this.cleanText(rawTool.input));
+    const res =
+      rawTool.result !== undefined ? clampBlockText(this.cleanText(rawTool.result)) : undefined;
+    if (inv.truncated || inp.truncated || res?.truncated) {
+      this.truncated = true;
+    }
+    return {
+      ...rawTool,
+      callId: safeCallId,
+      invocation: inv.text,
+      input: inp.text,
+      ...(rawTool.chip ? { chip: this.cleanText(rawTool.chip).slice(0, 240) } : {}),
+      ...(res !== undefined ? { result: res.text } : {}),
+    };
   }
 
   private upsertTool(rawTool: ViewTool, replay: boolean): void {
-    const sanitizedTool: ViewTool = {
-      ...rawTool,
-      invocation: this.cleanText(rawTool.invocation),
-      input: this.cleanText(rawTool.input),
-      ...(rawTool.chip ? { chip: this.cleanText(rawTool.chip) } : {}),
-      ...(rawTool.result !== undefined ? { result: this.cleanText(rawTool.result) } : {}),
-    };
+    const sanitizedTool = this.sanitizeToolFields(rawTool);
 
     const existingLoc = this.toolBlockLocation.get(sanitizedTool.callId);
     if (existingLoc) {
@@ -263,6 +363,7 @@ export class ExternalTranscriptProjector {
               ? 'interrupted'
               : 'completed';
         block.revision += 1;
+        this.enforceBudget();
         return;
       }
     }
@@ -285,6 +386,7 @@ export class ExternalTranscriptProjector {
 
     const prevBlock = assistantMsg.blocks.at(-1);
     if (prevBlock && prevBlock.kind !== 'tool' && prevBlock.state === 'streaming') {
+      prevBlock.rawCleanBuffer = undefined;
       prevBlock.state = 'completed';
     }
 
@@ -304,14 +406,87 @@ export class ExternalTranscriptProjector {
       tool: sanitizedTool,
     });
     this.toolBlockLocation.set(sanitizedTool.callId, { messageIndex, blockIndex });
+    this.enforceBudget();
+  }
+
+  private rebuildToolLocations(): void {
+    this.toolBlockLocation.clear();
+    for (let mIdx = 0; mIdx < this.messages.length; mIdx++) {
+      const blocks = this.messages[mIdx]!.blocks;
+      for (let bIdx = 0; bIdx < blocks.length; bIdx++) {
+        const tool = blocks[bIdx]!.tool;
+        if (tool) {
+          this.toolBlockLocation.set(tool.callId, { messageIndex: mIdx, blockIndex: bIdx });
+        }
+      }
+    }
+  }
+
+  private enforceBudget(): void {
+    let droppedMessages = false;
+    if (this.messages.length > MAX_LIVE_MESSAGES) {
+      this.messages.splice(0, this.messages.length - MAX_LIVE_MESSAGES);
+      this.truncated = true;
+      droppedMessages = true;
+    }
+
+    let totalBytes = 0;
+    for (const msg of this.messages) {
+      totalBytes += estimateMessageBytes(msg);
+    }
+
+    while (totalBytes > MAX_LIVE_TRANSCRIPT_BYTES && this.messages.length > 1) {
+      const removed = this.messages.shift()!;
+      totalBytes -= estimateMessageBytes(removed);
+      this.truncated = true;
+      droppedMessages = true;
+    }
+
+    // 单条消息内含极多工具调用时（例如单轮连续调用十余次大输出工具），裁剪早期已完成工具的输出详情，保留最近块完整可读。
+    if (totalBytes > MAX_LIVE_TRANSCRIPT_BYTES && this.messages.length === 1) {
+      const only = this.messages[0]!;
+      for (let i = 0; i < only.blocks.length - 2 && totalBytes > MAX_LIVE_TRANSCRIPT_BYTES; i++) {
+        const b = only.blocks[i]!;
+        if (b.tool?.result && b.tool.result.length > 1024) {
+          const prevBytes = Buffer.byteLength(b.tool.result, 'utf8');
+          const slim = `${b.tool.result.slice(0, 1024)}\n…[历史工具输出已折叠以控制快照体积]`;
+          b.tool = { ...b.tool, result: slim };
+          totalBytes -= Math.max(0, prevBytes - Buffer.byteLength(slim, 'utf8'));
+          this.truncated = true;
+        }
+        if (b.tool && b.tool.input.length > 1024 && totalBytes > MAX_LIVE_TRANSCRIPT_BYTES) {
+          const prevBytes = Buffer.byteLength(b.tool.input, 'utf8');
+          const slim = `${b.tool.input.slice(0, 1024)}\n…[历史入参已截断]`;
+          b.tool = { ...b.tool, input: slim };
+          totalBytes -= Math.max(0, prevBytes - Buffer.byteLength(slim, 'utf8'));
+          this.truncated = true;
+        }
+      }
+      // 兜底：若块数量极多仍超限，移除该单条消息最早的已完成块并重建索引。
+      while (totalBytes > MAX_LIVE_TRANSCRIPT_BYTES && only.blocks.length > 2) {
+        const removedBlock = only.blocks.shift()!;
+        const removedBytes =
+          96 +
+          Buffer.byteLength(removedBlock.text, 'utf8') +
+          (removedBlock.tool?.result ? Buffer.byteLength(removedBlock.tool.result, 'utf8') : 0) +
+          (removedBlock.tool ? Buffer.byteLength(removedBlock.tool.input, 'utf8') : 0);
+        totalBytes = Math.max(0, totalBytes - removedBytes);
+        this.truncated = true;
+        droppedMessages = true;
+      }
+    }
+
+    if (droppedMessages) {
+      this.rebuildToolLocations();
+    }
   }
 
   private updatePlan(items: readonly ViewTodoItem[]): void {
     this.planRevision += 1;
     this.planState = {
-      items: items.map((item) => ({
-        id: item.id,
-        title: this.cleanText(item.title),
+      items: items.slice(0, 100).map((item) => ({
+        id: item.id.slice(0, 256) || 'todo',
+        title: this.cleanText(item.title).slice(0, 500),
         status: item.status,
       })),
       updatedAt: Date.now(),
@@ -338,6 +513,7 @@ export class ExternalTranscriptProjector {
   private sealMessage(msg: MutableMessage, finalState: 'completed' | 'interrupted'): void {
     msg.state = finalState;
     for (const block of msg.blocks) {
+      block.rawCleanBuffer = undefined;
       if (block.state === 'streaming') {
         block.state = finalState;
         if (block.kind === 'tool' && block.tool && block.tool.status === 'running') {

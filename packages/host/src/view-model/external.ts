@@ -1,7 +1,7 @@
 import type { ViewMessage, ViewNotice, ViewOperation, ViewTodoState } from './types.js';
 
 /** 外部代理传输通道类型（纯展示枚举，0 Node 依赖）。 */
-export type ViewExternalTransport = 'acp' | 'claude-cli' | 'codex-app-server';
+export type ViewExternalTransport = 'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc';
 
 /** 外部代理会话生命周期状态。 */
 export type ViewExternalSessionStatus =
@@ -103,7 +103,7 @@ export interface ViewExternalApproval {
 export interface ViewExternalSnapshot {
   readonly session: ViewExternalSession;
   readonly sequence: number;
-  /** 若历史只读归档因超过 500 条消息或 2MiB 上限发生过头部裁剪则为 `true`。 */
+  /** 若实时投影或历史只读归档因超过条数或单帧 680KiB 安全预算发生过裁剪则为 `true`。 */
   readonly truncatedArchive?: boolean;
   readonly messages: readonly ViewMessage[];
   readonly operation?: ViewOperation;

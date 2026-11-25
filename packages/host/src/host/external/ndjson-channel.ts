@@ -14,6 +14,12 @@ const PRE_HANDSHAKE_MAX_NON_JSON_BYTES = 64 * 1024;
 const PRE_HANDSHAKE_MAX_NON_JSON_LINES = 100;
 /** 初始行拼接缓冲区容量（4 KiB），按需倍增至 `maxFrameBytes`，避免空闲会话常驻分配 8 MiB。 */
 const INITIAL_BUFFER_CAPACITY = 4 * 1024;
+/** 待消费帧队列暂停读取高水位（8 MiB），防止对端狂刷大帧撑爆宿主堆内存。 */
+const QUEUE_HIGH_WATER_BYTES = 8 * 1024 * 1024;
+/** 待消费帧队列恢复读取低水位（2 MiB）。 */
+const QUEUE_LOW_WATER_BYTES = 2 * 1024 * 1024;
+/** 单次读入突发累积帧队列硬上限（32 MiB），超出直接熔断关闭通道。 */
+const MAX_QUEUED_FRAME_BYTES = 32 * 1024 * 1024;
 
 /** JSON-RPC 请求 ID 类型（兼容数值或字符串 ID）。 */
 export type JsonRpcRequestId = string | number;
@@ -76,6 +82,9 @@ export class NdjsonChannel {
   private fatalError?: ExternalHarnessError;
   private readonly pending = new Map<JsonRpcRequestId, PendingRpcCall>();
   private readonly frameQueue: Buffer[] = [];
+  private frameHead = 0;
+  private queuedBytes = 0;
+  private streamPaused = false;
   private pumping = false;
 
   constructor(
@@ -200,6 +209,9 @@ export class NdjsonChannel {
     this.readable.off('end', this.handleEnd);
     this.readable.off('error', this.handleStreamError);
     this.frameQueue.length = 0;
+    this.frameHead = 0;
+    this.queuedBytes = 0;
+    this.streamPaused = false;
     this.bufferedBytes = 0;
 
     const rejection =
@@ -239,15 +251,38 @@ export class NdjsonChannel {
         }
         const rawFrame = Buffer.from(this.buffer.subarray(0, endOffset));
         this.bufferedBytes = 0;
-        this.frameQueue.push(rawFrame);
+        this.enqueueFrame(rawFrame);
+        if (this.closed) return;
       }
       start = index + 1;
     }
 
-    if (this.frameQueue.length > 0 && !this.pumping) {
+    if (this.frameHead < this.frameQueue.length && !this.pumping) {
       void this.pumpFrames();
     }
   };
+
+  private enqueueFrame(rawFrame: Buffer): void {
+    if (this.queuedBytes + rawFrame.length > MAX_QUEUED_FRAME_BYTES) {
+      this.failChannel(
+        new ExternalHarnessError(
+          'EXTERNAL_FRAME_LIMIT',
+          `外部代理待处理输出积压超过安全上限（${MAX_QUEUED_FRAME_BYTES} 字节）`,
+        ),
+      );
+      return;
+    }
+    this.frameQueue.push(rawFrame);
+    this.queuedBytes += rawFrame.length;
+    if (
+      !this.streamPaused &&
+      this.queuedBytes >= QUEUE_HIGH_WATER_BYTES &&
+      typeof this.readable.pause === 'function'
+    ) {
+      this.streamPaused = true;
+      this.readable.pause();
+    }
+  }
 
   private readonly handleEnd = (): void => {
     if (this.closed) return;
@@ -257,7 +292,7 @@ export class NdjsonChannel {
       if (endOffset > 0 && this.buffer[endOffset - 1] === 13) {
         endOffset -= 1;
       }
-      this.frameQueue.push(Buffer.from(this.buffer.subarray(0, endOffset)));
+      this.enqueueFrame(Buffer.from(this.buffer.subarray(0, endOffset)));
       this.bufferedBytes = 0;
     }
     void this.drainAndCloseOnEof();
@@ -274,7 +309,7 @@ export class NdjsonChannel {
   };
 
   private async drainAndCloseOnEof(): Promise<void> {
-    if (this.frameQueue.length > 0 && !this.pumping) {
+    if (this.frameHead < this.frameQueue.length && !this.pumping) {
       await this.pumpFrames();
     } else {
       while (this.pumping) {
@@ -308,14 +343,33 @@ export class NdjsonChannel {
     if (this.pumping) return;
     this.pumping = true;
     try {
-      while (!this.closed && this.frameQueue.length > 0) {
-        const frame = this.frameQueue.shift()!;
+      while (!this.closed && this.frameHead < this.frameQueue.length) {
+        const frame = this.frameQueue[this.frameHead]!;
+        this.frameQueue[this.frameHead] = Buffer.alloc(0);
+        this.frameHead += 1;
+        this.queuedBytes = Math.max(0, this.queuedBytes - frame.length);
+        if (this.frameHead >= 256 && this.frameHead * 2 >= this.frameQueue.length) {
+          this.frameQueue.splice(0, this.frameHead);
+          this.frameHead = 0;
+        }
+        if (
+          this.streamPaused &&
+          this.queuedBytes <= QUEUE_LOW_WATER_BYTES &&
+          typeof this.readable.resume === 'function'
+        ) {
+          this.streamPaused = false;
+          this.readable.resume();
+        }
         if (frame.length === 0) continue;
         if (frame.length >= LARGE_FRAME_YIELD_BYTES) {
           await new Promise<void>((resolve) => setImmediate(resolve));
           if (this.closed) return;
         }
         this.processSingleFrame(frame);
+      }
+      if (this.frameHead >= this.frameQueue.length) {
+        this.frameQueue.length = 0;
+        this.frameHead = 0;
       }
     } finally {
       this.pumping = false;
@@ -387,9 +441,11 @@ export class NdjsonChannel {
   private dispatchObject(obj: Record<string, unknown>): void {
     const hasId = typeof obj.id === 'string' || typeof obj.id === 'number';
     const hasMethod = typeof obj.method === 'string';
+    // Claude stream-json 与 Pi RPC 事件流均以顶层字符串 `type` 标识帧语义（如 Pi 的 `extension_ui_request` 同时含 `id` 与 `method`），不应误判为 JSON-RPC 请求。
+    const isTypedEventFrame = typeof obj.type === 'string';
 
-    // 1. 服务端请求（同时携带 id 与 method）
-    if (hasId && hasMethod) {
+    // 1. 服务端 JSON-RPC 请求（同时携带 id 与 method，且不含顶层事件 type）
+    if (!isTypedEventFrame && hasId && hasMethod) {
       void this.handleIncomingRequest(
         obj.id as JsonRpcRequestId,
         obj.method as string,
@@ -399,8 +455,8 @@ export class NdjsonChannel {
       return;
     }
 
-    // 2. 客户端在途请求的响应（携带 id，且含 result 或 error）
-    if (hasId && ('result' in obj || 'error' in obj)) {
+    // 2. 客户端在途 JSON-RPC 请求的响应（携带 id，且含 result 或 error）
+    if (!isTypedEventFrame && hasId && ('result' in obj || 'error' in obj)) {
       const pending = this.pending.get(obj.id as JsonRpcRequestId);
       if (!pending) return;
       this.pending.delete(obj.id as JsonRpcRequestId);
@@ -426,13 +482,13 @@ export class NdjsonChannel {
       return;
     }
 
-    // 3. 单向通知（携带 method、无 id）
-    if (!hasId && hasMethod) {
+    // 3. 单向通知（携带 method、无 id，且非顶层事件帧）
+    if (!isTypedEventFrame && !hasId && hasMethod) {
       this.options.onNotification?.(obj.method as string, obj.params);
       return;
     }
 
-    // 4. 非 JSON-RPC 形态的结构化事件对象（如 Claude stream-json）
+    // 4. 非 JSON-RPC 形态的结构化事件对象（如 Claude stream-json、Pi RPC）
     this.options.onMessage?.(obj);
   }
 

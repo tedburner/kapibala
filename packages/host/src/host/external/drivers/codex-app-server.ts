@@ -20,6 +20,7 @@ import {
   ExternalHarnessError,
   type ExternalInspectResult,
   type ExternalTurnResult,
+  isValidNativeSessionId,
 } from '../types.js';
 import { normalizeAcpPlanUpdate } from './acp/tolerance.js';
 
@@ -106,6 +107,11 @@ function mapCodexItemStatus(item: Record<string, unknown>, completed: boolean): 
   return 'running';
 }
 
+function clampCodexCallId(raw: string, fallback = 'codex-item'): string {
+  const trimmed = raw.trim().slice(0, 256);
+  return trimmed || fallback;
+}
+
 function buildCodexToolFromItem(
   item: Record<string, unknown>,
   completed: boolean,
@@ -113,7 +119,12 @@ function buildCodexToolFromItem(
   accumulatedOutput?: string,
   durationMs?: number,
 ): ViewTool | undefined {
-  const rawId = typeof item.id === 'string' && item.id.trim() ? item.id.trim() : previous?.callId;
+  const rawId =
+    typeof item.id === 'string' && item.id.trim()
+      ? clampCodexCallId(item.id)
+      : previous?.callId
+        ? clampCodexCallId(previous.callId)
+        : undefined;
   if (!rawId) return undefined;
   const kind = typeof item.type === 'string' ? item.type : '';
 
@@ -229,34 +240,28 @@ function buildCodexToolFromItem(
   return undefined;
 }
 
+function clampCodexTokens(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(value));
+}
+
 function parseCodexTokenUsage(params: unknown): ViewUsage | undefined {
   const obj = asRecord(params);
   const tokenUsage = asRecord(obj?.tokenUsage) ?? obj;
   const last = asRecord(tokenUsage?.last) ?? asRecord(tokenUsage?.total) ?? tokenUsage;
   if (!last) return undefined;
-  const input =
-    typeof last.inputTokens === 'number'
-      ? last.inputTokens
-      : typeof last.input_tokens === 'number'
-        ? last.input_tokens
-        : 0;
-  const cached =
-    typeof last.cachedInputTokens === 'number'
-      ? last.cachedInputTokens
-      : typeof last.cached_input_tokens === 'number'
-        ? last.cached_input_tokens
-        : 0;
-  const output =
-    typeof last.outputTokens === 'number'
-      ? last.outputTokens
-      : typeof last.output_tokens === 'number'
-        ? last.output_tokens
-        : 0;
-  const totalRaw =
-    typeof last.totalTokens === 'number' ? last.totalTokens : input + cached + output;
-  const promptTokens = Math.max(0, Math.floor(input + cached));
-  const completionTokens = Math.max(0, Math.floor(output));
-  const totalTokens = Math.max(promptTokens + completionTokens, Math.floor(totalRaw));
+  const input = clampCodexTokens(last.inputTokens ?? last.input_tokens);
+  const cached = clampCodexTokens(last.cachedInputTokens ?? last.cached_input_tokens);
+  const output = clampCodexTokens(last.outputTokens ?? last.output_tokens);
+  const promptTokens = Math.min(Number.MAX_SAFE_INTEGER, input + cached);
+  const completionTokens = output;
+  const totalFromPayload = clampCodexTokens(last.totalTokens ?? last.total_tokens);
+  const totalTokens = Math.min(
+    Number.MAX_SAFE_INTEGER,
+    Math.max(promptTokens + completionTokens, totalFromPayload),
+  );
   if (totalTokens <= 0) return undefined;
   return {
     promptTokens,
@@ -439,6 +444,11 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
     onEvent: (event: ExternalEvent) => void;
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult> {
+    if (input.nativeSessionId !== undefined && !isValidNativeSessionId(input.nativeSessionId)) {
+      throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', 'Codex 恢复会话 threadId 格式非法');
+    }
+    const sanitizedResumeId = input.nativeSessionId?.trim();
+
     const resolvedCmd = resolveExternalCommand({
       command: input.def.command,
       args: buildCodexCliArgs(input.def.command, input.def.args),
@@ -462,7 +472,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       env: launchEnv.env,
     });
 
-    let threadId = input.nativeSessionId;
+    let threadId = sanitizedResumeId;
     let closingByClient = false;
     const toolsById = new Map<
       string,
@@ -501,7 +511,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
         if (method === 'item/agentMessage/delta') {
           activeTurn?.bumpActivity();
           const delta = typeof p.delta === 'string' ? p.delta : '';
-          const itemId = typeof p.itemId === 'string' ? p.itemId : '';
+          const itemId = typeof p.itemId === 'string' ? clampCodexCallId(p.itemId, '') : '';
           if (delta) {
             if (itemId) {
               streamedAgentTextLen.set(
@@ -517,7 +527,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
         if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
           activeTurn?.bumpActivity();
           const delta = typeof p.delta === 'string' ? p.delta : '';
-          const itemId = typeof p.itemId === 'string' ? p.itemId : '';
+          const itemId = typeof p.itemId === 'string' ? clampCodexCallId(p.itemId, '') : '';
           if (delta) {
             if (itemId) streamedReasoningIds.add(itemId);
             input.onEvent({ type: 'thought_delta', text: delta });
@@ -530,7 +540,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           method === 'item/fileChange/outputDelta'
         ) {
           activeTurn?.bumpActivity();
-          const itemId = typeof p.itemId === 'string' ? p.itemId.trim() : '';
+          const itemId = typeof p.itemId === 'string' ? clampCodexCallId(p.itemId, '') : '';
           const delta = typeof p.delta === 'string' ? p.delta : '';
           if (!itemId || !delta) return;
           const tracked = toolsById.get(itemId);
@@ -559,7 +569,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           const item = asRecord(p.item);
           if (!item) return;
           const kind = typeof item.type === 'string' ? item.type : '';
-          const itemId = typeof item.id === 'string' ? item.id : '';
+          const itemId = typeof item.id === 'string' ? clampCodexCallId(item.id, '') : '';
           const completed = method === 'item/completed';
 
           if (kind === 'agentMessage' && completed && typeof item.text === 'string') {
@@ -690,12 +700,16 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           });
         }
 
+        if (!activeTurn) {
+          return { decision: 'cancel' };
+        }
+
         const itemId =
           typeof p.itemId === 'string' && p.itemId.trim()
-            ? p.itemId.trim()
+            ? clampCodexCallId(p.itemId)
             : typeof p.callId === 'string' && p.callId.trim()
-              ? p.callId.trim()
-              : `codex-item-${String(id)}`;
+              ? clampCodexCallId(p.callId)
+              : clampCodexCallId(`codex-item-${String(id)}`);
 
         const cmdText =
           typeof p.command === 'string'
@@ -704,52 +718,67 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
               ? p.command.filter((x): x is string => typeof x === 'string').join(' ')
               : undefined;
         const grantRoot = typeof p.grantRoot === 'string' ? p.grantRoot : undefined;
+        const changePaths: string[] = [];
+        if (Array.isArray(p.changes)) {
+          for (const entry of p.changes) {
+            const ch = asRecord(entry);
+            if (typeof ch?.path === 'string' && ch.path.trim()) {
+              changePaths.push(ch.path.trim());
+            }
+          }
+        }
         const reason =
           typeof p.reason === 'string' && p.reason.trim()
             ? sanitizeDisplayText(redactCommonSecrets(sanitizeUntrustedOutput(p.reason)), 200)
             : undefined;
 
         const existing = toolsById.get(itemId)?.view;
+        const fallbackFileTarget =
+          grantRoot ??
+          (changePaths.length > 0 ? changePaths.join(', ') : existing?.input || undefined);
+        const rawTarget = cmdText ?? fallbackFileTarget;
+        const safeTarget = rawTarget
+          ? sanitizeDisplayText(redactCommonSecrets(sanitizeUntrustedOutput(rawTarget)), 2_000)
+          : undefined;
+
         if (!existing) {
           const synth: ViewTool = isCmdApproval
             ? {
                 callId: itemId,
                 name: 'bash',
                 displayName: '终端命令',
-                invocation: cmdText ? `运行 ${cmdText}` : '运行命令',
+                invocation: safeTarget ? `运行 ${safeTarget.slice(0, 96)}` : '运行命令',
                 verb: '运行',
-                ...(cmdText ? { chip: sanitizeDisplayText(cmdText, 96) } : {}),
+                ...(safeTarget ? { chip: sanitizeDisplayText(safeTarget, 96) } : {}),
                 mono: true,
-                input: cmdText ?? '',
+                input: safeTarget ?? '',
                 status: 'running',
               }
             : {
                 callId: itemId,
                 name: 'edit_file',
                 displayName: '文件修改',
-                invocation: grantRoot ? `编辑 ${grantRoot}` : '修改文件',
+                invocation: safeTarget ? `编辑 ${safeTarget.slice(0, 96)}` : '修改文件',
                 verb: '编辑',
-                ...(grantRoot ? { chip: sanitizeDisplayText(grantRoot, 96) } : {}),
+                ...(safeTarget ? { chip: sanitizeDisplayText(safeTarget, 96) } : {}),
                 mono: true,
-                input: grantRoot ?? '',
+                input: safeTarget ?? '',
                 status: 'running',
               };
           emitToolUpsert(synth);
         }
 
-        if (activeTurn) {
-          activeTurn.pendingApprovals += 1;
-          activeTurn.bumpActivity();
-        }
+        activeTurn.pendingApprovals += 1;
+        activeTurn.bumpActivity();
 
         return await new Promise<Record<string, unknown>>((resolve) => {
           let settled = false;
           input.onEvent({
             type: 'approval_requested',
-            requestId: String(id),
+            requestId: clampCodexCallId(String(id), 'codex-req'),
             toolCallId: itemId,
             toolTitle: isCmdApproval ? '终端命令执行' : '文件写入修改',
-            ...(cmdText ? { target: cmdText } : grantRoot ? { target: grantRoot } : {}),
+            ...(safeTarget ? { target: safeTarget } : {}),
             ...(reason ? { warning: reason } : {}),
             options: isCmdApproval
               ? [
@@ -820,7 +849,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
         activeTurn = undefined;
         turn.cleanup();
         if (turn.cancelled || closingByClient) {
-          turn.resolve({ stopReason: 'cancelled' });
+          turn.resolve({ stopReason: 'cancelled', processTerminated: true });
         } else {
           turn.reject(closeErr);
         }
@@ -860,10 +889,10 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
         cwd: input.workspaceRoot,
         approvalPolicy: 'on-request',
         sandbox: 'workspace-write',
-        ...(input.nativeSessionId ? { threadId: input.nativeSessionId } : {}),
+        ...(sanitizedResumeId ? { threadId: sanitizedResumeId } : {}),
       };
       const openedRaw = await channel.request(
-        input.nativeSessionId ? 'thread/resume' : 'thread/start',
+        sanitizedResumeId ? 'thread/resume' : 'thread/start',
         threadParams,
         { omitJsonRpcVersion: true, timeoutMs: handshakeTimeoutMs, signal: input.signal },
       );
@@ -874,12 +903,12 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           ? threadObj.id.trim()
           : typeof opened.threadId === 'string' && opened.threadId.trim()
             ? opened.threadId.trim()
-            : input.nativeSessionId;
+            : sanitizedResumeId;
 
-      if (!resolvedThreadId) {
+      if (!resolvedThreadId || !isValidNativeSessionId(resolvedThreadId)) {
         throw new ExternalHarnessError(
           'EXTERNAL_PROTOCOL_ERROR',
-          'Codex thread/start 响应缺少有效的 thread.id',
+          'Codex thread/start 响应缺少合法的 thread.id',
         );
       }
       threadId = resolvedThreadId;
@@ -951,8 +980,11 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
                 'EXTERNAL_TIMEOUT',
                 `Codex 超过 ${Math.round(turnWatchdogMs / 1000)} 秒无响应进展，已中止当前轮次`,
               );
-              void proc.close();
-              reject(timeoutErr);
+              closingByClient = true;
+              void proc.close().finally(() => {
+                input.onEvent({ type: 'closed', code: 1, signal: null });
+                reject(timeoutErr);
+              });
             }
           }, checkIntervalMs);
           watchdogTimer.unref?.();
@@ -999,6 +1031,18 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
                     : `turn-${randomUUID().slice(0, 8)}`;
               if (activeTurn === currentTurn) {
                 currentTurn.turnId = idStr;
+                if (currentTurn.cancelled && activeThreadId) {
+                  void channel
+                    .request(
+                      'turn/interrupt',
+                      {
+                        threadId: activeThreadId,
+                        turnId: idStr,
+                      },
+                      { omitJsonRpcVersion: true, timeoutMs: 3_000 },
+                    )
+                    .catch(() => {});
+                }
               }
             })
             .catch((err) => {
@@ -1037,7 +1081,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
             snapshotTurn.cleanup();
             closingByClient = true;
             void proc.close().finally(() => {
-              snapshotTurn.resolve({ stopReason: 'cancelled' });
+              snapshotTurn.resolve({ stopReason: 'cancelled', processTerminated: true });
             });
           }
         }, CANCEL_SETTLE_GRACE_MS);
@@ -1049,7 +1093,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           const turn = activeTurn;
           activeTurn = undefined;
           turn.cleanup();
-          turn.resolve({ stopReason: 'cancelled' });
+          turn.resolve({ stopReason: 'cancelled', processTerminated: true });
         }
         channel.close();
         await proc.close();

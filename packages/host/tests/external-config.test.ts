@@ -31,11 +31,12 @@ afterEach(() => {
 });
 
 describe('外部代理内置预设与官方 ACP Registry 模板', () => {
-  it('完整包含七个内置预设（含三套驱动路由）与官方 ACP 模板清单', () => {
+  it('完整包含八个内置预设（含四套驱动路由）与官方 ACP 模板清单', () => {
     const ids = BUILTIN_EXTERNAL_HARNESSES.map((item) => item.id);
     expect(ids).toEqual([
       'claude-code',
       'codex',
+      'pi',
       'antigravity',
       'opencode',
       'deepseek-harness',
@@ -48,6 +49,7 @@ describe('外部代理内置预设与官方 ACP Registry 模板', () => {
     expect(BUILTIN_EXTERNAL_HARNESSES.find((h) => h.id === 'codex')?.transport).toBe(
       'codex-app-server',
     );
+    expect(BUILTIN_EXTERNAL_HARNESSES.find((h) => h.id === 'pi')?.transport).toBe('pi-rpc');
     expect(BUILTIN_EXTERNAL_HARNESSES.find((h) => h.id === 'antigravity')?.args).toEqual(['acp']);
     expect(ACP_REGISTRY_TEMPLATES.length).toBeGreaterThanOrEqual(5);
   });
@@ -194,5 +196,41 @@ describe('harnesses.json 独占锁增量配置事务', () => {
     expect(digestA).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(digestB).not.toBe(digestA);
     expect(digestC).not.toBe(digestA);
+  });
+
+  it('拦截原型保留属性键（constructor/__proto__），且内置代理支持传空串清空 command 覆写而保留 args/envFrom', () => {
+    const homeDir = makeTempHome('kpbl-ext-cfg-proto-');
+
+    expect(() =>
+      upsertCustomExternalHarness(
+        {
+          id: 'constructor',
+          name: 'Bad Proto',
+          command: 'opencode',
+          args: ['acp'],
+          enabled: true,
+        },
+        { homeDir },
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_CONFIG_INVALID' }));
+
+    saveBuiltinHarnessOverride(
+      'pi',
+      {
+        command: 'C:\\custom\\pi.exe',
+        args: ['--provider', 'anthropic'],
+        envFrom: ['ANTHROPIC_API_KEY'],
+      },
+      { homeDir },
+    );
+
+    // 单独将 command 传空串：回退默认命令名 'pi'，同时保留 args 与 envFrom 覆写
+    saveBuiltinHarnessOverride('pi', { command: '' }, { homeDir });
+    const resolvedPi = listResolvedExternalHarnesses({ homeDir }).find(
+      (i) => i.definition.id === 'pi',
+    )!;
+    expect(resolvedPi.definition.command).toBe('pi');
+    expect(resolvedPi.definition.args).toEqual(['--provider', 'anthropic']);
+    expect(resolvedPi.hasOverride).toBe(true);
   });
 });

@@ -19,6 +19,7 @@ import { TaskPanel } from './task-panel.js';
 function transportLabel(transport: ViewExternalSnapshot['session']['transport']): string {
   if (transport === 'acp') return 'ACP';
   if (transport === 'claude-cli') return 'CLI 直连';
+  if (transport === 'pi-rpc') return 'Pi 直连';
   return 'App-Server';
 }
 

@@ -121,6 +121,61 @@ rl.on('line', (line) => {
       return;
     }
 
+    if (text.includes('multistep')) {
+      emit({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'Step1 streamed. ' },
+        },
+      });
+      emit({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Step1 streamed. ' },
+            {
+              type: 'tool_use',
+              id: `toolu_step_${turnCount}`,
+              name: 'Read',
+              input: { file_path: 'package.json' },
+            },
+          ],
+        },
+      });
+      emit({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: `toolu_step_${turnCount}`,
+              content: '{"name":"demo"}',
+              is_error: false,
+            },
+          ],
+        },
+      });
+      emit({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Step2 non-streamed!' }],
+        },
+      });
+      emit({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: sessionId,
+        result: 'Step1 streamed. Step2 non-streamed!',
+        usage: { input_tokens: 15, output_tokens: 10 },
+      });
+      return;
+    }
+
     if (text.includes('plan')) {
       emit({
         type: 'assistant',

@@ -137,4 +137,54 @@ describe('Wire v2 external-session 能力协商与端到端调用', () => {
     expect(archivedSnap.session.hasArchive).toBe(true);
     expect(archivedSnap.messages).toHaveLength(2);
   });
+
+  it('多客户端连接同一 LocalHostServer 时强制单控制者门禁，拒绝非控制连接抢答审批或越权关闭', async () => {
+    const homeDir = makeTempDir('kpbl-wire-ext-ctrl-home-');
+    const workspaceRoot = makeTempDir('kpbl-wire-ext-ctrl-ws-');
+    trustProject(createUserSettingsSkeleton(), workspaceRoot, { homeDir });
+
+    const { client: clientA, server } = await createPair({
+      homeDir,
+      capabilities: ['sessions', 'external-session'],
+    });
+
+    const c2sB = new PassThrough();
+    const s2cB = new PassThrough();
+    const serverAcceptB = server.accept(createStdioTransport(c2sB, s2cB));
+    const clientB = await LocalClient.connect(createStdioTransport(s2cB, c2sB), {
+      protocolVersion: PROTOCOL_VERSION,
+      clientName: 'observer-client',
+      capabilities: ['sessions', 'external-session'],
+    });
+    cleanups.push(async () => {
+      await clientB.close();
+      await serverAcceptB.catch(() => {});
+    });
+
+    await clientA.call('external/harnessSave', {
+      id: 'ctrl-acp',
+      builtin: false,
+      name: 'Control ACP',
+      command: process.execPath,
+      args: [fakeAcpScript, '--mode=normal'],
+      enabled: true,
+    });
+
+    const opened = await clientA.call('external/open', {
+      workspaceRoot,
+      harnessId: 'ctrl-acp',
+    });
+
+    // 观察端 clientB 可以读取只读快照，但不能越权 close / cancel / prompt 由 clientA 控制的外部会话
+    const snapB = await clientB.call('external/snapshot', { sessionId: opened.session.id });
+    expect(snapB.session.id).toBe(opened.session.id);
+    await expect(clientB.call('external/close', { sessionId: opened.session.id })).rejects.toThrow(
+      /CONTROL_REQUIRED/,
+    );
+
+    // clientA detach 释放控制权后，clientB 即可正常接管并关闭
+    await clientA.call('external/detach', { sessionId: opened.session.id });
+    const closedByB = await clientB.call('external/close', { sessionId: opened.session.id });
+    expect(closedByB.closed).toBe(true);
+  });
 });

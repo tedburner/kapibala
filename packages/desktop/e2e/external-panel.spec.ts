@@ -57,6 +57,7 @@ test.describe
       const builtinRegion = page.getByRole('region', { name: '内置外部代理' });
       await expect(builtinRegion.getByText('Claude Code', { exact: true })).toBeVisible();
       await expect(builtinRegion.getByText('Codex', { exact: true })).toBeVisible();
+      await expect(builtinRegion.getByText('Pi Coding Agent', { exact: true })).toBeVisible();
       await expect(builtinRegion.getByText('Antigravity', { exact: true })).toBeVisible();
       await expect(builtinRegion.getByText('OpenCode', { exact: true })).toBeVisible();
 
@@ -124,6 +125,7 @@ test.describe
           overrides: {
             'claude-code': { enabled: false },
             codex: { enabled: false },
+            pi: { enabled: false },
             antigravity: { enabled: false },
             opencode: { enabled: false },
             'deepseek-harness': { enabled: false },

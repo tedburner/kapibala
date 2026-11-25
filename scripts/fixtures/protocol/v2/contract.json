@@ -421,8 +421,7 @@
           "type": "boolean"
         },
         "command": {
-          "maxLength": 1048576,
-          "minLength": 1,
+          "maxLength": 4096,
           "type": "string"
         },
         "enabled": {
@@ -1282,7 +1281,7 @@
                 ]
               },
               "transport": {
-                "enum": ["acp", "claude-cli", "codex-app-server"],
+                "enum": ["acp", "claude-cli", "codex-app-server", "pi-rpc"],
                 "type": "string"
               }
             },
@@ -1529,7 +1528,7 @@
                 ]
               },
               "transport": {
-                "enum": ["acp", "claude-cli", "codex-app-server"],
+                "enum": ["acp", "claude-cli", "codex-app-server", "pi-rpc"],
                 "type": "string"
               }
             },
@@ -1714,7 +1713,7 @@
                 "type": "string"
               },
               "transport": {
-                "enum": ["acp", "claude-cli", "codex-app-server"],
+                "enum": ["acp", "claude-cli", "codex-app-server", "pi-rpc"],
                 "type": "string"
               },
               "updatedAt": {
@@ -2163,7 +2162,7 @@
               "type": "string"
             },
             "transport": {
-              "enum": ["acp", "claude-cli", "codex-app-server"],
+              "enum": ["acp", "claude-cli", "codex-app-server", "pi-rpc"],
               "type": "string"
             },
             "updatedAt": {

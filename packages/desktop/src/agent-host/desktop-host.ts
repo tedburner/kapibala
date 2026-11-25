@@ -61,6 +61,7 @@ const DESKTOP_UNHANDLED_COMMANDS: ReadonlyMap<string, string> = new Map([
   ['model', '会话内模型切换依赖 CLI 宿主回调，桌面端请在设置面板管理模型。'],
   ['exit', '桌面端没有退出命令；请直接关闭窗口或会话标签。'],
   ['prompt', '提示词任务依赖运行收据管线适配，桌面端暂未开放；可改用该服务的 MCP 工具。'],
+  ['external', '桌面端请通过左侧栏「外部代理」或设置面板管理与运行外部代理会话。'],
 ]);
 
 type Scope = { workspaceId: string; sessionId: string };
@@ -548,16 +549,24 @@ export class DesktopHost {
       case 'external.open': {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
+        const initialPrompt = p.prompt?.trim();
         const opened = await this.external.openSession({
           workspaceRoot: ws.root,
           harnessId: p.harnessId,
           ...(p.title ? { title: p.title } : {}),
+          ...(initialPrompt ? { requireIdleWorkspace: true } : {}),
         });
-        if (p.prompt?.trim()) {
-          return await this.external.dispatchPrompt({
-            sessionId: opened.session.id,
-            text: p.prompt.trim(),
-          });
+        if (initialPrompt) {
+          try {
+            return await this.external.dispatchPrompt({
+              sessionId: opened.session.id,
+              text: initialPrompt,
+              expectedWorkspaceRoot: ws.root,
+            });
+          } catch (err) {
+            await this.external.closeSession(opened.session.id, ws.root).catch(() => {});
+            throw err;
+          }
         }
         return opened;
       }
@@ -581,6 +590,7 @@ export class DesktopHost {
         if (existing) {
           existing.unsubscribe();
           existing.stream.close();
+          this.externalStreams.delete(p.subscriptionId);
         }
         const stream = new LatestSnapshot<Output<'external.snapshot'>>(
           (subscriptionId, snapshot) =>
@@ -594,6 +604,11 @@ export class DesktopHost {
               'data',
             ),
           (subscriptionId) => {
+            const staleSub = this.externalStreams.get(subscriptionId);
+            if (staleSub) {
+              staleSub.unsubscribe();
+              this.externalStreams.delete(subscriptionId);
+            }
             if (!this.dead) {
               void this.notify(
                 {
@@ -637,6 +652,7 @@ export class DesktopHost {
         return await this.external.dispatchPrompt({
           sessionId: current.session.id,
           text: p.text,
+          expectedWorkspaceRoot: ws.root,
         });
       }
       case 'external.approve': {
@@ -651,6 +667,7 @@ export class DesktopHost {
           approvalId: p.approvalId,
           ...(p.optionId ? { optionId: p.optionId } : {}),
           ...(p.cancel !== undefined ? { cancel: p.cancel } : {}),
+          expectedWorkspaceRoot: ws.root,
         });
         return {};
       }
@@ -661,7 +678,7 @@ export class DesktopHost {
         if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
-        await this.external.cancelSession(current.session.id);
+        await this.external.cancelSession(current.session.id, ws.root);
         return {};
       }
       case 'external.close': {
@@ -671,7 +688,7 @@ export class DesktopHost {
         if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
-        await this.external.closeSession(current.session.id);
+        await this.external.closeSession(current.session.id, ws.root);
         return {};
       }
       case 'external.delete': {
@@ -681,7 +698,14 @@ export class DesktopHost {
         if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
-        const deleted = await this.external.deleteSession(current.session.id);
+        for (const [subId, sub] of this.externalStreams) {
+          if (sub.sessionId === current.session.id) {
+            sub.unsubscribe();
+            sub.stream.close();
+            this.externalStreams.delete(subId);
+          }
+        }
+        const deleted = await this.external.deleteSession(current.session.id, ws.root);
         return { deleted };
       }
       default:

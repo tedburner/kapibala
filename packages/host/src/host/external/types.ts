@@ -61,8 +61,23 @@ export class ExternalHarnessError extends KapibalaError {
   }
 }
 
-/** 外部代理底层传输协议；第三方自定义命令固定走 `'acp'`，Claude / Codex 原生直连走专用驱动。 */
-export type ExternalTransportKind = 'acp' | 'claude-cli' | 'codex-app-server';
+/** 外部代理底层传输协议；第三方自定义命令固定走 `'acp'`，Claude / Codex / Pi 原生直连走专用驱动。 */
+export type ExternalTransportKind = 'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc';
+
+/**
+ * 合法的外部会话恢复标识正则：必须以字母或数字开头，杜绝以 `-` 开头的恶意值在 `--resume` / `--session` 中退化为 CLI 选项注入。
+ */
+export const SAFE_NATIVE_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+
+/** 校验外部代理返回的原生会话 ID 是否可安全用于持久化与子进程恢复参数。 */
+export function isValidNativeSessionId(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_NATIVE_SESSION_ID_PATTERN.test(value.trim());
+}
+
+/** 拦截 `constructor`、`toString`、`__proto__` 等原型链保留属性名，防止普通对象字典读写碰撞。 */
+export function isReservedObjectPropertyName(key: string): boolean {
+  return key === '__proto__' || key === 'prototype' || key in Object.prototype;
+}
 
 /**
  * 一条可启动的外部代理定义。
@@ -171,6 +186,8 @@ export type ExternalEvent =
 export interface ExternalTurnResult {
   readonly stopReason: 'completed' | 'cancelled';
   readonly usage?: ViewUsage;
+  /** 当用户取消因宽限期超时触发底层子进程强杀时置 `true`，通知编排层立即移出存活槽位。 */
+  readonly processTerminated?: boolean;
 }
 
 /** 已打开的外部代理单会话子进程句柄；每个可写外部会话独占一个底层子进程。 */

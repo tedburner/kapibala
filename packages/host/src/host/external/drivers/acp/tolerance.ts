@@ -304,7 +304,7 @@ export function normalizeAcpToolUpdate(
           ? update.callId
           : previous?.callId;
   if (!rawId || !rawId.trim()) return undefined;
-  const callId = rawId.trim();
+  const callId = rawId.trim().slice(0, 256);
 
   const rawTitle =
     typeof update.title === 'string' && update.title.trim()
@@ -398,14 +398,16 @@ export function normalizeAcpPermissionRequest(
   const options: ExternalApprovalOption[] = [];
   if (Array.isArray(obj.options)) {
     for (const rawOpt of obj.options) {
+      if (options.length >= 32) break;
       const item = asRecord(rawOpt);
       if (!item) continue;
-      const optionId =
+      const optionId = (
         typeof item.optionId === 'string'
           ? item.optionId.trim()
           : typeof item.id === 'string'
             ? item.id.trim()
-            : '';
+            : ''
+      ).slice(0, 256);
       if (!optionId) continue;
       const rawLabel =
         typeof item.name === 'string'
@@ -427,6 +429,23 @@ export function normalizeAcpPermissionRequest(
     );
   }
 
+  const rawToolInput = asRecord(rawToolCall.rawInput) ?? asRecord(obj.rawInput);
+  const fullTargetSource =
+    typeof rawToolInput?.command === 'string'
+      ? rawToolInput.command
+      : typeof rawToolInput?.CommandLine === 'string'
+        ? rawToolInput.CommandLine
+        : typeof rawToolInput?.cmd === 'string'
+          ? rawToolInput.cmd
+          : typeof rawToolInput?.path === 'string'
+            ? rawToolInput.path
+            : typeof rawToolInput?.filePath === 'string'
+              ? rawToolInput.filePath
+              : synthesizedTool.chip;
+  const fullTarget = fullTargetSource
+    ? sanitizeDisplayText(redactCommonSecrets(fullTargetSource), 2_000)
+    : undefined;
+
   const warning =
     typeof obj.reason === 'string'
       ? sanitizeDisplayText(redactCommonSecrets(obj.reason), 240)
@@ -437,10 +456,15 @@ export function normalizeAcpPermissionRequest(
   return {
     tool: synthesizedTool,
     toolTitle: synthesizedTool.displayName,
-    ...(synthesizedTool.chip ? { target: synthesizedTool.chip } : {}),
+    ...(fullTarget ? { target: fullTarget } : {}),
     ...(warning ? { warning } : {}),
     options,
   };
+}
+
+function clampSafeTokenCount(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(value)));
 }
 
 /** 归一化 `session/prompt` 结算响应中的 Token 用量（缺失或非法时返回 `undefined`，不伪造 0）。 */
@@ -449,24 +473,28 @@ export function normalizeAcpUsage(raw: unknown): ViewUsage | undefined {
   const usage = asRecord(obj?.usage) ?? obj;
   if (!usage) return undefined;
 
-  const promptTokens =
+  const promptTokens = clampSafeTokenCount(
     typeof usage.inputTokens === 'number'
       ? usage.inputTokens
       : typeof usage.promptTokens === 'number'
         ? usage.promptTokens
-        : undefined;
-  const completionTokens =
+        : undefined,
+  );
+  const completionTokens = clampSafeTokenCount(
     typeof usage.outputTokens === 'number'
       ? usage.outputTokens
       : typeof usage.completionTokens === 'number'
         ? usage.completionTokens
-        : undefined;
+        : undefined,
+  );
   if (promptTokens === undefined && completionTokens === undefined) return undefined;
 
-  const p = Math.max(0, Math.trunc(promptTokens ?? 0));
-  const c = Math.max(0, Math.trunc(completionTokens ?? 0));
-  const totalTokens =
-    typeof usage.totalTokens === 'number' ? Math.max(0, Math.trunc(usage.totalTokens)) : p + c;
+  const p = promptTokens ?? 0;
+  const c = completionTokens ?? 0;
+  const explicitTotal = clampSafeTokenCount(
+    typeof usage.totalTokens === 'number' ? usage.totalTokens : undefined,
+  );
+  const totalTokens = explicitTotal ?? Math.min(Number.MAX_SAFE_INTEGER, p + c);
 
   return { promptTokens: p, completionTokens: c, totalTokens };
 }

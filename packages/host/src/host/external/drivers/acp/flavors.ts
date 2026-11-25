@@ -82,8 +82,8 @@ const FLAVORS: Readonly<Record<string, AcpHarnessFlavor>> = {
     verifiedResumable: false,
     misconfiguredCommandHint: (cmd) => {
       const stem = normalizeBinaryStem(cmd);
-      if (stem === 'claude' || stem === 'codex') {
-        return `检测到在 ACP 模式下直接填写了 '${stem}'；请改用内置的 Claude Code / Codex 原生直连预设`;
+      if (stem === 'claude' || stem === 'codex' || stem === 'pi') {
+        return `检测到在 ACP 模式下直接填写了 '${stem}'；请改用内置的 Claude Code / Codex / Pi Coding Agent 原生直连预设`;
       }
       return undefined;
     },

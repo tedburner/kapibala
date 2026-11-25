@@ -51,20 +51,20 @@
 | `watch/list` | `sessionId`（需先 attach） | `{ items: WatchWireItem[] }` |
 | `watch/cancel` | `SessionControl` + `watchId` | `{ cancelled: true }` |
 | `evidence/read` | `sessionId`（需先 attach；能力 `evidence`） | `ViewEvidence`：`{ summary, changes, references, mcp, delegations }` |
-| `external/harnesses` | 可选 `workspaceRoot`（能力 `external-session`） | `{ harnesses: ExternalHarnessWireItem[], templates: ExternalTemplateWireItem[] }` |
-| `external/harnessSave` | 内置覆写或自定义 ACP 定义（`id`、`builtin`、可选 `name`/`command`/`args`/`envFrom`/`registryId`/`enabled`） | `{ harnesses: ExternalHarnessWireItem[] }` |
+| `external/harnesses` | `{}`（能力 `external-session`） | `{ harnesses: ExternalHarnessWireItem[], templates: ExternalTemplateWireItem[] }` |
+| `external/harnessSave` | 内置覆写或自定义定义（`id`、`builtin`、可选 `name`/`command`（内置允许空串清空覆写）/`args`/`envFrom`/`registryId`/`enabled`） | `{ harnesses: ExternalHarnessWireItem[] }` |
 | `external/harnessReset` | `{ id }` | `{ harnesses: ExternalHarnessWireItem[] }` |
 | `external/harnessToggle` | `{ id, enabled }` | `{ harnesses: ExternalHarnessWireItem[] }` |
 | `external/harnessDelete` | `{ id }` | `{ harnesses: ExternalHarnessWireItem[] }` |
-| `external/harnessTest` | `{ id?, workspaceRoot?, draft? }` | `ExternalProbeWire`（`available`、`status`、`loadSupported`、可选版本与提示） |
-| `external/list` | 可选 `workspaceRoot`（传参时须已信任） | `{ items: ExternalSessionWireItem[] }` |
-| `external/open` | `{ workspaceRoot, harnessId, title? }`（工作区须已信任） | `ExternalSnapshotWire` |
-| `external/attach` / `external/detach` | `{ sessionId }` | `ExternalSnapshotWire` / `{ detached: true }` |
+| `external/harnessTest` | `{ id, workspaceRoot? }` | `ExternalProbeWire`（`available`、`status`、`loadSupported`、可选版本与提示） |
+| `external/list` | `{ workspaceRoot }`（绝对路径且须已信任） | `{ items: ExternalSessionWireItem[] }` |
+| `external/open` | `{ workspaceRoot, harnessId, title? }`（工作区须已信任，自动绑定当前连接为控制者） | `ExternalSnapshotWire` |
+| `external/attach` / `external/detach` | `{ sessionId }`（无活跃控制者时 `attach` 自动接管控制权；控制者 `detach` 自动取消在途轮次） | `ExternalSnapshotWire` / `{ detached: true }` |
 | `external/snapshot` | `{ sessionId }` | `ExternalSnapshotWire` |
-| `external/prompt` | `{ sessionId, text }` | `ExternalSnapshotWire` |
-| `external/approve` | `{ sessionId, approvalId, optionId?, cancel? }` | `{ handled: true }` |
-| `external/cancel` / `external/close` | `{ sessionId }` | `{ cancelled: true }` / `{ closed: true }` |
-| `external/delete` | `{ sessionId }`（仅允许终态或空闲会话） | `{ deleted: boolean }` |
+| `external/prompt` | `{ sessionId, text }`（须为当前控制连接，否则 `CONTROL_REQUIRED`） | `ExternalSnapshotWire` |
+| `external/approve` | `{ sessionId, approvalId, optionId?, cancel? }`（须为当前控制连接） | `{ resolved: true }` |
+| `external/cancel` / `external/close` | `{ sessionId }`（须为当前控制连接） | `{ cancellationRequested: true }` / `{ closed: true }` |
+| `external/delete` | `{ sessionId }`（须为当前控制连接；运行中自动先关闭再删除归档） | `{ deleted: boolean }` |
 | `host/shutdown` | `{}` | `{ stopped: true }` |
 
 `WatchWireItem = { watchId, kind: 'file_change' \| 'port_ready', target, state: 'armed' \| 'fired' \| 'timeout' \| 'cancelled' \| 'orphaned', armedAt, deadlineAt, closedAt: number \| null, detail: string \| null }`。`process_exit` 自 v0.1.4 起整体摘除，不再出现在 wire 上；历史落盘的遗留记录由读取侧按残缺数据跳过并输出诊断。`watch/list` 与 `session/snapshot` 同门禁：未 attach 返回 `CONTROL_REQUIRED`；默认 `createResourceFactory`（`kpbl serve`）经 `createManagedSessionResources` 在会话单写者锁（`SessionLock`）内完整布置监视触发源，若自定义 `ResourceFactory` 未注入监视门面，则 `watch/list` 返回空列表、`watch/cancel` 返回 `INVALID_REQUEST`。
@@ -91,7 +91,7 @@
 | `approval_closed` | `{ approvalId }` |
 | `diagnostic` | `{ code, message }` |
 
-声明 `external-session` 能力的连接另可通过 `external/event` 通知接收外部代理状态流（`ExternalWireEvent`）：已调用 `external/attach` 的会话推送 `{ kind: 'snapshot_updated', sessionId, snapshot }`，全局列表或关注提醒推送 `{ kind: 'list_changed', workspaceRoot? }` 与 `{ kind: 'attention', attentionKind, session }`。未声明 `external-session` 的客户端不会收到任何 `external/event` 帧，调用 `external/*` 方法返回 `PROTOCOL_MISMATCH`。
+声明 `external-session` 能力的连接另可通过 `external/event` 通知接收已 `external/attach` 外部会话的实时快照流（`ExternalSnapshotEvent = { sessionId, sequence, snapshot }`），其中 `transport` 枚举支持 `'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc'`。未声明 `external-session` 的客户端不会收到任何 `external/event` 帧，调用 `external/*` 方法返回 `PROTOCOL_MISMATCH`。
 
 ## 4. 快照与游标
 

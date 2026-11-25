@@ -251,4 +251,60 @@ describe('AcpStdioDriver 真实子进程契约测试', () => {
     expect(result.stopReason).toBe('cancelled');
     await opened.handle.close();
   });
+
+  it('无进展看门狗到期时以 EXTERNAL_TIMEOUT 拒绝，且投影器支持跨分片密钥脱敏、冷恢复 ID 递增与 620KiB 预算裁剪', async () => {
+    const cwd = makeTempWorkspace('kpbl-acp-watchdog-');
+    const fastWatchdogDriver = new AcpStdioDriver({ turnWatchdogMs: 120 });
+
+    const opened = await fastWatchdogDriver.open({
+      def: makeFakeHarness('normal', { flavor: 'opencode' }),
+      workspaceRoot: cwd,
+      onEvent: () => {},
+    });
+    openHandles.push(() => opened.handle.close());
+
+    await expect(opened.handle.prompt('HANG_FOREVER')).rejects.toMatchObject({
+      code: 'EXTERNAL_TIMEOUT',
+    });
+
+    // 验证投影器：1) replaceMessages 推进计数器防 ID 碰撞；2) 跨 chunk 切分密钥脱敏；3) 超大输出自动裁剪
+    const projector = new ExternalTranscriptProjector('ext-proj-1', ['customSecretXYZ999']);
+    projector.replaceMessages([
+      {
+        id: 'ext-proj-1:msg:5',
+        role: 'user',
+        state: 'completed',
+        persisted: true,
+        blocks: [{ id: 'b0', kind: 'text', text: 'old', state: 'completed', revision: 0 }],
+      },
+    ]);
+    projector.beginUserTurn('new turn');
+    expect(projector.getMessages().map((m) => m.id)).toEqual([
+      'ext-proj-1:msg:5',
+      'ext-proj-1:user:6',
+    ]);
+
+    projector.applyEvent({ type: 'text_delta', text: 'Key=customSecret' });
+    projector.applyEvent({ type: 'text_delta', text: 'XYZ999 & Bearer ' });
+    projector.applyEvent({ type: 'text_delta', text: 'splitTokenAbcdef123456!' });
+    projector.applyEvent({
+      type: 'tool_upsert',
+      tool: {
+        callId: 'big-tool',
+        name: 'bash',
+        displayName: '终端命令',
+        invocation: '运行 big',
+        input: 'A'.repeat(200_000),
+        result: 'B'.repeat(900_000),
+        status: 'succeeded',
+      },
+    });
+    projector.completeTurn();
+
+    expect(projector.wasTruncated()).toBe(true);
+    const serialized = JSON.stringify(projector.getMessages());
+    expect(serialized).not.toContain('customSecretXYZ999');
+    expect(serialized).not.toContain('splitTokenAbcdef123456');
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThan(680 * 1024);
+  });
 });

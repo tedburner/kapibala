@@ -14,6 +14,7 @@ import {
   ExternalHarnessError,
   type ExternalInspectResult,
   type ExternalTurnResult,
+  isValidNativeSessionId,
 } from '../../types.js';
 import { type AcpHarnessFlavor, isAcpAuthRequiredError, resolveAcpFlavor } from './flavors.js';
 import { ExternalTranscriptProjector } from './projector.js';
@@ -29,6 +30,8 @@ import {
 
 /** 设置页「检测连接」默认超时（15 秒）。 */
 const DEFAULT_INSPECT_TIMEOUT_MS = 15_000;
+/** 设置页非破坏性探测阶段的 `authenticate` 子步骤超时上限（3.5 秒），避免未登录 OAuth 回调阻塞按钮 15 秒。 */
+const INSPECT_AUTH_PROBE_TIMEOUT_MS = 3_500;
 /** 会话启动握手默认超时（60 秒）。 */
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 60_000;
 /** 轮次无进展静默看门狗上限（10 分钟；有实质输出即顺延，审批挂起期间暂停）。 */
@@ -70,13 +73,10 @@ function pickAuthMethodId(
 }
 
 /**
- * 通用 `acp-stdio` 传输驱动（JSON-RPC 2.0 over NDJSON stdio）。
+ * 标准 ACP（Agent Client Protocol）JSON-RPC 2.0 over NDJSON stdio 传输驱动。
  *
- * 覆盖 Antigravity (`agy acp`)、OpenCode (`opencode acp`)、DeepSeek Harness (`dsh --profile acp`)、
- * Gemini CLI、Qwen Code、官方 ACP Registry 模板与任意本地 `Local ACP Command`：
- * - 显式声明客户端不提供 `fs/*` 与 `terminal/*`（任何越界反向请求一律回 `-32601`）；
- * - `session/load` 发请求前预先绑定 `nativeSessionId` 并开启重放收集，兼容 OpenCode 在响应前先推通知且省略响应 `sessionId` 的实现；
- * - 严格执行四项恢复门禁：仅经实测背书的 Flavor 且具备 `nativeSessionId` + 加载能力位时返回 `resumable: true`。
+ * 承载范围：Antigravity（`agy acp`）、OpenCode（`opencode acp`）、DeepSeek Harness（`dsh --profile acp`）、
+ * Gemini CLI、Qwen Code、官方 ACP Registry 模板与任意第三方 `Local ACP Command`。
  */
 export class AcpStdioDriver implements ExternalHarnessDriver {
   readonly transport = 'acp' as const;
@@ -100,21 +100,31 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         hostEnv: this.options.hostEnv,
       });
     } catch (err) {
-      const code = err instanceof ExternalHarnessError ? err.code : 'EXTERNAL_COMMAND_NOT_FOUND';
-      if (code === 'EXTERNAL_COMMAND_NOT_FOUND') {
-        return {
-          available: false,
-          loadSupported: false,
-          status: 'not_installed',
-          reason: err instanceof Error ? err.message : '未找到可执行文件',
-          ...(flavor.installHint ? { installHint: flavor.installHint } : {}),
-        };
+      if (err instanceof ExternalHarnessError) {
+        if (err.code === 'EXTERNAL_COMMAND_NOT_FOUND') {
+          return {
+            available: false,
+            loadSupported: false,
+            status: 'not_installed',
+            reason: err.message,
+            ...(flavor.installHint ? { installHint: flavor.installHint } : {}),
+          };
+        }
+        if (err.code === 'EXTERNAL_UNSUPPORTED_SHIM' || err.code === 'EXTERNAL_NODE_NOT_FOUND') {
+          return {
+            available: false,
+            loadSupported: false,
+            status: 'invalid_shim',
+            reason: err.message,
+            ...(flavor.installHint ? { installHint: flavor.installHint } : {}),
+          };
+        }
       }
       return {
         available: false,
         loadSupported: false,
-        status: 'invalid_shim',
-        reason: err instanceof Error ? err.message : '命令或垫片校验失败',
+        status: 'handshake_failed',
+        reason: err instanceof Error ? err.message : String(err),
       };
     }
 
@@ -165,7 +175,11 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       const authMethodId = pickAuthMethodId(flavor, init.authMethods);
       if (authMethodId) {
         try {
-          await channel.request('authenticate', { methodId: authMethodId }, { timeoutMs, signal });
+          await channel.request(
+            'authenticate',
+            { methodId: authMethodId },
+            { timeoutMs: Math.min(timeoutMs, INSPECT_AUTH_PROBE_TIMEOUT_MS), signal },
+          );
         } catch (authErr) {
           const authMsg = authErr instanceof Error ? authErr.message : String(authErr);
           return {
@@ -228,6 +242,9 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult> {
     const { def, onEvent, signal } = input;
+    if (input.nativeSessionId !== undefined && !isValidNativeSessionId(input.nativeSessionId)) {
+      throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', '外部会话恢复标识格式非法');
+    }
     const nativeWorkspaceRoot = (() => {
       try {
         return fs.realpathSync.native(input.workspaceRoot);
@@ -257,9 +274,10 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       string,
       (decision: ExternalApprovalDecision) => void
     >();
-    let boundSessionId: string | undefined = input.nativeSessionId;
+    let boundSessionId: string | undefined = input.nativeSessionId?.trim();
     let replayingLoad = false;
     let replayProjector: ExternalTranscriptProjector | undefined;
+    let activeTurnCancel: (() => Promise<void>) | undefined;
     let lastActivityAt = Date.now();
     let userClosed = false;
 
@@ -337,12 +355,15 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
           }
           case 'tool_call':
           case 'tool_call_update': {
-            const existingId =
+            const existingId = (
               typeof update.toolCallId === 'string'
                 ? update.toolCallId
                 : typeof update.id === 'string'
                   ? update.id
-                  : undefined;
+                  : ''
+            )
+              .trim()
+              .slice(0, 256);
             const prev = existingId ? knownTools.get(existingId) : undefined;
             const merged = normalizeAcpToolUpdate(update, prev);
             if (merged) {
@@ -374,21 +395,27 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
             rpcCode: -32601,
           });
         }
+        // 握手重放期或无活跃轮次时自动按取消回绝，防悬空权限请求锁死握手或空闲态。
+        if (replayingLoad || !activeTurnCancel) {
+          return { outcome: { outcome: 'cancelled' } };
+        }
         const reqObj = asRecord(params);
         const rawToolCall = asRecord(reqObj?.toolCall);
-        const rawCallId =
+        const rawCallId = (
           typeof rawToolCall?.toolCallId === 'string'
             ? rawToolCall.toolCallId
             : typeof reqObj?.toolCallId === 'string'
               ? reqObj.toolCallId
-              : `perm-${String(id)}`;
+              : `perm-${String(id)}`
+        )
+          .trim()
+          .slice(0, 256);
         const normalized = normalizeAcpPermissionRequest(params, knownTools.get(rawCallId));
 
-        // 审批前置补卡（noteToolCall）：防止代理尚未发 tool_call 通知即请求权限导致界面缺少对应工具上下文。
         knownTools.set(normalized.tool.callId, normalized.tool);
         onEvent({ type: 'tool_upsert', tool: normalized.tool });
 
-        const requestKey = String(id);
+        const requestKey = String(id).slice(0, 256);
         const decision = await new Promise<ExternalApprovalDecision>((resolve) => {
           let settled = false;
           const finish = (res: ExternalApprovalDecision): void => {
@@ -465,22 +492,20 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       }
 
       let sessionResultRaw: unknown;
-      if (input.nativeSessionId) {
+      if (boundSessionId) {
         if (!init.loadMethod) {
           throw new ExternalHarnessError(
             'EXTERNAL_PROTOCOL_ERROR',
             `外部代理 '${def.name}' 不支持加载已有会话`,
           );
         }
-        // 发请求前预绑 nativeSessionId 并开启重放收集，确保响应返回前到达的 session/update 一帧不漏。
-        boundSessionId = input.nativeSessionId;
-        replayProjector = new ExternalTranscriptProjector(`replay:${input.nativeSessionId}`);
+        replayProjector = new ExternalTranscriptProjector(`replay:${boundSessionId}`);
         replayingLoad = true;
         try {
           sessionResultRaw = await channel.request(
             init.loadMethod,
             {
-              sessionId: input.nativeSessionId,
+              sessionId: boundSessionId,
               cwd: nativeWorkspaceRoot,
               mcpServers: [],
             },
@@ -491,7 +516,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         }
         replayProjector.completeTurn();
         const returnedId = asRecord(sessionResultRaw)?.sessionId;
-        if (typeof returnedId === 'string' && returnedId.trim()) {
+        if (isValidNativeSessionId(returnedId)) {
           boundSessionId = returnedId.trim();
         }
       } else {
@@ -514,10 +539,11 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       }
 
       const configSummary = normalizeAcpConfigSummary(sessionResultRaw);
-      const resumable = Boolean(boundSessionId && init.loadMethod && flavor.verifiedResumable);
+      const validBoundId = isValidNativeSessionId(boundSessionId) ? boundSessionId : undefined;
+      const resumable = Boolean(validBoundId && init.loadMethod && flavor.verifiedResumable);
 
-      let activeTurnCancel: (() => Promise<void>) | undefined;
       const watchdogLimitMs = this.options.turnWatchdogMs ?? DEFAULT_TURN_WATCHDOG_MS;
+      const checkIntervalMs = Math.max(25, Math.min(1_000, Math.floor(watchdogLimitMs / 4)));
 
       const handle: ExternalDriverSessionHandle = {
         pid: proc.pid,
@@ -534,10 +560,12 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
 
           lastActivityAt = Date.now();
           let cancelRequested = false;
+          let timedOutByWatchdog = false;
+          let graceTimer: ReturnType<typeof setTimeout> | undefined;
           const turnAbortController = new AbortController();
 
           const sendCancelAndSettle = async (): Promise<void> => {
-            if (cancelRequested) return;
+            if (cancelRequested || timedOutByWatchdog) return;
             cancelRequested = true;
             settlePendingApprovalsAsCancelled();
             try {
@@ -545,7 +573,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
             } catch {
               /* ignore closed pipe */
             }
-            const graceTimer = setTimeout(() => {
+            graceTimer = setTimeout(() => {
               turnAbortController.abort();
             }, CANCEL_SETTLE_GRACE_MS);
             graceTimer.unref?.();
@@ -562,21 +590,25 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
             const now = Date.now();
             const tickDelta = now - lastTickAt;
             lastTickAt = now;
-            // 若系统发生休眠唤醒跳变，顺延活动基准避免唤醒瞬间误杀长轮次。
             if (tickDelta > SLEEP_JUMP_TOLERANCE_MS) {
               lastActivityAt += tickDelta;
               return;
             }
-            // 等待用户审批期间暂停无进展看门狗（由上层审批到期计时器接管）。
             if (pendingApprovalResolvers.size > 0) {
               lastActivityAt = now;
               return;
             }
-            if (now - lastActivityAt > watchdogLimitMs) {
-              void sendCancelAndSettle();
+            if (!timedOutByWatchdog && !cancelRequested && now - lastActivityAt > watchdogLimitMs) {
+              timedOutByWatchdog = true;
+              settlePendingApprovalsAsCancelled();
+              try {
+                channel.notify('session/cancel', { sessionId: boundSessionId });
+              } catch {
+                /* ignore */
+              }
               turnAbortController.abort();
             }
-          }, 1_000);
+          }, checkIntervalMs);
           watchdogInterval.unref?.();
 
           try {
@@ -597,19 +629,24 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
               ...(usage ? { usage } : {}),
             };
           } catch (err) {
-            if (cancelRequested) {
-              await proc.close();
-              return { stopReason: 'cancelled' };
-            }
-            if (Date.now() - lastActivityAt > watchdogLimitMs) {
+            if (timedOutByWatchdog) {
+              userClosed = true;
+              channel.close();
               await proc.close();
               throw new ExternalHarnessError(
                 'EXTERNAL_TIMEOUT',
                 `外部代理 '${def.name}' 超过 ${Math.round(watchdogLimitMs / 1000)} 秒无响应，已自动终止`,
               );
             }
+            if (cancelRequested) {
+              userClosed = true;
+              channel.close();
+              await proc.close();
+              return { stopReason: 'cancelled', processTerminated: true };
+            }
             throw err;
           } finally {
+            if (graceTimer !== undefined) clearTimeout(graceTimer);
             clearInterval(watchdogInterval);
             turnSignal?.removeEventListener('abort', onExternalAbort);
             activeTurnCancel = undefined;
@@ -631,7 +668,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       const replayedMessages = replayProjector?.getMessages();
       return {
         handle,
-        nativeSessionId: boundSessionId,
+        ...(validBoundId ? { nativeSessionId: validBoundId } : {}),
         resumable,
         ...(configSummary.modelLabel ? { modelLabel: configSummary.modelLabel } : {}),
         ...(configSummary.modeLabel ? { modeLabel: configSummary.modeLabel } : {}),

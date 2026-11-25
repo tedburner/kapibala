@@ -94,7 +94,7 @@ wire 1 的 `{major, minMinor, maxMinor}`，新端报价从候选构建的 `PROTO
 
 ## v0.1.5 增量（开发中）
 
-本版聚焦宿主层「外部代理（External Harness）」独立会话域（通用 `acp-stdio`、`claude-cli` 与 `codex-app-server` 三套传输驱动），**`@kiturone/kapibala`（Core）与 `@kiturone/kapibala-mcp` 零改动**，本地宿主协议**保持整数 `PROTOCOL_VERSION = 2` 不变**，仅通过能力集合增量扩展 `'external-session'`，对既有 v0.1.4 客户端非破坏兼容。详见 [v0.1.5 迁移说明](migration/v0.1.5.md)。
+本版聚焦宿主层「外部代理（External Harness）」独立会话域（通用 `acp-stdio`、`claude-cli`、`codex-app-server` 与 `pi-rpc` 四套传输驱动），**`@kiturone/kapibala`（Core）与 `@kiturone/kapibala-mcp` 零改动**，本地宿主协议**保持整数 `PROTOCOL_VERSION = 2` 不变**，仅通过能力集合增量扩展 `'external-session'`，对既有 v0.1.4 客户端非破坏兼容。详见 [v0.1.5 迁移说明](migration/v0.1.5.md)。
 
 | 变化 | 影响 | 迁移方式 |
 |---|---|---|

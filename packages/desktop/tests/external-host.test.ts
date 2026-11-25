@@ -133,5 +133,38 @@ describe('DesktopHost external.* IPC 契约与 LatestSnapshot 通知桥接', () 
     expect(closedSnap.session.status).toBe('ended');
     expect(closedSnap.session.hasArchive).toBe(true);
     expect(closedSnap.messages).toHaveLength(2);
+
+    // 6. 验证超大工具输出（> 1.2 MiB）自动裁剪至桌面单帧预算（1 MiB）以内，且内置代理支持空串清空 command 覆写
+    await host.dispatch('external.saveHarness', {
+      id: 'pi',
+      builtin: true,
+      command: 'C:\\custom\\pi.exe',
+      args: ['--provider', 'openai'],
+    });
+    const resetCmdOnly = (await host.dispatch('external.saveHarness', {
+      id: 'pi',
+      builtin: true,
+      command: '',
+    })) as Output<'external.saveHarness'>;
+    const piItem = resetCmdOnly.harnesses.find((h) => h.id === 'pi')!;
+    expect(piItem.transport).toBe('pi-rpc');
+    expect(piItem.command).toBe('pi');
+    expect(piItem.args).toEqual(['--provider', 'openai']);
+
+    const hugeOpened = (await host.dispatch('external.open', {
+      workspaceId: ws.id,
+      harnessId: 'desk-fake-acp',
+      prompt: 'HUGE_OUTPUT',
+    })) as Output<'external.open'>;
+
+    await vi.waitFor(async () => {
+      const snap = (await host.dispatch('external.snapshot', {
+        workspaceId: ws.id,
+        sessionId: hugeOpened.session.id,
+      })) as Output<'external.snapshot'>;
+      expect(snap.session.status).toBe('idle');
+      expect(snap.truncatedArchive).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(snap), 'utf8')).toBeLessThan(750 * 1024);
+    });
   });
 });

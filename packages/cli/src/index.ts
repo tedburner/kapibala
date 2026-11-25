@@ -410,7 +410,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const dispatcher = createDefaultCommandDispatcher();
       externalService = new ExternalSessionService({
         homeDir: os.homedir(),
-        isWorkspaceTrusted: (root) => isProjectTrusted(settings, root),
+        isWorkspaceTrusted: (root) =>
+          isProjectTrusted(settings, root) ||
+          isProjectTrusted(
+            loadSettings({ cwd: root, homeDir: os.homedir(), includeProject: false }).settings,
+            root,
+          ),
       });
       const commandContext: CommandContext = {
         get session() {

@@ -427,6 +427,15 @@ async function handle(
   if (method === 'session.create' || method === 'session.open')
     notices.open((result as { sessionId: string }).sessionId);
   if (method === 'session.close') notices.close((params as { sessionId: string }).sessionId);
+  if (
+    method === 'external.subscribe' ||
+    method === 'external.prompt' ||
+    method === 'external.approve' ||
+    method === 'external.close' ||
+    method === 'external.delete'
+  ) {
+    notices.dismissExternal((params as { sessionId: string }).sessionId);
+  }
   return result;
 }
 async function connect(): Promise<void> {

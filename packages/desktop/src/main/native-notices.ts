@@ -29,6 +29,15 @@ export class NativeNotices {
         this.dismiss(id);
       }
   }
+  /** 清理指定外部会话的驻留系统通知并释放同会话去重槽位，使下一轮仍可正常提醒。 */
+  dismissExternal(sessionId: string): void {
+    this.dismiss(`ext:${sessionId}`);
+    for (const item of [...this.seen]) {
+      if (item.startsWith(`ext:${sessionId}:`)) {
+        this.seen.delete(item);
+      }
+    }
+  }
   /** 新控制期或 Host 不可用时立即撤销旧回调；迟到点击不会重放任务或审批。 */
   reset(): void {
     this.epoch++;
@@ -107,7 +116,7 @@ export class NativeNotices {
             : `${event.harnessName} 任务已完成`;
       this.publish(
         `ext:${event.sessionId}`,
-        `ext:${event.sessionId}:${event.kind}:${Date.now()}`,
+        `ext:${event.sessionId}:${event.kind}`,
         title,
         '打开 Kapibala 查看外部代理进展。',
         () => true,

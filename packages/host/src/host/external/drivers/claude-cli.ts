@@ -22,6 +22,7 @@ import {
   ExternalHarnessError,
   type ExternalInspectResult,
   type ExternalTurnResult,
+  isValidNativeSessionId,
 } from '../types.js';
 import { normalizeAcpPlanUpdate } from './acp/tolerance.js';
 
@@ -85,10 +86,14 @@ function buildClaudeLaunchArgs(baseArgs: readonly string[], nativeSessionId?: st
   if (!args.includes('--disallowedTools')) {
     args.push('--disallowedTools', CLAUDE_DISALLOWED_INTERACTIVE_TOOLS);
   }
-  if (nativeSessionId && !args.includes('--resume')) {
-    args.push('--resume', nativeSessionId);
+  if (nativeSessionId && isValidNativeSessionId(nativeSessionId) && !args.includes('--resume')) {
+    args.push('--resume', nativeSessionId.trim());
   }
   return args;
+}
+
+function sanitizeClaudeApprovalTarget(raw: string): string | undefined {
+  return sanitizeDisplayText(redactCommonSecrets(sanitizeUntrustedOutput(raw)), 2_000);
 }
 
 function extractClaudeToolTarget(input: Record<string, unknown>): {
@@ -109,7 +114,7 @@ function extractClaudeToolTarget(input: Record<string, unknown>): {
     return {
       chip: sanitizeDisplayText(filePath, 96),
       mono: true,
-      target: filePath,
+      target: sanitizeClaudeApprovalTarget(filePath),
     };
   }
   if (typeof input.command === 'string' && input.command.trim()) {
@@ -117,7 +122,7 @@ function extractClaudeToolTarget(input: Record<string, unknown>): {
       verb: '运行',
       chip: sanitizeDisplayText(input.command, 96),
       mono: true,
-      target: input.command,
+      target: sanitizeClaudeApprovalTarget(input.command),
     };
   }
   if (typeof input.pattern === 'string' && input.pattern.trim()) {
@@ -125,17 +130,22 @@ function extractClaudeToolTarget(input: Record<string, unknown>): {
       verb: '搜索',
       chip: sanitizeDisplayText(input.pattern, 96),
       mono: true,
-      target: input.pattern,
+      target: sanitizeClaudeApprovalTarget(input.pattern),
     };
   }
   if (typeof input.url === 'string' && input.url.trim()) {
     return {
       verb: '请求',
       chip: sanitizeDisplayText(input.url, 96),
-      target: input.url,
+      target: sanitizeClaudeApprovalTarget(input.url),
     };
   }
   return {};
+}
+
+function clampCallId(raw: string, fallback = 'claude-tool'): string {
+  const trimmed = raw.trim().slice(0, 256);
+  return trimmed || fallback;
 }
 
 function buildClaudeViewTool(
@@ -144,6 +154,7 @@ function buildClaudeViewTool(
   rawInput: Record<string, unknown>,
   previous?: ViewTool,
 ): ViewTool {
+  const safeCallId = clampCallId(callId, previous?.callId ?? 'claude-tool');
   const name = sanitizeToolName(rawName || previous?.name || 'tool');
   const displayName = sanitizeDisplayText(rawName, 40) ?? resolveToolDisplay(name).label;
   const builtin = describeToolActivity(name, rawInput);
@@ -171,7 +182,7 @@ function buildClaudeViewTool(
       : (previous?.input ?? '');
 
   return {
-    callId,
+    callId: safeCallId,
     name,
     displayName,
     invocation,
@@ -207,17 +218,23 @@ function extractToolResultText(content: unknown): string | undefined {
   return undefined;
 }
 
+function clampUsageCount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(value));
+}
+
 function parseClaudeUsage(raw: unknown): ViewUsage | undefined {
   const u = asRecord(raw);
   if (!u) return undefined;
-  const input = typeof u.input_tokens === 'number' ? u.input_tokens : 0;
-  const cacheRead = typeof u.cache_read_input_tokens === 'number' ? u.cache_read_input_tokens : 0;
-  const cacheWrite =
-    typeof u.cache_creation_input_tokens === 'number' ? u.cache_creation_input_tokens : 0;
-  const output = typeof u.output_tokens === 'number' ? u.output_tokens : 0;
-  const promptTokens = Math.max(0, Math.floor(input + cacheRead + cacheWrite));
-  const completionTokens = Math.max(0, Math.floor(output));
-  const totalTokens = promptTokens + completionTokens;
+  const input = clampUsageCount(u.input_tokens);
+  const cacheRead = clampUsageCount(u.cache_read_input_tokens);
+  const cacheWrite = clampUsageCount(u.cache_creation_input_tokens);
+  const output = clampUsageCount(u.output_tokens);
+  const promptTokens = Math.min(Number.MAX_SAFE_INTEGER, input + cacheRead + cacheWrite);
+  const completionTokens = output;
+  const totalTokens = Math.min(Number.MAX_SAFE_INTEGER, promptTokens + completionTokens);
   if (totalTokens <= 0) return undefined;
   return {
     promptTokens,
@@ -371,6 +388,11 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
     onEvent: (event: ExternalEvent) => void;
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult> {
+    if (input.nativeSessionId !== undefined && !isValidNativeSessionId(input.nativeSessionId)) {
+      throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', 'Claude Code 恢复会话 ID 格式非法');
+    }
+    const sanitizedResumeId = input.nativeSessionId?.trim();
+
     const resolvedCmd = resolveExternalCommand({
       command: input.def.command,
       args: input.def.args,
@@ -387,7 +409,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       platform: this.options.platform,
     });
 
-    const cliArgs = buildClaudeLaunchArgs(resolvedCmd.args, input.nativeSessionId);
+    const cliArgs = buildClaudeLaunchArgs(resolvedCmd.args, sanitizedResumeId);
     const proc = ExternalProcessSupervisor.spawn({
       executable: resolvedCmd.executable,
       args: cliArgs,
@@ -395,7 +417,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       env: launchEnv.env,
     });
 
-    let currentSessionId = input.nativeSessionId;
+    let currentSessionId = sanitizedResumeId;
     let currentModelLabel: string | undefined;
     let currentModeLabel: string | undefined;
     let closingByClient = false;
@@ -475,7 +497,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
             settleHandshakeOk();
             activeTurn?.bumpActivity();
             const sid =
-              typeof payload.session_id === 'string' && payload.session_id.trim()
+              typeof payload.session_id === 'string' && isValidNativeSessionId(payload.session_id)
                 ? payload.session_id.trim()
                 : undefined;
             const model =
@@ -574,7 +596,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
             } else if (block.type === 'tool_use') {
               const callId =
                 typeof block.id === 'string' && block.id.trim()
-                  ? block.id.trim()
+                  ? clampCallId(block.id)
                   : `claude-tool-${randomUUID().slice(0, 8)}`;
               const toolName = typeof block.name === 'string' ? block.name : 'tool';
               const toolInput = asRecord(block.input) ?? {};
@@ -585,6 +607,11 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
               const prev = toolsByCallId.get(callId)?.view;
               emitToolUpsert(buildClaudeViewTool(callId, toolName, toolInput, prev));
             }
+          }
+          // 单轮多步工具调用时，每条 assistant 消息收尾后重置流式观测位，防后续步骤非流式块被误吞
+          if (activeTurn) {
+            activeTurn.sawStreamText = false;
+            activeTurn.sawStreamThinking = false;
           }
           return;
         }
@@ -598,7 +625,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
             if (block?.type !== 'tool_result') continue;
             const callId =
               typeof block.tool_use_id === 'string' && block.tool_use_id.trim()
-                ? block.tool_use_id.trim()
+                ? clampCallId(block.tool_use_id)
                 : undefined;
             if (!callId) continue;
             const tracked = toolsByCallId.get(callId);
@@ -623,18 +650,40 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
           settleHandshakeOk();
           const requestId =
             typeof payload.request_id === 'string' && payload.request_id.trim()
-              ? payload.request_id.trim()
+              ? clampCallId(payload.request_id, `ctrl_${randomUUID().slice(0, 8)}`)
               : `ctrl_${randomUUID().slice(0, 8)}`;
           const req = asRecord(payload.request);
           if (req?.subtype === 'can_use_tool') {
-            const toolName = typeof req.tool_name === 'string' ? req.tool_name : 'tool';
-            const toolInput = asRecord(req.input) ?? {};
             const toolUseId =
               typeof req.tool_use_id === 'string' && req.tool_use_id.trim()
-                ? req.tool_use_id.trim()
+                ? clampCallId(req.tool_use_id, requestId)
                 : requestId;
 
-            // 先确保消息流中存在对应工具卡（对齐 Cindy noteToolCall 不变量）
+            if (!activeTurn) {
+              try {
+                channel.send({
+                  type: 'control_response',
+                  response: {
+                    subtype: 'success',
+                    request_id: requestId,
+                    response: {
+                      behavior: 'deny',
+                      message: '当前无活跃执行轮次，已拒绝非预期工具调用',
+                      interrupt: true,
+                      toolUseID: toolUseId,
+                    },
+                  },
+                });
+              } catch {
+                /* ignore */
+              }
+              return;
+            }
+
+            const toolName = typeof req.tool_name === 'string' ? req.tool_name : 'tool';
+            const toolInput = asRecord(req.input) ?? {};
+
+            // 先确保消息流中存在对应工具卡（对齐 noteToolCall 不变量）
             const existing = toolsByCallId.get(toolUseId)?.view;
             const toolCard = buildClaudeViewTool(toolUseId, toolName, toolInput, existing);
             emitToolUpsert(toolCard, toolsByCallId.get(toolUseId)?.startedAt);
@@ -648,10 +697,8 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
                   )
                 : undefined;
 
-            if (activeTurn) {
-              activeTurn.pendingApprovals += 1;
-              activeTurn.bumpActivity();
-            }
+            activeTurn.pendingApprovals += 1;
+            activeTurn.bumpActivity();
 
             let responded = false;
             input.onEvent({
@@ -736,7 +783,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
         if (type === 'result') {
           settleHandshakeOk();
           const sid =
-            typeof payload.session_id === 'string' && payload.session_id.trim()
+            typeof payload.session_id === 'string' && isValidNativeSessionId(payload.session_id)
               ? payload.session_id.trim()
               : undefined;
           if (sid && sid !== currentSessionId) {
@@ -821,7 +868,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
         activeTurn = undefined;
         turn.cleanup();
         if (turn.cancelled || closingByClient) {
-          turn.resolve({ stopReason: 'cancelled' });
+          turn.resolve({ stopReason: 'cancelled', processTerminated: true });
         } else {
           turn.reject(closeErr);
         }
@@ -926,8 +973,11 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
                 'EXTERNAL_TIMEOUT',
                 `Claude Code 超过 ${Math.round(turnWatchdogMs / 1000)} 秒无响应进展，已中止当前轮次`,
               );
-              void proc.close();
-              reject(timeoutErr);
+              closingByClient = true;
+              void proc.close().finally(() => {
+                input.onEvent({ type: 'closed', code: 1, signal: null });
+                reject(timeoutErr);
+              });
             }
           }, checkIntervalMs);
           watchdogTimer.unref?.();
@@ -995,7 +1045,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
             snapshotTurn.cleanup();
             closingByClient = true;
             void proc.close().finally(() => {
-              snapshotTurn.resolve({ stopReason: 'cancelled' });
+              snapshotTurn.resolve({ stopReason: 'cancelled', processTerminated: true });
             });
           }
         }, CANCEL_SETTLE_GRACE_MS);
@@ -1007,7 +1057,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
           const turn = activeTurn;
           activeTurn = undefined;
           turn.cleanup();
-          turn.resolve({ stopReason: 'cancelled' });
+          turn.resolve({ stopReason: 'cancelled', processTerminated: true });
         }
         channel.close();
         await proc.close();

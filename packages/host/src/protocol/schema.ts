@@ -52,6 +52,7 @@ const initialize = object({ protocolVersion: integer, clientName: id, capabiliti
   'token',
 ]);
 
+const optionalCommand = { type: 'string', maxLength: 4_096 } as const;
 const argItem = { type: 'string', maxLength: 16_384 } as const;
 const argArray = { type: 'array', items: argItem, maxItems: 128 } as const;
 const envFromArray = { type: 'array', items: id, maxItems: 64 } as const;
@@ -93,7 +94,7 @@ export const REQUEST_SCHEMAS = {
       id,
       builtin: boolean,
       name: id,
-      command: string,
+      command: optionalCommand,
       args: argArray,
       envFrom: envFromArray,
       registryId: id,

@@ -46,6 +46,8 @@ export class LocalHostServer {
   readonly external: ExternalSessionService;
   private readonly peers = new Map<string, RpcPeer>();
   private readonly approvals = new Map<string, RpcApprovalChannel>();
+  /** 外部会话单控制者登记（sessionId -> clientId），防止非控制连接抢答审批或越权关闭。 */
+  private readonly externalControllers = new Map<string, string>();
   private stopping = false;
   private stopped = false;
   private stoppedNotified = false;
@@ -358,12 +360,16 @@ export class LocalHostServer {
           requireExternalCapability();
           requireAbsolute(request.params.workspaceRoot);
           const snap = await this.external.openSession(request.params);
+          this.externalControllers.set(snap.session.id, clientId);
           return toExternalSnapshotWire(snap) as unknown as JsonValue;
         }
         case 'external/attach': {
           requireExternalCapability();
           const snap = this.external.getSnapshot(request.params.sessionId);
           const resolvedId = snap.session.id;
+          if (!this.externalControllers.has(resolvedId)) {
+            this.externalControllers.set(resolvedId, clientId);
+          }
           externalSubscriptions.get(resolvedId)?.();
           externalSubscriptions.set(
             resolvedId,
@@ -382,6 +388,10 @@ export class LocalHostServer {
           const resolvedId = this.external.resolveSessionId(request.params.sessionId);
           externalSubscriptions.get(resolvedId)?.();
           externalSubscriptions.delete(resolvedId);
+          if (this.externalControllers.get(resolvedId) === clientId) {
+            this.externalControllers.delete(resolvedId);
+            await this.external.cancelSession(resolvedId).catch(() => {});
+          }
           return { detached: true };
         }
         case 'external/snapshot': {
@@ -392,30 +402,57 @@ export class LocalHostServer {
         }
         case 'external/prompt': {
           requireExternalCapability();
-          const snap = await this.external.promptSession(request.params);
+          const resolvedId = this.attachOrVerifyExternalController(
+            request.params.sessionId,
+            clientId,
+          );
+          const snap = await this.external.promptSession({
+            sessionId: resolvedId,
+            text: request.params.text,
+          });
           return toExternalSnapshotWire(snap) as unknown as JsonValue;
         }
         case 'external/approve': {
           requireExternalCapability();
-          await this.external.approveSession(request.params);
+          const resolvedId = this.attachOrVerifyExternalController(
+            request.params.sessionId,
+            clientId,
+          );
+          await this.external.approveSession({
+            ...request.params,
+            sessionId: resolvedId,
+          });
           return { resolved: true };
         }
         case 'external/cancel': {
           requireExternalCapability();
-          await this.external.cancelSession(request.params.sessionId);
+          const resolvedId = this.attachOrVerifyExternalController(
+            request.params.sessionId,
+            clientId,
+          );
+          await this.external.cancelSession(resolvedId);
           return { cancellationRequested: true };
         }
         case 'external/close': {
           requireExternalCapability();
-          await this.external.closeSession(request.params.sessionId);
+          const resolvedId = this.attachOrVerifyExternalController(
+            request.params.sessionId,
+            clientId,
+          );
+          await this.external.closeSession(resolvedId);
+          this.externalControllers.delete(resolvedId);
           return { closed: true };
         }
         case 'external/delete': {
           requireExternalCapability();
-          const resolvedId = this.external.resolveSessionId(request.params.sessionId);
+          const resolvedId = this.attachOrVerifyExternalController(
+            request.params.sessionId,
+            clientId,
+          );
           externalSubscriptions.get(resolvedId)?.();
           externalSubscriptions.delete(resolvedId);
           const deleted = await this.external.deleteSession(resolvedId);
+          this.externalControllers.delete(resolvedId);
           return { deleted };
         }
         case 'host/shutdown':
@@ -437,8 +474,18 @@ export class LocalHostServer {
         subscriptions.clear();
         for (const unsubscribe of externalSubscriptions.values()) unsubscribe();
         externalSubscriptions.clear();
+        const ownedExternalIds: string[] = [];
+        for (const [extId, ownerId] of this.externalControllers) {
+          if (ownerId === clientId) {
+            this.externalControllers.delete(extId);
+            ownedExternalIds.push(extId);
+          }
+        }
         this.peers.delete(clientId);
-        await this.registry.disconnect(clientId);
+        await Promise.all([
+          this.registry.disconnect(clientId),
+          ...ownedExternalIds.map((extId) => this.external.cancelSession(extId).catch(() => {})),
+        ]);
         // 响应可能因对端断开而未送达；清理成功后仍要通知宿主退出。
         if (this.stopping) {
           await this.shutdownTask?.catch(() => {});
@@ -448,6 +495,22 @@ export class LocalHostServer {
     });
     this.peers.set(clientId, peer);
     await peer.done.catch(() => {});
+  }
+
+  /**
+   * 校验当前连接是否持有外部会话控制权（无活跃控制者时自动授予当前连接），
+   * 杜绝非控制连接抢答审批或越权关闭他人正在运行的外部会话。
+   */
+  private attachOrVerifyExternalController(sessionIdOrPrefix: string, clientId: string): string {
+    const resolvedId = this.external.resolveSessionId(sessionIdOrPrefix);
+    const owner = this.externalControllers.get(resolvedId);
+    if (owner !== undefined && owner !== clientId) {
+      throw new Error('CONTROL_REQUIRED');
+    }
+    if (owner === undefined) {
+      this.externalControllers.set(resolvedId, clientId);
+    }
+    return resolvedId;
   }
 
   /**

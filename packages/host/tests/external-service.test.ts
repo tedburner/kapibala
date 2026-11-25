@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 describe('ExternalSessionRegistry 只读快照归档与容量边界', () => {
-  it('原子落盘只读展示快照并自动脱敏，超过 500 条消息时裁剪旧消息且空数组不覆盖既有快照', () => {
+  it('原子落盘只读展示快照并自动脱敏，超过 160 条消息时裁剪旧消息且空数组不覆盖既有快照', () => {
     const homeDir = makeTempDir('kpbl-ext-reg-home-');
     const workspaceRoot = makeTempDir('kpbl-ext-reg-ws-');
     const registry = new ExternalSessionRegistry({ homeDir });
@@ -48,7 +48,7 @@ describe('ExternalSessionRegistry 只读快照归档与容量边界', () => {
       updatedAt: 2_000,
     });
 
-    const manyMessages: ViewMessage[] = Array.from({ length: 505 }, (_, index) => ({
+    const manyMessages: ViewMessage[] = Array.from({ length: 170 }, (_, index) => ({
       id: `m-${index}`,
       role: index % 2 === 0 ? 'user' : 'assistant',
       state: 'completed',
@@ -58,7 +58,7 @@ describe('ExternalSessionRegistry 只读快照归档与容量边界', () => {
           id: `m-${index}:b0`,
           kind: 'text',
           text:
-            index === 504
+            index === 169
               ? '最后一条含凭据 Authorization: Bearer secretToken123456'
               : `消息正文 ${index}`,
           state: 'completed',
@@ -74,12 +74,12 @@ describe('ExternalSessionRegistry 只读快照归档与容量边界', () => {
     const archive = registry.readArchive('ext-1');
     expect(archive).toBeDefined();
     expect(archive?.truncated).toBe(true);
-    expect(archive?.messages).toHaveLength(500);
-    expect(archive?.messages[0]?.id).toBe('m-5');
+    expect(archive?.messages).toHaveLength(160);
+    expect(archive?.messages[0]?.id).toBe('m-10');
     expect(archive?.messages.at(-1)?.blocks[0]?.text).toContain('Bearer [REDACTED]');
   });
 
-  it('保留会话数达 50 条上限时拒绝新增，不静默淘汰已有记录', () => {
+  it('满 50 条时自动淘汰最早终态记录及快照，但全部处于活跃态时拒绝新增防静默丢会话', () => {
     const homeDir = makeTempDir('kpbl-ext-reg-cap-');
     const workspaceRoot = makeTempDir('kpbl-ext-reg-cap-ws-');
     const registry = new ExternalSessionRegistry({ homeDir });
@@ -93,26 +93,56 @@ describe('ExternalSessionRegistry 只读快照归档与容量边界', () => {
         workspaceRoot,
         configDigest: 'sha256:demo',
         title: `任务 ${i}`,
-        status: 'ended',
+        status: i === 1 ? 'ended' : 'idle',
         resumable: false,
         createdAt: i,
         updatedAt: i,
       });
     }
+    registry.saveArchive('ext-1', {
+      messages: [
+        {
+          id: 'm1',
+          role: 'user',
+          state: 'completed',
+          persisted: true,
+          blocks: [{ id: 'b1', kind: 'text', text: 'bye', state: 'completed', revision: 0 }],
+        },
+      ],
+    });
+    expect(registry.hasArchive('ext-1')).toBe(true);
 
+    // 存在终态项 ext-1 时自动淘汰 ext-1 并清理其快照
+    registry.upsertRecord({
+      id: 'ext-51',
+      harnessId: 'opencode',
+      harnessName: 'OpenCode',
+      transport: 'acp',
+      workspaceRoot,
+      configDigest: 'sha256:demo',
+      title: '触发淘汰最旧终态',
+      status: 'idle',
+      resumable: false,
+      createdAt: 51,
+      updatedAt: 51,
+    });
+    expect(registry.getRecord('ext-1')).toBeUndefined();
+    expect(registry.hasArchive('ext-1')).toBe(false);
+
+    // 此时 50 条全部为活跃 idle，再新增第 52 条必须抛 EXTERNAL_CAPACITY
     expect(() =>
       registry.upsertRecord({
-        id: 'ext-51',
+        id: 'ext-52',
         harnessId: 'opencode',
         harnessName: 'OpenCode',
         transport: 'acp',
         workspaceRoot,
         configDigest: 'sha256:demo',
-        title: '超出上限',
+        title: '全部活跃不可淘汰',
         status: 'starting',
         resumable: false,
-        createdAt: 51,
-        updatedAt: 51,
+        createdAt: 52,
+        updatedAt: 52,
       }),
     ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_CAPACITY' }));
   });
@@ -264,5 +294,73 @@ describe('ExternalSessionService 会话编排、审批、空闲回收与 configD
     const snap1 = service.getSnapshot(s1.session.id);
     expect(snap1.approvals).toHaveLength(0);
     expect(snap1.notices.some((n) => n.text.includes('超时'))).toBe(true);
+  });
+
+  it('保留显式自定义标题、脱敏 envFrom 注入凭据、输错审批选项不误毁审批单，且同工作区忙时 startSession 不泄漏子进程', async () => {
+    const homeDir = makeTempDir('kpbl-ext-svc-guard-home-');
+    const workspaceRoot = makeTempDir('kpbl-ext-svc-guard-ws-');
+    trustProject(createUserSettingsSkeleton(), workspaceRoot, { homeDir });
+
+    const envSecretValue = 'dsh_super_secret_env_token_778899';
+    const service = new ExternalSessionService({
+      homeDir,
+      hostEnv: { DEEPSEEK_API_KEY: envSecretValue },
+    });
+    activeServices.push(service);
+
+    service.saveCustomHarness({
+      id: 'fake-opencode',
+      name: 'Fake OpenCode',
+      command: process.execPath,
+      args: [fixtureScript, '--mode=normal'],
+      flavor: 'opencode',
+      envFrom: ['DEEPSEEK_API_KEY'],
+      enabled: true,
+    });
+
+    const s1 = await service.openSession({
+      workspaceRoot,
+      harnessId: 'fake-opencode',
+      title: `自定义标题 ${envSecretValue}`,
+    });
+    expect(s1.session.title).toBe('自定义标题 [REDACTED]');
+
+    // 启动带挂起审批的轮次
+    const runningTurn = service.promptSession({
+      sessionId: s1.session.id,
+      text: 'NEED_APPROVAL',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    // 此时只有 1 个子进程；同工作区调用 startSession 应前置拦截 EXTERNAL_WORKSPACE_BUSY，绝不多拉起第 2 个空闲进程
+    expect(service.getActiveSessionPids()).toHaveLength(1);
+    await expect(
+      service.startSession({
+        workspaceRoot,
+        harnessId: 'fake-opencode',
+        prompt: '并发抢跑',
+      }),
+    ).rejects.toMatchObject({ code: 'EXTERNAL_WORKSPACE_BUSY' });
+    expect(service.getActiveSessionPids()).toHaveLength(1);
+
+    // 传入非法审批 optionId 应抛错但保留原审批单，随后正确选择 allow-once 仍可顺利放行
+    const apr = service.getSnapshot(s1.session.id).approvals[0]!;
+    await expect(
+      service.approveSession({
+        sessionId: s1.session.id,
+        approvalId: apr.approvalId,
+        optionId: 'non-existent-option',
+      }),
+    ).rejects.toMatchObject({ code: 'EXTERNAL_CONFIG_INVALID' });
+    expect(service.getSnapshot(s1.session.id).approvals).toHaveLength(1);
+
+    await service.approveSession({
+      sessionId: s1.session.id,
+      approvalId: apr.approvalId,
+      optionId: 'allow-once',
+    });
+    const finished = await runningTurn;
+    // 自定义标题不被首轮输入 NEED_APPROVAL 覆盖
+    expect(finished.session.title).toBe('自定义标题 [REDACTED]');
   });
 });

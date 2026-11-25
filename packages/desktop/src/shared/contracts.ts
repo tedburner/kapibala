@@ -673,7 +673,7 @@ const updateDownloadResult = z.discriminatedUnion('status', [
   z.object({ status: z.literal('failed'), reason: text, detail: text.optional() }).strict(),
 ]);
 
-const externalTransport = z.enum(['acp', 'claude-cli', 'codex-app-server']);
+const externalTransport = z.enum(['acp', 'claude-cli', 'codex-app-server', 'pi-rpc']);
 const externalSessionStatus = z.enum([
   'starting',
   'idle',

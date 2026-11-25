@@ -11,18 +11,23 @@ import { redactViewMessage } from '../public-projection.js';
 import { redactText } from '../redaction.js';
 import { normalizeProjectRoot } from '../resource/mcp-approval.js';
 import { getExternalStateDirPath } from './config.js';
-import { ExternalHarnessError, type ExternalTransportKind } from './types.js';
+import {
+  ExternalHarnessError,
+  type ExternalTransportKind,
+  isReservedObjectPropertyName,
+  isValidNativeSessionId,
+} from './types.js';
 
 /** 外部代理会话登记簿文件名（`~/.kapibala/external/sessions.json`）。 */
 export const EXTERNAL_SESSIONS_FILE_NAME = 'sessions.json';
 /** 外部代理有界只读展示快照子目录名（`~/.kapibala/external/snapshots/`）。 */
 export const EXTERNAL_SNAPSHOTS_DIR_NAME = 'snapshots';
-/** 全局允许保留的外部会话记录上限（满额拒绝新建并提示手动清理已结束项，不自动淘汰活动会话）。 */
+/** 全局允许保留的外部会话记录上限；满额新增时优先自动淘汰最早终态记录，全为活跃态时才拒绝。 */
 export const MAX_RETAINED_EXTERNAL_SESSIONS = 50;
-/** 单会话只读展示快照的最大保留消息条数。 */
-export const MAX_EXTERNAL_ARCHIVE_MESSAGES = 500;
-/** 单会话只读展示快照的最大字节上限（2 MiB）。 */
-export const MAX_EXTERNAL_ARCHIVE_BYTES = 2 * 1024 * 1024;
+/** 单会话只读展示快照的最大保留消息条数（控制 JSON 节点数安全低于 Wire 10 万节点上限）。 */
+export const MAX_EXTERNAL_ARCHIVE_MESSAGES = 160;
+/** 单会话只读展示快照的最大字节上限（680 KiB，确保单帧包裹后恒低于桌面 IPC 与 Wire 1 MiB 帧上限）。 */
+export const MAX_EXTERNAL_ARCHIVE_BYTES = 680 * 1024;
 
 /** 持久化在 `sessions.json` 中的单条外部会话元数据记录。 */
 export interface ExternalSessionRecord {
@@ -34,6 +39,8 @@ export interface ExternalSessionRecord {
   /** 创建会话时的 `computeHarnessConfigDigest`；配置漂移后禁止盲目原地续聊。 */
   readonly configDigest: string;
   readonly title: string;
+  /** 用户在 `openSession` 时显式传入自定义标题则为 `true`，避免首轮消息覆盖自定义标题。 */
+  readonly customTitle?: boolean;
   readonly status: ViewExternalSessionStatus;
   readonly nativeSessionId?: string;
   readonly resumable: boolean;
@@ -70,8 +77,9 @@ function isLiveStatus(status: ViewExternalSessionStatus): boolean {
  *
  * 隔离与安全不变量：
  * - 所有文件严格落在 `~/.kapibala/external/`（目录 `0700`、文件 `0600`），与 Core `SessionManager` 零交集；
- * - 宿主首次加载登记簿时，将上一次宿主退出遗留的非终态（`running` / `idle` 等）归一为 `'ended'`，不伪装存活子进程；
- * - 快照文件名采用 `sha256(sessionId).json`，落盘前统一脱敏，空消息列表绝不覆盖既有非空归档。
+ * - 内部记录表统一采用无原型字典（`Object.create(null)` + `Object.hasOwn`），阻断 `constructor` 等原型键污染；
+ * - 宿主首次加载登记簿时，将上一次宿主退出遗留的非终态归一为 `'ended'`，并校验 `nativeSessionId` 合法性；
+ * - 快照文件名采用 `sha256(sessionId).json`，落盘前统一脱敏并强制钳制在 680KiB 单帧安全预算以内。
  */
 export class ExternalSessionRegistry {
   readonly sessionsFilePath: string;
@@ -93,32 +101,61 @@ export class ExternalSessionRegistry {
       .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
   }
 
-  /** 按精确 ID 读取单条外部会话记录。 */
+  /** 按精确 ID 读取单条外部会话记录（阻断原型属性命中）。 */
   getRecord(id: string): ExternalSessionRecord | undefined {
+    if (!id || isReservedObjectPropertyName(id)) return undefined;
     this.ensureStartupNormalized();
-    return this.readRecordsMap()[id];
+    const records = this.readRecordsMap();
+    return Object.hasOwn(records, id) ? records[id] : undefined;
   }
 
-  /** 新增或更新外部会话记录；新增且总数超过 50 条时抛 `EXTERNAL_CAPACITY`。 */
+  /**
+   * 新增或更新外部会话记录。
+   *
+   * 容量回收策略：当全局已满 50 条记录且新增会话时，自动淘汰更新时间最早的终态（`ended` / `failed`）记录及其快照，
+   * 避免历史已移除工作区的旧记录占满配额导致当前工作区死锁；仅当 50 条全为活跃会话时抛 `EXTERNAL_CAPACITY`。
+   */
   upsertRecord(record: ExternalSessionRecord): ExternalSessionRecord {
+    if (!record.id || isReservedObjectPropertyName(record.id)) {
+      throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `非法的外部会话 ID：${record.id}`);
+    }
     this.ensureStartupNormalized();
-    return this.mutateRecords((records) => {
-      if (!records[record.id] && Object.keys(records).length >= MAX_RETAINED_EXTERNAL_SESSIONS) {
-        throw new ExternalHarnessError(
-          'EXTERNAL_CAPACITY',
-          `外部会话记录已达上限（${MAX_RETAINED_EXTERNAL_SESSIONS} 条），请先删除已结束的外部会话`,
-        );
+    const evictedIds: string[] = [];
+    const saved = this.mutateRecords((records) => {
+      if (!Object.hasOwn(records, record.id)) {
+        while (Object.keys(records).length >= MAX_RETAINED_EXTERNAL_SESSIONS) {
+          const oldestTerminal = Object.values(records)
+            .filter((item) => !isLiveStatus(item.status))
+            .sort((a, b) => a.updatedAt - b.updatedAt || a.createdAt - b.createdAt)[0];
+          if (!oldestTerminal) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CAPACITY',
+              `外部会话记录已达上限（${MAX_RETAINED_EXTERNAL_SESSIONS} 条），请先关闭或删除已结束的外部会话`,
+            );
+          }
+          delete records[oldestTerminal.id];
+          evictedIds.push(oldestTerminal.id);
+        }
       }
       records[record.id] = record;
       return record;
     });
+    for (const evictedId of evictedIds) {
+      try {
+        fs.unlinkSync(this.archivePathOf(evictedId));
+      } catch {
+        /* ignore missing archive */
+      }
+    }
+    return saved;
   }
 
   /** 删除指定外部会话记录并同步清理对应的只读展示快照文件。 */
   deleteRecord(id: string): boolean {
+    if (!id || isReservedObjectPropertyName(id)) return false;
     this.ensureStartupNormalized();
     const removed = this.mutateRecords((records) => {
-      if (!records[id]) return false;
+      if (!Object.hasOwn(records, id)) return false;
       delete records[id];
       return true;
     });
@@ -133,6 +170,7 @@ export class ExternalSessionRegistry {
 
   /** 判断指定会话是否存在本地只读展示快照文件。 */
   hasArchive(sessionId: string): boolean {
+    if (!sessionId || isReservedObjectPropertyName(sessionId)) return false;
     try {
       return fs.statSync(this.archivePathOf(sessionId)).isFile();
     } catch {
@@ -142,6 +180,7 @@ export class ExternalSessionRegistry {
 
   /** 读取指定会话的本地只读展示快照；缺失或损坏时返回 `undefined`。 */
   readArchive(sessionId: string): ExternalSessionArchive | undefined {
+    if (!sessionId || isReservedObjectPropertyName(sessionId)) return undefined;
     let raw: string;
     try {
       raw = fs.readFileSync(this.archivePathOf(sessionId), 'utf8');
@@ -170,7 +209,7 @@ export class ExternalSessionRegistry {
    *
    * 保护规则：
    * - 若传入空消息数组且磁盘已有非空快照，直接跳过以防启动失败或异常收口抹掉历史输出；
-   * - 超出 500 条消息或 2 MiB 字节上限时从头部裁剪最旧消息并置 `truncated: true`。
+   * - 超出 160 条消息或 680 KiB 字节上限时从头部裁剪最旧消息并置 `truncated: true`。
    */
   saveArchive(
     sessionId: string,
@@ -178,9 +217,11 @@ export class ExternalSessionRegistry {
       readonly messages: readonly ViewMessage[];
       readonly plan?: ViewTodoState;
       readonly notices?: readonly ViewNotice[];
+      readonly alreadyTruncated?: boolean;
     },
     secrets: readonly string[] = [],
   ): void {
+    if (!sessionId || isReservedObjectPropertyName(sessionId)) return;
     const filePath = this.archivePathOf(sessionId);
     if (payload.messages.length === 0 && this.hasArchive(sessionId)) {
       const existing = this.readArchive(sessionId);
@@ -191,7 +232,7 @@ export class ExternalSessionRegistry {
 
     const redactFn = (text: string): string => redactText(text, secrets);
     let redactedMessages = payload.messages.map((msg) => redactViewMessage(msg, redactFn));
-    let truncated = false;
+    let truncated = Boolean(payload.alreadyTruncated);
 
     if (redactedMessages.length > MAX_EXTERNAL_ARCHIVE_MESSAGES) {
       redactedMessages = redactedMessages.slice(
@@ -203,7 +244,7 @@ export class ExternalSessionRegistry {
     const redactedPlan: ViewTodoState | undefined = payload.plan
       ? {
           ...payload.plan,
-          items: payload.plan.items.map((item) => ({
+          items: payload.plan.items.slice(0, 100).map((item) => ({
             ...item,
             title: redactFn(item.title),
           })),
@@ -233,27 +274,36 @@ export class ExternalSessionRegistry {
       Buffer.byteLength(content, 'utf8') > MAX_EXTERNAL_ARCHIVE_BYTES &&
       redactedMessages.length > 1
     ) {
-      // 按批次或逐条剥除最旧消息直至满足 2 MiB 硬预算。
       const dropCount = Math.max(1, Math.floor(redactedMessages.length * 0.1));
       redactedMessages = redactedMessages.slice(dropCount);
       truncated = true;
       content = serialize(redactedMessages, true);
     }
 
-    // 若极端情况下单条超大消息仍超过 2 MiB，截断该条消息内过长块文本保底落盘。
+    // 若极端情况下单条超大消息仍超过 680 KiB，按块预算截断文本与工具详情保底落盘。
     if (
       Buffer.byteLength(content, 'utf8') > MAX_EXTERNAL_ARCHIVE_BYTES &&
       redactedMessages.length === 1
     ) {
       const only = redactedMessages[0]!;
+      const maxCharsPerBlock = Math.max(
+        1024,
+        Math.floor((420 * 1024) / Math.max(1, only.blocks.length)),
+      );
       redactedMessages = [
         {
           ...only,
-          blocks: only.blocks.map((b) => ({
+          blocks: only.blocks.slice(-64).map((b) => ({
             ...b,
-            text: b.text.slice(0, 128 * 1024),
-            ...(b.tool?.result
-              ? { tool: { ...b.tool, result: b.tool.result.slice(0, 128 * 1024) } }
+            text: b.text.slice(0, maxCharsPerBlock),
+            ...(b.tool
+              ? {
+                  tool: {
+                    ...b.tool,
+                    input: b.tool.input.slice(0, Math.min(maxCharsPerBlock, 16 * 1024)),
+                    ...(b.tool.result ? { result: b.tool.result.slice(0, maxCharsPerBlock) } : {}),
+                  },
+                }
               : {}),
           })),
         },
@@ -308,11 +358,13 @@ export class ExternalSessionRegistry {
   }
 
   private readRecordsMap(): Record<string, ExternalSessionRecord> {
+    const emptyMap = (): Record<string, ExternalSessionRecord> =>
+      Object.create(null) as Record<string, ExternalSessionRecord>;
     let raw: string;
     try {
       raw = fs.readFileSync(this.sessionsFilePath, 'utf8');
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyMap();
       throw err;
     }
     let parsed: unknown;
@@ -325,17 +377,20 @@ export class ExternalSessionRegistry {
         { cause },
       );
     }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return emptyMap();
     const container = parsed as { version?: unknown; sessions?: unknown };
     if (container.version !== 1 || !container.sessions || typeof container.sessions !== 'object') {
-      return {};
+      return emptyMap();
     }
-    const map: Record<string, ExternalSessionRecord> = {};
+    const map = emptyMap();
     for (const [id, rawItem] of Object.entries(container.sessions as Record<string, unknown>)) {
+      if (!id || isReservedObjectPropertyName(id)) continue;
       if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) continue;
       const item = rawItem as Partial<ExternalSessionRecord>;
       if (
         typeof item.id !== 'string' ||
+        item.id !== id ||
+        isReservedObjectPropertyName(item.id) ||
         typeof item.harnessId !== 'string' ||
         typeof item.harnessName !== 'string' ||
         typeof item.transport !== 'string' ||
@@ -346,7 +401,14 @@ export class ExternalSessionRegistry {
       ) {
         continue;
       }
-      map[id] = item as ExternalSessionRecord;
+      const validNativeId = isValidNativeSessionId(item.nativeSessionId)
+        ? item.nativeSessionId.trim()
+        : undefined;
+      map[id] = {
+        ...(item as ExternalSessionRecord),
+        nativeSessionId: validNativeId,
+        resumable: Boolean(item.resumable && validNativeId),
+      };
     }
     return map;
   }
@@ -355,35 +417,40 @@ export class ExternalSessionRegistry {
     fs.mkdirSync(path.dirname(this.sessionsFilePath), { recursive: true, mode: 0o700 });
     const lockPath = `${this.sessionsFilePath}.lock`;
     const owner = randomUUID();
-    let lockFd: number;
+    let fd: number;
     try {
-      lockFd = fs.openSync(lockPath, 'wx', 0o600);
+      fd = fs.openSync(lockPath, 'wx', 0o600);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
         throw new ExternalHarnessError(
           'EXTERNAL_CONFIG_BUSY',
-          `外部会话登记簿锁 ${lockPath} 已被占用`,
+          `外部会话登记簿正在被其他进程写入（${lockPath}）`,
         );
       }
       throw err;
     }
 
     try {
-      fs.writeFileSync(lockFd, JSON.stringify({ owner, pid: process.pid }));
+      fs.writeFileSync(fd, JSON.stringify({ owner, pid: process.pid }));
       const records = this.readRecordsMap();
       const result = mutate(records);
+      const plainSessions: Record<string, ExternalSessionRecord> = {};
+      for (const [k, v] of Object.entries(records)) {
+        if (!k || isReservedObjectPropertyName(k)) continue;
+        plainSessions[k] = v;
+      }
+      const content = `${JSON.stringify({ version: 1, sessions: plainSessions }, null, 2)}\n`;
       const tempPath = `${this.sessionsFilePath}.${randomUUID()}.tmp`;
-      const serialized = `${JSON.stringify({ version: 1, sessions: records }, null, 2)}\n`;
       try {
-        fs.writeFileSync(tempPath, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        fs.writeFileSync(tempPath, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
         fs.renameSync(tempPath, this.sessionsFilePath);
-      } catch (err) {
+      } catch (writeErr) {
         try {
           fs.unlinkSync(tempPath);
         } catch {
           /* ignore */
         }
-        throw err;
+        throw writeErr;
       }
       try {
         fs.chmodSync(this.sessionsFilePath, 0o600);
@@ -392,13 +459,13 @@ export class ExternalSessionRegistry {
       }
       return result;
     } finally {
-      fs.closeSync(lockFd);
+      fs.closeSync(fd);
       try {
-        if ((JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { owner?: string }).owner === owner) {
+        if (JSON.parse(fs.readFileSync(lockPath, 'utf8')).owner === owner) {
           fs.unlinkSync(lockPath);
         }
       } catch {
-        /* ignore */
+        /* 保留无法确认所有者的锁现场 */
       }
     }
   }

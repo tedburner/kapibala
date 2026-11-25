@@ -523,9 +523,12 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     rawTail: true,
     usage:
       '/external [list | harnesses | harness <test|add|enable|disable|remove|reset> ... | start <id> <任务> | show|prompt|approve|cancel|close|delete ...]',
-    description: '管理外部代理（ACP / Claude / Codex）并运行独立外部任务会话',
+    description: '管理外部代理（ACP / Claude / Codex / Pi）并运行独立外部任务会话',
     group: 'session',
-    mutates: () => false,
+    mutates: (args) => {
+      const first = (args[0] ?? '').trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+      return !['', 'list', 'harnesses', 'show', 'approve', 'cancel'].includes(first);
+    },
     validate: validateExternalCommandArgs,
   },
   {

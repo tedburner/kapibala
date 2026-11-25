@@ -139,4 +139,64 @@ describe('/external CLI 命令组与补全兼容', () => {
     expect(logs.join('\n')).toContain('已删除外部会话');
     expect(external.listSessions(workspaceRoot)).toHaveLength(0);
   });
+
+  it('支持未信任普通目录交互式信任引导、start 轮次内实时 select 审批闭环，以及缺参/越界序号安全拦截', async () => {
+    const homeDir = makeTempDir('kpbl-cli-ext-interactive-home-');
+    const untrustedRepo = makeTempDir('kpbl-cli-ext-untrusted-repo-');
+    const settings = createUserSettingsSkeleton();
+
+    const external = new ExternalSessionService({ homeDir });
+    services.push(external);
+    external.saveCustomHarness({
+      id: 'cli-apr-acp',
+      name: 'CLI Approval ACP',
+      command: process.execPath,
+      args: [fakeAcpScript, '--mode=normal'],
+      flavor: 'opencode',
+      enabled: true,
+    });
+
+    const logs: string[] = [];
+    const errors: string[] = [];
+    let confirmCalls = 0;
+    let selectCalls = 0;
+
+    const dispatcher = createDefaultCommandDispatcher();
+    const ctx: CommandContext = {
+      session: { isBusy: () => false } as unknown as CommandContext['session'],
+      settings,
+      homeDir,
+      projectRoot: untrustedRepo,
+      external,
+      confirm: async () => {
+        confirmCalls += 1;
+        return true;
+      },
+      select: async (config) => {
+        selectCalls += 1;
+        const allowSession = config.options.find((o) => String(o.value) === 'allow-session');
+        return (allowSession?.value ?? config.options[0]?.value ?? null) as never;
+      },
+      output: {
+        log: (msg) => logs.push(msg),
+        error: (msg) => errors.push(msg),
+        write: (msg, stream) => (stream === 'stderr' ? errors : logs).push(msg),
+      },
+      onModelSwitched: () => {},
+      onExit: () => {},
+    };
+
+    // 1. 缺参或未闭合引号不抛 TypeError 崩溃
+    await dispatcher.dispatch('/external harness', ctx);
+    await dispatcher.dispatch('/external start "unclosed', ctx);
+    expect(logs.join('\n')).toContain('命令执行失败');
+    logs.length = 0;
+
+    // 2. 在未信任普通仓库执行 /external start：先触发 confirm 落盘信任，再在轮次内触发 select 实时审批
+    await dispatcher.dispatch('/external start cli-apr-acp NEED_APPROVAL', ctx);
+    expect(confirmCalls).toBe(1);
+    expect(selectCalls).toBe(1);
+    expect(logs.join('\n')).toContain('已信任工作区');
+    expect(logs.join('\n')).toContain('执行完毕（allow-session）');
+  });
 });

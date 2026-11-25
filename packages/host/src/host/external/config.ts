@@ -11,7 +11,11 @@ import {
   hasAsciiControlCharacter,
 } from './env.js';
 import { BUILTIN_EXTERNAL_HARNESSES, findBuiltinExternalHarness } from './presets.js';
-import { type ExternalHarnessDefinition, ExternalHarnessError } from './types.js';
+import {
+  type ExternalHarnessDefinition,
+  ExternalHarnessError,
+  isReservedObjectPropertyName,
+} from './types.js';
 
 /** 外部代理配置目录名（位于 `~/.kapibala/external`）。 */
 export const EXTERNAL_STATE_DIR_NAME = 'external';
@@ -115,11 +119,17 @@ function validateCommandField(label: string, command: string): void {
 }
 
 function validateArgsField(label: string, args: readonly string[]): void {
+  if (args.length > 128) {
+    throw new ExternalHarnessError(
+      'EXTERNAL_CONFIG_INVALID',
+      `[${label}] 启动参数数量不能超过 128 项`,
+    );
+  }
   for (const item of args) {
-    if (typeof item !== 'string' || item.includes('\0')) {
+    if (typeof item !== 'string' || item.includes('\0') || item.length > 16_384) {
       throw new ExternalHarnessError(
         'EXTERNAL_CONFIG_INVALID',
-        `[${label}] 启动参数必须为不含空字节的字符串`,
+        `[${label}] 启动参数必须为不含空字节且长度不超过 16KiB 的字符串`,
       );
     }
     if (redactCommonSecrets(item) !== item) {
@@ -172,13 +182,23 @@ function validateEnvFromField(label: string, envFrom: readonly string[]): string
     }
     const name = raw.trim();
     if (!name) continue;
-    if (!ENV_VAR_NAME_PATTERN.test(name) || FORBIDDEN_EXTERNAL_ENV_KEYS.has(name.toUpperCase())) {
+    if (
+      name.length > 64 ||
+      !ENV_VAR_NAME_PATTERN.test(name) ||
+      FORBIDDEN_EXTERNAL_ENV_KEYS.has(name.toUpperCase())
+    ) {
       throw new ExternalHarnessError(
         'EXTERNAL_CONFIG_INVALID',
         `[${label}] envFrom 包含非法或受禁的变量名：${name}`,
       );
     }
     if (!seen.has(name)) {
+      if (deduped.length >= 64) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_CONFIG_INVALID',
+          `[${label}] envFrom 变量数量不能超过 64 项`,
+        );
+      }
       seen.add(name);
       deduped.push(name);
     }
@@ -213,9 +233,9 @@ function parseAndValidateConfigObject(raw: unknown): ExternalHarnessesConfigFile
     throw new ExternalHarnessError('EXTERNAL_CONFIG_CORRUPT', 'harnesses.json custom 字段损坏');
   }
 
-  const overrides: Record<string, BuiltinHarnessOverride> = {};
+  const overrides: Record<string, BuiltinHarnessOverride> = Object.create(null);
   for (const [id, rawOv] of Object.entries((obj.overrides as Record<string, unknown>) ?? {})) {
-    if (!findBuiltinExternalHarness(id)) {
+    if (isReservedObjectPropertyName(id) || !findBuiltinExternalHarness(id)) {
       throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未知的内置外部代理 ID：${id}`);
     }
     if (!rawOv || typeof rawOv !== 'object' || Array.isArray(rawOv)) {
@@ -273,12 +293,12 @@ function parseAndValidateConfigObject(raw: unknown): ExternalHarnessesConfigFile
     }
   }
 
-  const custom: Record<string, Omit<CustomExternalHarnessInput, 'id'>> = {};
+  const custom: Record<string, Omit<CustomExternalHarnessInput, 'id'>> = Object.create(null);
   for (const [id, rawItem] of Object.entries((obj.custom as Record<string, unknown>) ?? {})) {
-    if (!HARNESS_ID_PATTERN.test(id)) {
+    if (!HARNESS_ID_PATTERN.test(id) || isReservedObjectPropertyName(id)) {
       throw new ExternalHarnessError(
         'EXTERNAL_CONFIG_INVALID',
-        `自定义代理 ID '${id}' 非法（仅允许小写字母、数字、连字符与下划线，最长 64 字符）`,
+        `自定义代理 ID '${id}' 非法（仅允许小写字母、数字、连字符与下划线，最长 64 字符且不得使用保留属性名）`,
       );
     }
     if (findBuiltinExternalHarness(id)) {
@@ -392,7 +412,7 @@ export function listResolvedExternalHarnesses(
   const results: ResolvedExternalHarnessEntry[] = [];
 
   for (const builtin of BUILTIN_EXTERNAL_HARNESSES) {
-    const ov = file.overrides[builtin.id];
+    const ov = Object.hasOwn(file.overrides, builtin.id) ? file.overrides[builtin.id] : undefined;
     const hasOverride = Boolean(ov && Object.keys(ov).length > 0);
     results.push({
       hasOverride,
@@ -409,6 +429,7 @@ export function listResolvedExternalHarnesses(
   }
 
   for (const id of Object.keys(file.custom).sort()) {
+    if (isReservedObjectPropertyName(id) || !Object.hasOwn(file.custom, id)) continue;
     const entry = file.custom[id]!;
     results.push({
       hasOverride: false,
@@ -506,21 +527,50 @@ export function mutateExternalHarnessesConfig<T>(
   }
 }
 
-/** 保存内置外部代理的路径、参数或 `envFrom` 覆写差量（未传字段保持原值）。 */
+/**
+ * 保存内置外部代理的路径、参数或 `envFrom` 覆写差量。
+ *
+ * 置空回退语义：当传入 `override.command === ''`（或与内置默认命令相同）时，显式移除 `command` 覆写键回退至内置命令，
+ * 同时保留已配置的 `args` / `envFrom`；若合并后所有字段均回到内置默认值，自动清理空 `overrides[id]` 条目。
+ */
 export function saveBuiltinHarnessOverride(
   id: string,
   override: BuiltinHarnessOverride,
   options: { readonly homeDir?: string } = {},
 ): void {
-  if (!findBuiltinExternalHarness(id)) {
+  const builtin = findBuiltinExternalHarness(id);
+  if (isReservedObjectPropertyName(id) || !builtin) {
     throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未知的内置外部代理 ID：${id}`);
   }
   mutateExternalHarnessesConfig((draft) => {
-    const prev = draft.overrides[id] ?? {};
-    draft.overrides[id] = {
+    const prev = Object.hasOwn(draft.overrides, id) ? draft.overrides[id]! : {};
+    const next: {
+      command?: string;
+      args?: readonly string[];
+      env?: Readonly<Record<string, string>>;
+      envFrom?: readonly string[];
+      enabled?: boolean;
+    } = {
       ...prev,
       ...override,
     };
+    if (
+      next.command !== undefined &&
+      (next.command.trim() === '' || next.command.trim() === builtin.command)
+    ) {
+      next.command = undefined;
+    }
+    if (
+      (next.enabled === undefined || next.enabled === builtin.enabled) &&
+      next.command === undefined &&
+      next.args === undefined &&
+      next.env === undefined &&
+      next.envFrom === undefined
+    ) {
+      delete draft.overrides[id];
+    } else {
+      draft.overrides[id] = next;
+    }
   }, options);
 }
 
@@ -529,11 +579,11 @@ export function resetBuiltinHarnessOverride(
   id: string,
   options: { readonly homeDir?: string } = {},
 ): boolean {
-  if (!findBuiltinExternalHarness(id)) {
+  if (isReservedObjectPropertyName(id) || !findBuiltinExternalHarness(id)) {
     throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未知的内置外部代理 ID：${id}`);
   }
   return mutateExternalHarnessesConfig((draft) => {
-    if (!draft.overrides[id]) return false;
+    if (!Object.hasOwn(draft.overrides, id)) return false;
     delete draft.overrides[id];
     return true;
   }, options);
@@ -545,12 +595,14 @@ export function toggleExternalHarness(
   enabled: boolean,
   options: { readonly homeDir?: string } = {},
 ): void {
+  if (!id || isReservedObjectPropertyName(id)) {
+    throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `非法的外部代理 ID：${id}`);
+  }
   mutateExternalHarnessesConfig((draft) => {
     const builtin = findBuiltinExternalHarness(id);
     if (builtin) {
-      const prev = draft.overrides[id] ?? {};
+      const prev = Object.hasOwn(draft.overrides, id) ? draft.overrides[id]! : {};
       const next = { ...prev, enabled };
-      // 若仅剩 enabled 且与内置默认值一致，自动折叠为空避免冗余落盘。
       if (
         enabled === builtin.enabled &&
         next.command === undefined &&
@@ -564,7 +616,7 @@ export function toggleExternalHarness(
       }
       return;
     }
-    const custom = draft.custom[id];
+    const custom = Object.hasOwn(draft.custom, id) ? draft.custom[id] : undefined;
     if (!custom) {
       throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未找到外部代理定义：${id}`);
     }
@@ -578,6 +630,12 @@ export function upsertCustomExternalHarness(
   options: { readonly homeDir?: string } = {},
 ): void {
   const id = entry.id.trim();
+  if (!HARNESS_ID_PATTERN.test(id) || isReservedObjectPropertyName(id)) {
+    throw new ExternalHarnessError(
+      'EXTERNAL_CONFIG_INVALID',
+      `自定义代理 ID '${id}' 非法（仅允许小写字母、数字、连字符与下划线，最长 64 字符且不得使用保留属性名）`,
+    );
+  }
   mutateExternalHarnessesConfig((draft) => {
     const { id: _ignored, ...rest } = entry;
     draft.custom[id] = rest;
@@ -589,6 +647,9 @@ export function removeCustomExternalHarness(
   id: string,
   options: { readonly homeDir?: string } = {},
 ): boolean {
+  if (!id || isReservedObjectPropertyName(id)) {
+    return false;
+  }
   if (findBuiltinExternalHarness(id)) {
     throw new ExternalHarnessError(
       'EXTERNAL_CONFIG_INVALID',
@@ -596,7 +657,7 @@ export function removeCustomExternalHarness(
     );
   }
   return mutateExternalHarnessesConfig((draft) => {
-    if (!draft.custom[id]) return false;
+    if (!Object.hasOwn(draft.custom, id)) return false;
     delete draft.custom[id];
     return true;
   }, options);

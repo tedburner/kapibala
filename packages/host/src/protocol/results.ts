@@ -212,7 +212,7 @@ const evidence = object({
 const bool = { type: 'boolean' } as const;
 const externalTransport = {
   type: 'string',
-  enum: ['acp', 'claude-cli', 'codex-app-server'],
+  enum: ['acp', 'claude-cli', 'codex-app-server', 'pi-rpc'],
 } as const;
 const externalStatus = {
   type: 'string',
