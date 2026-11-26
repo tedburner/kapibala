@@ -141,6 +141,7 @@ export function getStandardCliFallbackDirs(options: {
       path.win32.join(localAppData, 'Programs', 'Antigravity', 'bin'),
       path.win32.join(localAppData, 'Programs', 'OpenAI', 'Codex', 'bin'),
       path.win32.join(localAppData, 'qwen-code', 'bin'),
+      path.win32.join(homeDir, '.pi', 'agent', 'bin'),
       path.win32.join(homeDir, '.opencode', 'bin'),
       path.win32.join(homeDir, '.omp', 'bin'),
       path.win32.join(homeDir, '.qoder', 'bin', 'qodercli'),
@@ -164,6 +165,7 @@ export function getStandardCliFallbackDirs(options: {
     path.posix.join(homeDir, 'Library', 'pnpm'),
     path.posix.join(homeDir, '.local', 'share', 'pnpm'),
     path.posix.join(homeDir, '.npm-global', 'bin'),
+    path.posix.join(homeDir, '.pi', 'agent', 'bin'),
     path.posix.join(homeDir, '.opencode', 'bin'),
     path.posix.join(homeDir, '.omp', 'bin'),
     path.posix.join(homeDir, '.qoder', 'bin', 'qodercli'),
@@ -278,11 +280,12 @@ function resolveNodeExecutable(options: {
 }
 
 /**
- * 静态解包标准 npm / pnpm `.cmd` 垫片，确保全程 `shell: false`。
+ * 静态解包标准 npm / pnpm 及官方独立安装器生成的 `.cmd` 垫片，确保全程 `shell: false`。
  *
- * 三形态分流（已于 Windows `opencode.cmd` 与 `dsh.cmd` 实测）：
+ * 四类受管边界：
  * 1. 仅解析带 `%*` 的执行行（避开 `npm 12+` 前置变量行）；
- * 2. 词法路径与 `fs.realpathSync.native` 物理路径均须落在受管 `node_modules` 边界内，拦截 `..\..\` 目录穿越；
+ * 2. 词法路径与 `fs.realpathSync.native` 物理路径须落在 `<shimDir>\node_modules`、`<root>\node_modules`、
+ *    pnpm 全局虚拟仓或同目录兄弟目标（如 `traecli.cmd -> %~dp0traex.exe`、`pi.cmd -> %~dp0pi-launcher.js`），拦截 `..\..\` 目录穿越；
  * 3. 目标后缀 `.exe` 直启二进制；`.js/.mjs/.cjs` 或首 256B 含 `#!...node` 走独立 `node.exe` 启动；其余脚本一律拒绝。
  */
 function unwrapWindowsCmdShim(
@@ -335,6 +338,7 @@ function unwrapWindowsCmdShim(
       const lower = token.toLowerCase().replace(/\//g, '\\');
       if (
         lower === '%_prog%' ||
+        lower === '%node%' ||
         lower === 'node' ||
         lower === 'node.exe' ||
         lower === '%dp0%\\node.exe' ||
@@ -361,8 +365,8 @@ function unwrapWindowsCmdShim(
   const expanded = rawTargetToken.replace(/(?:%~dp0|%dp0%)[\\/]?/gi, `${shimDir}${path.win32.sep}`);
   const lexicalTarget = path.win32.resolve(shimDir, expanded);
 
-  // 允许三类合法受管边界：<shimDir>\node_modules\（全局 npm）、<root>\node_modules\（node_modules\.bin），
-  // 以及官方独立安装器生成的同目录原生二进制包装垫片（如 Programs\TraeCLI\bin\traecli.cmd -> %~dp0traex.exe，仅限同目录 .exe）。
+  // 允许四类合法受管边界：<shimDir>\node_modules\（全局 npm）、<root>\node_modules\（node_modules\.bin）、
+  // pnpm 全局虚拟仓，以及官方独立安装器生成的同目录包装垫片（如 traecli.cmd -> %~dp0traex.exe、pi.cmd -> %~dp0pi-launcher.js，禁越出 shimDir）。
   const isDotBin =
     path.win32.basename(shimDir).toLowerCase() === '.bin' &&
     path.win32.basename(path.win32.dirname(shimDir)).toLowerCase() === 'node_modules';
@@ -373,14 +377,19 @@ function unwrapWindowsCmdShim(
   const isPnpmGlobalShim =
     isContainedIn(lexicalTarget, pnpmGlobalRoot, 'win32') &&
     lexicalTarget.toLowerCase().includes('\\node_modules\\');
+  const lexicalExt = path.win32.extname(lexicalTarget).toLowerCase();
   const isSameDirSiblingExe =
-    path.win32.extname(lexicalTarget).toLowerCase() === '.exe' &&
+    lexicalExt === '.exe' &&
+    path.win32.dirname(lexicalTarget).toLowerCase() === shimDir.toLowerCase();
+  const isSameDirSiblingNodeScript =
+    (lexicalExt === '.js' || lexicalExt === '.mjs' || lexicalExt === '.cjs') &&
     path.win32.dirname(lexicalTarget).toLowerCase() === shimDir.toLowerCase();
 
   const lexicallyValid =
     isContainedIn(lexicalTarget, managedNodeModulesRoot, 'win32') ||
     isPnpmGlobalShim ||
-    isSameDirSiblingExe;
+    isSameDirSiblingExe ||
+    isSameDirSiblingNodeScript;
 
   if (!lexicallyValid) {
     throw new ExternalHarnessError(
@@ -397,7 +406,7 @@ function unwrapWindowsCmdShim(
     );
   }
 
-  // 二次物理边界核验：常规 npm 垫片目标必须落于受管 node_modules 物理根内；pnpm 全局虚拟仓必须命中 `.pnpm\...\node_modules\`；同目录二进制垫片物理路径仍须位于同一 shimDir 且后缀为 .exe。
+  // 二次物理边界核验：常规 npm 垫片目标必须落于受管 node_modules 物理根内；pnpm 全局虚拟仓必须命中 `.pnpm\...\node_modules\`；同目录兄弟二进制或 Node 启动器脚本物理路径仍须位于同一 shimDir。
   let physicalManagedNodeModules = managedNodeModulesRoot;
   try {
     physicalManagedNodeModules = fs.realpathSync.native(managedNodeModulesRoot);
@@ -411,6 +420,7 @@ function unwrapWindowsCmdShim(
     /* keep lexical if missing */
   }
   const normalizedPhysicalTarget = physicalTarget.replace(/\//g, '\\').toLowerCase();
+  const physicalExt = path.win32.extname(physicalTarget).toLowerCase();
   const validStandardPhysical = isContainedIn(physicalTarget, physicalManagedNodeModules, 'win32');
   const validPnpmPhysical =
     isPnpmGlobalShim &&
@@ -419,9 +429,18 @@ function unwrapWindowsCmdShim(
     normalizedPhysicalTarget.includes('\\node_modules\\');
   const validSiblingExePhysical =
     isSameDirSiblingExe &&
-    path.win32.extname(physicalTarget).toLowerCase() === '.exe' &&
+    physicalExt === '.exe' &&
     path.win32.dirname(physicalTarget).toLowerCase() === physicalShimDir.toLowerCase();
-  if (!validStandardPhysical && !validPnpmPhysical && !validSiblingExePhysical) {
+  const validSiblingNodeScriptPhysical =
+    isSameDirSiblingNodeScript &&
+    (physicalExt === '.js' || physicalExt === '.mjs' || physicalExt === '.cjs') &&
+    path.win32.dirname(physicalTarget).toLowerCase() === physicalShimDir.toLowerCase();
+  if (
+    !validStandardPhysical &&
+    !validPnpmPhysical &&
+    !validSiblingExePhysical &&
+    !validSiblingNodeScriptPhysical
+  ) {
     throw new ExternalHarnessError(
       'EXTERNAL_UNSUPPORTED_SHIM',
       `垫片 '${shimBaseName}' 的物理目标越出受管目录边界`,

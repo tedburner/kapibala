@@ -93,6 +93,7 @@ interface LiveSessionSlot {
   sequence: number;
   coalesceTimer?: ReturnType<typeof setTimeout>;
   idleTimer?: ReturnType<typeof setTimeout>;
+  configuring?: boolean;
   closing?: Promise<void>;
   truncatedArchive: boolean;
   readonly secrets: readonly string[];
@@ -576,6 +577,14 @@ export class ExternalSessionService {
     const resolvedId = this.resolveSessionId(input.sessionId, input.expectedWorkspaceRoot);
     let slot = this.liveSlots.get(resolvedId);
     if (slot) {
+      this.requireTrustedWorkspace(slot.record.workspaceRoot);
+      this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
+      if (slot.closing || slot.configuring || slot.record.status !== 'idle') {
+        throw new ExternalHarnessError(
+          'EXTERNAL_SESSION_BUSY',
+          '当前外部代理正在运行或正在切换配置，请等待完成后再试',
+        );
+      }
       const currentDef = this.requireEnabledHarnessDefinition(slot.record.harnessId);
       if (computeHarnessConfigDigest(currentDef) !== slot.record.configDigest) {
         await this.closeSession(resolvedId).catch(() => {});
@@ -620,13 +629,11 @@ export class ExternalSessionService {
         resume: true,
         signal,
       });
-    } else {
-      this.requireTrustedWorkspace(slot.record.workspaceRoot);
-      this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
     }
 
     if (
       slot.closing ||
+      slot.configuring ||
       slot.record.status === 'running' ||
       slot.record.status === 'waiting_approval' ||
       slot.record.status === 'cancelling' ||
@@ -634,44 +641,58 @@ export class ExternalSessionService {
     ) {
       throw new ExternalHarnessError(
         'EXTERNAL_SESSION_BUSY',
-        '当前外部代理正在运行，请等待本轮结束后再切换配置',
+        '当前外部代理正在运行或正在切换配置，请等待完成后再试',
       );
     }
-    if (!slot.handle.setConfigOption) {
+    const activeSlot = slot;
+    const setConfigFn = activeSlot.handle.setConfigOption;
+    if (!setConfigFn) {
       throw new ExternalHarnessError(
         'EXTERNAL_CONFIG_INVALID',
-        `外部代理 '${slot.record.harnessName}' 暂不支持会话内动态切换配置`,
+        `外部代理 '${activeSlot.record.harnessName}' 暂不支持会话内动态切换配置`,
       );
     }
 
-    this.clearSlotTimers(slot);
-    const updated = await slot.handle.setConfigOption(
-      {
-        configId: input.configId,
-        category: input.category,
-        value: input.value,
-      },
-      signal,
-    );
-    if (updated.configOptions && updated.configOptions.length > 0) {
-      slot.configOptions = updated.configOptions;
-      saveHarnessConfigCache(
-        this.homeDir,
-        slot.record.harnessId,
-        slot.record.configDigest,
-        updated.configOptions,
+    activeSlot.configuring = true;
+    this.clearIdleTimer(activeSlot);
+    try {
+      const updated = await setConfigFn.call(
+        activeSlot.handle,
+        {
+          configId: input.configId,
+          category: input.category,
+          value: input.value,
+        },
+        signal,
       );
+      if (updated.configOptions && updated.configOptions.length > 0) {
+        activeSlot.configOptions = updated.configOptions;
+        saveHarnessConfigCache(
+          this.homeDir,
+          activeSlot.record.harnessId,
+          activeSlot.record.configDigest,
+          updated.configOptions,
+        );
+      }
+      this.updateSlotRecordSafe(activeSlot, {
+        ...(updated.modelLabel !== undefined ? { modelLabel: updated.modelLabel } : {}),
+        ...(updated.modeLabel !== undefined ? { modeLabel: updated.modeLabel } : {}),
+        ...(updated.thoughtLevelLabel !== undefined
+          ? { thoughtLevelLabel: updated.thoughtLevelLabel }
+          : {}),
+      });
+      this.flushSlotImmediate(activeSlot);
+      return this.buildLiveSnapshot(activeSlot);
+    } finally {
+      activeSlot.configuring = false;
+      if (
+        !activeSlot.closing &&
+        this.liveSlots.get(resolvedId) === activeSlot &&
+        activeSlot.record.status === 'idle'
+      ) {
+        this.armIdleTimer(activeSlot);
+      }
     }
-    this.updateSlotRecordSafe(slot, {
-      ...(updated.modelLabel !== undefined ? { modelLabel: updated.modelLabel } : {}),
-      ...(updated.modeLabel !== undefined ? { modeLabel: updated.modeLabel } : {}),
-      ...(updated.thoughtLevelLabel !== undefined
-        ? { thoughtLevelLabel: updated.thoughtLevelLabel }
-        : {}),
-    });
-    if (!slot.closing) this.armIdleTimer(slot);
-    this.flushSlotImmediate(slot);
-    return this.buildLiveSnapshot(slot);
   }
 
   /** 一步式创建外部代理会话并立即发送首轮任务文本；同工作区忙时前置拦截，避免泄漏空闲子进程。 */
@@ -777,6 +798,14 @@ export class ExternalSessionService {
 
     let slot = this.liveSlots.get(resolvedId);
     if (slot) {
+      this.requireTrustedWorkspace(slot.record.workspaceRoot);
+      this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
+      if (slot.closing || slot.configuring || slot.record.status !== 'idle') {
+        throw new ExternalHarnessError(
+          'EXTERNAL_SESSION_BUSY',
+          '当前外部会话正在执行或等待审批，不能并发发送新轮次',
+        );
+      }
       const currentDef = this.requireEnabledHarnessDefinition(slot.record.harnessId);
       if (computeHarnessConfigDigest(currentDef) !== slot.record.configDigest) {
         await this.closeSession(resolvedId).catch(() => {});
@@ -824,7 +853,7 @@ export class ExternalSessionService {
     }
     this.requireTrustedWorkspace(slot.record.workspaceRoot);
     this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
-    if (slot.closing || slot.record.status !== 'idle') {
+    if (slot.closing || slot.configuring || slot.record.status !== 'idle') {
       throw new ExternalHarnessError(
         'EXTERNAL_SESSION_BUSY',
         '当前外部会话正在执行或等待审批，不能并发发送新轮次',

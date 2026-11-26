@@ -39,6 +39,6 @@
 
 ## 按需阅读索引（触发对应任务时必读）
 
-- **当前基线与版本路线图**：当前最新已发布版本为 `v0.1.4`（本地 wire `PROTOCOL_VERSION = 2`）；查历史版本交付范围或后续排期时读 `docs/RELEASES.md`，开发 `v0.1.5` 第三方 ACP 接入时读 `docs/design/015-v0.1.5-acp-external-harness.md`。
+- **当前基线与版本路线图**：当前最新已发布版本为 `v0.1.4`（本地 wire `PROTOCOL_VERSION = 2`）；查历史版本交付范围或后续排期时读 `docs/RELEASES.md`，开发 `v0.1.5` 外部代理工作台时读 `docs/design/015-v0.1.5-acp-external-harness.md`，推进 `v0.1.6+` 桌面 UI 2.0 重构时读 `docs/design/017-ui-v2-workbench.md`。
 - **契约与子系统文档**：改 Core/MCP/CLI 公共导出时读 `docs/sdk-compatibility.md` 与 `scripts/fixtures/public-api/migration.json`；改本地客户端协议时读 `docs/local-protocol.md`；改技能体系时读 `docs/skills.md`。
 - **跨包高危联动**：从任意包修改内置模型目录、厂商元数据、API Key 读写或全局配置持久化前，必读 `packages/host/AGENTS.md`；修改品牌 SVG/PNG 或 README 双主题抬头图前，必读 `assets/AGENTS.md`；模型升级巡检或精简 Agent 上下文与 Skills 时，必读 `docs/context-pruning-playbook.md`。

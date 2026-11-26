@@ -893,8 +893,8 @@ export function MessageList({
   onContinue?: () => void;
   /** 唯一可重试的消息（最新一轮）；缺失时历史回答不出现重试按钮。 */
   retryableMessageId?: string;
-  /** 重试 = 宿主截断上一轮后重新生成；只在最新回答上调用。 */
-  onRetry(): void;
+  /** 重试 = 宿主截断上一轮后重新生成；只在最新回答上调用，不支持重试的会话（如外部代理）省略。 */
+  onRetry?: () => void;
   memoryKey: string;
   /** 当前工作区根路径；正文里相对路径的本地图片以它为基准解析。 */
   root?: string;
@@ -907,9 +907,9 @@ export function MessageList({
   /** 打开产物预览；chip 是工具调用常驻的重开入口。 */
   onArtifact(callId: string, artifact: ViewArtifact, trigger: HTMLElement): void;
   /** 打开证据面板；trigger 用于关闭后把焦点还给摘要按钮。 */
-  onEvidence(trigger: HTMLElement): void;
-  /** 将用户消息原文回填到输入框供修改重发；只填草稿，不改写已落盘历史。 */
-  onEdit(text: string): void;
+  onEvidence?: (trigger: HTMLElement) => void;
+  /** 将用户消息原文回填到输入框供修改重发；只读归档会话省略以隐藏无效编辑按钮。 */
+  onEdit?: (text: string) => void;
   report(message: string): void;
 }) {
   const summary = evidenceSummary(evidence);
@@ -987,7 +987,7 @@ export function MessageList({
   };
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {(summary || evidenceUnavailable) && (
+      {(summary || evidenceUnavailable) && onEvidence && (
         <div className="shrink-0 px-6 pt-3">
           <Button
             className="kapibala-action"
@@ -1067,7 +1067,7 @@ export function MessageList({
                         report={report}
                       />
                     </div>
-                    {(copyText || retryable) && (
+                    {(copyText || (retryable && onRetry)) && (
                       <div className="mt-1 flex items-center justify-end gap-1 opacity-0 transition-opacity [@media(hover:none)]:opacity-100 group-hover:opacity-100 focus-within:opacity-100">
                         {copyText && (
                           <>
@@ -1078,20 +1078,22 @@ export function MessageList({
                             >
                               {''}
                             </InlineCopyText>
-                            <Button
-                              className="kapibala-action text-kumo-subtle"
-                              variant="ghost"
-                              size="sm"
-                              shape="square"
-                              aria-label="编辑该消息"
-                              title="编辑该消息"
-                              onClick={() => onEdit(copyText)}
-                            >
-                              <PencilSimpleIcon size={14} />
-                            </Button>
+                            {onEdit && (
+                              <Button
+                                className="kapibala-action text-kumo-subtle"
+                                variant="ghost"
+                                size="sm"
+                                shape="square"
+                                aria-label="编辑该消息"
+                                title="编辑该消息"
+                                onClick={() => onEdit(copyText)}
+                              >
+                                <PencilSimpleIcon size={14} />
+                              </Button>
+                            )}
                           </>
                         )}
-                        {retryable && (
+                        {retryable && onRetry && (
                           <Button
                             className="kapibala-action text-kumo-subtle"
                             variant="ghost"
@@ -1164,7 +1166,9 @@ export function MessageList({
               m.blocks.some((b) => b.kind === 'text' || b.kind === 'tool'),
             );
             const retryable = Boolean(
-              retryableMessageId && turnMessages.some((m) => m.id === retryableMessageId),
+              onRetry &&
+                retryableMessageId &&
+                turnMessages.some((m) => m.id === retryableMessageId),
             );
             const latestUsage = aggregateTurnUsage(turnMessages);
 

@@ -219,4 +219,61 @@ describe('/external CLI 命令组与补全兼容', () => {
     expect(batchTestOut).toContain('cli-apr-acp: ready');
     expect(batchTestOut).toContain('pi: handshake_failed');
   });
+
+  it('支持 /external start --model <id> 与 /external config 查询及切换模型/模式/推理档位', async () => {
+    const homeDir = makeTempDir('kpbl-cli-ext-cfg-home-');
+    const workspaceRoot = makeTempDir('kpbl-cli-ext-cfg-ws-');
+    const settings = createUserSettingsSkeleton();
+    trustProject(settings, workspaceRoot, { homeDir });
+
+    const external = new ExternalSessionService({ homeDir });
+    services.push(external);
+    external.saveCustomHarness({
+      id: 'cli-cfg-acp',
+      name: 'CLI Config ACP',
+      command: process.execPath,
+      args: [fakeAcpScript, '--mode=opencode-model-sync'],
+      flavor: 'opencode',
+      enabled: true,
+    });
+
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const dispatcher = createDefaultCommandDispatcher();
+    const ctx: CommandContext = {
+      session: { isBusy: () => false } as unknown as CommandContext['session'],
+      settings,
+      homeDir,
+      projectRoot: workspaceRoot,
+      external,
+      output: {
+        log: (msg) => logs.push(msg),
+        error: (msg) => errors.push(msg),
+        write: (msg, stream) => (stream === 'stderr' ? errors : logs).push(msg),
+      },
+      onModelSwitched: () => {},
+      onExit: () => {},
+    };
+
+    await dispatcher.dispatch(
+      '/external start --model opencode/deepseek-v4.1-flash-free cli-cfg-acp 验证初始模型',
+      ctx,
+    );
+    expect(errors).toEqual([]);
+    expect(logs.join('\n')).toContain('model=opencode/deepseek-v4.1-flash-free');
+    expect(logs.join('\n')).toContain('模型:opencode/DeepSeek V4.1 Flash Free');
+
+    const sessionId = external.listSessions(workspaceRoot)[0]!.id.slice(0, 10);
+    logs.length = 0;
+
+    await dispatcher.dispatch(`/external config ${sessionId}`, ctx);
+    expect(logs.join('\n')).toContain('可切换配置');
+    expect(logs.join('\n')).toContain('opencode/seaglass-alpha-free');
+    logs.length = 0;
+
+    await dispatcher.dispatch(`/external config ${sessionId} thought high`, ctx);
+    await dispatcher.dispatch(`/external config ${sessionId} mode plan`, ctx);
+    expect(logs.join('\n')).toContain('推理:High');
+    expect(logs.join('\n')).toContain('模式:Plan');
+  });
 });

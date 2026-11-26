@@ -675,4 +675,101 @@ describe('ExternalSessionService 会话编排、审批、空闲回收与 configD
     const afterChange = service.listHarnesses().harnesses.find((item) => item.id === 'sync-acp');
     expect(afterChange?.cachedConfigOptions).toBeUndefined();
   });
+
+  it('setSessionConfig 在途期间拒绝并发发送或重复切换，且异常失败后正确重装空闲回收定时器', async () => {
+    const homeDir = makeTempDir('kpbl-ext-cfg-race-home-');
+    const workspaceRoot = makeTempDir('kpbl-ext-cfg-race-ws-');
+    let releaseConfig!: () => void;
+    let shouldFailConfig = false;
+    let closedCount = 0;
+
+    const service = new ExternalSessionService({
+      homeDir,
+      isWorkspaceTrusted: () => true,
+      idleTimeoutMs: 60,
+    });
+    activeServices.push(service);
+
+    service.registerDriver({
+      transport: 'acp',
+      inspect: async () => ({ available: true, status: 'ready', loadSupported: true }),
+      open: async () => ({
+        resumable: true,
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            currentValue: 'm1',
+            options: [
+              { value: 'm1', name: 'M1' },
+              { value: 'm2', name: 'M2' },
+            ],
+          },
+        ],
+        handle: {
+          pid: undefined,
+          prompt: async () => ({ stopReason: 'completed' }),
+          setConfigOption: async ({ value }) => {
+            await new Promise<void>((resolve) => {
+              releaseConfig = resolve;
+            });
+            if (shouldFailConfig) {
+              throw new Error('config switch rejected');
+            }
+            return { modelLabel: value.toUpperCase() };
+          },
+          approve: async () => {},
+          cancel: async () => {},
+          close: async () => {
+            closedCount += 1;
+          },
+        },
+      }),
+    });
+    service.saveCustomHarness({
+      id: 'race-acp',
+      name: '并发守卫 ACP',
+      command: process.execPath,
+      args: [fixtureScript],
+      enabled: true,
+    });
+
+    const opened = await service.openSession({ workspaceRoot, harnessId: 'race-acp' });
+    const inFlight = service.setSessionConfig({
+      sessionId: opened.session.id,
+      configId: 'model',
+      category: 'model',
+      value: 'm2',
+      expectedWorkspaceRoot: workspaceRoot,
+    });
+
+    await expect(
+      service.promptSession({
+        sessionId: opened.session.id,
+        text: 'concurrent prompt',
+        expectedWorkspaceRoot: workspaceRoot,
+      }),
+    ).rejects.toMatchObject({ code: 'EXTERNAL_SESSION_BUSY' });
+
+    releaseConfig();
+    const settled = await inFlight;
+    expect(settled.session.modelLabel).toBe('M2');
+
+    // 验证 setConfigOption 抛错后 idleTimer 仍正常重装并触发空闲回收
+    shouldFailConfig = true;
+    const failedSwitch = service.setSessionConfig({
+      sessionId: opened.session.id,
+      configId: 'model',
+      category: 'model',
+      value: 'bad',
+      expectedWorkspaceRoot: workspaceRoot,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseConfig();
+    await expect(failedSwitch).rejects.toThrow(/config switch rejected/);
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(closedCount).toBeGreaterThanOrEqual(1);
+  });
 });

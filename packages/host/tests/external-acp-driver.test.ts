@@ -508,7 +508,35 @@ describe('AcpStdioDriver 真实子进程契约测试', () => {
       }),
     );
 
-    const driver = new AcpStdioDriver({ homeDir: home, platform: 'darwin' });
+    // 跨平台纯函数先验证 macOS/Linux 与 Windows LOCALAPPDATA 候选路径解析
+    expect(
+      resolveOpenCodePreferredConfig({
+        workspaceRoot: cwd,
+        homeDir: home,
+        env: {},
+        platform: 'darwin',
+      }),
+    ).toEqual([
+      { category: 'model', value: 'opencode/deepseek-v4.1-flash-free' },
+      { category: 'thought_level', value: 'max' },
+    ]);
+    const winAppData = makeTempWorkspace('kpbl-acp-win-localappdata-');
+    fs.mkdirSync(path.join(winAppData, 'opencode'), { recursive: true });
+    fs.writeFileSync(
+      path.join(winAppData, 'opencode', 'model.json'),
+      JSON.stringify({ recent: [{ providerID: 'opencode', modelID: 'seaglass-alpha-free' }] }),
+    );
+    expect(
+      resolveOpenCodePreferredConfig({
+        workspaceRoot: cwd,
+        homeDir: makeTempWorkspace('kpbl-acp-empty-home-'),
+        env: { LOCALAPPDATA: winAppData },
+        platform: 'win32',
+      }),
+    ).toEqual([{ category: 'model', value: 'opencode/seaglass-alpha-free' }]);
+
+    // 真实拉起 process.execPath 子进程时使用当前宿主平台，防止在 Windows 下以 POSIX 绝对路径规则误拒盘符路径
+    const driver = new AcpStdioDriver({ homeDir: home });
     const textChunks: string[] = [];
     const opened = await driver.open({
       def: makeFakeHarness('opencode-model-sync', { flavor: 'opencode' }),

@@ -522,7 +522,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     interactionLevel: 'none',
     rawTail: true,
     usage:
-      '/external [list | harnesses | harness <test|add|enable|disable|remove|reset> ... | start <id> <任务> | show|prompt|approve|cancel|close|delete ...]',
+      '/external [list | harnesses | harness <test|add|enable|disable|remove|reset> ... | start [--model <id>] <harnessId> <任务> | config <sessionId> [model|mode|thought <值>] | show|prompt|approve|cancel|close|delete ...]',
     description: '管理外部代理（ACP / Claude / Codex / Pi）并运行独立外部任务会话',
     group: 'session',
     mutates: (args) => {
@@ -530,6 +530,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
       const first = parts[0]?.toLowerCase() ?? '';
       const second = parts[1]?.toLowerCase() ?? '';
       if (first === 'harness' && second === 'test') return false;
+      if (first === 'config') return false;
       return !['', 'list', 'harnesses', 'show', 'approve', 'cancel'].includes(first);
     },
     validate: validateExternalCommandArgs,

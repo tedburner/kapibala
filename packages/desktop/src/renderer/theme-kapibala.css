@@ -91,6 +91,47 @@
   :root[data-mode="dark"] [style*="--kumo-button-emphasis-bg"]:not([style*="color-kumo-danger"]) {
     color: var(--text-color-kumo-inverse) !important;
   }
+  /* Kumo Switch 默认无内边距等宽滑块在深色反相底色下会产生「左亮右暗看似关闭」的视错觉，且默认激活态为亮蓝；
+     统一改为 2px 内嵌滑块并映射到 Kapibala 单色碳墨语义，确保浅色/深色下左关右开一眼可辨。 */
+  [data-kumo-component="Switch"] > div {
+    top: 2px;
+    bottom: 2px;
+    width: calc(50% - 3px);
+  }
+  [data-kumo-component="Switch"][aria-checked="false"] > div {
+    left: 2px;
+    background-color: var(--color-kumo-base);
+  }
+  [data-kumo-component="Switch"][aria-checked="true"] > div {
+    left: calc(50% + 1px);
+    background-color: var(--text-color-kumo-inverse);
+  }
+  [data-kumo-component="Switch"][aria-checked="true"] {
+    background-color: var(--color-kumo-brand);
+    --tw-ring-color: var(--color-kumo-brand);
+  }
+  [data-kumo-component="Switch"][aria-checked="false"] {
+    background-color: color-mix(in oklab, var(--text-color-kumo-default) 13%, transparent);
+    --tw-ring-color: var(--color-kumo-line);
+  }
+  :root[data-mode="dark"] [data-kumo-component="Switch"][aria-checked="true"] {
+    background-color: color-mix(in oklab, var(--text-color-kumo-strong) 32%, transparent);
+    --tw-ring-color: color-mix(in oklab, var(--text-color-kumo-strong) 42%, transparent);
+  }
+  :root[data-mode="dark"] [data-kumo-component="Switch"][aria-checked="true"] > div {
+    background-color: var(--text-color-kumo-strong);
+  }
+  :root[data-mode="dark"] [data-kumo-component="Switch"][aria-checked="false"] {
+    background-color: color-mix(in oklab, var(--text-color-kumo-strong) 10%, transparent);
+    --tw-ring-color: var(--color-kumo-line);
+  }
+  :root[data-mode="dark"] [data-kumo-component="Switch"][aria-checked="false"] > div {
+    background-color: var(--text-color-kumo-subtle);
+  }
+  /* Kumo Combobox.Item 内层文本列默认缺 min-width: 0，补齐以防长模型名撑破网格列宽。 */
+  [data-kumo-component="Combobox"][data-kumo-part="item"] > :first-child {
+    min-width: 0;
+  }
 }
 /* Kumo LayerDialog 使用公开 Tailwind 尺寸 token，集中收紧各类浮层，避免页面各自覆盖库内部结构。 */
 @theme {
@@ -432,6 +473,7 @@ body {
   margin: 0;
   border: 0;
   background: transparent;
+  color: var(--text-color-kumo-default);
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.6;
@@ -1004,6 +1046,13 @@ body {
   padding: 16px;
   /* 表单类面板统一收在可读宽度内，右缘形成稳定边界；模型页双栏面板单独放开。 */
   max-width: var(--kapibala-settings-form-width);
+}
+/* 外部代理页承载多条目列表、命令预览与双栏模板网格，采用单层卡片直铺并放宽至阅读列上限，避免灰底套白卡的三层嵌套与过早截断。 */
+.kapibala-settings-panel.kapibala-external-settings {
+  max-width: 780px;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
 }
 /* 保存/校验反馈位于面板上方，滚动时也不被长表单挤出视野。 */
 .kapibala-settings-notice {

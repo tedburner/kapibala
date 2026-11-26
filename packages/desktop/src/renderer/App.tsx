@@ -948,9 +948,15 @@ export function App() {
         category: change.category,
         value: change.value,
       });
-      setActiveExternal((prev) =>
-        prev && prev.sessionId === cur.sessionId ? { ...prev, snapshot } : prev,
-      );
+      setActiveExternal((prev) => {
+        if (!prev || prev.sessionId !== cur.sessionId) return prev;
+        if (snapshot.sequence !== 0 && snapshot.sequence < prev.snapshot.sequence) {
+          return prev;
+        }
+        const next = { ...prev, snapshot };
+        activeExternalRef.current = next;
+        return next;
+      });
       await refreshExternalList(cur.workspaceId);
       await reloadHarnessCatalog(cur.workspaceId);
     } catch (reason) {
@@ -1011,9 +1017,12 @@ export function App() {
       await api.external.close({ workspaceId: space.id, sessionId });
       if (activeExternalRef.current?.sessionId === sessionId) {
         const snapshot = await api.external.snapshot({ workspaceId: space.id, sessionId });
-        setActiveExternal((prev) =>
-          prev && prev.sessionId === sessionId ? { ...prev, snapshot } : prev,
-        );
+        setActiveExternal((prev) => {
+          if (!prev || prev.sessionId !== sessionId) return prev;
+          const next = { ...prev, snapshot };
+          activeExternalRef.current = next;
+          return next;
+        });
       }
       await refreshExternalList(space.id);
     });

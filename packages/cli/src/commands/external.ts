@@ -6,6 +6,7 @@ import {
 } from '@kiturone/kapibala-host/internal';
 import type {
   ViewExternalApproval,
+  ViewExternalConfigCategory,
   ViewExternalSession,
   ViewExternalSnapshot,
 } from '@kiturone/kapibala-host/view-model';
@@ -30,7 +31,7 @@ const TRANSPORT_LABELS: Record<ViewExternalSession['transport'], string> = {
 };
 
 const EXTERNAL_USAGE =
-  '/external [list | harnesses | harness test [id] | harness add <id> <cmd> [args...] | harness enable|disable|remove|reset <id> | start <harnessId> <任务> | show <sessionId> | prompt <sessionId> <文本> | approve <sessionId> [approvalId] <选项序号|ID|cancel> | cancel|close|delete <sessionId>]';
+  '/external [list | harnesses | harness test [id] | harness add <id> <cmd> [args...] | harness enable|disable|remove|reset <id> | start [--model <id>] <harnessId> <任务> | config <sessionId> [model|mode|thought <值>] | show <sessionId> | prompt <sessionId> <文本> | approve <sessionId> [approvalId] <选项序号|ID|cancel> | cancel|close|delete <sessionId>]';
 
 function scanQuotedTokens(raw: string): { tokens: string[]; unclosedQuote: boolean } {
   const tokens: string[] = [];
@@ -115,10 +116,32 @@ export function validateExternalCommandArgs(args: string[]): string | undefined 
       }
       return '用法: /external harness <test|add|enable|disable|remove|reset> ...';
     }
-    case 'start':
+    case 'start': {
+      if (tokens[1] === '--model') {
+        return tokens.length >= 5 && tokens[2]?.trim() && tokens[3]?.trim()
+          ? undefined
+          : '用法: /external start [--model <modelId>] <harnessId> <任务文本>';
+      }
       return tokens.length >= 3 && tokens[1]?.trim()
         ? undefined
-        : '用法: /external start <harnessId> <任务文本>';
+        : '用法: /external start [--model <modelId>] <harnessId> <任务文本>';
+    }
+    case 'config': {
+      if (tokens.length === 2 && tokens[1]?.trim()) return undefined;
+      const categoryToken = tokens[2]?.toLowerCase();
+      if (
+        tokens.length === 4 &&
+        tokens[1]?.trim() &&
+        (categoryToken === 'model' ||
+          categoryToken === 'mode' ||
+          categoryToken === 'thought' ||
+          categoryToken === 'thought_level') &&
+        tokens[3]?.trim()
+      ) {
+        return undefined;
+      }
+      return '用法: /external config <sessionId> [model|mode|thought <值>]';
+    }
     case 'prompt':
       return tokens.length >= 3 && tokens[1]?.trim()
         ? undefined
@@ -147,6 +170,8 @@ function formatSnapshotSummary(snap: ViewExternalSnapshot): string[] {
     `${s.harnessName} (${TRANSPORT_LABELS[s.transport]})`,
     STATUS_LABELS[s.status],
     s.modelLabel ? `模型:${s.modelLabel}` : '',
+    s.modeLabel ? `模式:${s.modeLabel}` : '',
+    s.thoughtLevelLabel ? `推理:${s.thoughtLevelLabel}` : '',
     s.canContinue ? '可续聊' : '只读归档',
   ].filter(Boolean);
   lines.push(`${metaParts.join(' · ')} — ${s.title}`);
@@ -550,10 +575,12 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
     if (!(await ensureCliWorkspaceTrusted(workspaceRoot, ctx, output))) {
       return;
     }
-    const { head, tail } = splitFirstNTokens(raw, 2);
-    const harnessId = head[1];
-    if (!harnessId || !tail) {
-      output.error('用法: /external start <harnessId> <任务文本>');
+    const hasExplicitModel = tokens[1] === '--model';
+    const { head, tail } = splitFirstNTokens(raw, hasExplicitModel ? 4 : 2);
+    const modelId = hasExplicitModel ? head[2] : undefined;
+    const harnessId = hasExplicitModel ? head[3] : head[1];
+    if (!harnessId || !tail || (hasExplicitModel && !modelId)) {
+      output.error('用法: /external start [--model <modelId>] <harnessId> <任务文本>');
       return;
     }
     const opened = await service.openSession({
@@ -562,6 +589,7 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
       title: tail,
       customTitle: false,
       requireIdleWorkspace: true,
+      ...(modelId ? { modelId } : {}),
     });
     output.log(
       `已创建外部会话 [${opened.session.id}] (${opened.session.harnessName})，正在执行首轮任务…`,
@@ -584,6 +612,58 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
       throw err;
     }
     for (const line of formatSnapshotSummary(snap)) output.log(line);
+    return;
+  }
+
+  if (sub === 'config') {
+    if (!workspaceRoot) {
+      output.error('缺少工作区根目录，无法管理外部代理会话配置。');
+      return;
+    }
+    if (!(await ensureCliWorkspaceTrusted(workspaceRoot, ctx, output))) {
+      return;
+    }
+    const sessionId = tokens[1];
+    if (!sessionId) return;
+    const current = service.getSnapshot(sessionId, workspaceRoot);
+    if (tokens.length === 2) {
+      const options = current.configOptions ?? [];
+      if (options.length === 0) {
+        output.log(`外部会话 [${current.session.id}] 当前未暴露可切换的模型/模式/推理档位选项。`);
+        return;
+      }
+      output.log(`外部会话 [${current.session.id}] 可切换配置:`);
+      for (const opt of options) {
+        const curText = opt.currentValue ? ` (当前: ${opt.currentValue})` : '';
+        const valuesPreview = opt.options
+          .slice(0, 12)
+          .map((item) => item.value)
+          .join(', ');
+        const more = opt.options.length > 12 ? ` …共 ${opt.options.length} 项` : '';
+        output.log(`• ${opt.category} [${opt.id}]${curText}: ${valuesPreview}${more}`);
+      }
+      return;
+    }
+    const rawCat = tokens[2]!.toLowerCase();
+    const category: ViewExternalConfigCategory =
+      rawCat === 'thought' || rawCat === 'thought_level'
+        ? 'thought_level'
+        : rawCat === 'mode'
+          ? 'mode'
+          : 'model';
+    const value = tokens[3]!;
+    const matchedOpt = current.configOptions?.find((opt) => opt.category === category);
+    const configId =
+      matchedOpt?.id ?? (category === 'thought_level' ? 'reasoning_effort' : category);
+    const updated = await service.setSessionConfig({
+      sessionId: current.session.id,
+      configId,
+      category,
+      value,
+      expectedWorkspaceRoot: workspaceRoot,
+    });
+    output.log(`已更新外部会话 [${updated.session.id}] 配置 (${category} = ${value})。`);
+    for (const line of formatSnapshotSummary(updated)) output.log(line);
     return;
   }
 

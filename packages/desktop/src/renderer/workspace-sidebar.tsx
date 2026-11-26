@@ -247,37 +247,33 @@ export function WorkspaceSidebar({
             已打开的空间中没有匹配的对话。
           </p>
         )}
-        {keyword === '' && (
+        {keyword === '' && temporary.length > 0 && (
           <div className="group-data-[state=collapsed]/sidebar:hidden">
             <div className="kapibala-sidebar-section">临时对话</div>
-            {temporary.length === 0 ? (
-              <p className="kapibala-sidebar-empty">暂无临时对话</p>
-            ) : (
-              <Sidebar.Menu>
-                {temporary.map((item) => {
-                  const space = spaces.find((entry) => entry.id === item.workspaceId);
-                  const title = titleOfSession(item);
-                  return (
-                    <Sidebar.MenuItem key={item.sessionId}>
-                      <Sidebar.MenuButton
-                        icon={NotePencilIcon}
-                        className="kapibala-sidebar-temp"
-                        title={title}
-                        tooltip={title}
-                        aria-label={`${title} · ${space?.name ?? '未知空间'} 临时对话`}
-                        disabled={!space || busy}
-                        onClick={() => space && onOpen(space, item.conversationId)}
-                      >
-                        <span className="min-w-0 truncate">{title}</span>
-                        <span className="ml-auto shrink-0 text-xs text-kumo-subtle">
-                          {runtimeLabel(item, runtimeValid)}
-                        </span>
-                      </Sidebar.MenuButton>
-                    </Sidebar.MenuItem>
-                  );
-                })}
-              </Sidebar.Menu>
-            )}
+            <Sidebar.Menu>
+              {temporary.map((item) => {
+                const space = spaces.find((entry) => entry.id === item.workspaceId);
+                const title = titleOfSession(item);
+                return (
+                  <Sidebar.MenuItem key={item.sessionId}>
+                    <Sidebar.MenuButton
+                      icon={NotePencilIcon}
+                      className="kapibala-sidebar-temp"
+                      title={title}
+                      tooltip={title}
+                      aria-label={`${title} · ${space?.name ?? '未知空间'} 临时对话`}
+                      disabled={!space || busy}
+                      onClick={() => space && onOpen(space, item.conversationId)}
+                    >
+                      <span className="min-w-0 truncate">{title}</span>
+                      <span className="ml-auto shrink-0 text-xs text-kumo-subtle">
+                        {runtimeLabel(item, runtimeValid)}
+                      </span>
+                    </Sidebar.MenuButton>
+                  </Sidebar.MenuItem>
+                );
+              })}
+            </Sidebar.Menu>
           </div>
         )}
         <div className="kapibala-sidebar-section group-data-[state=collapsed]/sidebar:hidden">
@@ -478,7 +474,7 @@ export function WorkspaceSidebar({
                               onClick={() => onOpen(space, row.conversationId)}
                             >
                               <span className="truncate">{row.title || '未命名对话'}</span>
-                              <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-kumo-subtle">
+                              <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-kumo-subtle transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0">
                                 {row.pinned && <PushPinIcon size={12} weight="fill" />}
                                 {handle?.phase !== undefined &&
                                   handle.phase !== 'idle' &&
@@ -617,7 +613,7 @@ export function WorkspaceSidebar({
                             className="group/ext relative flex min-w-0 items-center"
                           >
                             <Sidebar.MenuButton
-                              className="kapibala-sidebar-conversation min-w-0 flex-1"
+                              className="kapibala-sidebar-conversation h-auto min-w-0 flex-1 py-1.5"
                               active={
                                 space.id === activeWorkspaceId && activeExternalSessionId === ext.id
                               }
@@ -626,23 +622,27 @@ export function WorkspaceSidebar({
                               aria-label={`${ext.harnessName} · ${extTitle}`}
                               onClick={() => onOpenExternal?.(space, ext.id)}
                             >
-                              <span className="shrink-0 rounded bg-kumo-recessed px-1 py-0.5 text-2xs text-kumo-subtle">
-                                {ext.harnessName}
-                              </span>
-                              <span className="min-w-0 truncate">{extTitle}</span>
-                              <span className="ml-auto flex shrink-0 items-center gap-1 text-xs text-kumo-subtle">
-                                {extActive && (
-                                  <span
-                                    className={`size-1.5 rounded-full ${
-                                      ext.pendingApprovalCount > 0 ||
-                                      ext.status === 'waiting_approval'
-                                        ? 'bg-kumo-warning'
-                                        : 'bg-(--kapibala-signal)'
-                                    }`}
-                                    aria-hidden="true"
-                                  />
-                                )}
-                                {externalStatusLabel(ext)}
+                              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                                <span className="block w-full truncate leading-snug group-focus-within/ext:pr-6 group-hover/ext:pr-6">
+                                  {extTitle}
+                                </span>
+                                <span className="flex w-full min-w-0 items-center gap-1.5 text-2xs leading-tight text-kumo-subtle">
+                                  <span className="min-w-0 truncate">{ext.harnessName}</span>
+                                  <span className="ml-auto flex shrink-0 items-center gap-1 transition-opacity group-focus-within/ext:opacity-0 group-hover/ext:opacity-0">
+                                    {extActive && (
+                                      <span
+                                        className={`size-1.5 rounded-full ${
+                                          ext.pendingApprovalCount > 0 ||
+                                          ext.status === 'waiting_approval'
+                                            ? 'bg-kumo-warning'
+                                            : 'bg-(--kapibala-signal)'
+                                        }`}
+                                        aria-hidden="true"
+                                      />
+                                    )}
+                                    {externalStatusLabel(ext)}
+                                  </span>
+                                </span>
                               </span>
                             </Sidebar.MenuButton>
                             {(onCloseExternal || onDeleteExternal) && (
@@ -650,7 +650,7 @@ export function WorkspaceSidebar({
                                 <DropdownMenu.Trigger
                                   render={
                                     <Button
-                                      className="kapibala-action z-10 shrink-0 opacity-0 transition-opacity [@media(hover:none)]:opacity-100 focus-visible:opacity-100 group-focus-within/ext:opacity-100 group-hover/ext:opacity-100"
+                                      className="kapibala-action absolute right-0 z-10 shrink-0 opacity-0 transition-opacity [@media(hover:none)]:opacity-100 focus-visible:opacity-100 group-focus-within/ext:opacity-100 group-hover/ext:opacity-100"
                                       variant="ghost"
                                       shape="square"
                                       size="base"

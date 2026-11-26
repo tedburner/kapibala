@@ -102,7 +102,7 @@ wire 1 的 `{major, minMinor, maxMinor}`，新端报价从候选构建的 `PROTO
 |---|---|---|
 | `SERVER_CAPABILITIES` 新增 `'external-session'`，`PROTOCOL_VERSION` 保持 `2` | 不声明 `'external-session'` 的 v0.1.4 客户端照常握手并使用全部本地会话能力；调用 `external/*` 方法需在握手中显式声明 `'external-session'` | 需要消费外部代理 RPC 的客户端在 `ProtocolOffer.capabilities` 中加入 `'external-session'` |
 | `protocol` 子路径新增 `EXTERNAL_EVENT_SCHEMA`、`ExternalWireEvent`、`ExternalSnapshotWire`、`ExternalHarnessWireItem`、`ExternalProbeWire`、`ExternalTemplateWireItem`、`ExternalSessionWireItem`、`ExternalApprovalWireItem`、`ExternalMessageWire`、`ExternalBlockWire`、`validateExternalEvent`，并扩展 `REQUEST_SCHEMAS` / `RESULT_SCHEMAS` / `WireNotification` | 纯新增导出与联合分支；`LocalClient` 自动过滤非 `session/event` 通知，既有会话订阅不受影响 | 订阅外部代理通知请使用新增的 `LocalClient.subscribeExternal(listener)` |
-| `view-model` 子路径新增 `ViewExternalHarness`、`ViewExternalHarnessProbe`、`ViewExternalTemplate`、`ViewExternalSession`、`ViewExternalSessionStatus`、`ViewExternalTransport`、`ViewExternalApproval`、`ViewExternalSnapshot` | 纯新增浏览器安全 DTO（0 Node 依赖） | 无迁移动作；外部会话的消息流与计划直接复用既有 `ViewMessage` 与 `ViewTodoState` |
+| `view-model` 子路径新增 `ViewExternalHarness`、`ViewExternalHarnessProbe`、`ViewExternalTemplate`、`ViewExternalSession`、`ViewExternalSessionStatus`、`ViewExternalTransport`、`ViewExternalApproval`、`ViewExternalSnapshot`、`ViewExternalConfigCategory`、`ViewExternalConfigChoice`、`ViewExternalConfigOption` | 纯新增浏览器安全 DTO（0 Node 依赖） | 无迁移动作；外部会话的消息流与计划直接复用既有 `ViewMessage` 与 `ViewTodoState` |
 | `@kiturone/kapibala-cli` 新增声明模块 `commands/external.d.ts`（`/external` 命令组）与 `local-host/external-wire.d.ts` | 纯新增内部命令与 wire 转换模块 | 无迁移动作 |
 
 ## 1. 盘点口径

@@ -1,4 +1,4 @@
-import { Button, InlineCopyText, Input, InputArea, LayerCard, Switch } from '@cloudflare/kumo';
+import { Button, InlineCopyText, Input, InputArea, Switch } from '@cloudflare/kumo';
 import {
   CheckCircleIcon,
   PlugsConnectedIcon,
@@ -130,25 +130,25 @@ function transportBadgeText(transport: HarnessItem['transport']): string {
 
 function probeBadge(probe?: ProbeResult): { label: string; className: string } {
   if (!probe) {
-    return { label: '未检测', className: 'bg-kumo-recessed text-kumo-subtle' };
+    return { label: '未检测', className: 'border border-kumo-hairline text-kumo-faint' };
   }
   if (probe.status === 'ready') {
     const suffix = probe.version ? ` · ${probe.version}` : '';
-    return { label: `就绪${suffix}`, className: 'bg-kumo-recessed text-kumo-success' };
+    return { label: `就绪${suffix}`, className: 'bg-kumo-tint font-medium text-kumo-success' };
   }
   if (probe.status === 'needs_login') {
-    return { label: '需登录', className: 'bg-kumo-recessed text-kumo-warning' };
+    return { label: '需登录', className: 'bg-kumo-tint font-medium text-kumo-warning' };
   }
   if (probe.status === 'auth_unverified') {
-    return { label: '认证未核验', className: 'bg-kumo-recessed text-kumo-warning' };
+    return { label: '认证未核验', className: 'bg-kumo-tint font-medium text-kumo-warning' };
   }
   if (probe.status === 'not_installed') {
-    return { label: '未安装', className: 'bg-kumo-recessed text-kumo-subtle' };
+    return { label: '未安装', className: 'border border-kumo-hairline text-kumo-subtle' };
   }
   if (probe.status === 'invalid_shim') {
-    return { label: '垫片异常', className: 'bg-kumo-recessed text-kumo-danger' };
+    return { label: '垫片异常', className: 'bg-kumo-tint font-medium text-kumo-danger' };
   }
-  return { label: '握手失败', className: 'bg-kumo-recessed text-kumo-danger' };
+  return { label: '握手失败', className: 'bg-kumo-tint font-medium text-kumo-danger' };
 }
 
 /**
@@ -543,33 +543,46 @@ export function ExternalSettingsPanel({
             直接复用本机已安装的 CLI 工具及其自有登录态，不在 Kapibala 内重复填写订阅密钥。
           </p>
         </div>
-        <div className="space-y-2.5">
+        <div className="divide-y divide-kumo-hairline overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
           {builtinHarnesses.map((item) => {
             const probe = probes[item.id] ?? item.probe;
             const badge = probeBadge(probe);
             const editing = overrideDraft?.id === item.id;
             const commandPreview = [item.command, ...item.args].join(' ');
             return (
-              <LayerCard key={item.id} className="space-y-3 p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
+              <div
+                key={item.id}
+                className="space-y-2.5 px-4 py-3 transition-colors hover:bg-kumo-tint"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium text-kumo-default">{item.name}</span>
-                      <span className="rounded-md bg-kumo-recessed px-2 py-0.5 text-xs text-kumo-subtle">
+                      <span
+                        className={`text-sm font-medium ${
+                          item.enabled ? 'text-kumo-default' : 'text-kumo-subtle'
+                        }`}
+                      >
+                        {item.name}
+                      </span>
+                      <span className="rounded-md bg-kumo-recessed px-1.5 py-0.5 text-2xs text-kumo-subtle">
                         {transportBadgeText(item.transport)}
                       </span>
-                      <span className={`rounded-md px-2 py-0.5 text-xs ${badge.className}`}>
+                      <span className={`rounded-md px-1.5 py-0.5 text-2xs ${badge.className}`}>
                         {badge.label}
                       </span>
                       {item.hasOverride && (
-                        <span className="rounded-md bg-kumo-recessed px-2 py-0.5 text-xs text-kumo-brand">
+                        <span className="rounded-md bg-kumo-tint px-1.5 py-0.5 text-2xs font-medium text-kumo-default">
                           已覆盖配置
                         </span>
                       )}
                     </div>
                     <p
                       className="truncate font-mono text-xs text-kumo-subtle"
-                      title={commandPreview}
+                      title={
+                        item.envFrom.length > 0
+                          ? `${commandPreview} · 透传变量：${item.envFrom.join(', ')}`
+                          : commandPreview
+                      }
                     >
                       {commandPreview}
                       {item.envFrom.length > 0 ? ` · 透传变量：${item.envFrom.join(', ')}` : ''}
@@ -600,6 +613,7 @@ export function ExternalSettingsPanel({
                       配置覆盖
                     </Button>
                     <Switch
+                      variant="neutral"
                       checked={item.enabled}
                       disabled={hostDown || busy}
                       aria-label={`启用 ${item.name}`}
@@ -609,7 +623,7 @@ export function ExternalSettingsPanel({
                 </div>
 
                 {probe && (!probe.available || probe.loginHint || probe.installHint) && (
-                  <div className="space-y-1.5 rounded-lg bg-kumo-recessed px-3 py-2 text-xs">
+                  <div className="space-y-1.5 rounded-lg border border-kumo-hairline bg-kumo-recessed px-3 py-2 text-xs">
                     {probe.reason && (
                       <p className="flex items-start gap-1.5 text-kumo-subtle">
                         <WarningCircleIcon
@@ -735,7 +749,7 @@ export function ExternalSettingsPanel({
                     </div>
                   </div>
                 )}
-              </LayerCard>
+              </div>
             );
           })}
         </div>
@@ -777,8 +791,8 @@ export function ExternalSettingsPanel({
         </div>
 
         {templatesOpen && (
-          <LayerCard className="space-y-2.5 p-4">
-            <div className="flex items-center justify-between">
+          <div className="space-y-3 rounded-xl border border-kumo-line bg-kumo-base p-4">
+            <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-medium text-kumo-subtle">
                 选择社区 ACP 模板（点击自动回填至下方表单，仍可按本机路径修改）
               </span>
@@ -791,11 +805,11 @@ export function ExternalSettingsPanel({
                 关闭模板列表
               </Button>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2.5 sm:grid-cols-2">
               {templates.map((template) => (
                 <div
                   key={template.registryId}
-                  className="flex flex-col justify-between gap-2 rounded-lg border border-kumo-line bg-kumo-base p-3"
+                  className="flex flex-col justify-between gap-2 rounded-lg border border-kumo-hairline bg-kumo-recessed p-3"
                 >
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
@@ -826,11 +840,11 @@ export function ExternalSettingsPanel({
                 </div>
               ))}
             </div>
-          </LayerCard>
+          </div>
         )}
 
         {customDraft && (
-          <LayerCard className="space-y-3 p-4">
+          <div className="space-y-3 rounded-xl border border-kumo-line bg-kumo-base p-4">
             <h4 className="text-sm font-medium text-kumo-default">
               {customDraft.idLocked ? `编辑自定义代理 · ${customDraft.id}` : '新建自定义 ACP 代理'}
             </h4>
@@ -940,7 +954,7 @@ export function ExternalSettingsPanel({
             </div>
 
             {draftProbe && (
-              <div className="rounded-lg bg-kumo-recessed px-3 py-2 text-xs">
+              <div className="rounded-lg border border-kumo-hairline bg-kumo-recessed px-3 py-2 text-xs">
                 {draftProbe.available ? (
                   <p className="flex items-center gap-1.5 text-kumo-success">
                     <CheckCircleIcon size={14} className="shrink-0" />
@@ -994,36 +1008,49 @@ export function ExternalSettingsPanel({
                 保存代理
               </Button>
             </div>
-          </LayerCard>
+          </div>
         )}
 
         {customHarnesses.length === 0 && !customDraft ? (
-          <p className="rounded-lg border border-kumo-line bg-kumo-recessed px-4 py-3 text-xs text-kumo-subtle">
+          <p className="rounded-xl border border-kumo-line bg-kumo-recessed px-4 py-3 text-xs text-kumo-subtle">
             尚未添加自定义 ACP 代理；可点击上方按钮手动配置，或从官方 ACP 目录选用模板。
           </p>
-        ) : (
-          <div className="space-y-2.5">
+        ) : customHarnesses.length > 0 ? (
+          <div className="divide-y divide-kumo-hairline overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
             {customHarnesses.map((item) => {
               const probe = probes[item.id] ?? item.probe;
               const badge = probeBadge(probe);
               const commandPreview = [item.command, ...item.args].join(' ');
               const confirmingDelete = confirmDeleteId === item.id;
               return (
-                <LayerCard key={item.id} className="space-y-2 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
+                <div
+                  key={item.id}
+                  className="space-y-2 px-4 py-3 transition-colors hover:bg-kumo-tint"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="min-w-0 flex-1 space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium text-kumo-default">{item.name}</span>
-                        <code className="rounded bg-kumo-recessed px-1.5 py-0.5 font-mono text-xs text-kumo-subtle">
+                        <span
+                          className={`text-sm font-medium ${
+                            item.enabled ? 'text-kumo-default' : 'text-kumo-subtle'
+                          }`}
+                        >
+                          {item.name}
+                        </span>
+                        <code className="rounded bg-kumo-recessed px-1.5 py-0.5 font-mono text-2xs text-kumo-subtle">
                           {item.id}
                         </code>
-                        <span className={`rounded-md px-2 py-0.5 text-xs ${badge.className}`}>
+                        <span className={`rounded-md px-1.5 py-0.5 text-2xs ${badge.className}`}>
                           {badge.label}
                         </span>
                       </div>
                       <p
                         className="truncate font-mono text-xs text-kumo-subtle"
-                        title={commandPreview}
+                        title={
+                          item.envFrom.length > 0
+                            ? `${commandPreview} · 透传变量：${item.envFrom.join(', ')}`
+                            : commandPreview
+                        }
                       >
                         {commandPreview}
                         {item.envFrom.length > 0 ? ` · 透传变量：${item.envFrom.join(', ')}` : ''}
@@ -1085,6 +1112,7 @@ export function ExternalSettingsPanel({
                         </Button>
                       )}
                       <Switch
+                        variant="neutral"
                         checked={item.enabled}
                         disabled={hostDown || busy}
                         aria-label={`启用 ${item.name}`}
@@ -1095,11 +1123,11 @@ export function ExternalSettingsPanel({
                   {probe?.reason && !probe.available && (
                     <p className="text-xs text-kumo-subtle">{probe.reason}</p>
                   )}
-                </LayerCard>
+                </div>
               );
             })}
           </div>
-        )}
+        ) : null}
       </section>
     </div>
   );

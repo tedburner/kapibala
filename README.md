@@ -64,7 +64,7 @@ npm install @kiturone/kapibala-mcp      # 可选：MCP 协议扩展包（CLI 与
 - **确定性会话与上下文管理**：每个会话保存为独立的 Schema v2 JSONL 因果树（`parentId` / `branchId`），支持回答级无损重试、任意节点分叉（`/branch` / `/fork`）与跨项目全文检索。工具调用强制事务闭合，异常中断后重启只补写 `OUTCOME_UNKNOWN` 占位，绝不静默重放写操作；长对话自动对保护窗口外的旧读取结果先剪裁、再做滚动摘要。
 - **原生多协议与场景路由**：内置 **8 家厂商 / 20 款模型**（DeepSeek、OpenAI、Anthropic、Google Gemini、通义千问、Kimi、智谱、本地 Ollama）并支持自定义网关，同时实现原生 **Anthropic Messages**、**OpenAI Responses** 与 **OpenAI Chat Completions** 兼容层，支持按 `default`、`planning`、`execution`、`fast`、`summary` 角色路由不同模型。
 - **风险分级权限与路径硬禁区**：提供 `Approval`、`Plan`、`Auto`、`FullAccess` 四档模式，内部按「沙箱边界 × 询问策略」两轴裁决。Shell 命令经词法分析划分为 7 类风险（干净的工作区内构建与测试在 `Auto` 下直接放行，未跟踪或已修改脚本绑定内容摘要审批指纹）；`.git/hooks`、`.git/config`、`.env*`、`.envrc` 与 `.kapibala/**` 设为硬禁区，任何工具写入均直接拦截。
-- **多任务委派、跨会话引用与外部监视**：除后台子代理任务树（`spawn_agent`）外，支持创建用户可见、可续聊的独立委派会话（`/delegate` / `send_agent`）；支持把同项目其它会话或分支的消息作为带溯源头的脱敏冻结快照引入当前上下文（`/quote`）；内置会话级外部监视（`watch_start` / `/watches`），监听文件变更或本地端口就绪后落盘背景通知并在空闲时自动续跑。
+- **多任务委派、外部代理工作台与会话监视**：除后台子代理任务树（`spawn_agent`）外，支持可续聊的独立委派会话（`/delegate` / `send_agent`）、跨会话脱敏快照引用（`/quote`）与文件/端口监视（`watch_start` / `/watches`）；宿主层内置零外部 SDK 的**外部代理工作台**（`/external`），通过 `acp`、`claude-cli`、`codex-app-server`、`pi-rpc` 四套驱动直连本机 Claude Code、Codex、Pi、Antigravity、OpenCode 等 CLI 代理并保留有界只读归档。
 - **MCP 与技能体系（支持跨工具导入）**：支持 Stdio 与 Streamable HTTP 双传输 MCP 服务，按服务器配置摘要逐个批准启动并提供 `/prompt` 模板调用；有界 `SkillRegistry` 支持按需加载与 `allowed-tools` 权限收紧；支持从 Claude Code、Codex、Cursor 等外部工具预览并一次性导入技能与 MCP 配置。
 
 ## 交互式 CLI
@@ -88,7 +88,7 @@ kpbl daemon                               # 启动受控本地守护进程（支
 | 模型与权限 | `/model` · `/permissions` | 两步分级切换模型、查看或切换会话权限档位 |
 | 历史与分支 | `/history` · `/resume` · `/branch` · `/fork` | 查看分支树（`--tree`）、跨项目全文检索（`--search`）、切分支或导出新会话 |
 | 上下文复用 | `/quote` · `/context` · `/compact` | 跨会话引用历史片段、查看上下文预算占比、手动触发压缩 |
-| 多代理与监视 | `/delegate` · `/delegations` · `/agents` · `/watches` | 派发可续聊委派会话、观测后台子代理任务树、管理文件/端口监视 |
+| 多代理与监视 | `/delegate` · `/delegations` · `/external` · `/agents` · `/watches` | 派发委派会话、连接外部 CLI 代理、观测后台子代理与文件/端口监视 |
 | 任务与证据 | `/todos` · `/evidence` · `/status` · `/logs` | 查看四态任务清单、聚合会话文件增删行数与来源看板、查看审计日志 |
 | 扩展生态 | `/mcp` · `/prompts` · `/skills` · `/skill` | 管理与导入 MCP 服务、调用受控 Prompt、诊断与导入本地技能 |
 
@@ -98,7 +98,7 @@ kpbl daemon                               # 启动受控本地守护进程（支
 
 - **Streamdown 对话与富内容预览**：支持按需全语言代码高亮、代码块折行开关、沙箱化 HTML/SVG 渲染预览、Mermaid 图表、KaTeX 公式、内联图片与紧凑思考块，千条长会话采用虚拟列表保持流畅滚动。
 - **任务胶囊与右侧信息抽屉**：输入框上方实时展示 `todo_write` 任务进度胶囊与四态清单浮层，底栏常驻工作区、Git 分支与上下文用量；右侧抽屉集成**会话证据看板**（真实持久化的文件增删行数、引用溯源、MCP 调用与委派汇总）、**图片产物自动预览**与**工具差异详情**。
-- **统一配置与资源管理**：与 CLI 读写同一份 `~/.kapibala/` 配置，图形化管理厂商分组模型与连通性探测、项目文件夹信任授权、MCP 服务器增删改与逐服务批准、跨工具技能/MCP 导入抽屉，以及 GitHub Releases 版本检查与 SHA-256 校验下载。
+- **统一配置、外部代理与资源管理**：与 CLI 读写同一份 `~/.kapibala/` 配置，图形化管理厂商分组模型与连通性探测、外部 CLI / ACP 代理启停与会话内联审批、项目文件夹信任授权、MCP 服务器增删改与逐服务批准、跨工具技能/MCP 导入抽屉，以及 GitHub Releases 版本检查与 SHA-256 校验下载。
 
 ```bash
 pnpm dev:desktop     # 桌面端开发模式（热重建，读写本机 ~/.kapibala 配置）
@@ -183,7 +183,7 @@ try {
 |---|---|---|---|
 | `packages/core` | [`@kiturone/kapibala`](https://www.npmjs.com/package/@kiturone/kapibala) | npm 公共包 | Headless 核心：Agent 循环、工具与权限裁决、JSONL 因果会话、压缩、原生多协议 Provider，运行时 0 依赖 |
 | `packages/mcp` | [`@kiturone/kapibala-mcp`](https://www.npmjs.com/package/@kiturone/kapibala-mcp) | npm 公共包 | MCP 客户端插件：Stdio / Streamable HTTP 传输、进程树回收、按源原子上下线与受控 Prompt |
-| `packages/host` | `@kiturone/kapibala-host` | 私有共享层 | 跨端宿主真源：版本化协议契约、0 Node 依赖纯 `ViewModel`、受管会话装配、外部监视与资源导入 |
+| `packages/host` | `@kiturone/kapibala-host` | 私有共享层 | 跨端宿主真源：版本化协议契约、0 Node 依赖纯 `ViewModel`、受管会话装配、外部代理编排、会话监视与资源导入 |
 | `packages/cli` | [`@kiturone/kapibala-cli`](https://www.npmjs.com/package/@kiturone/kapibala-cli) | npm 公共包 | 命令行工具 `kpbl`：交互式 REPL、40+ Slash 命令、冷启动向导、本地守护进程与客户端 SDK 转发出口 |
 | `packages/desktop` | `@kiturone/kapibala-desktop` | GitHub Release | Electron 桌面工作台：Main / Preload / Agent Host / 沙箱 Renderer 隔离，基于 React、Streamdown 与语义化主题构建 |
 
@@ -223,7 +223,7 @@ pnpm dev
 | [模型与协议](docs/models/openai-compatible.md) | [Anthropic 原生](docs/models/anthropic.md)、[OpenAI Responses](docs/models/openai-responses.md)、兼容层与输出预算 |
 | [桌面开发指南](docs/desktop-development.md) | 桌面三进程边界、开发调试与 [未签名测试包发布流程](docs/desktop-release.md) |
 | [SDK 兼容性说明](docs/sdk-compatibility.md) | 公开导出面兼容基线与版本迁移差异登记 |
-| [版本发布与路线图](docs/RELEASES.md) | 历次版本交付明细、验收记录与后续规划（如 `v0.1.5` 第三方 ACP 接入、`v0.1.6` Git Worktree 隔离与文件检查点） |
+| [版本发布与路线图](docs/RELEASES.md) | 历次版本交付明细、验收记录与后续规划（含 `v0.1.5` 外部代理工作台、`v0.1.6` Git Worktree 隔离与 UI 2.0 工作台） |
 
 ## 开源协议
 

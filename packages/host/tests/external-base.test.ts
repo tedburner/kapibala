@@ -297,6 +297,52 @@ describe('resolveExternalCommand', () => {
     expect(resolved.executable).toBe(fs.realpathSync.native(target));
     expect(resolved.usedFallbackDir).toBe(true);
   });
+
+  it('支持官方 Pi Windows 安装器目录回退（~/.pi/agent/bin）与同目录 Node 启动器垫片解包，同时继续拦截 .. 越界脚本', () => {
+    const home = makeTempDir('kpbl-ext-pi-win-');
+    const piBin = path.join(home, '.pi', 'agent', 'bin');
+    const nodeDir = path.join(home, 'nodejs');
+    fs.mkdirSync(piBin, { recursive: true });
+    fs.mkdirSync(nodeDir, { recursive: true });
+    const fakeNodeExe = path.join(nodeDir, 'node.exe');
+    fs.writeFileSync(fakeNodeExe, 'MZ-node-binary');
+    const launcherJs = path.join(piBin, 'pi-launcher.js');
+    fs.writeFileSync(launcherJs, 'console.log("pi launcher");\n');
+    const piCmd = path.join(piBin, 'pi.cmd');
+    fs.writeFileSync(
+      piCmd,
+      '@echo off\r\nset "node=node"\r\n"%node%" "%~dp0pi-launcher.js" %*\r\n',
+      'utf8',
+    );
+
+    const resolved = resolveExternalCommand({
+      command: 'pi',
+      args: ['--mode', 'rpc'],
+      platform: 'win32',
+      envPath: nodeDir,
+      homeDir: home,
+    });
+    expect(resolved.unwrapKind).toBe('cmd-node-script');
+    expect(resolved.executable).toBe(fs.realpathSync.native(fakeNodeExe));
+    expect(resolved.args).toEqual([fs.realpathSync.native(launcherJs), '--mode', 'rpc']);
+    expect(resolved.usedFallbackDir).toBe(true);
+
+    // 尝试通过 %~dp0..\ 越出垫片目录指向父目录脚本时仍须被拦截
+    fs.writeFileSync(path.join(home, '.pi', 'agent', 'escape.js'), 'console.log(1);\n');
+    fs.writeFileSync(
+      path.join(piBin, 'escape.cmd'),
+      '@echo off\r\n"%node%" "%~dp0..\\escape.js" %*\r\n',
+    );
+    expect(() =>
+      resolveExternalCommand({
+        command: 'escape',
+        args: [],
+        platform: 'win32',
+        envPath: `${piBin};${nodeDir}`,
+        homeDir: home,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_UNSUPPORTED_SHIM' }));
+  });
 });
 
 describe('NdjsonChannel', () => {

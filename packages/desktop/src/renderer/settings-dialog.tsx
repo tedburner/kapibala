@@ -1382,6 +1382,7 @@ export function SettingsDialog({
                                 onPick={(tokens) => change('maxOutputTokens', tokens)}
                               />
                               <Switch
+                                variant="neutral"
                                 label="支持思考输出"
                                 checked={draft.supportsThinking ?? false}
                                 disabled={busy}
@@ -1438,6 +1439,7 @@ export function SettingsDialog({
                                 onPick={(tokens) => change('maxOutputTokens', tokens)}
                               />
                               <Switch
+                                variant="neutral"
                                 label="支持思考输出"
                                 checked={draft.supportsThinking ?? false}
                                 disabled={busy}
@@ -1533,7 +1535,10 @@ export function SettingsDialog({
                     />
                   ))}
                 </Tabs.Panel>
-                <Tabs.Panel value="external" className="kapibala-settings-panel">
+                <Tabs.Panel
+                  value="external"
+                  className="kapibala-settings-panel kapibala-external-settings"
+                >
                   <ExternalSettingsPanel
                     active={open && tab === 'external'}
                     workspaceId={workspaceId}
@@ -1637,6 +1642,7 @@ export function SettingsDialog({
                             {editable && (
                               <div className="flex shrink-0 items-center gap-2">
                                 <Switch
+                                  variant="neutral"
                                   label={`启用 ${server.name}`}
                                   checked={server.enabled}
                                   disabled={resBusy}
@@ -1974,6 +1980,7 @@ export function SettingsDialog({
                             </p>
                           </div>
                           <Switch
+                            variant="neutral"
                             label="覆盖同名 MCP 服务器"
                             checked={mcpImportOverwrite}
                             disabled={mcpImportBusy}
@@ -2075,6 +2082,7 @@ export function SettingsDialog({
                                       )}
                                     </span>
                                     <Switch
+                                      variant="neutral"
                                       label={`选择导入 ${candidate.name}`}
                                       checked={mcpImportSelected.has(importKey(candidate))}
                                       disabled={mcpImportBusy}
@@ -2135,6 +2143,7 @@ export function SettingsDialog({
                         </p>
                       </div>
                       <Switch
+                        variant="neutral"
                         label="启用技能功能"
                         checked={resSkills?.enabled ?? true}
                         disabled={resBusy}
@@ -2171,6 +2180,7 @@ export function SettingsDialog({
                           )}
                         </div>
                         <Switch
+                          variant="neutral"
                           label={`启用 ${skill.name}`}
                           checked={!skill.disabled}
                           disabled={resBusy}
@@ -2315,6 +2325,7 @@ export function SettingsDialog({
                                       )}
                                     </span>
                                     <Switch
+                                      variant="neutral"
                                       label={`选择导入 ${candidate.name}`}
                                       checked={importSelected.has(importKey(candidate))}
                                       disabled={importBusy}

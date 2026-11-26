@@ -1,4 +1,4 @@
-import { Button, Combobox, DropdownMenu, InputArea, LayerCard, Popover } from '@cloudflare/kumo';
+import { Button, Combobox, DropdownMenu, InputArea, Popover } from '@cloudflare/kumo';
 import type {
   ViewArtifact,
   ViewExternalApproval,
@@ -16,7 +16,6 @@ import {
   SlidersHorizontalIcon,
   SparkleIcon,
   StopIcon,
-  TerminalWindowIcon,
   WarningCircleIcon,
 } from '@phosphor-icons/react';
 import {
@@ -92,9 +91,9 @@ function ExternalApprovalDeck({
         const remainingSec = Math.max(0, Math.ceil((approval.expiresAt - now) / 1000));
         const expired = remainingSec <= 0;
         return (
-          <LayerCard
+          <div
             key={approval.approvalId}
-            className="space-y-2.5 border border-kumo-line bg-kumo-elevated p-3.5 shadow-md"
+            className="space-y-2.5 rounded-2xl border border-kumo-line border-l-3 border-l-kumo-warning bg-kumo-base p-3.5 shadow-(--kapibala-shadow-composer)"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -108,14 +107,14 @@ function ExternalApprovalDeck({
               </span>
             </div>
             {approval.target && (
-              <pre className="max-h-28 overflow-auto rounded-md bg-kumo-recessed px-2.5 py-1.5 font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere] text-kumo-default">
+              <pre className="max-h-28 overflow-auto rounded-lg border border-kumo-hairline bg-kumo-recessed px-3 py-2 font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere] text-kumo-default">
                 {approval.target}
               </pre>
             )}
             {approval.warning && <p className="text-xs text-kumo-warning">{approval.warning}</p>}
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-0.5">
               <Button
-                className="kapibala-action mr-auto"
+                className="kapibala-action mr-auto text-kumo-subtle"
                 variant="ghost"
                 size="sm"
                 disabled={busy || expired}
@@ -139,7 +138,7 @@ function ExternalApprovalDeck({
                 );
               })}
             </div>
-          </LayerCard>
+          </div>
         );
       })}
     </section>
@@ -397,53 +396,71 @@ export function ExternalSessionView({
   const thoughtOption = snapshot.configOptions?.find((opt) => opt.category === 'thought_level');
   const configSwitchDisabled = activeRun || busy || Boolean(configBusy);
 
+  const hasInteractiveControls = Boolean(
+    session.canContinue && onSetConfig && (modeOption || modelOption || thoughtOption),
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* 顶部外部代理权限与运行边界横幅 */}
-      <div className="flex shrink-0 flex-col gap-1.5 border-b border-kumo-line bg-kumo-recessed px-4 py-2 text-xs">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1 rounded-md bg-kumo-base px-2 py-0.5 font-medium text-kumo-default">
-            <TerminalWindowIcon size={13} className="shrink-0 text-kumo-brand" />
-            {session.harnessName}
-          </span>
-          <span className="rounded-md bg-kumo-base px-1.5 py-0.5 text-kumo-subtle">
-            {transportLabel(session.transport)}
-          </span>
-          {session.modelLabel && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-kumo-base px-2 py-0.5 text-kumo-subtle">
-              <CpuIcon size={12} className="shrink-0" />
-              {session.modelLabel}
+      {/* 顶部外部代理权限与运行边界提示条（顶栏已展示空间名与代理名，此处仅聚焦协议、状态与信任边界，不再重复代理标题） */}
+      <div className="shrink-0 border-b border-kumo-hairline bg-kumo-base px-6 py-1.5 text-xs">
+        <div className="mx-auto flex w-full max-w-[var(--kapibala-content-max)] flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-kumo-subtle">
+            <span className={`inline-flex items-center gap-1.5 font-medium ${badge.className}`}>
+              {activeRun && (
+                <span
+                  className={`size-1.5 rounded-full ${
+                    session.status === 'waiting_approval' || snapshot.approvals.length > 0
+                      ? 'bg-kumo-warning'
+                      : 'bg-(--kapibala-signal)'
+                  }`}
+                  aria-hidden="true"
+                />
+              )}
+              {badge.label}
             </span>
+            <span aria-hidden="true">·</span>
+            <span>{transportLabel(session.transport)}</span>
+            {!hasInteractiveControls && session.modelLabel && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="inline-flex items-center gap-1">
+                  <CpuIcon size={12} className="shrink-0" />
+                  {session.modelLabel}
+                </span>
+              </>
+            )}
+            {!hasInteractiveControls && session.modeLabel && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>模式：{session.modeLabel}</span>
+              </>
+            )}
+            {!hasInteractiveControls && session.thoughtLevelLabel && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>推理：{session.thoughtLevelLabel}</span>
+              </>
+            )}
+            <span className="ml-auto text-kumo-faint">外部代理 · 遵循该工具自有权限与登录态</span>
+          </div>
+          {localBusy && (
+            <p className="flex items-center gap-1.5 text-kumo-warning">
+              <WarningCircleIcon size={14} className="shrink-0" />
+              <span>
+                当前工作区同时有本地会话正在运行；外部代理不共享文件写租约，请留意并发改动冲突。
+              </span>
+            </p>
           )}
-          {session.modeLabel && (
-            <span className="rounded-md bg-kumo-base px-2 py-0.5 text-kumo-subtle">
-              模式：{session.modeLabel}
-            </span>
+          {snapshot.truncatedArchive && (
+            <p className="text-kumo-subtle">该会话历史较长，归档仅保留最近消息快照供只读查阅。</p>
           )}
-          {session.thoughtLevelLabel && (
-            <span className="rounded-md bg-kumo-base px-2 py-0.5 text-kumo-subtle">
-              推理：{session.thoughtLevelLabel}
-            </span>
+          {session.status === 'failed' && session.lastError && snapshot.messages.length === 0 && (
+            <p role="alert" className="text-kumo-danger">
+              运行失败：{session.lastError}
+            </p>
           )}
-          <span className={`font-medium ${badge.className}`}>{badge.label}</span>
-          <span className="ml-auto text-kumo-subtle">外部代理 · 遵循该工具自有权限与登录态</span>
         </div>
-        {localBusy && (
-          <p className="flex items-center gap-1.5 text-kumo-warning">
-            <WarningCircleIcon size={14} className="shrink-0" />
-            <span>
-              当前工作区同时有本地会话正在运行；外部代理不共享文件写租约，请留意并发改动冲突。
-            </span>
-          </p>
-        )}
-        {snapshot.truncatedArchive && (
-          <p className="text-kumo-subtle">该会话历史较长，归档仅保留最近消息快照供只读查阅。</p>
-        )}
-        {session.status === 'failed' && session.lastError && snapshot.messages.length === 0 && (
-          <p role="alert" className="text-kumo-danger">
-            运行失败：{session.lastError}
-          </p>
-        )}
       </div>
 
       {/* 主消息流 */}
@@ -461,21 +478,23 @@ export function ExternalSessionView({
                   ? { id: session.id, phase: 'idle', result: 'failed' }
                   : snapshot.operation
           }
+          hasPendingApproval={snapshot.approvals.length > 0}
           latestErrorNotice={session.lastError}
           onContinue={
             session.canContinue && !activeRun && !busy ? () => onSend('继续', false) : undefined
           }
-          onRetry={() => {}}
           root={workspaceRoot}
           scrollRef={scrollRef}
           onTool={onTool}
           onArtifact={onArtifact}
-          onEvidence={() => {}}
-          onEdit={(text) => {
-            if (!session.canContinue) return;
-            onDraftChange(text);
-            requestAnimationFrame(() => inputRef.current?.focus());
-          }}
+          onEdit={
+            session.canContinue
+              ? (text) => {
+                  onDraftChange(text);
+                  requestAnimationFrame(() => inputRef.current?.focus());
+                }
+              : undefined
+          }
           report={report}
         />
       ) : (
