@@ -683,6 +683,24 @@ const externalSessionStatus = z.enum([
   'ended',
   'failed',
 ]);
+const externalConfigCategory = z.enum(['model', 'mode', 'thought_level']);
+const externalConfigChoice = z
+  .object({
+    value: z.string().min(1).max(256),
+    name: text,
+    description: text.optional(),
+    group: text.optional(),
+  })
+  .strict();
+const externalConfigOption = z
+  .object({
+    id: z.string().min(1).max(128),
+    name: text,
+    category: externalConfigCategory,
+    currentValue: z.string().min(1).max(256).optional(),
+    options: z.array(externalConfigChoice).max(200),
+  })
+  .strict();
 const externalProbe = z
   .object({
     available: z.boolean(),
@@ -700,6 +718,7 @@ const externalProbe = z
     reason: text.optional(),
     loginHint: text.optional(),
     installHint: text.optional(),
+    configOptions: z.array(externalConfigOption).max(16).optional(),
   })
   .strict();
 const externalHarness = z
@@ -715,6 +734,7 @@ const externalHarness = z
     hasOverride: z.boolean(),
     enabled: z.boolean(),
     probe: externalProbe.optional(),
+    cachedConfigOptions: z.array(externalConfigOption).max(16).optional(),
   })
   .strict();
 const externalTemplate = z
@@ -745,6 +765,7 @@ const externalSession = z
     pendingApprovalCount: z.number().int().nonnegative(),
     modelLabel: text.optional(),
     modeLabel: text.optional(),
+    thoughtLevelLabel: text.optional(),
     createdAt: z.number().int().nonnegative(),
     updatedAt: z.number().int().nonnegative(),
     lastError: text.optional(),
@@ -782,6 +803,7 @@ const externalSnapshot = z
     approvals: z.array(externalApproval),
     plan: todos.optional(),
     notices: z.array(notice),
+    configOptions: z.array(externalConfigOption).max(16).optional(),
   })
   .strict();
 
@@ -1067,12 +1089,20 @@ export const PARAMS = {
       harnessId: id,
       title: z.string().max(200).optional(),
       prompt: z.string().max(512_000).optional(),
+      modelId: z.string().min(1).max(256).optional(),
+      modeId: z.string().min(1).max(256).optional(),
+      thoughtLevel: z.string().min(1).max(256).optional(),
     })
     .strict(),
   'external.snapshot': session,
   'external.subscribe': session.extend({ subscriptionId: z.uuid() }),
   'external.unsubscribe': z.object({ subscriptionId: z.uuid() }).strict(),
   'external.prompt': session.extend({ text: z.string().min(1).max(512_000) }),
+  'external.setConfig': session.extend({
+    configId: z.string().min(1).max(128),
+    category: externalConfigCategory,
+    value: z.string().min(1).max(256),
+  }),
   'external.approve': session.extend({
     approvalId: id,
     optionId: id.optional(),
@@ -1241,6 +1271,7 @@ export const RESULTS = {
   'external.subscribe': externalSnapshot,
   'external.unsubscribe': empty,
   'external.prompt': externalSnapshot,
+  'external.setConfig': externalSnapshot,
   'external.approve': empty,
   'external.cancel': empty,
   'external.close': empty,
@@ -1572,6 +1603,7 @@ export type DesktopAPI = {
     subscribe(params: Params<'external.subscribe'>): Promise<Output<'external.subscribe'>>;
     unsubscribe(subscriptionId: string): Promise<void>;
     prompt(params: Params<'external.prompt'>): Promise<Output<'external.prompt'>>;
+    setConfig(params: Params<'external.setConfig'>): Promise<Output<'external.setConfig'>>;
     approve(params: Params<'external.approve'>): Promise<void>;
     cancel(params: Params<'external.cancel'>): Promise<void>;
     close(params: Params<'external.close'>): Promise<void>;

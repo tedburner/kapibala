@@ -556,6 +556,9 @@ export class DesktopHost {
           workspaceRoot: ws.root,
           harnessId: p.harnessId,
           ...(p.title ? { title: p.title } : {}),
+          ...(p.modelId ? { modelId: p.modelId } : {}),
+          ...(p.modeId ? { modeId: p.modeId } : {}),
+          ...(p.thoughtLevel ? { thoughtLevel: p.thoughtLevel } : {}),
           ...(initialPrompt ? { requireIdleWorkspace: true } : {}),
         });
         if (initialPrompt) {
@@ -654,6 +657,21 @@ export class DesktopHost {
         return await this.external.dispatchPrompt({
           sessionId: current.session.id,
           text: p.text,
+          expectedWorkspaceRoot: ws.root,
+        });
+      }
+      case 'external.setConfig': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
+        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+          throw new Error('FORBIDDEN');
+        }
+        return await this.external.setSessionConfig({
+          sessionId: current.session.id,
+          configId: p.configId,
+          category: p.category,
+          value: p.value,
           expectedWorkspaceRoot: ws.root,
         });
       }

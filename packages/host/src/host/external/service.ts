@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type {
   ViewExternalApproval,
+  ViewExternalConfigCategory,
+  ViewExternalConfigOption,
   ViewExternalHarness,
   ViewExternalHarnessProbe,
   ViewExternalSession,
@@ -17,6 +19,11 @@ import { redactViewMessage } from '../public-projection.js';
 import { redactText, sanitizeDisplayText } from '../redaction.js';
 import { normalizeProjectRoot } from '../resource/mcp-approval.js';
 import { isProjectTrusted, loadSettings } from '../settings.js';
+import {
+  deleteHarnessConfigCache,
+  readHarnessConfigCache,
+  saveHarnessConfigCache,
+} from './config-cache.js';
 import {
   type BuiltinHarnessOverride,
   type CustomExternalHarnessInput,
@@ -39,6 +46,7 @@ import { ACP_REGISTRY_TEMPLATES } from './presets.js';
 import { type ExternalSessionRecord, ExternalSessionRegistry } from './registry.js';
 import {
   type ExternalApprovalDecision,
+  type ExternalConfigSelection,
   type ExternalDriverSessionHandle,
   type ExternalEvent,
   type ExternalHarnessDefinition,
@@ -80,6 +88,7 @@ interface LiveSessionSlot {
   readonly projector: ExternalTranscriptProjector;
   readonly approvals: Map<string, LiveApprovalEntry>;
   readonly notices: ViewNotice[];
+  configOptions?: readonly ViewExternalConfigOption[];
   operation?: ViewOperation;
   sequence: number;
   coalesceTimer?: ReturnType<typeof setTimeout>;
@@ -198,8 +207,17 @@ export class ExternalSessionService {
       homeDir: this.homeDir,
       hostEnv: this.options.hostEnv,
     });
+    const configCache = readHarnessConfigCache(this.homeDir);
     const harnesses: ViewExternalHarness[] = resolved.map(({ definition, hasOverride }) => {
       const probe = this.probeCache.get(definition.id);
+      const digest = computeHarnessConfigDigest(definition);
+      const cachedEntry = Object.hasOwn(configCache, definition.id)
+        ? configCache[definition.id]
+        : undefined;
+      const cachedConfigOptions =
+        cachedEntry && cachedEntry.configDigest === digest && cachedEntry.configOptions.length > 0
+          ? cachedEntry.configOptions
+          : undefined;
       return {
         id: definition.id,
         name: definition.name,
@@ -212,6 +230,7 @@ export class ExternalSessionService {
         hasOverride,
         enabled: definition.enabled,
         ...(probe ? { probe } : {}),
+        ...(cachedConfigOptions ? { cachedConfigOptions } : {}),
       };
     });
     return {
@@ -224,6 +243,7 @@ export class ExternalSessionService {
   saveBuiltinOverride(id: string, override: BuiltinHarnessOverride): ViewExternalHarness[] {
     saveBuiltinHarnessOverride(id, override, { homeDir: this.homeDir });
     this.probeCache.delete(id);
+    deleteHarnessConfigCache(this.homeDir, id);
     this.reconcileLiveSlotsForHarness(id);
     this.notifyListChanged();
     return this.listHarnesses().harnesses;
@@ -233,6 +253,7 @@ export class ExternalSessionService {
   resetBuiltinOverride(id: string): ViewExternalHarness[] {
     resetBuiltinHarnessOverride(id, { homeDir: this.homeDir });
     this.probeCache.delete(id);
+    deleteHarnessConfigCache(this.homeDir, id);
     this.reconcileLiveSlotsForHarness(id);
     this.notifyListChanged();
     return this.listHarnesses().harnesses;
@@ -251,6 +272,7 @@ export class ExternalSessionService {
     const trimmedId = entry.id.trim();
     upsertCustomExternalHarness(entry, { homeDir: this.homeDir });
     this.probeCache.delete(trimmedId);
+    deleteHarnessConfigCache(this.homeDir, trimmedId);
     this.reconcileLiveSlotsForHarness(trimmedId);
     this.notifyListChanged();
     return this.listHarnesses().harnesses;
@@ -260,6 +282,7 @@ export class ExternalSessionService {
   deleteCustomHarness(id: string): ViewExternalHarness[] {
     removeCustomExternalHarness(id, { homeDir: this.homeDir });
     this.probeCache.delete(id);
+    deleteHarnessConfigCache(this.homeDir, id);
     this.reconcileLiveSlotsForHarness(id);
     this.notifyListChanged();
     return this.listHarnesses().harnesses;
@@ -326,9 +349,20 @@ export class ExternalSessionService {
         ...(safeReason ? { reason: safeReason } : {}),
         ...(result.loginHint ? { loginHint: result.loginHint } : {}),
         ...(result.installHint ? { installHint: result.installHint } : {}),
+        ...(result.configOptions && result.configOptions.length > 0
+          ? { configOptions: result.configOptions }
+          : {}),
       };
       if (typeof target === 'string' && !this.disposed) {
         this.probeCache.set(def.id, probe);
+        if (result.configOptions && result.configOptions.length > 0) {
+          saveHarnessConfigCache(
+            this.homeDir,
+            def.id,
+            computeHarnessConfigDigest(def),
+            result.configOptions,
+          );
+        }
       }
       return probe;
     } finally {
@@ -404,8 +438,20 @@ export class ExternalSessionService {
     }).find((item) => item.definition.id === record.harnessId)?.definition;
     const secrets = this.collectSecrets(nativeRoot, currentDef);
     const redactFn = (text: string): string => redactText(text, secrets);
+    const viewSession = this.toViewSession(record);
+    const configCache = viewSession.canContinue ? readHarnessConfigCache(this.homeDir) : undefined;
+    const cachedEntry =
+      configCache && Object.hasOwn(configCache, record.harnessId)
+        ? configCache[record.harnessId]
+        : undefined;
+    const cachedOptions =
+      cachedEntry &&
+      cachedEntry.configDigest === record.configDigest &&
+      cachedEntry.configOptions.length > 0
+        ? cachedEntry.configOptions
+        : undefined;
     return {
-      session: this.toViewSession(record),
+      session: viewSession,
       sequence: 0,
       ...(archive?.truncated ? { truncatedArchive: true } : {}),
       messages: archive?.messages
@@ -426,6 +472,7 @@ export class ExternalSessionService {
       notices: archive?.notices
         ? archive.notices.map((n) => ({ ...n, text: redactFn(n.text) }))
         : [],
+      ...(cachedOptions ? { configOptions: cachedOptions } : {}),
     };
   }
 
@@ -437,6 +484,12 @@ export class ExternalSessionService {
       readonly title?: string;
       readonly customTitle?: boolean;
       readonly requireIdleWorkspace?: boolean;
+      /** 可选的新建会话初始模型 ID（缺省走代理自身默认）。 */
+      readonly modelId?: string;
+      /** 可选的新建会话初始模式 ID（缺省走代理自身默认）。 */
+      readonly modeId?: string;
+      /** 可选的新建会话初始推理档位（缺省走代理自身默认）。 */
+      readonly thoughtLevel?: string;
     },
     signal?: AbortSignal,
   ): Promise<ViewExternalSnapshot> {
@@ -461,6 +514,17 @@ export class ExternalSessionService {
     const initialTitle =
       sanitizeDisplayText(redactText(rawTitle, secrets), 120) ?? `${def.name} 任务`;
 
+    const initialConfig: ExternalConfigSelection[] = [];
+    if (input.modelId?.trim()) {
+      initialConfig.push({ category: 'model', value: input.modelId.trim() });
+    }
+    if (input.thoughtLevel?.trim()) {
+      initialConfig.push({ category: 'thought_level', value: input.thoughtLevel.trim() });
+    }
+    if (input.modeId?.trim()) {
+      initialConfig.push({ category: 'mode', value: input.modeId.trim() });
+    }
+
     const initialRecord: ExternalSessionRecord = {
       id,
       harnessId: def.id,
@@ -480,7 +544,130 @@ export class ExternalSessionService {
       def,
       driver,
       secrets,
+      ...(initialConfig.length > 0 ? { initialConfig } : {}),
       signal,
+    });
+    if (!slot.closing) this.armIdleTimer(slot);
+    this.flushSlotImmediate(slot);
+    return this.buildLiveSnapshot(slot);
+  }
+
+  /**
+   * 在空闲态切换外部会话的模型、模式或推理档位。
+   *
+   * 边界与恢复语义：
+   * - 运行中或待审批状态下拒绝切换（`EXTERNAL_SESSION_BUSY`），避免打乱在途请求；
+   * - 若子进程已空闲回收且仍满足可恢复门禁，自动先恢复会话再下发切换命令；
+   * - 切换成功后同步更新展示标签与本地配置目录缓存，并广播给所有订阅方。
+   */
+  async setSessionConfig(
+    input: {
+      readonly sessionId: string;
+      readonly configId: string;
+      readonly category: ViewExternalConfigCategory;
+      readonly value: string;
+      readonly expectedWorkspaceRoot?: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<ViewExternalSnapshot> {
+    if (this.disposed) {
+      throw new ExternalHarnessError('EXTERNAL_ABORTED', '外部会话服务已关闭');
+    }
+    const resolvedId = this.resolveSessionId(input.sessionId, input.expectedWorkspaceRoot);
+    let slot = this.liveSlots.get(resolvedId);
+    if (slot) {
+      const currentDef = this.requireEnabledHarnessDefinition(slot.record.harnessId);
+      if (computeHarnessConfigDigest(currentDef) !== slot.record.configDigest) {
+        await this.closeSession(resolvedId).catch(() => {});
+        slot = undefined;
+      }
+    }
+    if (!slot) {
+      if (this.openingSessions.has(resolvedId)) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_SESSION_BUSY',
+          '当前外部会话正在握手恢复，请稍候再试',
+        );
+      }
+      const record = this.registry.getRecord(resolvedId);
+      if (!record) {
+        throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未找到外部会话 '${resolvedId}'`);
+      }
+      const nativeResumeRoot = this.requireTrustedWorkspace(record.workspaceRoot);
+      if (normalizeProjectRoot(nativeResumeRoot) !== normalizeProjectRoot(record.workspaceRoot)) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_UNTRUSTED_WORKSPACE',
+          `工作区目录物理身份已变更，拒绝恢复外部会话 '${resolvedId}'`,
+        );
+      }
+      this.verifyExpectedWorkspace(record.workspaceRoot, input.expectedWorkspaceRoot);
+      if (record.owner) {
+        throw new ExternalHarnessError('EXTERNAL_SESSION_BUSY', '外部会话由另一个宿主持有');
+      }
+      const def = this.requireEnabledHarnessDefinition(record.harnessId);
+      if (!this.canContinueRecord(record)) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_PROTOCOL_ERROR',
+          '当前为外部代理只读历史归档，无法切换配置',
+        );
+      }
+      this.ensureProcessCapacity();
+      const driver = this.requireDriver(def.transport);
+      slot = await this.spawnAndBindSlot({
+        record,
+        def,
+        driver,
+        resume: true,
+        signal,
+      });
+    } else {
+      this.requireTrustedWorkspace(slot.record.workspaceRoot);
+      this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
+    }
+
+    if (
+      slot.closing ||
+      slot.record.status === 'running' ||
+      slot.record.status === 'waiting_approval' ||
+      slot.record.status === 'cancelling' ||
+      slot.record.status === 'starting'
+    ) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_SESSION_BUSY',
+        '当前外部代理正在运行，请等待本轮结束后再切换配置',
+      );
+    }
+    if (!slot.handle.setConfigOption) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_CONFIG_INVALID',
+        `外部代理 '${slot.record.harnessName}' 暂不支持会话内动态切换配置`,
+      );
+    }
+
+    this.clearSlotTimers(slot);
+    const updated = await slot.handle.setConfigOption(
+      {
+        configId: input.configId,
+        category: input.category,
+        value: input.value,
+      },
+      signal,
+    );
+    if (updated.configOptions && updated.configOptions.length > 0) {
+      slot.configOptions = updated.configOptions;
+      saveHarnessConfigCache(
+        this.homeDir,
+        slot.record.harnessId,
+        slot.record.configDigest,
+        updated.configOptions,
+      );
+    }
+    this.updateSlotRecordSafe(slot, {
+      ...(updated.modelLabel !== undefined ? { modelLabel: updated.modelLabel } : {}),
+      ...(updated.modeLabel !== undefined ? { modeLabel: updated.modeLabel } : {}),
+      ...(updated.thoughtLevelLabel !== undefined
+        ? { thoughtLevelLabel: updated.thoughtLevelLabel }
+        : {}),
     });
     if (!slot.closing) this.armIdleTimer(slot);
     this.flushSlotImmediate(slot);
@@ -964,6 +1151,7 @@ export class ExternalSessionService {
     readonly driver: ExternalHarnessDriver;
     readonly secrets?: readonly string[];
     readonly resume?: boolean;
+    readonly initialConfig?: readonly ExternalConfigSelection[];
     readonly signal?: AbortSignal;
   }): Promise<LiveSessionSlot> {
     if (this.liveSlots.has(params.record.id) || this.openingSessions.has(params.record.id)) {
@@ -1028,6 +1216,9 @@ export class ExternalSessionService {
         ...(params.resume && claimed.nativeSessionId
           ? { nativeSessionId: claimed.nativeSessionId }
           : {}),
+        ...(!params.resume && params.initialConfig?.length
+          ? { initialConfig: params.initialConfig }
+          : {}),
         signal: openingAbort.signal,
         onEvent: (event) => this.handleDriverEvent(slot, event),
       });
@@ -1043,6 +1234,15 @@ export class ExternalSessionService {
         opened.replayedMessages.length > 0
       ) {
         slot.projector.replaceMessages(opened.replayedMessages);
+      }
+      if (opened.configOptions && opened.configOptions.length > 0) {
+        slot.configOptions = opened.configOptions;
+        saveHarnessConfigCache(
+          this.homeDir,
+          params.def.id,
+          params.record.configDigest,
+          opened.configOptions,
+        );
       }
 
       const updatedRecord: ExternalSessionRecord = {
@@ -1063,6 +1263,11 @@ export class ExternalSessionService {
           ? { modeLabel: opened.modeLabel }
           : slot.record.modeLabel
             ? { modeLabel: slot.record.modeLabel }
+            : {}),
+        ...(opened.thoughtLevelLabel
+          ? { thoughtLevelLabel: opened.thoughtLevelLabel }
+          : slot.record.thoughtLevelLabel
+            ? { thoughtLevelLabel: slot.record.thoughtLevelLabel }
             : {}),
         updatedAt: Date.now(),
       };
@@ -1130,11 +1335,21 @@ export class ExternalSessionService {
         return;
       }
       case 'config_updated': {
+        if (event.configOptions && event.configOptions.length > 0) {
+          slot.configOptions = event.configOptions;
+          saveHarnessConfigCache(
+            this.homeDir,
+            slot.record.harnessId,
+            slot.record.configDigest,
+            event.configOptions,
+          );
+        }
         this.updateSlotRecordSafe(slot, {
           ...(event.nativeSessionId ? { nativeSessionId: event.nativeSessionId } : {}),
           ...(event.resumable !== undefined ? { resumable: event.resumable } : {}),
           ...(event.modelLabel ? { modelLabel: event.modelLabel } : {}),
           ...(event.modeLabel ? { modeLabel: event.modeLabel } : {}),
+          ...(event.thoughtLevelLabel ? { thoughtLevelLabel: event.thoughtLevelLabel } : {}),
         });
         this.flushSlotImmediate(slot);
         return;
@@ -1422,6 +1637,9 @@ export class ExternalSessionService {
       approvals: [...slot.approvals.values()].map((a) => a.view),
       ...(slot.projector.getPlan() ? { plan: slot.projector.getPlan() } : {}),
       notices: [...slot.notices],
+      ...(slot.configOptions && slot.configOptions.length > 0
+        ? { configOptions: slot.configOptions }
+        : {}),
     };
   }
 
@@ -1495,6 +1713,7 @@ export class ExternalSessionService {
       pendingApprovalCount: live ? live.approvals.size : 0,
       ...(effective.modelLabel ? { modelLabel: effective.modelLabel } : {}),
       ...(effective.modeLabel ? { modeLabel: effective.modeLabel } : {}),
+      ...(effective.thoughtLevelLabel ? { thoughtLevelLabel: effective.thoughtLevelLabel } : {}),
       createdAt: effective.createdAt,
       updatedAt: effective.updatedAt,
       ...(effective.lastError ? { lastError: effective.lastError } : {}),

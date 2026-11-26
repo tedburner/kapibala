@@ -4,9 +4,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AcpStdioDriver } from '../src/host/external/drivers/acp/acp-driver.js';
-import { resolveAcpFlavor } from '../src/host/external/drivers/acp/flavors.js';
+import {
+  resolveAcpFlavor,
+  resolveOpenCodePreferredConfig,
+} from '../src/host/external/drivers/acp/flavors.js';
 import { ExternalTranscriptProjector } from '../src/host/external/drivers/acp/projector.js';
 import {
+  findAcpConfigOption,
+  normalizeAcpConfigOptions,
   normalizeAcpConfigSummary,
   normalizeAcpPlanUpdate,
 } from '../src/host/external/drivers/acp/tolerance.js';
@@ -127,6 +132,119 @@ describe('ACP Flavor 与线格式宽容层', () => {
       { id: 'ext-todo-1', title: '步骤 A', status: 'completed' },
       { id: 'ext-todo-2', title: '步骤 B', status: 'pending' },
     ]);
+  });
+
+  it('兼容分组 configOptions、旧式 availableModels/availableModes 显示名反查与单项配置更新', () => {
+    const groupedPayload = {
+      configOptions: [
+        {
+          id: 'model',
+          category: 'model',
+          currentValue: 'opencode/deepseek-v4.1-flash-free',
+          options: [
+            {
+              group: 'opencode',
+              name: 'OpenCode',
+              options: [
+                {
+                  value: 'opencode/deepseek-v4.1-flash-free',
+                  name: 'opencode/DeepSeek V4.1 Flash Free',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(normalizeAcpConfigSummary(groupedPayload)).toEqual({
+      modelLabel: 'opencode/DeepSeek V4.1 Flash Free',
+    });
+    const modelOpt = findAcpConfigOption(groupedPayload, 'model');
+    expect(modelOpt?.id).toBe('model');
+    expect(modelOpt?.hasOption('opencode/deepseek-v4.1-flash-free')).toBe(true);
+    expect(modelOpt?.hasOption('opencode/missing')).toBe(false);
+
+    expect(
+      normalizeAcpConfigSummary({
+        models: {
+          currentModelId: 'gemini-4-neon-high',
+          availableModels: [{ modelId: 'gemini-4-neon-high', name: 'Gemini 4 Neon (High)' }],
+        },
+        modes: {
+          currentModeId: 'accept-edits',
+          availableModes: [{ id: 'accept-edits', name: 'Accept edits' }],
+        },
+      }),
+    ).toEqual({
+      modelLabel: 'Gemini 4 Neon (High)',
+      modeLabel: 'Accept edits',
+    });
+
+    expect(
+      normalizeAcpConfigSummary({
+        configId: 'model',
+        currentValue: 'deepseek-reasoner',
+      }),
+    ).toEqual({
+      modelLabel: 'deepseek-reasoner',
+    });
+
+    expect(
+      normalizeAcpConfigSummary({
+        currentModelId: 'qwen-3-coder',
+      }),
+    ).toEqual({
+      modelLabel: 'qwen-3-coder',
+    });
+  });
+
+  it('OpenCode TUI model.json 同步：无显式 opencode.json model 时读取模型与档位，有显式配置时尊重配置文件', () => {
+    const home = makeTempWorkspace('kpbl-opencode-pref-');
+    const cwd = makeTempWorkspace('kpbl-opencode-cwd-');
+    const stateDir = path.join(home, '.local', 'state', 'opencode');
+    const cfgDir = path.join(home, '.config', 'opencode');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(cfgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'model.json'),
+      JSON.stringify({
+        recent: [{ providerID: 'opencode', modelID: 'deepseek-v4.1-flash-free' }],
+        variant: { 'opencode/deepseek-v4.1-flash-free': 'max' },
+      }),
+    );
+    // 含 URL 字符串内 // 的 opencode.json（无 model 字段），不得误判或解析失败。
+    fs.writeFileSync(
+      path.join(cfgDir, 'opencode.json'),
+      JSON.stringify({
+        mcp: { demo: { type: 'remote', url: 'https://example.com/mcp' } },
+      }),
+    );
+
+    expect(
+      resolveOpenCodePreferredConfig({
+        workspaceRoot: cwd,
+        homeDir: home,
+        env: {},
+        platform: 'darwin',
+      }),
+    ).toEqual([
+      { category: 'model', value: 'opencode/deepseek-v4.1-flash-free' },
+      { category: 'thought_level', value: 'max' },
+    ]);
+
+    // 工作区 opencode.jsonc 显式声明了 model（含注释与尾随逗号），此时不得覆盖用户显式配置。
+    fs.writeFileSync(
+      path.join(cwd, 'opencode.jsonc'),
+      '// explicit model\n{ "model": "opencode/big-pickle", }\n',
+    );
+    expect(
+      resolveOpenCodePreferredConfig({
+        workspaceRoot: cwd,
+        homeDir: home,
+        env: {},
+        platform: 'darwin',
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -375,5 +493,87 @@ describe('AcpStdioDriver 真实子进程契约测试', () => {
     expect(projector.getPlan()?.items).toHaveLength(1);
     projector.applyEvent({ type: 'user_delta', text: '回放新轮次', replay: true });
     expect(projector.getPlan()).toBeUndefined();
+  });
+
+  it('OpenCode 新建会话自动通过 session/set_config_option 同步本地 model.json 的模型与推理档位', async () => {
+    const cwd = makeTempWorkspace('kpbl-acp-sync-cwd-');
+    const home = makeTempWorkspace('kpbl-acp-sync-home-');
+    const stateDir = path.join(home, '.local', 'state', 'opencode');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'model.json'),
+      JSON.stringify({
+        recent: [{ providerID: 'opencode', modelID: 'deepseek-v4.1-flash-free' }],
+        variant: { 'opencode/deepseek-v4.1-flash-free': 'max' },
+      }),
+    );
+
+    const driver = new AcpStdioDriver({ homeDir: home, platform: 'darwin' });
+    const textChunks: string[] = [];
+    const opened = await driver.open({
+      def: makeFakeHarness('opencode-model-sync', { flavor: 'opencode' }),
+      workspaceRoot: cwd,
+      onEvent: (event) => {
+        if (event.type === 'text_delta') textChunks.push(event.text);
+      },
+    });
+
+    expect(opened.modelLabel).toBe('opencode/DeepSeek V4.1 Flash Free');
+    expect(opened.modeLabel).toBe('Build');
+
+    await opened.handle.prompt('hello');
+    expect(textChunks.join('')).toBe(
+      'model=opencode/deepseek-v4.1-flash-free;effort=max;mode=build;text=hello',
+    );
+
+    // 会话空闲态支持动态切换模型、推理档位与模式
+    const afterModel = await opened.handle.setConfigOption!({
+      configId: 'model',
+      category: 'model',
+      value: 'opencode/seaglass-alpha-free',
+    });
+    expect(afterModel.modelLabel).toBe('opencode/Seaglass Alpha Free');
+    const afterEffort = await opened.handle.setConfigOption!({
+      configId: 'effort',
+      category: 'thought_level',
+      value: 'high',
+    });
+    expect(afterEffort.thoughtLevelLabel).toBe('High');
+    const afterMode = await opened.handle.setConfigOption!({
+      configId: 'mode',
+      category: 'mode',
+      value: 'plan',
+    });
+    expect(afterMode.modeLabel).toBe('Plan');
+
+    textChunks.length = 0;
+    await opened.handle.prompt('after-switch');
+    expect(textChunks.join('')).toBe(
+      'model=opencode/seaglass-alpha-free;effort=high;mode=plan;text=after-switch',
+    );
+    await opened.handle.close();
+
+    // 新建会话显式指定 modelId 时优先覆盖 OpenCode model.json 默认值，且 inspect 返回完整 configOptions
+    const probed = await driver.inspect(
+      makeFakeHarness('opencode-model-sync', { flavor: 'opencode' }),
+      cwd,
+    );
+    expect(probed.available).toBe(true);
+    expect(
+      probed.configOptions?.find((opt) => opt.category === 'model')?.options.map((o) => o.value),
+    ).toContain('opencode/seaglass-alpha-free');
+
+    const explicitOpen = await driver.open({
+      def: makeFakeHarness('opencode-model-sync', { flavor: 'opencode' }),
+      workspaceRoot: cwd,
+      initialConfig: [{ category: 'model', value: 'opencode/seaglass-alpha-free' }],
+      onEvent: () => {},
+    });
+    expect(explicitOpen.modelLabel).toBe('opencode/Seaglass Alpha Free');
+    expect(explicitOpen.configOptions?.find((opt) => opt.category === 'model')?.currentValue).toBe(
+      'opencode/seaglass-alpha-free',
+    );
+    expect(normalizeAcpConfigOptions({ configOptions: [] })).toEqual([]);
+    await explicitOpen.handle.close();
   });
 });

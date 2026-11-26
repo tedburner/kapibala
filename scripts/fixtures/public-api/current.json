@@ -1084,24 +1084,45 @@
           ]
         },
         {
+          "name": "ViewExternalConfigCategory",
+          "kind": "type",
+          "declarations": [
+            "export type ViewExternalConfigCategory = 'model' | 'mode' | 'thought_level';"
+          ]
+        },
+        {
+          "name": "ViewExternalConfigChoice",
+          "kind": "interface",
+          "declarations": [
+            "export interface ViewExternalConfigChoice {\n    readonly value: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly group?: string;\n}"
+          ]
+        },
+        {
+          "name": "ViewExternalConfigOption",
+          "kind": "interface",
+          "declarations": [
+            "export interface ViewExternalConfigOption {\n    readonly id: string;\n    readonly name: string;\n    readonly category: ViewExternalConfigCategory;\n    readonly currentValue?: string;\n    readonly options: readonly ViewExternalConfigChoice[];\n}"
+          ]
+        },
+        {
           "name": "ViewExternalHarness",
           "kind": "interface",
           "declarations": [
-            "export interface ViewExternalHarness {\n    readonly id: string;\n    readonly name: string;\n    readonly transport: ViewExternalTransport;\n    readonly command: string;\n    readonly args: readonly string[];\n    readonly envFrom: readonly string[];\n    readonly builtin: boolean;\n    readonly registryId?: string;\n    /** 内置代理若存在用户增量路径/参数覆写则为 `true`，用于控制「恢复默认」按钮显隐。 */\n    readonly hasOverride: boolean;\n    readonly enabled: boolean;\n    /** 若刚在设置页执行过连接检测，附带最新探测结论。 */\n    readonly probe?: ViewExternalHarnessProbe;\n}"
+            "export interface ViewExternalHarness {\n    readonly id: string;\n    readonly name: string;\n    readonly transport: ViewExternalTransport;\n    readonly command: string;\n    readonly args: readonly string[];\n    readonly envFrom: readonly string[];\n    readonly builtin: boolean;\n    readonly registryId?: string;\n    /** 内置代理若存在用户增量路径/参数覆写则为 `true`，用于控制「恢复默认」按钮显隐。 */\n    readonly hasOverride: boolean;\n    readonly enabled: boolean;\n    /** 若刚在设置页执行过连接检测，附带最新探测结论。 */\n    readonly probe?: ViewExternalHarnessProbe;\n    /** 本地按配置指纹缓存的可用模型/模式/推理档位清单，供新对话选择器零冷启展示。 */\n    readonly cachedConfigOptions?: readonly ViewExternalConfigOption[];\n}"
           ]
         },
         {
           "name": "ViewExternalHarnessProbe",
           "kind": "interface",
           "declarations": [
-            "export interface ViewExternalHarnessProbe {\n    readonly available: boolean;\n    readonly status: 'ready' | 'auth_unverified' | 'needs_login' | 'not_installed' | 'invalid_shim' | 'handshake_failed';\n    readonly agentName?: string;\n    readonly version?: string;\n    readonly loadSupported: boolean;\n    readonly reason?: string;\n    readonly loginHint?: string;\n    readonly installHint?: string;\n}"
+            "export interface ViewExternalHarnessProbe {\n    readonly available: boolean;\n    readonly status: 'ready' | 'auth_unverified' | 'needs_login' | 'not_installed' | 'invalid_shim' | 'handshake_failed';\n    readonly agentName?: string;\n    readonly version?: string;\n    readonly loadSupported: boolean;\n    readonly reason?: string;\n    readonly loginHint?: string;\n    readonly installHint?: string;\n    /** 探测握手附带拿到的可选模型/模式/推理档位目录。 */\n    readonly configOptions?: readonly ViewExternalConfigOption[];\n}"
           ]
         },
         {
           "name": "ViewExternalSession",
           "kind": "interface",
           "declarations": [
-            "export interface ViewExternalSession {\n    readonly id: string;\n    readonly harnessId: string;\n    readonly harnessName: string;\n    readonly transport: ViewExternalTransport;\n    readonly workspaceRoot: string;\n    readonly title: string;\n    readonly status: ViewExternalSessionStatus;\n    /** 会话创建时记录的底层恢复能力事实。 */\n    readonly resumable: boolean;\n    /** 综合当前进程在场性、`resumable` 门禁与 `configDigest` 连续性后的实时可续聊判定；`false` 时输入框锁定为只读归档态。 */\n    readonly canContinue: boolean;\n    /** 本地 `snapshots/` 是否存有可供离线阅读的展示归档。 */\n    readonly hasArchive: boolean;\n    readonly pendingApprovalCount: number;\n    readonly modelLabel?: string;\n    readonly modeLabel?: string;\n    readonly createdAt: number;\n    readonly updatedAt: number;\n    readonly lastError?: string;\n}"
+            "export interface ViewExternalSession {\n    readonly id: string;\n    readonly harnessId: string;\n    readonly harnessName: string;\n    readonly transport: ViewExternalTransport;\n    readonly workspaceRoot: string;\n    readonly title: string;\n    readonly status: ViewExternalSessionStatus;\n    /** 会话创建时记录的底层恢复能力事实。 */\n    readonly resumable: boolean;\n    /** 综合当前进程在场性、`resumable` 门禁与 `configDigest` 连续性后的实时可续聊判定；`false` 时输入框锁定为只读归档态。 */\n    readonly canContinue: boolean;\n    /** 本地 `snapshots/` 是否存有可供离线阅读的展示归档。 */\n    readonly hasArchive: boolean;\n    readonly pendingApprovalCount: number;\n    readonly modelLabel?: string;\n    readonly modeLabel?: string;\n    readonly thoughtLevelLabel?: string;\n    readonly createdAt: number;\n    readonly updatedAt: number;\n    readonly lastError?: string;\n}"
           ]
         },
         {
@@ -1115,7 +1136,7 @@
           "name": "ViewExternalSnapshot",
           "kind": "interface",
           "declarations": [
-            "export interface ViewExternalSnapshot {\n    readonly session: ViewExternalSession;\n    readonly sequence: number;\n    /** 若实时投影或历史只读归档因超过条数或单帧 680KiB 安全预算发生过裁剪则为 `true`。 */\n    readonly truncatedArchive?: boolean;\n    readonly messages: readonly ViewMessage[];\n    readonly operation?: ViewOperation;\n    readonly approvals: readonly ViewExternalApproval[];\n    readonly plan?: ViewTodoState;\n    readonly notices: readonly ViewNotice[];\n}"
+            "export interface ViewExternalSnapshot {\n    readonly session: ViewExternalSession;\n    readonly sequence: number;\n    /** 若实时投影或历史只读归档因超过条数或单帧 680KiB 安全预算发生过裁剪则为 `true`。 */\n    readonly truncatedArchive?: boolean;\n    readonly messages: readonly ViewMessage[];\n    readonly operation?: ViewOperation;\n    readonly approvals: readonly ViewExternalApproval[];\n    readonly plan?: ViewTodoState;\n    readonly notices: readonly ViewNotice[];\n    /** 当前会话实时可切换的模型、模式与推理档位目录（仅当底层代理提供时存在）。 */\n    readonly configOptions?: readonly ViewExternalConfigOption[];\n}"
           ]
         },
         {

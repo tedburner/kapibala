@@ -9,6 +9,7 @@ import {
 } from '@cloudflare/kumo';
 import brandMark from '@kapibala-assets/icon.svg';
 import {
+  type ViewExternalConfigCategory,
   type ViewMessage,
   type ViewNotice,
   selectMessages,
@@ -42,7 +43,7 @@ import {
 import { flushSync } from 'react-dom';
 import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
 import { collectViewArtifacts, latestViewArtifact } from './artifact-model.js';
-import { ComposerModelPicker } from './composer-model-picker.js';
+import { ComposerModelPicker, type SelectedHarnessChoice } from './composer-model-picker.js';
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
 import { ExternalSessionView } from './external-session-view.js';
 import { rankFileMatches } from './file-completion.js';
@@ -68,12 +69,12 @@ import { WorkspaceSidebar, runtimeLabel } from './workspace-sidebar.js';
 
 type Opened = Output<'session.open'>;
 type Catalog = Output<'settings.read'>;
-/** 输入框只依赖代理的稳定标识和显示名称，命令配置始终由宿主解析。 */
+/** 输入框依赖代理的稳定标识、显示名称与本地缓存的可选模型目录，命令配置始终由宿主解析。 */
 type HarnessEntry = Pick<
   Output<'external.harnesses'>['harnesses'][number],
-  'id' | 'name' | 'transport'
+  'id' | 'name' | 'transport' | 'cachedConfigOptions'
 >;
-type HarnessChoice = Pick<HarnessEntry, 'id' | 'name'>;
+type HarnessChoice = SelectedHarnessChoice;
 const api: DesktopAPI = window.kapibala;
 const client = new ViewClient(api);
 const scopeOf = (opened: Opened) => ({
@@ -238,6 +239,8 @@ export function App() {
     failed?: true;
   }>();
   const [pendingHarness, setPendingHarness] = useState<HarnessChoice>();
+  const [refreshingHarnessId, setRefreshingHarnessId] = useState<string>();
+  const [externalConfigBusy, setExternalConfigBusy] = useState(false);
   const [pendingExternalDelete, setPendingExternalDelete] = useState<{
     space: Workspace;
     id: string;
@@ -338,6 +341,25 @@ export function App() {
   const selectedHarnessAvailable = availableHarnesses.some(
     (item) => item.id === composerHarness?.id,
   );
+  const reloadHarnessCatalog = useCallback(async (targetWorkspaceId: string | undefined) => {
+    if (!targetWorkspaceId) return;
+    try {
+      const { harnesses } = await api.external.harnesses(targetWorkspaceId);
+      setHarnessCatalog({
+        workspaceId: targetWorkspaceId,
+        choices: harnesses
+          .filter((item) => item.enabled)
+          .map(({ id, name, transport, cachedConfigOptions }) => ({
+            id,
+            name,
+            transport,
+            ...(cachedConfigOptions ? { cachedConfigOptions } : {}),
+          })),
+      });
+    } catch {
+      setHarnessCatalog({ workspaceId: targetWorkspaceId, choices: [], failed: true });
+    }
+  }, []);
   // 切换空间或离开设置时重新读取，忽略上一空间或设置打开前尚未返回的结果。
   useEffect(() => {
     if (!trustedWorkspaceId || ui.settingsOpen) return;
@@ -350,7 +372,12 @@ export function App() {
             workspaceId: trustedWorkspaceId,
             choices: harnesses
               .filter((item) => item.enabled)
-              .map(({ id, name, transport }) => ({ id, name, transport })),
+              .map(({ id, name, transport, cachedConfigOptions }) => ({
+                id,
+                name,
+                transport,
+                ...(cachedConfigOptions ? { cachedConfigOptions } : {}),
+              })),
           });
       })
       .catch(() => {
@@ -361,6 +388,33 @@ export function App() {
       cancelled = true;
     };
   }, [trustedWorkspaceId, ui.settingsOpen]);
+  const refreshHarnessModels = useCallback(
+    async (harnessId: string) => {
+      if (!trustedWorkspaceId) return;
+      setRefreshingHarnessId(harnessId);
+      setError('');
+      try {
+        const probe = await api.external.testHarness({
+          id: harnessId,
+          workspaceId: trustedWorkspaceId,
+        });
+        await reloadHarnessCatalog(trustedWorkspaceId);
+        if (!probe.available) {
+          report(
+            probe.reason ||
+              (probe.loginHint
+                ? `需要先登录：${probe.loginHint}`
+                : '未能读取该外部代理的模型列表。'),
+          );
+        }
+      } catch (reason) {
+        report(failure(reason));
+      } finally {
+        setRefreshingHarnessId((currentId) => (currentId === harnessId ? undefined : currentId));
+      }
+    },
+    [trustedWorkspaceId, reloadHarnessCatalog],
+  );
   // 新对话只校验当前选择的执行入口；外部代理使用自有凭证，不依赖本地模型配置。
   // 已打开会话沿用运行事实门控，不因收尾状态重复触发任务。
   const canSend = opened
@@ -877,6 +931,34 @@ export function App() {
     setExternalToasts((prev) => prev.filter((item) => item.sessionId !== sessionId));
     await refreshExternalList(space.id);
   }
+  async function setExternalSessionConfig(change: {
+    readonly configId: string;
+    readonly category: ViewExternalConfigCategory;
+    readonly value: string;
+  }) {
+    const cur = activeExternalRef.current;
+    if (!cur || busy || externalConfigBusy) return;
+    setExternalConfigBusy(true);
+    setError('');
+    try {
+      const snapshot = await api.external.setConfig({
+        workspaceId: cur.workspaceId,
+        sessionId: cur.sessionId,
+        configId: change.configId,
+        category: change.category,
+        value: change.value,
+      });
+      setActiveExternal((prev) =>
+        prev && prev.sessionId === cur.sessionId ? { ...prev, snapshot } : prev,
+      );
+      await refreshExternalList(cur.workspaceId);
+      await reloadHarnessCatalog(cur.workspaceId);
+    } catch (reason) {
+      report(failure(reason));
+    } finally {
+      setExternalConfigBusy(false);
+    }
+  }
   async function sendExternalPrompt(text: string, clearDraft = true) {
     const cur = activeExternalRef.current;
     const trimmed = text.trim();
@@ -1103,6 +1185,7 @@ export function App() {
       if (!selectedHarnessAvailable) return;
       const targetSpace = workspace;
       const targetHarnessId = composerHarness.id;
+      const targetModelId = composerHarness.modelId;
       const navSnapshotBefore = externalNavGen.current;
       await act(async () => {
         // 宿主原子承接首轮：先验工作区并发，启动失败时保留草稿，接受后再订阅消息流。
@@ -1110,9 +1193,11 @@ export function App() {
           workspaceId: targetSpace.id,
           harnessId: targetHarnessId,
           prompt: input,
+          ...(targetModelId ? { modelId: targetModelId } : {}),
         });
         rememberPrompt(input);
         rememberPrompt(input, `ext:${targetSpace.id}:${snapshot.session.id}`);
+        await reloadHarnessCatalog(targetSpace.id);
         if (
           current.current?.id === targetSpace.id &&
           externalNavGen.current === navSnapshotBefore
@@ -1850,8 +1935,10 @@ export function App() {
                 harness={composerHarness}
                 disabled={busy}
                 harnessesFailed={currentHarnessCatalog?.failed}
+                refreshingHarnessId={refreshingHarnessId}
                 onModel={chooseModel}
                 onHarness={setPendingHarness}
+                onRefreshHarnessModels={(id) => void refreshHarnessModels(id)}
                 onSettings={() => ui.settings(true)}
                 onExternalSettings={() => {
                   setSettingsInitialTab('external');
@@ -2161,6 +2248,7 @@ export function App() {
                 ui.drafts[`ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`] ?? ''
               }
               busy={busy}
+              configBusy={externalConfigBusy}
               localBusy={localWorkspaceBusy}
               wide={wide}
               detailsOpen={Boolean(details)}
@@ -2179,6 +2267,7 @@ export function App() {
                   event.currentTarget,
                 );
               }}
+              onSetConfig={(change) => void setExternalSessionConfig(change)}
               onSend={(text, clearDraft) => void sendExternalPrompt(text, clearDraft)}
               onCancel={() => void cancelExternal()}
               onApprove={(approvalId, optionId, cancel) =>

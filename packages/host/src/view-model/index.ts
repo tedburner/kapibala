@@ -44,6 +44,9 @@ export type {
 } from './types.js';
 export type {
   ViewExternalApproval,
+  ViewExternalConfigCategory,
+  ViewExternalConfigChoice,
+  ViewExternalConfigOption,
   ViewExternalHarness,
   ViewExternalHarnessProbe,
   ViewExternalSession,

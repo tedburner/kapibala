@@ -1,11 +1,17 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import type { ViewTool } from '../../../../view-model/index.js';
+import type {
+  ViewExternalConfigCategory,
+  ViewExternalConfigOption,
+  ViewTool,
+} from '../../../../view-model/index.js';
 import { buildExternalLaunchEnv } from '../../env.js';
 import { NdjsonChannel } from '../../ndjson-channel.js';
 import { ExternalProcessSupervisor, resolveExternalCommand } from '../../process.js';
 import {
   type ExternalApprovalDecision,
+  type ExternalConfigSelection,
   type ExternalDriverOpenResult,
   type ExternalDriverSessionHandle,
   type ExternalEvent,
@@ -13,19 +19,25 @@ import {
   type ExternalHarnessDriver,
   ExternalHarnessError,
   type ExternalInspectResult,
+  type ExternalSetConfigResult,
   type ExternalTurnResult,
   isValidNativeSessionId,
 } from '../../types.js';
 import { type AcpHarnessFlavor, isAcpAuthRequiredError, resolveAcpFlavor } from './flavors.js';
 import { ExternalTranscriptProjector } from './projector.js';
 import {
+  LEGACY_ACP_MODEL_CONFIG_ID,
+  LEGACY_ACP_MODE_CONFIG_ID,
   extractAcpChunkText,
+  normalizeAcpConfigOptions,
   normalizeAcpConfigSummary,
   normalizeAcpInitializeResult,
   normalizeAcpPermissionRequest,
   normalizeAcpPlanUpdate,
   normalizeAcpToolUpdate,
   normalizeAcpUsage,
+  patchAcpConfigOptions,
+  summarizeAcpConfigOptions,
 } from './tolerance.js';
 
 /** 设置页「检测连接」默认超时（20 秒；兼容 Oh My Pi 等首次初始化模型/扩展耗时约 12 秒的代理）。 */
@@ -184,10 +196,10 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       });
 
       const authMethodId = pickAuthMethodId(flavor, init.authMethods);
+      let probeNewRes: unknown;
       if (authMethodId || init.authMethods.length > 0) {
         // 惰性认证探测：对声明了 authMethods 的代理（如 Antigravity / Gemini / TRAE / OMP）先试调 session/new 核验既有登录态，
         // 避免盲目触发交互式浏览器 OAuth 弹窗；仅当报未鉴权且存在首选静默认证方法时才降级尝试 authenticate。
-        let probeNewRes: unknown;
         try {
           probeNewRes = await channel.request(
             'session/new',
@@ -251,6 +263,35 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
             ...(flavor.loginHint ? { loginHint: flavor.loginHint } : {}),
           };
         }
+      } else if (flavor.id !== 'dsh') {
+        // 对未声明 authMethods 的 ACP 代理也尝试一次非破坏性 session/new 以顺带采集可用模型与模式目录；
+        // 仅在命中未鉴权错误时标 needs_login，其余失败静默忽略不影响握手就绪判定。
+        try {
+          probeNewRes = await channel.request(
+            'session/new',
+            { cwd, mcpServers: [] },
+            { timeoutMs: Math.min(remainingBudgetMs(), 8_000), signal },
+          );
+        } catch (probeErr) {
+          const probeRpcCode =
+            probeErr &&
+            typeof probeErr === 'object' &&
+            typeof (probeErr as { rpcCode?: unknown }).rpcCode === 'number'
+              ? (probeErr as { rpcCode: number }).rpcCode
+              : undefined;
+          const probeMsg = probeErr instanceof Error ? probeErr.message : String(probeErr);
+          if (isAcpAuthRequiredError(`${probeMsg} ${proc.getStderrTail()}`, probeRpcCode)) {
+            return {
+              available: false,
+              ...(init.agentName ? { agentName: init.agentName } : {}),
+              ...(init.version ? { version: init.version } : {}),
+              loadSupported: Boolean(init.loadMethod),
+              status: 'needs_login',
+              reason: '已完成协议握手，但尚未完成登录鉴权',
+              ...(flavor.loginHint ? { loginHint: flavor.loginHint } : {}),
+            };
+          }
+        }
       }
 
       if (flavor.id === 'dsh' && !authMethodId) {
@@ -265,12 +306,15 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         };
       }
 
+      const configOptions = probeNewRes ? normalizeAcpConfigOptions(probeNewRes) : [];
+
       return {
         available: true,
         ...(init.agentName ? { agentName: init.agentName } : {}),
         ...(init.version ? { version: init.version } : {}),
         loadSupported: Boolean(init.loadMethod),
         status: 'ready',
+        ...(configOptions.length > 0 ? { configOptions } : {}),
       };
     } catch (err) {
       if (err instanceof ExternalHarnessError) {
@@ -332,6 +376,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
     def: ExternalHarnessDefinition;
     workspaceRoot: string;
     nativeSessionId?: string;
+    initialConfig?: readonly ExternalConfigSelection[];
     onEvent: (event: ExternalEvent) => void;
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult> {
@@ -374,6 +419,9 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
     let boundSessionId: string | undefined = input.nativeSessionId?.trim();
     let replayingLoad = false;
     let replayProjector: ExternalTranscriptProjector | undefined;
+    let notifiedConfig: { modelLabel?: string; modeLabel?: string; thoughtLevelLabel?: string } =
+      {};
+    let currentConfigOptions: ViewExternalConfigOption[] = [];
     let activeTurnState:
       | {
           cancelled: boolean;
@@ -490,10 +538,46 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
             break;
           }
           case 'config_option_update':
-          case 'current_mode_update': {
-            const cfg = normalizeAcpConfigSummary(update);
-            if (cfg.modelLabel || cfg.modeLabel) {
-              emitOrCapture({ type: 'config_updated', ...cfg });
+          case 'config_options_update':
+          case 'current_mode_update':
+          case 'current_model_update': {
+            if (currentConfigOptions.length > 0 || Array.isArray(update.configOptions)) {
+              currentConfigOptions = patchAcpConfigOptions(currentConfigOptions, update);
+            }
+            const cfgFromOpts = summarizeAcpConfigOptions(currentConfigOptions);
+            const cfgRaw = normalizeAcpConfigSummary(update);
+            const mergedCfg = {
+              ...(cfgRaw.modelLabel
+                ? { modelLabel: cfgRaw.modelLabel }
+                : cfgFromOpts.modelLabel
+                  ? { modelLabel: cfgFromOpts.modelLabel }
+                  : {}),
+              ...(cfgRaw.modeLabel
+                ? { modeLabel: cfgRaw.modeLabel }
+                : cfgFromOpts.modeLabel
+                  ? { modeLabel: cfgFromOpts.modeLabel }
+                  : {}),
+              ...(cfgRaw.thoughtLevelLabel
+                ? { thoughtLevelLabel: cfgRaw.thoughtLevelLabel }
+                : cfgFromOpts.thoughtLevelLabel
+                  ? { thoughtLevelLabel: cfgFromOpts.thoughtLevelLabel }
+                  : {}),
+            };
+            if (
+              mergedCfg.modelLabel ||
+              mergedCfg.modeLabel ||
+              mergedCfg.thoughtLevelLabel ||
+              currentConfigOptions.length > 0
+            ) {
+              notifiedConfig = {
+                ...notifiedConfig,
+                ...mergedCfg,
+              };
+              emitOrCapture({
+                type: 'config_updated',
+                ...mergedCfg,
+                ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
+              });
             }
             break;
           }
@@ -700,7 +784,170 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         sessionResultRaw = await openOrLoadSession();
       }
 
-      const configSummary = normalizeAcpConfigSummary(sessionResultRaw);
+      currentConfigOptions = normalizeAcpConfigOptions(sessionResultRaw);
+
+      /** 统一向对端提交单项配置切换（优先标准 `session/set_config_option`，旧式回退 `session/set_model` / `session/set_mode`）。 */
+      const applyConfigChange = async (
+        change: {
+          readonly configId?: string;
+          readonly category: ViewExternalConfigCategory;
+          readonly value: string;
+        },
+        reqSignal?: AbortSignal,
+      ): Promise<ExternalSetConfigResult> => {
+        if (!boundSessionId) {
+          throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', '外部会话尚未绑定 sessionId');
+        }
+        const opt =
+          (change.configId
+            ? currentConfigOptions.find((item) => item.id === change.configId)
+            : undefined) ?? currentConfigOptions.find((item) => item.category === change.category);
+        if (!opt) {
+          throw new ExternalHarnessError(
+            'EXTERNAL_CONFIG_INVALID',
+            `外部代理 '${def.name}' 不支持切换该配置项`,
+          );
+        }
+        const trimmedVal = change.value.trim();
+        if (!opt.options.some((choice) => choice.value === trimmedVal)) {
+          throw new ExternalHarnessError(
+            'EXTERNAL_CONFIG_INVALID',
+            `外部代理 '${def.name}' 当前无可用选项 '${trimmedVal}'，请刷新模型列表后重试`,
+          );
+        }
+        const reqTimeout = Math.min(handshakeTimeoutMs, 10_000);
+        let updatedRaw: unknown;
+        if (opt.id === LEGACY_ACP_MODEL_CONFIG_ID) {
+          updatedRaw = await channel.request(
+            'session/set_model',
+            { sessionId: boundSessionId, modelId: trimmedVal },
+            { timeoutMs: reqTimeout, signal: reqSignal },
+          );
+        } else if (opt.id === LEGACY_ACP_MODE_CONFIG_ID) {
+          updatedRaw = await channel.request(
+            'session/set_mode',
+            { sessionId: boundSessionId, modeId: trimmedVal },
+            { timeoutMs: reqTimeout, signal: reqSignal },
+          );
+        } else {
+          updatedRaw = await channel.request(
+            'session/set_config_option',
+            { sessionId: boundSessionId, configId: opt.id, value: trimmedVal },
+            { timeoutMs: reqTimeout, signal: reqSignal },
+          );
+        }
+
+        if (Array.isArray(asRecord(updatedRaw)?.configOptions)) {
+          const prevObj = asRecord(sessionResultRaw);
+          sessionResultRaw = prevObj ? { ...prevObj, ...(asRecord(updatedRaw) ?? {}) } : updatedRaw;
+          currentConfigOptions = normalizeAcpConfigOptions(sessionResultRaw);
+        } else {
+          currentConfigOptions = currentConfigOptions.map((item) =>
+            item.id === opt.id ? { ...item, currentValue: trimmedVal } : item,
+          );
+        }
+        const nextSummary = summarizeAcpConfigOptions(currentConfigOptions);
+        return {
+          ...nextSummary,
+          ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
+        };
+      };
+
+      // 仅在新建会话（非 session/load 恢复）时套用初始配置：
+      // 1) 用户在选择器显式指定的模型/模式/推理档位优先，覆盖方言默认同步（例如 OpenCode model.json）；
+      // 2) 未显式指定时保持方言默认同步，失败静默回退；显式指定失败时报错提示，避免静默跑错模型。
+      if (!input.nativeSessionId && boundSessionId) {
+        const explicitItems = input.initialConfig ?? [];
+        const hasExplicitModel = explicitItems.some((item) => item.category === 'model');
+        const flavorDefaults =
+          flavor.resolveInitialConfigOverrides?.({
+            workspaceRoot: nativeWorkspaceRoot,
+            homeDir: this.options.homeDir ?? os.homedir(),
+            env: launchEnv.env,
+            platform: this.options.platform ?? process.platform,
+          }) ?? [];
+
+        const planned = new Map<
+          ViewExternalConfigCategory,
+          { readonly value: string; readonly explicit: boolean }
+        >();
+        for (const defItem of flavorDefaults) {
+          if (
+            hasExplicitModel &&
+            (defItem.category === 'model' || defItem.category === 'thought_level')
+          ) {
+            continue;
+          }
+          planned.set(defItem.category, { value: defItem.value, explicit: false });
+        }
+        for (const expItem of explicitItems) {
+          if (expItem.value.trim()) {
+            planned.set(expItem.category, { value: expItem.value.trim(), explicit: true });
+          }
+        }
+
+        const applyOrder: readonly ViewExternalConfigCategory[] = [
+          'model',
+          'thought_level',
+          'mode',
+        ];
+        for (const category of applyOrder) {
+          const target = planned.get(category);
+          if (!target) continue;
+          const opt = currentConfigOptions.find((item) => item.category === category);
+          if (!opt) {
+            if (target.explicit) {
+              throw new ExternalHarnessError(
+                'EXTERNAL_CONFIG_INVALID',
+                `外部代理 '${def.name}' 不支持在建会话时指定该配置项`,
+              );
+            }
+            continue;
+          }
+          if (opt.currentValue === target.value) continue;
+          if (!opt.options.some((choice) => choice.value === target.value)) {
+            if (target.explicit) {
+              throw new ExternalHarnessError(
+                'EXTERNAL_CONFIG_INVALID',
+                `外部代理 '${def.name}' 当前无可用选项 '${target.value}'，请刷新模型列表后重试`,
+              );
+            }
+            continue;
+          }
+          try {
+            await applyConfigChange({ configId: opt.id, category, value: target.value }, signal);
+          } catch (cfgErr) {
+            if (target.explicit) throw cfgErr;
+            /* 方言默认同步失败时保留 session/new 默认配置，不阻断启动 */
+          }
+        }
+      }
+
+      const rpcConfigSummary = normalizeAcpConfigSummary(sessionResultRaw);
+      const optConfigSummary = summarizeAcpConfigOptions(currentConfigOptions);
+      const configSummary = {
+        ...(optConfigSummary.modelLabel
+          ? { modelLabel: optConfigSummary.modelLabel }
+          : rpcConfigSummary.modelLabel
+            ? { modelLabel: rpcConfigSummary.modelLabel }
+            : notifiedConfig.modelLabel
+              ? { modelLabel: notifiedConfig.modelLabel }
+              : {}),
+        ...(optConfigSummary.modeLabel
+          ? { modeLabel: optConfigSummary.modeLabel }
+          : rpcConfigSummary.modeLabel
+            ? { modeLabel: rpcConfigSummary.modeLabel }
+            : notifiedConfig.modeLabel
+              ? { modeLabel: notifiedConfig.modeLabel }
+              : {}),
+        ...(optConfigSummary.thoughtLevelLabel
+          ? { thoughtLevelLabel: optConfigSummary.thoughtLevelLabel }
+          : rpcConfigSummary.thoughtLevelLabel
+            ? { thoughtLevelLabel: rpcConfigSummary.thoughtLevelLabel }
+            : notifiedConfig.thoughtLevelLabel
+              ? { thoughtLevelLabel: notifiedConfig.thoughtLevelLabel }
+              : {}),
+      };
       const validBoundId = isValidNativeSessionId(boundSessionId) ? boundSessionId : undefined;
       const resumable = Boolean(validBoundId && init.loadMethod && flavor.verifiedResumable);
 
@@ -856,6 +1103,22 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
             activeTurnState = undefined;
           }
         },
+        setConfigOption: async (req, reqSignal): Promise<ExternalSetConfigResult> => {
+          if (activeTurnState) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_SESSION_BUSY',
+              '当前外部代理正在运行，请等待本轮结束后再切换配置',
+            );
+          }
+          if (proc.isClosed) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_PROTOCOL_ERROR',
+              '外部代理子进程已结束，无法切换配置',
+              { processTerminated: true },
+            );
+          }
+          return await applyConfigChange(req, reqSignal);
+        },
         cancel: async (): Promise<void> => {
           if (activeTurnState) {
             await activeTurnState.cancel();
@@ -876,6 +1139,10 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         resumable,
         ...(configSummary.modelLabel ? { modelLabel: configSummary.modelLabel } : {}),
         ...(configSummary.modeLabel ? { modeLabel: configSummary.modeLabel } : {}),
+        ...(configSummary.thoughtLevelLabel
+          ? { thoughtLevelLabel: configSummary.thoughtLevelLabel }
+          : {}),
+        ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
         ...(replayedMessages && replayedMessages.length > 0 ? { replayedMessages } : {}),
       };
     } catch (err) {

@@ -81,7 +81,9 @@ export class RpcEndpoint {
     const timeoutMs =
       method === 'app.downloadUpdate'
         ? LIMITS.downloadTimeout
-        : method === 'external.open' || method === 'external.prompt'
+        : method === 'external.open' ||
+            method === 'external.prompt' ||
+            method === 'external.setConfig'
           ? LIMITS.externalOpenTimeout
           : LIMITS.requestTimeout;
     return new Promise<Output<M>>((resolve, reject) => {

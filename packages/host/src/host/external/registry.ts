@@ -47,6 +47,7 @@ export interface ExternalSessionRecord {
   readonly resumable: boolean;
   readonly modelLabel?: string;
   readonly modeLabel?: string;
+  readonly thoughtLevelLabel?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly lastError?: string;

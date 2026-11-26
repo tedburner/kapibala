@@ -1,10 +1,26 @@
+import fs from 'node:fs';
 import path from 'node:path';
+
+/** `session/new` 之后按方言同步初始配置项的上下文。 */
+export interface AcpInitialConfigContext {
+  readonly workspaceRoot: string;
+  readonly homeDir: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly platform: NodeJS.Platform;
+}
+
+/** 单条待经由标准 ACP `session/set_config_option` 同步的初始配置期望。 */
+export interface AcpInitialConfigOverride {
+  readonly category: 'model' | 'thought_level';
+  readonly value: string;
+}
 
 /**
  * 单个 ACP 外部代理方言（Flavor）的极薄声明式钩子。
  *
  * 设计取舍（对齐 Orca `AcpDialect` + T3 Code `makeAcpAdapterV2`）：
- * 状态机、行通道与消息投影全量共享，方言层仅承载认证方法偏好、误配诊断、登录/安装提示与持久身份背书。
+ * 状态机、行通道与消息投影全量共享，方言层仅承载认证方法偏好、误配诊断、登录/安装提示、
+ * 初始配置对齐（如 OpenCode TUI 模型状态同步）与持久身份背书。
  */
 export interface AcpHarnessFlavor {
   readonly id: string;
@@ -20,6 +36,167 @@ export interface AcpHarnessFlavor {
     command: string,
     args: readonly string[],
   ) => string | undefined;
+  /**
+   * 仅在新建会话（`session/new`）完成后触发的可选配置同步钩子。
+   * 驱动会逐项核验期望值确实存在于对端 `configOptions` 候选中，再调用 `session/set_config_option` 生效。
+   */
+  readonly resolveInitialConfigOverrides?: (
+    context: AcpInitialConfigContext,
+  ) => readonly AcpInitialConfigOverride[] | undefined;
+}
+
+/** 解析 JSON / JSONC 文本（跳过字符串字面量内的 `//` 与 `/*`，并容忍尾随逗号）；失败返回 `undefined`。 */
+function parseJsoncLoose(raw: string): Record<string, unknown> | undefined {
+  let stripped = '';
+  let inString = false;
+  let escaped = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    const next = raw[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') {
+        inLineComment = false;
+        stripped += ch;
+      }
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false;
+        i += 1;
+      }
+      continue;
+    }
+    if (inString) {
+      stripped += ch;
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      stripped += ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      inBlockComment = true;
+      i += 1;
+      continue;
+    }
+    stripped += ch;
+  }
+
+  const withoutTrailingCommas = stripped.replace(/,\s*([}\]])/g, '$1');
+  try {
+    const parsed: unknown = JSON.parse(withoutTrailingCommas);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasExplicitOpenCodeConfigModel(context: AcpInitialConfigContext): boolean {
+  if (context.env.OPENCODE_CONFIG_CONTENT) {
+    const inlineCfg = parseJsoncLoose(context.env.OPENCODE_CONFIG_CONTENT);
+    if (typeof inlineCfg?.model === 'string' && inlineCfg.model.trim()) {
+      return true;
+    }
+  }
+  const xdgConfigHome = context.env.XDG_CONFIG_HOME?.trim();
+  const globalConfigDir = xdgConfigHome
+    ? path.join(xdgConfigHome, 'opencode')
+    : path.join(context.homeDir, '.config', 'opencode');
+  const candidates = [
+    context.env.OPENCODE_CONFIG?.trim() || undefined,
+    path.join(context.workspaceRoot, 'opencode.json'),
+    path.join(context.workspaceRoot, 'opencode.jsonc'),
+    path.join(context.workspaceRoot, '.opencode', 'opencode.json'),
+    path.join(context.workspaceRoot, '.opencode', 'opencode.jsonc'),
+    path.join(globalConfigDir, 'opencode.json'),
+    path.join(globalConfigDir, 'opencode.jsonc'),
+  ].filter((p): p is string => Boolean(p));
+
+  for (const filePath of candidates) {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const parsed = parseJsoncLoose(content);
+      if (typeof parsed?.model === 'string' && parsed.model.trim()) {
+        return true;
+      }
+    } catch {
+      /* 配置文件不存在或不可读时继续检查下一候选 */
+    }
+  }
+  return false;
+}
+
+/**
+ * 读取 OpenCode TUI 最近选用的模型与推理档位（`model.json`）。
+ *
+ * 背景与边界：
+ * - OpenCode TUI 切换模型时只写 `$XDG_STATE_HOME/opencode/model.json`（默认 `~/.local/state/opencode/model.json`），
+ *   不写 `opencode.json`；而 `opencode acp` 的 `session/new` 只读 `opencode.json` 的 `model` 字段，缺省时退回到任意默认模型（如 `opencode/big-pickle`）；
+ * - 若工作区或全局 `opencode.json(c)` / `OPENCODE_CONFIG_CONTENT` 已显式指定 `model`，此处返回 `undefined`，完全尊重配置文件优先；
+ * - 文件缺失、损坏或无有效 `recent[0]` 时静默返回 `undefined`，不阻断会话启动。
+ */
+export function resolveOpenCodePreferredConfig(
+  context: AcpInitialConfigContext,
+): readonly AcpInitialConfigOverride[] | undefined {
+  if (hasExplicitOpenCodeConfigModel(context)) return undefined;
+
+  const xdgStateHome = context.env.XDG_STATE_HOME?.trim();
+  const localAppData =
+    context.platform === 'win32'
+      ? (context.env.LOCALAPPDATA ?? context.env.LocalAppData)?.trim()
+      : undefined;
+  const statePaths = [
+    xdgStateHome ? path.join(xdgStateHome, 'opencode', 'model.json') : undefined,
+    path.join(context.homeDir, '.local', 'state', 'opencode', 'model.json'),
+    localAppData ? path.join(localAppData, 'opencode', 'model.json') : undefined,
+  ].filter((p): p is string => Boolean(p));
+
+  for (const statePath of statePaths) {
+    try {
+      const parsed = parseJsoncLoose(fs.readFileSync(statePath, 'utf8'));
+      if (!parsed || !Array.isArray(parsed.recent) || parsed.recent.length === 0) continue;
+      const top = parsed.recent[0];
+      if (!top || typeof top !== 'object' || Array.isArray(top)) continue;
+      const rec = top as Record<string, unknown>;
+      const providerID = typeof rec.providerID === 'string' ? rec.providerID.trim() : '';
+      const modelID = typeof rec.modelID === 'string' ? rec.modelID.trim() : '';
+      if (!providerID || !modelID) continue;
+
+      const model = `${providerID}/${modelID}`;
+      const overrides: AcpInitialConfigOverride[] = [{ category: 'model', value: model }];
+      const variants =
+        parsed.variant && typeof parsed.variant === 'object' && !Array.isArray(parsed.variant)
+          ? (parsed.variant as Record<string, unknown>)
+          : undefined;
+      const variant = variants?.[model];
+      if (typeof variant === 'string' && variant.trim()) {
+        overrides.push({ category: 'thought_level', value: variant.trim() });
+      }
+      return overrides;
+    } catch {
+      /* 状态文件不存在或损坏时静默回退下一候选 */
+    }
+  }
+  return undefined;
 }
 
 const FLAVORS: Readonly<Record<string, AcpHarnessFlavor>> = {
@@ -41,6 +218,7 @@ const FLAVORS: Readonly<Record<string, AcpHarnessFlavor>> = {
     installHint: 'npm install -g opencode-ai',
     misconfiguredCommandHint: (_cmd, args) =>
       args.includes('acp') ? undefined : 'OpenCode 需传入子命令 "acp"（即 opencode acp）',
+    resolveInitialConfigOverrides: resolveOpenCodePreferredConfig,
   },
   dsh: {
     id: 'dsh',

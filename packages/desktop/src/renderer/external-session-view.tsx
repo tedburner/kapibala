@@ -1,13 +1,20 @@
-import { Button, InputArea, LayerCard } from '@cloudflare/kumo';
+import { Button, Combobox, DropdownMenu, InputArea, LayerCard, Popover } from '@cloudflare/kumo';
 import type {
   ViewArtifact,
   ViewExternalApproval,
+  ViewExternalConfigCategory,
+  ViewExternalConfigOption,
   ViewExternalSnapshot,
 } from '@kiturone/kapibala-host/view-model';
 import {
   ArrowUpIcon,
+  CaretDownIcon,
+  CheckIcon,
   CpuIcon,
+  MagnifyingGlassIcon,
   ShieldWarningIcon,
+  SlidersHorizontalIcon,
+  SparkleIcon,
   StopIcon,
   TerminalWindowIcon,
   WarningCircleIcon,
@@ -139,6 +146,183 @@ function ExternalApprovalDeck({
   );
 }
 
+/** 外部会话内可搜索的模型选择浮层，支持数十条 ACP 候选模型快速筛选切换。 */
+function ExternalModelSelector({
+  option,
+  fallbackLabel,
+  disabled,
+  onSelect,
+}: {
+  readonly option: ViewExternalConfigOption;
+  readonly fallbackLabel?: string;
+  readonly disabled: boolean;
+  readonly onSelect: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const currentChoice = option.options.find((item) => item.value === option.currentValue);
+  const triggerLabel = currentChoice?.name ?? fallbackLabel ?? option.currentValue ?? '选择模型';
+  const filtered = option.options.filter((item) => {
+    if (terms.length === 0) return true;
+    const hay =
+      `${item.name} ${item.value} ${item.group ?? ''} ${item.description ?? ''}`.toLowerCase();
+    return terms.every((term) => hay.includes(term));
+  });
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (next) setQuery('');
+        setOpen(next);
+      }}
+    >
+      <Popover.Trigger
+        render={
+          <Button
+            className="kapibala-action kapibala-chip max-w-56"
+            variant="ghost"
+            size="sm"
+            disabled={disabled}
+            aria-label={`外部会话模型：${triggerLabel}`}
+          >
+            <CpuIcon size={14} className="shrink-0 text-kumo-subtle" />
+            <span className="min-w-0 truncate">{triggerLabel}</span>
+            <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
+          </Button>
+        }
+      />
+      <Popover.Portal>
+        <Popover.Positioner side="top" align="start" sideOffset={8} collisionPadding={12}>
+          <Popover.Popup
+            aria-label="切换外部代理模型"
+            className="max-h-(--available-height) w-[min(24rem,var(--available-width))] overflow-y-auto rounded-xl px-0 py-0 shadow-lg motion-reduce:transition-none"
+          >
+            <Combobox
+              inline
+              items={filtered}
+              filter={null}
+              inputValue={query}
+              onInputValueChange={setQuery}
+              itemToStringLabel={(item) => item.name}
+              value={currentChoice ?? null}
+              isItemEqualToValue={(first, second) => first.value === second.value}
+              autoHighlight
+              onValueChange={(item) => {
+                if (!item || item.value === option.currentValue) {
+                  setOpen(false);
+                  return;
+                }
+                setOpen(false);
+                onSelect(item.value);
+              }}
+            >
+              {option.options.length > 6 && (
+                <div className="relative border-b border-kumo-line px-3 py-2">
+                  <MagnifyingGlassIcon
+                    className="pointer-events-none absolute top-1/2 left-5 -translate-y-1/2 text-kumo-subtle"
+                    size={14}
+                    aria-hidden="true"
+                  />
+                  <Combobox.Input
+                    aria-label="搜索外部代理模型"
+                    placeholder="搜索模型…"
+                    className="m-0 rounded-md bg-kumo-recessed pl-7 text-sm"
+                  />
+                </div>
+              )}
+              <Combobox.List className="max-h-72 py-1.5">
+                {(item: ViewExternalConfigOption['options'][number]) => (
+                  <Combobox.Item
+                    key={item.value}
+                    value={item}
+                    aria-label={item.name}
+                    className="grid-cols-[minmax(0,1fr)_16px] text-sm"
+                  >
+                    <span className="block truncate font-medium">{item.name}</span>
+                    {(item.group || item.description) && (
+                      <span className="block truncate text-xs text-kumo-subtle">
+                        {item.group ?? item.description}
+                      </span>
+                    )}
+                  </Combobox.Item>
+                )}
+              </Combobox.List>
+              <Combobox.Empty className="py-4">没有匹配的模型</Combobox.Empty>
+            </Combobox>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover>
+  );
+}
+
+/** 外部会话内的模式或推理档位下拉选择器。 */
+function ExternalOptionMenu({
+  option,
+  fallbackLabel,
+  disabled,
+  onSelect,
+}: {
+  readonly option: ViewExternalConfigOption;
+  readonly fallbackLabel?: string;
+  readonly disabled: boolean;
+  readonly onSelect: (value: string) => void;
+}) {
+  const currentChoice = option.options.find((item) => item.value === option.currentValue);
+  const currentLabel = currentChoice?.name ?? fallbackLabel ?? option.currentValue ?? option.name;
+  const isThought = option.category === 'thought_level';
+  const ariaPrefix = isThought ? '外部会话推理档位' : '外部会话模式';
+
+  return (
+    <DropdownMenu>
+      <DropdownMenu.Trigger
+        render={
+          <Button
+            className="kapibala-action kapibala-chip max-w-44"
+            variant="ghost"
+            size="sm"
+            disabled={disabled}
+            aria-label={`${ariaPrefix}：${currentLabel}`}
+          >
+            {isThought ? (
+              <SparkleIcon size={14} className="shrink-0 text-kumo-subtle" />
+            ) : (
+              <SlidersHorizontalIcon size={14} className="shrink-0 text-kumo-subtle" />
+            )}
+            <span className="min-w-0 truncate">
+              {isThought ? `推理：${currentLabel}` : currentLabel}
+            </span>
+            <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
+          </Button>
+        }
+      />
+      <DropdownMenu.Content className="max-h-[min(20rem,var(--available-height))]">
+        <DropdownMenu.Group>
+          <DropdownMenu.Label>{isThought ? '推理档位' : '会话模式'}</DropdownMenu.Label>
+          {option.options.map((choice) => (
+            <DropdownMenu.Item
+              key={choice.value}
+              onClick={() => {
+                if (choice.value !== option.currentValue) onSelect(choice.value);
+              }}
+            >
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="truncate">{choice.name}</span>
+                {choice.description && (
+                  <span className="truncate text-xs text-kumo-subtle">{choice.description}</span>
+                )}
+              </span>
+              {choice.value === option.currentValue && <CheckIcon size={14} />}
+            </DropdownMenu.Item>
+          ))}
+        </DropdownMenu.Group>
+      </DropdownMenu.Content>
+    </DropdownMenu>
+  );
+}
+
 /**
  * 外部代理会话工作台主视图。
  *
@@ -153,12 +337,14 @@ export function ExternalSessionView({
   snapshot,
   draft,
   busy,
+  configBusy,
   localBusy,
   wide,
   detailsOpen,
   scrollRef,
   onDraftChange,
   onHistoryKeyDown,
+  onSetConfig,
   onSend,
   onCancel,
   onApprove,
@@ -172,6 +358,8 @@ export function ExternalSessionView({
   readonly snapshot: ViewExternalSnapshot;
   readonly draft: string;
   readonly busy: boolean;
+  /** 外部会话正在切换模型/模式/推理档位时为 true。 */
+  readonly configBusy?: boolean;
   /** 同一工作区是否有本地会话正在运行；为 true 时展示并发无写租约覆盖提醒。 */
   readonly localBusy: boolean;
   readonly wide: boolean;
@@ -180,6 +368,12 @@ export function ExternalSessionView({
   readonly onDraftChange: (value: string) => void;
   /** 外部会话输入区 ↑/↓ 历史问句召回回调；返回 true 表示按键已消费。 */
   readonly onHistoryKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
+  /** 会话空闲态切换模型、模式或推理档位回调。 */
+  readonly onSetConfig?: (input: {
+    readonly configId: string;
+    readonly category: ViewExternalConfigCategory;
+    readonly value: string;
+  }) => void;
   readonly onSend: (text: string, clearDraft?: boolean) => void;
   readonly onCancel: () => void;
   readonly onApprove: (approvalId: string, optionId?: string, cancel?: boolean) => void;
@@ -196,7 +390,12 @@ export function ExternalSessionView({
     session.status === 'waiting_approval' ||
     session.status === 'cancelling';
   const badge = statusBadge(session.status);
-  const canSend = session.canContinue && !activeRun && !busy && Boolean(draft.trim());
+  const canSend =
+    session.canContinue && !activeRun && !busy && !configBusy && Boolean(draft.trim());
+  const modeOption = snapshot.configOptions?.find((opt) => opt.category === 'mode');
+  const modelOption = snapshot.configOptions?.find((opt) => opt.category === 'model');
+  const thoughtOption = snapshot.configOptions?.find((opt) => opt.category === 'thought_level');
+  const configSwitchDisabled = activeRun || busy || Boolean(configBusy);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -219,6 +418,11 @@ export function ExternalSessionView({
           {session.modeLabel && (
             <span className="rounded-md bg-kumo-base px-2 py-0.5 text-kumo-subtle">
               模式：{session.modeLabel}
+            </span>
+          )}
+          {session.thoughtLevelLabel && (
+            <span className="rounded-md bg-kumo-base px-2 py-0.5 text-kumo-subtle">
+              推理：{session.thoughtLevelLabel}
             </span>
           )}
           <span className={`font-medium ${badge.className}`}>{badge.label}</span>
@@ -319,10 +523,61 @@ export function ExternalSessionView({
               }}
             />
             <div className="flex items-center justify-between gap-2 pt-1">
-              <div className="flex min-w-0 items-center gap-2 text-xs text-kumo-subtle">
-                {workspaceName && <span className="truncate">{workspaceName}</span>}
-                <span>·</span>
-                <span className="truncate">{session.harnessName}</span>
+              <div className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-kumo-subtle">
+                {workspaceName && <span className="truncate px-1">{workspaceName}</span>}
+                {session.canContinue &&
+                onSetConfig &&
+                (modeOption || modelOption || thoughtOption) ? (
+                  <>
+                    {modeOption && modeOption.options.length > 0 && (
+                      <ExternalOptionMenu
+                        option={modeOption}
+                        fallbackLabel={session.modeLabel}
+                        disabled={configSwitchDisabled}
+                        onSelect={(value) =>
+                          onSetConfig({
+                            configId: modeOption.id,
+                            category: 'mode',
+                            value,
+                          })
+                        }
+                      />
+                    )}
+                    {modelOption && modelOption.options.length > 0 && (
+                      <ExternalModelSelector
+                        option={modelOption}
+                        fallbackLabel={session.modelLabel}
+                        disabled={configSwitchDisabled}
+                        onSelect={(value) =>
+                          onSetConfig({
+                            configId: modelOption.id,
+                            category: 'model',
+                            value,
+                          })
+                        }
+                      />
+                    )}
+                    {thoughtOption && thoughtOption.options.length > 0 && (
+                      <ExternalOptionMenu
+                        option={thoughtOption}
+                        fallbackLabel={session.thoughtLevelLabel}
+                        disabled={configSwitchDisabled}
+                        onSelect={(value) =>
+                          onSetConfig({
+                            configId: thoughtOption.id,
+                            category: 'thought_level',
+                            value,
+                          })
+                        }
+                      />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <span>·</span>
+                    <span className="truncate">{session.harnessName}</span>
+                  </>
+                )}
                 {!session.canContinue && (
                   <Button
                     className="kapibala-action"

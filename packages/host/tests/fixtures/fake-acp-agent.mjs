@@ -40,6 +40,51 @@ if (mode === 'tui-flood') {
   let authenticated = mode !== 'agy-auth-ok' && mode !== 'agy-auth-fail';
   let activePromptId = null;
   let fsProbeErrorCode = null;
+  let currentModel = mode === 'opencode-model-sync' ? 'opencode/big-pickle' : 'deepseek-chat';
+  let currentEffort = 'default';
+  let currentMode = 'build';
+
+  const buildModelSyncConfigOptions = () => [
+    {
+      id: 'model',
+      category: 'model',
+      currentValue: currentModel,
+      options: [
+        { value: 'opencode/big-pickle', name: 'opencode/Big Pickle' },
+        {
+          value: 'opencode/deepseek-v4.1-flash-free',
+          name: 'opencode/DeepSeek V4.1 Flash Free',
+        },
+        {
+          value: 'opencode/seaglass-alpha-free',
+          name: 'opencode/Seaglass Alpha Free',
+        },
+      ],
+    },
+    ...(currentModel !== 'opencode/big-pickle'
+      ? [
+          {
+            id: 'effort',
+            category: 'thought_level',
+            currentValue: currentEffort,
+            options: [
+              { value: 'default', name: 'Default' },
+              { value: 'high', name: 'High' },
+              { value: 'max', name: 'Max' },
+            ],
+          },
+        ]
+      : []),
+    {
+      id: 'mode',
+      category: 'mode',
+      currentValue: currentMode,
+      options: [
+        { value: 'build', name: 'Build' },
+        { value: 'plan', name: 'Plan' },
+      ],
+    },
+  ];
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -192,6 +237,17 @@ if (mode === 'tui-flood') {
         });
         return;
       }
+      if (mode === 'opencode-model-sync') {
+        send({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            sessionId: 'ses_sync_1',
+            configOptions: buildModelSyncConfigOptions(),
+          },
+        });
+        return;
+      }
       send({
         jsonrpc: '2.0',
         id: msg.id,
@@ -213,6 +269,30 @@ if (mode === 'tui-flood') {
             },
           ],
         },
+      });
+      return;
+    }
+
+    if (msg.method === 'session/set_config_option') {
+      if (mode === 'opencode-model-sync') {
+        if (msg.params?.configId === 'model' && typeof msg.params?.value === 'string') {
+          currentModel = msg.params.value;
+        } else if (msg.params?.configId === 'effort' && typeof msg.params?.value === 'string') {
+          currentEffort = msg.params.value;
+        } else if (msg.params?.configId === 'mode' && typeof msg.params?.value === 'string') {
+          currentMode = msg.params.value;
+        }
+        send({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { configOptions: buildModelSyncConfigOptions() },
+        });
+        return;
+      }
+      send({
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: { code: -32601, message: 'Method not found' },
       });
       return;
     }
@@ -429,7 +509,13 @@ if (mode === 'tui-flood') {
           sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: `收到:${text}` },
+            content: {
+              type: 'text',
+              text:
+                mode === 'opencode-model-sync'
+                  ? `model=${currentModel};effort=${currentEffort};mode=${currentMode};text=${text}`
+                  : `收到:${text}`,
+            },
           },
         },
       });

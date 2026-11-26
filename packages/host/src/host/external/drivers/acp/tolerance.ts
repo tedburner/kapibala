@@ -1,4 +1,7 @@
 import type {
+  ViewExternalConfigCategory,
+  ViewExternalConfigChoice,
+  ViewExternalConfigOption,
   ViewTodoItem,
   ViewTodoStatus,
   ViewTool,
@@ -72,18 +75,365 @@ export function normalizeAcpInitializeResult(raw: unknown): NormalizedAcpInitial
   };
 }
 
+/** 旧式 ACP（仅提供 `models.availableModels`）的合成配置 ID，驱动据此改调 `session/set_model`。 */
+export const LEGACY_ACP_MODEL_CONFIG_ID = '__legacy_model__';
+/** 旧式 ACP（仅提供 `modes.availableModes`）的合成配置 ID，驱动据此改调 `session/set_mode`。 */
+export const LEGACY_ACP_MODE_CONFIG_ID = '__legacy_mode__';
+/** 单个配置项最多保留的候选数量，防止异常巨大的目录击穿单帧快照预算。 */
+const MAX_CONFIG_CHOICES = 200;
+
+/** 在平铺或分组（`SessionConfigSelectGroup`）的 ACP `options` 数组中查找指定 `value` 对应的候选项。 */
+function findConfigOptionChoice(
+  options: unknown,
+  value: string,
+): { readonly value: string; readonly name: string } | undefined {
+  if (!Array.isArray(options)) return undefined;
+  for (const entry of options) {
+    const rec = asRecord(entry);
+    if (!rec) continue;
+    if (rec.value === value) {
+      return {
+        value,
+        name: typeof rec.name === 'string' && rec.name.trim() ? rec.name : value,
+      };
+    }
+    if (Array.isArray(rec.options)) {
+      const nested = findConfigOptionChoice(rec.options, value);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+function flattenConfigChoices(
+  options: unknown,
+  groupName?: string,
+  out: ViewExternalConfigChoice[] = [],
+  seen = new Set<string>(),
+): ViewExternalConfigChoice[] {
+  if (!Array.isArray(options)) return out;
+  for (const entry of options) {
+    if (out.length >= MAX_CONFIG_CHOICES) break;
+    const rec = asRecord(entry);
+    if (!rec) continue;
+    if (Array.isArray(rec.options)) {
+      const nextGroup =
+        typeof rec.name === 'string' && rec.name.trim()
+          ? sanitizeDisplayText(rec.name, 48)
+          : typeof rec.group === 'string' && rec.group.trim()
+            ? sanitizeDisplayText(rec.group, 48)
+            : groupName;
+      flattenConfigChoices(rec.options, nextGroup, out, seen);
+      continue;
+    }
+    if (typeof rec.value !== 'string' || !rec.value.trim()) continue;
+    const value = rec.value.trim().slice(0, 256);
+    if (seen.has(value)) continue;
+    seen.add(value);
+    const rawName = typeof rec.name === 'string' && rec.name.trim() ? rec.name : value;
+    const name = sanitizeDisplayText(redactCommonSecrets(rawName), 80) ?? value;
+    const description =
+      typeof rec.description === 'string' && rec.description.trim()
+        ? sanitizeDisplayText(redactCommonSecrets(rec.description), 160)
+        : undefined;
+    out.push({
+      value,
+      name,
+      ...(description ? { description } : {}),
+      ...(groupName ? { group: groupName } : {}),
+    });
+  }
+  return out;
+}
+
+function resolveOptionCategory(
+  id: string,
+  category: string,
+): ViewExternalConfigCategory | undefined {
+  const lowerCat = category.toLowerCase();
+  const lowerId = id.toLowerCase();
+  if (lowerCat === 'model' || lowerId === 'model') return 'model';
+  if (lowerCat === 'mode' || lowerId === 'mode') return 'mode';
+  if (lowerCat === 'thought_level' || lowerId === 'thought_level' || lowerId === 'effort') {
+    return 'thought_level';
+  }
+  return undefined;
+}
+
+function defaultCategoryName(category: ViewExternalConfigCategory): string {
+  if (category === 'model') return '模型';
+  if (category === 'mode') return '模式';
+  return '推理档位';
+}
+
 /**
- * 从 `session/new`、`session/load` 或 `config_option_update` 载荷中提取只读模型与模式展示名。
+ * 将 ACP `session/new`、`session/load` 或 `session/set_config_option` 返回的可选配置项归一化为只读展示目录。
  *
- * 宽容策略（对齐 Cindy）：单个损坏配置项独立跳过，同时兼容新式 `configOptions[]` 与旧式 `models` / `modes` 字段。
+ * 兼容策略：优先读取标准 `configOptions[]`（支持平铺与分组选项），缺失时自动回退旧式
+ * `models.availableModels` 与 `modes.availableModes`；每个类别至多保留首个有效配置项且候选封顶 200 条。
+ */
+export function normalizeAcpConfigOptions(raw: unknown): ViewExternalConfigOption[] {
+  const obj = asRecord(raw);
+  if (!obj) return [];
+
+  const result: ViewExternalConfigOption[] = [];
+  const seenCategories = new Set<ViewExternalConfigCategory>();
+
+  if (Array.isArray(obj.configOptions)) {
+    for (const rawOpt of obj.configOptions) {
+      const opt = asRecord(rawOpt);
+      if (!opt || typeof opt.id !== 'string' || !opt.id.trim()) continue;
+      const optId = opt.id.trim().slice(0, 128);
+      const category = resolveOptionCategory(
+        optId,
+        typeof opt.category === 'string' ? opt.category : '',
+      );
+      if (!category || seenCategories.has(category)) continue;
+      const choices = flattenConfigChoices(opt.options);
+      if (choices.length === 0) continue;
+      const currentValue =
+        typeof opt.currentValue === 'string' && opt.currentValue.trim()
+          ? opt.currentValue.trim().slice(0, 256)
+          : undefined;
+      const name =
+        typeof opt.name === 'string' && opt.name.trim()
+          ? (sanitizeDisplayText(opt.name, 48) ?? defaultCategoryName(category))
+          : defaultCategoryName(category);
+      seenCategories.add(category);
+      result.push({
+        id: optId,
+        name,
+        category,
+        ...(currentValue ? { currentValue } : {}),
+        options: choices,
+      });
+    }
+  }
+
+  if (!seenCategories.has('model')) {
+    const models = asRecord(obj.models);
+    if (Array.isArray(models?.availableModels)) {
+      const choices: ViewExternalConfigChoice[] = [];
+      const seenValues = new Set<string>();
+      for (const entry of models.availableModels) {
+        if (choices.length >= MAX_CONFIG_CHOICES) break;
+        const item = asRecord(entry);
+        const value = typeof item?.modelId === 'string' ? item.modelId.trim().slice(0, 256) : '';
+        if (!value || seenValues.has(value)) continue;
+        seenValues.add(value);
+        const rawName = typeof item?.name === 'string' && item.name.trim() ? item.name : value;
+        const name = sanitizeDisplayText(redactCommonSecrets(rawName), 80) ?? value;
+        const description =
+          typeof item?.description === 'string' && item.description.trim()
+            ? sanitizeDisplayText(redactCommonSecrets(item.description), 160)
+            : undefined;
+        choices.push({ value, name, ...(description ? { description } : {}) });
+      }
+      if (choices.length > 0) {
+        const currentValue =
+          typeof models.currentModelId === 'string' && models.currentModelId.trim()
+            ? models.currentModelId.trim().slice(0, 256)
+            : undefined;
+        seenCategories.add('model');
+        result.push({
+          id: LEGACY_ACP_MODEL_CONFIG_ID,
+          name: '模型',
+          category: 'model',
+          ...(currentValue ? { currentValue } : {}),
+          options: choices,
+        });
+      }
+    }
+  }
+
+  if (!seenCategories.has('mode')) {
+    const modes = asRecord(obj.modes);
+    if (Array.isArray(modes?.availableModes)) {
+      const choices: ViewExternalConfigChoice[] = [];
+      const seenValues = new Set<string>();
+      for (const entry of modes.availableModes) {
+        if (choices.length >= MAX_CONFIG_CHOICES) break;
+        const item = asRecord(entry);
+        const value = typeof item?.id === 'string' ? item.id.trim().slice(0, 256) : '';
+        if (!value || seenValues.has(value)) continue;
+        seenValues.add(value);
+        const rawName = typeof item?.name === 'string' && item.name.trim() ? item.name : value;
+        const name = sanitizeDisplayText(redactCommonSecrets(rawName), 80) ?? value;
+        const description =
+          typeof item?.description === 'string' && item.description.trim()
+            ? sanitizeDisplayText(redactCommonSecrets(item.description), 160)
+            : undefined;
+        choices.push({ value, name, ...(description ? { description } : {}) });
+      }
+      if (choices.length > 0) {
+        const currentValue =
+          typeof modes.currentModeId === 'string' && modes.currentModeId.trim()
+            ? modes.currentModeId.trim().slice(0, 256)
+            : undefined;
+        seenCategories.add('mode');
+        result.push({
+          id: LEGACY_ACP_MODE_CONFIG_ID,
+          name: '模式',
+          category: 'mode',
+          ...(currentValue ? { currentValue } : {}),
+          options: choices,
+        });
+      }
+    }
+  }
+
+  return result;
+}
+
+/** 根据增量配置通知刷新已有配置目录的 `currentValue`；若通知自带完整 `configOptions` 则整体替换。 */
+export function patchAcpConfigOptions(
+  existing: readonly ViewExternalConfigOption[],
+  update: Record<string, unknown>,
+): ViewExternalConfigOption[] {
+  if (Array.isArray(update.configOptions)) {
+    const fresh = normalizeAcpConfigOptions(update);
+    if (fresh.length > 0) return fresh;
+  }
+  if (existing.length === 0) return [];
+
+  const patches = new Map<ViewExternalConfigCategory, string>();
+  const singleId =
+    typeof update.configId === 'string'
+      ? update.configId
+      : typeof update.id === 'string'
+        ? update.id
+        : '';
+  const singleCategory = resolveOptionCategory(
+    singleId,
+    typeof update.category === 'string' ? update.category : '',
+  );
+  const singleValue =
+    typeof update.currentValue === 'string'
+      ? update.currentValue.trim()
+      : typeof update.value === 'string'
+        ? update.value.trim()
+        : '';
+  if (singleCategory && singleValue) {
+    patches.set(singleCategory, singleValue);
+  }
+  const modeVal =
+    typeof update.currentModeId === 'string'
+      ? update.currentModeId.trim()
+      : typeof update.modeId === 'string'
+        ? update.modeId.trim()
+        : '';
+  if (modeVal && !patches.has('mode')) patches.set('mode', modeVal);
+  const modelVal =
+    typeof update.currentModelId === 'string'
+      ? update.currentModelId.trim()
+      : typeof update.modelId === 'string'
+        ? update.modelId.trim()
+        : '';
+  if (modelVal && !patches.has('model')) patches.set('model', modelVal);
+
+  if (patches.size === 0) return [...existing];
+  return existing.map((opt) => {
+    const nextVal = patches.get(opt.category);
+    return nextVal ? { ...opt, currentValue: nextVal } : opt;
+  });
+}
+
+/** 从归一化后的配置项列表中提取模型、模式与推理档位的展示名摘要。 */
+export function summarizeAcpConfigOptions(options: readonly ViewExternalConfigOption[]): {
+  readonly modelLabel?: string;
+  readonly modeLabel?: string;
+  readonly thoughtLevelLabel?: string;
+} {
+  let modelLabel: string | undefined;
+  let modeLabel: string | undefined;
+  let thoughtLevelLabel: string | undefined;
+  for (const opt of options) {
+    if (!opt.currentValue) continue;
+    const hit = opt.options.find((c) => c.value === opt.currentValue);
+    const label = hit?.name ?? opt.currentValue;
+    if (opt.category === 'model' && !modelLabel) {
+      modelLabel = sanitizeDisplayText(label, 64);
+    } else if (opt.category === 'mode' && !modeLabel) {
+      modeLabel = sanitizeDisplayText(label, 48);
+    } else if (opt.category === 'thought_level' && !thoughtLevelLabel) {
+      thoughtLevelLabel = sanitizeDisplayText(label, 32);
+    }
+  }
+  return {
+    ...(modelLabel ? { modelLabel } : {}),
+    ...(modeLabel ? { modeLabel } : {}),
+    ...(thoughtLevelLabel ? { thoughtLevelLabel } : {}),
+  };
+}
+
+/** 已解析的单个 ACP `configOptions` 条目，供驱动校验候选值并发起 `session/set_config_option`。 */
+export interface AcpConfigOptionHandle {
+  readonly id: string;
+  readonly currentValue?: string;
+  readonly hasOption: (value: string) => boolean;
+}
+
+/**
+ * 从 ACP `session/new`、`session/load` 或 `session/set_config_option` 载荷中按语义类别查找配置项。
+ *
+ * 兼容规则：`category` 精确命中优先，次选按 `id` 兜底（`thought_level` 同时兼容 `id === 'effort'`）；
+ * 候选值核验同时支持平铺项与分组项（`options[].options`），避免把不支持的模型 ID 盲发给对端。
+ */
+export function findAcpConfigOption(
+  raw: unknown,
+  target: 'model' | 'mode' | 'thought_level',
+): AcpConfigOptionHandle | undefined {
+  const obj = asRecord(raw);
+  if (!obj || !Array.isArray(obj.configOptions)) return undefined;
+
+  const matchesCategory = (opt: Record<string, unknown>): boolean => {
+    const category = typeof opt.category === 'string' ? opt.category.toLowerCase() : '';
+    return category === target;
+  };
+  const matchesId = (opt: Record<string, unknown>): boolean => {
+    const id = typeof opt.id === 'string' ? opt.id.toLowerCase() : '';
+    if (target === 'thought_level') return id === 'thought_level' || id === 'effort';
+    return id === target;
+  };
+
+  let fallback: Record<string, unknown> | undefined;
+  for (const rawOpt of obj.configOptions) {
+    const opt = asRecord(rawOpt);
+    if (!opt || typeof opt.id !== 'string' || !opt.id.trim()) continue;
+    if (matchesCategory(opt)) {
+      return {
+        id: opt.id,
+        ...(typeof opt.currentValue === 'string' ? { currentValue: opt.currentValue } : {}),
+        hasOption: (value) => Boolean(findConfigOptionChoice(opt.options, value)),
+      };
+    }
+    if (!fallback && matchesId(opt)) {
+      fallback = opt;
+    }
+  }
+  if (!fallback || typeof fallback.id !== 'string') return undefined;
+  return {
+    id: fallback.id,
+    ...(typeof fallback.currentValue === 'string' ? { currentValue: fallback.currentValue } : {}),
+    hasOption: (value) => Boolean(findConfigOptionChoice(fallback.options, value)),
+  };
+}
+
+/**
+ * 从 `session/new`、`session/load`、`session/set_config_option` 或配置更新通知中提取只读模型与模式展示名。
+ *
+ * 宽容策略（对齐 Cindy）：单个损坏配置项独立跳过，同时兼容新式 `configOptions[]`（含分组选项）、
+ * 单项 `configId` 更新通知，以及旧式 `models` / `modes`（含 `availableModels` / `availableModes` 显示名反查）。
  */
 export function normalizeAcpConfigSummary(raw: unknown): {
   readonly modelLabel?: string;
   readonly modeLabel?: string;
+  readonly thoughtLevelLabel?: string;
 } {
   const obj = asRecord(raw) ?? {};
   let modelLabel: string | undefined;
   let modeLabel: string | undefined;
+  let thoughtLevelLabel: string | undefined;
 
   if (Array.isArray(obj.configOptions)) {
     for (const rawOpt of obj.configOptions) {
@@ -94,45 +444,109 @@ export function normalizeAcpConfigSummary(raw: unknown): {
       const currentValue = typeof opt.currentValue === 'string' ? opt.currentValue : undefined;
       if (!currentValue) continue;
 
-      let resolvedName = currentValue;
-      if (Array.isArray(opt.options)) {
-        for (const choice of opt.options) {
-          const choiceRec = asRecord(choice);
-          if (choiceRec && choiceRec.value === currentValue && typeof choiceRec.name === 'string') {
-            resolvedName = choiceRec.name;
-            break;
-          }
-        }
-      }
+      const resolvedName = findConfigOptionChoice(opt.options, currentValue)?.name ?? currentValue;
 
       if (!modelLabel && (category === 'model' || id === 'model')) {
         modelLabel = sanitizeDisplayText(resolvedName, 64);
       } else if (!modeLabel && (category === 'mode' || id === 'mode')) {
         modeLabel = sanitizeDisplayText(resolvedName, 48);
+      } else if (
+        !thoughtLevelLabel &&
+        (category === 'thought_level' || id === 'thought_level' || id === 'effort')
+      ) {
+        thoughtLevelLabel = sanitizeDisplayText(resolvedName, 32);
       }
+    }
+  }
+
+  // 兼容单项配置更新通知（如 `{ configId: 'model', currentValue: '...' }` 或 `{ id: 'model', value: '...' }`）
+  const singleId = (
+    typeof obj.configId === 'string' ? obj.configId : typeof obj.id === 'string' ? obj.id : ''
+  ).toLowerCase();
+  const singleCategory = typeof obj.category === 'string' ? obj.category.toLowerCase() : '';
+  const singleValue =
+    typeof obj.currentValue === 'string'
+      ? obj.currentValue
+      : typeof obj.value === 'string'
+        ? obj.value
+        : undefined;
+  if (singleValue) {
+    const resolvedSingle = findConfigOptionChoice(obj.options, singleValue)?.name ?? singleValue;
+    if (!modelLabel && (singleCategory === 'model' || singleId === 'model')) {
+      modelLabel = sanitizeDisplayText(resolvedSingle, 64);
+    } else if (!modeLabel && (singleCategory === 'mode' || singleId === 'mode')) {
+      modeLabel = sanitizeDisplayText(resolvedSingle, 48);
+    } else if (
+      !thoughtLevelLabel &&
+      (singleCategory === 'thought_level' || singleId === 'thought_level' || singleId === 'effort')
+    ) {
+      thoughtLevelLabel = sanitizeDisplayText(resolvedSingle, 32);
     }
   }
 
   if (!modelLabel) {
     const models = asRecord(obj.models);
-    if (typeof models?.currentModelId === 'string') {
-      modelLabel = sanitizeDisplayText(models.currentModelId, 64);
+    const currentModelId =
+      typeof models?.currentModelId === 'string'
+        ? models.currentModelId
+        : typeof obj.currentModelId === 'string'
+          ? obj.currentModelId
+          : typeof obj.modelId === 'string'
+            ? obj.modelId
+            : undefined;
+    if (currentModelId) {
+      let resolvedModelName = currentModelId;
+      if (Array.isArray(models?.availableModels)) {
+        for (const entry of models.availableModels) {
+          const item = asRecord(entry);
+          if (
+            item &&
+            item.modelId === currentModelId &&
+            typeof item.name === 'string' &&
+            item.name.trim()
+          ) {
+            resolvedModelName = item.name;
+            break;
+          }
+        }
+      }
+      modelLabel = sanitizeDisplayText(resolvedModelName, 64);
     }
   }
   if (!modeLabel) {
     const modes = asRecord(obj.modes);
-    if (typeof modes?.currentModeId === 'string') {
-      modeLabel = sanitizeDisplayText(modes.currentModeId, 48);
-    } else if (typeof obj.currentModeId === 'string') {
-      modeLabel = sanitizeDisplayText(obj.currentModeId, 48);
-    } else if (typeof obj.modeId === 'string') {
-      modeLabel = sanitizeDisplayText(obj.modeId, 48);
+    const currentModeId =
+      typeof modes?.currentModeId === 'string'
+        ? modes.currentModeId
+        : typeof obj.currentModeId === 'string'
+          ? obj.currentModeId
+          : typeof obj.modeId === 'string'
+            ? obj.modeId
+            : undefined;
+    if (currentModeId) {
+      let resolvedModeName = currentModeId;
+      if (Array.isArray(modes?.availableModes)) {
+        for (const entry of modes.availableModes) {
+          const item = asRecord(entry);
+          if (
+            item &&
+            item.id === currentModeId &&
+            typeof item.name === 'string' &&
+            item.name.trim()
+          ) {
+            resolvedModeName = item.name;
+            break;
+          }
+        }
+      }
+      modeLabel = sanitizeDisplayText(resolvedModeName, 48);
     }
   }
 
   return {
     ...(modelLabel ? { modelLabel } : {}),
     ...(modeLabel ? { modeLabel } : {}),
+    ...(thoughtLevelLabel ? { thoughtLevelLabel } : {}),
   };
 }
 

@@ -197,6 +197,7 @@ const api: DesktopAPI = {
     subscribe: (params) => call('external.subscribe', params),
     unsubscribe: (subscriptionId) => done('external.unsubscribe', { subscriptionId }),
     prompt: (params) => call('external.prompt', params),
+    setConfig: (params) => call('external.setConfig', params),
     approve: (params) => done('external.approve', params),
     cancel: (params) => done('external.cancel', params),
     close: (params) => done('external.close', params),

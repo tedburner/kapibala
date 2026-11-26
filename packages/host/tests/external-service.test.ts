@@ -603,4 +603,76 @@ describe('ExternalSessionService 会话编排、审批、空闲回收与 configD
       service.promptSession({ sessionId: idleOpened.session.id, text: 'try after disable' }),
     ).rejects.toMatchObject({ code: 'EXTERNAL_HARNESS_DISABLED' });
   });
+
+  it('缓存 ACP 模型目录并支持新建选模型与会话内切换模型/模式/推理档位', async () => {
+    const homeDir = makeTempDir('kpbl-ext-cfg-home-');
+    const workspaceRoot = makeTempDir('kpbl-ext-cfg-ws-');
+    const service = new ExternalSessionService({
+      homeDir,
+      isWorkspaceTrusted: () => true,
+      idleTimeoutMs: 0,
+    });
+    activeServices.push(service);
+
+    service.saveCustomHarness({
+      id: 'sync-acp',
+      name: '模型切换验收 ACP',
+      command: process.execPath,
+      args: [fixtureScript, '--mode=opencode-model-sync'],
+      flavor: 'opencode',
+      enabled: true,
+    });
+
+    // 探测一次后，可用模型目录自动落盘缓存，listHarnesses() 零冷启即可返回 cachedConfigOptions
+    const probe = await service.testHarness('sync-acp', workspaceRoot);
+    expect(probe.available).toBe(true);
+    expect(probe.configOptions?.find((opt) => opt.category === 'model')?.options).toHaveLength(3);
+
+    const listed = service.listHarnesses().harnesses.find((item) => item.id === 'sync-acp');
+    expect(
+      listed?.cachedConfigOptions?.find((opt) => opt.category === 'model')?.options,
+    ).toHaveLength(3);
+
+    // 新建会话显式指定 modelId
+    const opened = await service.openSession({
+      workspaceRoot,
+      harnessId: 'sync-acp',
+      modelId: 'opencode/deepseek-v4.1-flash-free',
+    });
+    expect(opened.session.modelLabel).toBe('opencode/DeepSeek V4.1 Flash Free');
+    expect(opened.configOptions?.find((opt) => opt.category === 'model')?.currentValue).toBe(
+      'opencode/deepseek-v4.1-flash-free',
+    );
+
+    // 会话内切换推理档位与模式
+    const withEffort = await service.setSessionConfig({
+      sessionId: opened.session.id,
+      configId: 'effort',
+      category: 'thought_level',
+      value: 'max',
+      expectedWorkspaceRoot: workspaceRoot,
+    });
+    expect(withEffort.session.thoughtLevelLabel).toBe('Max');
+
+    const withMode = await service.setSessionConfig({
+      sessionId: opened.session.id,
+      configId: 'mode',
+      category: 'mode',
+      value: 'plan',
+      expectedWorkspaceRoot: workspaceRoot,
+    });
+    expect(withMode.session.modeLabel).toBe('Plan');
+
+    // 修改代理配置后旧缓存按 configDigest 自动失效
+    service.saveCustomHarness({
+      id: 'sync-acp',
+      name: '模型切换验收 ACP',
+      command: process.execPath,
+      args: [fixtureScript, '--mode=normal'],
+      flavor: 'opencode',
+      enabled: true,
+    });
+    const afterChange = service.listHarnesses().harnesses.find((item) => item.id === 'sync-acp');
+    expect(afterChange?.cachedConfigOptions).toBeUndefined();
+  });
 });

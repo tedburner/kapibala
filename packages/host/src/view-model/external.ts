@@ -13,6 +13,26 @@ export type ViewExternalSessionStatus =
   | 'ended'
   | 'failed';
 
+/** 外部代理暴露的单个配置候选项（模型、模式或推理档位）。 */
+export interface ViewExternalConfigChoice {
+  readonly value: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly group?: string;
+}
+
+/** 外部代理可切换的配置项语义类别。 */
+export type ViewExternalConfigCategory = 'model' | 'mode' | 'thought_level';
+
+/** 外部代理暴露的单个可切换配置项（兼容 ACP `configOptions` 与旧式 `models` / `modes`）。 */
+export interface ViewExternalConfigOption {
+  readonly id: string;
+  readonly name: string;
+  readonly category: ViewExternalConfigCategory;
+  readonly currentValue?: string;
+  readonly options: readonly ViewExternalConfigChoice[];
+}
+
 /** 设置页或 CLI 执行外部代理单次握手探测后的只读状态摘要。 */
 export interface ViewExternalHarnessProbe {
   readonly available: boolean;
@@ -29,6 +49,8 @@ export interface ViewExternalHarnessProbe {
   readonly reason?: string;
   readonly loginHint?: string;
   readonly installHint?: string;
+  /** 探测握手附带拿到的可选模型/模式/推理档位目录。 */
+  readonly configOptions?: readonly ViewExternalConfigOption[];
 }
 
 /** 面向桌面设置页与 CLI `/external harnesses` 的外部代理展示项（不含任何环境变量值）。 */
@@ -46,6 +68,8 @@ export interface ViewExternalHarness {
   readonly enabled: boolean;
   /** 若刚在设置页执行过连接检测，附带最新探测结论。 */
   readonly probe?: ViewExternalHarnessProbe;
+  /** 本地按配置指纹缓存的可用模型/模式/推理档位清单，供新对话选择器零冷启展示。 */
+  readonly cachedConfigOptions?: readonly ViewExternalConfigOption[];
 }
 
 /** 官方 ACP Registry 静态模板的纯展示投影。 */
@@ -79,6 +103,7 @@ export interface ViewExternalSession {
   readonly pendingApprovalCount: number;
   readonly modelLabel?: string;
   readonly modeLabel?: string;
+  readonly thoughtLevelLabel?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly lastError?: string;
@@ -116,4 +141,6 @@ export interface ViewExternalSnapshot {
   readonly approvals: readonly ViewExternalApproval[];
   readonly plan?: ViewTodoState;
   readonly notices: readonly ViewNotice[];
+  /** 当前会话实时可切换的模型、模式与推理档位目录（仅当底层代理提供时存在）。 */
+  readonly configOptions?: readonly ViewExternalConfigOption[];
 }

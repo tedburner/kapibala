@@ -1,5 +1,6 @@
 import { Button, Combobox, Popover } from '@cloudflare/kumo';
 import {
+  ArrowsClockwiseIcon,
   CaretDownIcon,
   CpuIcon,
   MagnifyingGlassIcon,
@@ -13,10 +14,24 @@ type Catalog = Output<'settings.read'>;
 type ModelChoice = Pick<Catalog['profiles'][number], 'id' | 'name' | 'modelName' | 'providerKey'>;
 type ExternalChoice = Pick<
   Output<'external.harnesses'>['harnesses'][number],
-  'id' | 'name' | 'transport'
+  'id' | 'name' | 'transport' | 'cachedConfigOptions'
 >;
+/** 新对话中选定的外部代理及可选显式模型（未选模型时默认沿用该代理自身配置）。 */
+export type SelectedHarnessChoice = {
+  readonly id: string;
+  readonly name: string;
+  readonly modelId?: string;
+  readonly modelName?: string;
+};
 
-/** 新对话在代理和模型间共用一个搜索入口。外部代理的默认模型由宿主启动时解析。 */
+/**
+ * 新对话代理与模型统一搜索选择器（左栏按代理分栏，右栏选具体模型）。
+ *
+ * 边界与约束：
+ * - 外部代理默认项始终保留「使用默认模型」，选中时不传 `modelId`，完全沿用代理自身默认配置；
+ * - 若该外部代理已有本地缓存的模型列表，点选左栏该代理或全局搜索时直接呈现具体模型；
+ * - 不在启动阶段自动拉起所有代理探针：仅在用户点击「加载/刷新模型」时按需探测并回填缓存。
+ */
 export function ComposerModelPicker({
   models,
   providers,
@@ -25,8 +40,10 @@ export function ComposerModelPicker({
   harness,
   disabled,
   harnessesFailed,
+  refreshingHarnessId,
   onModel,
   onHarness,
+  onRefreshHarnessModels,
   onSettings,
   onExternalSettings,
 }: {
@@ -34,19 +51,21 @@ export function ComposerModelPicker({
   providers: readonly Pick<Catalog['providers'][number], 'key' | 'name'>[];
   harnesses: readonly ExternalChoice[];
   model?: Pick<ModelChoice, 'id' | 'name'>;
-  harness?: Pick<ExternalChoice, 'id' | 'name'>;
+  harness?: SelectedHarnessChoice;
   disabled: boolean;
   harnessesFailed?: boolean;
+  refreshingHarnessId?: string;
   onModel(id: string): void;
-  onHarness(choice: Pick<ExternalChoice, 'id' | 'name'>): void;
+  onHarness(choice: SelectedHarnessChoice): void;
+  onRefreshHarnessModels?(harnessId: string): void;
   onSettings(): void;
   onExternalSettings?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [scope, setScope] = useState('all');
   const [query, setQuery] = useState('');
-  const terms = query.toLowerCase().trim().split(/\s+/);
-  const searching = Boolean(query.trim());
+  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const searching = terms.length > 0;
   const activeScope = searching ? 'all' : scope;
   const categories = [
     { id: 'all', name: '全部', icon: SquaresFourIcon },
@@ -58,40 +77,94 @@ export function ComposerModelPicker({
     })),
   ];
   const providerByKey = new Map(providers.map((provider) => [provider.key, provider.name]));
+
+  const externalChoices = harnesses.flatMap((item) => {
+    const scopeKey = `harness:${item.id}`;
+    const modelOption = item.cachedConfigOptions?.find((opt) => opt.category === 'model');
+    const cachedModels = modelOption?.options ?? [];
+    const defaultRow = {
+      key: scopeKey,
+      scope: scopeKey,
+      showInAll: true,
+      name: activeScope === 'all' ? item.name : '使用默认模型',
+      detail: activeScope === 'all' ? '外部代理 · 默认模型' : item.name,
+      search: `${item.name} ${item.id} ${item.transport} 外部代理 默认模型`,
+      select: () => onHarness({ id: item.id, name: item.name }),
+    };
+    const modelRows = cachedModels.map((choice) => ({
+      key: `${scopeKey}:model:${choice.value}`,
+      scope: scopeKey,
+      // 仅在选中左栏具体代理或全局关键词搜索时展开外部代理的具体模型，避免「全部」首屏被数十条外模淹没。
+      showInAll: false,
+      name: choice.name,
+      detail: choice.group
+        ? `${item.name} · ${choice.group}`
+        : choice.value === modelOption?.currentValue
+          ? `${item.name} · 默认`
+          : item.name,
+      search: `${choice.name} ${choice.value} ${choice.group ?? ''} ${item.name} ${item.id}`,
+      select: () =>
+        onHarness({
+          id: item.id,
+          name: item.name,
+          modelId: choice.value,
+          modelName: choice.name,
+        }),
+    }));
+    return [defaultRow, ...modelRows];
+  });
+
   const choices = [
     ...models.map((item) => {
       const provider = providerByKey.get(item.providerKey);
       return {
         key: `model:${item.id}`,
         scope: 'kapibala',
+        showInAll: true,
         name: item.name,
         detail: provider ? `Kapibala · ${provider}` : 'Kapibala',
         search: `${item.name} ${item.modelName} ${item.id} ${provider ?? ''} Kapibala`,
         select: () => onModel(item.id),
       };
     }),
-    ...harnesses.map(({ id, name, transport }) => ({
-      key: `harness:${id}`,
-      scope: `harness:${id}`,
-      name: activeScope === 'all' ? name : '使用默认模型',
-      detail: activeScope === 'all' ? '外部代理 · 默认模型' : name,
-      search: `${name} ${id} ${transport} 外部代理 默认模型`,
-      select: () => onHarness({ id, name }),
-    })),
-  ].filter(
-    (item) =>
-      (activeScope === 'all' || item.scope === activeScope) &&
-      terms.every((term) => item.search.toLowerCase().includes(term)),
+    ...externalChoices,
+  ].filter((item) => {
+    if (searching) {
+      return terms.every((term) => item.search.toLowerCase().includes(term));
+    }
+    if (activeScope === 'all') return item.showInAll;
+    return item.scope === activeScope;
+  });
+
+  const focusedHarness = activeScope.startsWith('harness:')
+    ? harnesses.find((item) => `harness:${item.id}` === activeScope)
+    : undefined;
+  const focusedHarnessModels =
+    focusedHarness?.cachedConfigOptions?.find((opt) => opt.category === 'model')?.options ?? [];
+  const canProbeFocusedHarness = Boolean(
+    focusedHarness && focusedHarness.transport === 'acp' && onRefreshHarnessModels,
   );
-  const selected = harness ? `harness:${harness.id}` : model ? `model:${model.id}` : null;
-  const triggerLabel = harness?.name ?? model?.name ?? '选择模型或代理';
+  const probingFocused = Boolean(focusedHarness && refreshingHarnessId === focusedHarness.id);
+
+  const selected = harness
+    ? harness.modelId
+      ? `harness:${harness.id}:model:${harness.modelId}`
+      : `harness:${harness.id}`
+    : model
+      ? `model:${model.id}`
+      : null;
+  const triggerLabel = harness
+    ? harness.modelName
+      ? `${harness.name} · ${harness.modelName}`
+      : harness.name
+    : (model?.name ?? '选择模型或代理');
 
   return (
     <Popover
       open={open}
       onOpenChange={(next) => {
         if (next) {
-          setScope('all');
+          setScope(harness ? `harness:${harness.id}` : 'all');
           setQuery('');
         }
         setOpen(next);
@@ -100,7 +173,7 @@ export function ComposerModelPicker({
       <Popover.Trigger
         render={
           <Button
-            className="kapibala-action kapibala-chip max-w-56"
+            className="kapibala-action kapibala-chip max-w-64"
             variant="ghost"
             size="sm"
             disabled={disabled}
@@ -193,7 +266,23 @@ export function ComposerModelPicker({
                 </div>
               </div>
             </Combobox>
-            <div className="flex flex-wrap justify-end gap-1 border-t border-kumo-line px-2 py-1.5">
+            <div className="flex flex-wrap items-center justify-end gap-1 border-t border-kumo-line px-2 py-1.5">
+              {canProbeFocusedHarness && focusedHarness && (
+                <Button
+                  className="kapibala-action mr-auto"
+                  variant="ghost"
+                  size="sm"
+                  disabled={probingFocused || Boolean(refreshingHarnessId)}
+                  onClick={() => onRefreshHarnessModels?.(focusedHarness.id)}
+                >
+                  <ArrowsClockwiseIcon size={14} aria-hidden="true" />
+                  {probingFocused
+                    ? '正在加载模型…'
+                    : focusedHarnessModels.length > 0
+                      ? '刷新模型列表'
+                      : '加载可用模型'}
+                </Button>
+              )}
               <Popover.Close
                 render={
                   <Button

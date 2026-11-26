@@ -1,5 +1,12 @@
 import { KapibalaError } from '@kiturone/kapibala';
-import type { ViewMessage, ViewTodoItem, ViewTool, ViewUsage } from '../../view-model/index.js';
+import type {
+  ViewExternalConfigCategory,
+  ViewExternalConfigOption,
+  ViewMessage,
+  ViewTodoItem,
+  ViewTool,
+  ViewUsage,
+} from '../../view-model/index.js';
 
 /**
  * 外部代理子系统的稳定机器错误码。
@@ -134,6 +141,7 @@ export interface ExternalInspectResult {
   readonly reason?: string;
   readonly loginHint?: string;
   readonly installHint?: string;
+  readonly configOptions?: readonly ViewExternalConfigOption[];
 }
 
 /** 外部代理原样透传的审批选项；保留 `allow_session` 等扩展 `kind`，不与本地权限模式混同。 */
@@ -166,6 +174,8 @@ export type ExternalEvent =
       readonly resumable?: boolean;
       readonly modelLabel?: string;
       readonly modeLabel?: string;
+      readonly thoughtLevelLabel?: string;
+      readonly configOptions?: readonly ViewExternalConfigOption[];
     }
   | {
       readonly type: 'approval_requested';
@@ -201,10 +211,33 @@ export interface ExternalTurnResult {
   readonly processTerminated?: boolean;
 }
 
+/** 新建会话或会话内切换外部代理配置项的统一载荷。 */
+export interface ExternalConfigSelection {
+  readonly category: ViewExternalConfigCategory;
+  readonly value: string;
+}
+
+/** 会话内切换外部代理配置项后的最新摘要与可选目录。 */
+export interface ExternalSetConfigResult {
+  readonly modelLabel?: string;
+  readonly modeLabel?: string;
+  readonly thoughtLevelLabel?: string;
+  readonly configOptions?: readonly ViewExternalConfigOption[];
+}
+
 /** 已打开的外部代理单会话子进程句柄；每个可写外部会话独占一个底层子进程。 */
 export interface ExternalDriverSessionHandle {
   readonly pid: number | undefined;
   prompt(text: string, signal?: AbortSignal): Promise<ExternalTurnResult>;
+  /** 在空闲态动态切换模型、模式或推理档位；底层驱动不支持时可缺省。 */
+  setConfigOption?(
+    input: {
+      readonly configId: string;
+      readonly category: ViewExternalConfigCategory;
+      readonly value: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<ExternalSetConfigResult>;
   cancel(): Promise<void>;
   close(): Promise<void>;
 }
@@ -217,6 +250,8 @@ export interface ExternalDriverOpenResult {
   readonly resumable: boolean;
   readonly modelLabel?: string;
   readonly modeLabel?: string;
+  readonly thoughtLevelLabel?: string;
+  readonly configOptions?: readonly ViewExternalConfigOption[];
   /** `session/load` 等恢复握手期间由外部代理权威重放出的历史消息。 */
   readonly replayedMessages?: readonly ViewMessage[];
 }
@@ -243,6 +278,8 @@ export interface ExternalHarnessDriver {
     def: ExternalHarnessDefinition;
     workspaceRoot: string;
     nativeSessionId?: string;
+    /** 仅新建会话生效的用户显式配置覆盖（如首轮选定的模型 ID）。 */
+    initialConfig?: readonly ExternalConfigSelection[];
     onEvent: (event: ExternalEvent) => void;
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult>;
