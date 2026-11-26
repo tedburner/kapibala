@@ -372,12 +372,13 @@ export class SessionPresentation {
         }
       }
     }
-    // 任务清单只认最近一次成功 todo_write；revision 不变时不重复下发，避免每帧抖动。
+    // 任务清单只认最近一次成功 todo_write（已全部完结的清单进入后续轮次自动收起）；
+    // revision 不变时不重复下发，避免每帧抖动。
     const todos = buildTodoState(history, this.redact);
     const revision = todos?.revision ?? 0;
     if (revision !== this.todosRevision) {
       this.todosRevision = revision;
-      this.emit({ type: 'todos_changed', todos });
+      this.emit(todos ? { type: 'todos_changed', todos } : { type: 'todos_changed' });
     }
   }
 

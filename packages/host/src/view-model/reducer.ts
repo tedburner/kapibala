@@ -259,8 +259,13 @@ export function reducePresentation(
         order: change.messages.map((message) => message.id),
         pendingMessages: [],
       };
-    case 'todos_changed':
+    case 'todos_changed': {
+      if (change.todos === undefined) {
+        const { todos: _dropped, ...rest } = next;
+        return rest;
+      }
       return { ...next, todos: change.todos };
+    }
     case 'set_expanded':
       return { ...next, expanded: { ...state.expanded, [change.blockId]: change.expanded } };
     case 'diagnostic': {

@@ -335,4 +335,45 @@ describe('AcpStdioDriver 真实子进程契约测试', () => {
     expect(serialized).not.toContain('splitTokenAbcdef123456');
     expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThan(680 * 1024);
   });
+
+  it('ExternalTranscriptProjector 在后续用户轮次自动清空已全部完结的计划，未完结计划跨轮次保留', () => {
+    const projector = new ExternalTranscriptProjector('ext-plan-lifecycle');
+    projector.beginUserTurn('第一轮任务');
+    projector.applyEvent({
+      type: 'plan_updated',
+      items: [
+        { id: '1', title: '步骤一', status: 'completed' },
+        { id: '2', title: '步骤二', status: 'in_progress' },
+      ],
+    });
+    projector.completeTurn();
+    expect(projector.getPlan()?.items).toHaveLength(2);
+
+    // 仍含进行中项时，后续轮次保留计划面板。
+    projector.beginUserTurn('继续');
+    expect(projector.getPlan()?.items).toHaveLength(2);
+
+    // 全部完结后，本轮结束仍展示已完成计划，进入下一轮时自动清空。
+    projector.applyEvent({
+      type: 'plan_updated',
+      items: [
+        { id: '1', title: '步骤一', status: 'completed' },
+        { id: '2', title: '步骤二', status: 'cancelled' },
+      ],
+    });
+    projector.completeTurn();
+    expect(projector.getPlan()?.items).toHaveLength(2);
+
+    projector.beginUserTurn('下一轮新问题');
+    expect(projector.getPlan()).toBeUndefined();
+
+    // 回放历史时，已完结计划后紧跟的新用户消息同样触发清空。
+    projector.applyEvent({
+      type: 'plan_updated',
+      items: [{ id: '3', title: '已完结回放项', status: 'completed' }],
+    });
+    expect(projector.getPlan()?.items).toHaveLength(1);
+    projector.applyEvent({ type: 'user_delta', text: '回放新轮次', replay: true });
+    expect(projector.getPlan()).toBeUndefined();
+  });
 });

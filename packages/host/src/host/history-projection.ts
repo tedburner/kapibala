@@ -230,6 +230,11 @@ function parseTodoItems(input: unknown): ViewTodoItem[] | undefined {
   return items;
 }
 
+/** 清单是否已全部终结（无 `pending` / `in_progress` 项）；全部完结后仅在所属轮次展示，进入后续新用户轮次即收起。 */
+function isSettledTodoItems(items: readonly ViewTodoItem[]): boolean {
+  return !items.some((item) => item.status === 'pending' || item.status === 'in_progress');
+}
+
 /**
  * 从 canonical 历史重算会话任务清单：只认**最近一次成功**（配对结果非 error）的
  * `todo_write` 调用，失败、中断或无结果的调用不改变视图，避免一次坏写入把面板闪空。
@@ -240,20 +245,40 @@ function parseTodoItems(input: unknown): ViewTodoItem[] | undefined {
  *   宿主注入凭证闭包脱敏，缺省恒等便于纯结构测试。
  * - `items` 保持模型提交顺序，不做二次排序；`revision` 为成功调用累计数，仅用于
  *   渲染层判断是否需要重绘，不参与权限或持久化。
+ * - 生命周期收口：清单全部处于终态（`completed` / `cancelled`，无 `pending` / `in_progress`）时，
+ *   在所属轮次结束时仍保留展示；一旦后续出现新用户轮次且尚未再次成功调用 `todo_write`，自动收起返回 `undefined`，
+ *   避免已完成任务的旧看板长期停留在后续轮次对话上方；仍含未完结项的清单跨轮次保留，直到模型更新或完结。
  * - 从未成功调用时返回 `undefined`，桌面 pill / 浮层与 CLI 据此隐藏。
  */
 export function buildTodoState(
   history: readonly CanonicalMessage[],
   redact: PublicTextRedactor = (text) => text,
 ): ViewTodoState | undefined {
-  const inputs = new Map<string, { input: unknown; timestamp?: number }>();
+  const inputs = new Map<string, { input: unknown; timestamp?: number; interactionId?: string }>();
   let latest: ViewTodoItem[] | undefined;
+  let latestInteractionId: string | undefined;
   let updatedAt: number | undefined;
   let revision = 0;
   for (const message of history) {
+    // 已全部完结的清单仅归属原轮次：后续出现新用户轮次（非同一 interactionId）时自动清出视图，
+    // 直到模型在新轮次再次成功调用 todo_write。
+    if (
+      message.role === 'user' &&
+      latest &&
+      isSettledTodoItems(latest) &&
+      (!message.interactionId || message.interactionId !== latestInteractionId)
+    ) {
+      latest = undefined;
+      latestInteractionId = undefined;
+      updatedAt = undefined;
+    }
     for (const block of message.content) {
       if (block.type === 'tool_use' && block.name === 'todo_write') {
-        inputs.set(block.id, { input: block.input, timestamp: message.timestamp });
+        inputs.set(block.id, {
+          input: block.input,
+          timestamp: message.timestamp,
+          interactionId: message.interactionId,
+        });
       } else if (block.type === 'tool_result' && !block.isError) {
         const call = inputs.get(block.toolUseId);
         if (!call) continue;
@@ -264,6 +289,7 @@ export function buildTodoState(
           ...item,
           title: redact(sanitizeUntrustedOutput(item.title)),
         }));
+        latestInteractionId = message.interactionId ?? call.interactionId;
         updatedAt = message.timestamp ?? call.timestamp;
         revision += 1;
       }

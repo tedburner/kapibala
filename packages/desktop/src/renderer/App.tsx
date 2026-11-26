@@ -31,6 +31,7 @@ import {
 import {
   type CSSProperties,
   Fragment,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -50,6 +51,14 @@ import { KubaiIcon } from './icons/KubaiIcon.js';
 import { MessageList } from './message-list.js';
 import { MODE_NAMES } from './mode-labels.js';
 import { ProjectDialog } from './project-dialog.js';
+import {
+  type PromptHistoryState,
+  isPromptHistoryBrowsing,
+  rememberPromptEntry,
+  resetPromptBrowsing,
+  seedPromptHistory,
+  stepPromptHistory,
+} from './prompt-history.js';
 import { SessionDeleteDialog, SessionRenameDialog, type SessionTarget } from './session-actions.js';
 import { SettingsDialog } from './settings-dialog.js';
 import { TaskPanel } from './task-panel.js';
@@ -65,8 +74,6 @@ type HarnessEntry = Pick<
   'id' | 'name' | 'transport'
 >;
 type HarnessChoice = Pick<HarnessEntry, 'id' | 'name'>;
-/** 单个输入作用域（会话或 ':new'）的已发送历史与 ↑/↓ 浏览位置。 */
-type PromptHistory = { entries: string[]; index: number; draft?: string };
 const api: DesktopAPI = window.kapibala;
 const client = new ViewClient(api);
 const scopeOf = (opened: Opened) => ({
@@ -262,10 +269,10 @@ export function App() {
   /** 输入框元素：历史召回写入受控值后，需要把光标补到末尾。 */
   const composerInput = useRef<HTMLTextAreaElement | null>(null);
   /**
-   * 已发送输入的进程内历史，按草稿作用域隔离；不落盘、不跨进程，
-   * 与草稿一样只在本次运行内可召回（提问内容可能含敏感信息）。
+   * 输入历史缓存，按草稿作用域（本地会话 / 外部会话 / `:new`）隔离；
+   * 仅存于渲染进程内存，打开已有会话时从已加载的公开脱敏消息补种，新发送同步追加。
    */
-  const promptHistory = useRef(new Map<string, PromptHistory>());
+  const promptHistory = useRef(new Map<string, PromptHistoryState>());
   const [details, setDetails] = useState<DetailsTarget>();
   // 产物自动预览的基线：按「会话 + 工具调用 + 路径」记录已处理过的产物。
   // 进入会话、窗口重建或切回会话时先把历史产物整体记为基线且不弹，
@@ -297,12 +304,14 @@ export function App() {
   const draft = ui.drafts[draftScope] ?? '';
   // 切回某个会话时历史浏览下标可能停在中间项：作用域变化一律回到「未提交草稿」位置。
   useEffect(() => {
-    const history = promptHistory.current.get(draftScope);
-    if (history) {
-      history.index = history.entries.length;
-      history.draft = undefined;
-    }
+    resetPromptBrowsing(promptHistory.current.get(draftScope));
   }, [draftScope]);
+  const externalDraftScope = activeExternal
+    ? `ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`
+    : undefined;
+  useEffect(() => {
+    if (externalDraftScope) resetPromptBrowsing(promptHistory.current.get(externalDraftScope));
+  }, [externalDraftScope]);
   const selectedModel = catalog?.profiles.find(
     (model) => model.id === opened?.configuration.profileId,
   );
@@ -360,6 +369,23 @@ export function App() {
   // 快照到消息列表的推导按引用记忆：自动预览 effect 只应在快照真正变化时重跑，
   // 不能因为草稿输入等无关渲染反复扫描历史。
   const messages = useMemo(() => (facts.state ? selectMessages(facts.state) : []), [facts.state]);
+  // 继续历史本地会话时，从当前会话已安装的公开投影消息补种输入历史：
+  // 必须核对 identity.conversationId 与当前 opened 一致，避免切换会话间隙把旧视图消息串入新作用域。
+  const loadedConversationId = facts.state?.identity.conversationId;
+  useEffect(() => {
+    if (!opened || loadedConversationId !== opened.conversationId) return;
+    const scope = `${opened.workspaceId}:${opened.conversationId}`;
+    promptHistory.current.set(scope, seedPromptHistory(promptHistory.current.get(scope), messages));
+  }, [opened, loadedConversationId, messages]);
+  // 继续历史外部代理会话时同步从其公开快照补种输入历史。
+  const activeExternalMessages = activeExternal?.snapshot.messages;
+  useEffect(() => {
+    if (!externalDraftScope || !activeExternalMessages) return;
+    promptHistory.current.set(
+      externalDraftScope,
+      seedPromptHistory(promptHistory.current.get(externalDraftScope), activeExternalMessages),
+    );
+  }, [externalDraftScope, activeExternalMessages]);
   // 顶栏手动入口：当前会话存在可预览产物时给出常驻按钮。自动弹只覆盖「新产物」一次，
   // 用户关闭后仍需要主动重开的方式；没有产物时不渲染，避免出现点了没有内容的入口。
   const latestArtifact = useMemo(
@@ -833,18 +859,20 @@ export function App() {
   }
   async function sendExternalPrompt(text: string) {
     const cur = activeExternalRef.current;
-    if (!cur || !text.trim() || busy) return;
+    const trimmed = text.trim();
+    if (!cur || !trimmed || busy) return;
     const draftKey = `ext:${cur.workspaceId}:${cur.sessionId}`;
     await act(async () => {
       const snapshot = await api.external.prompt({
         workspaceId: cur.workspaceId,
         sessionId: cur.sessionId,
-        text: text.trim(),
+        text: trimmed,
       });
       setActiveExternal((prev) =>
         prev && prev.sessionId === cur.sessionId ? { ...prev, snapshot } : prev,
       );
       ui.draft(draftKey, '');
+      rememberPrompt(trimmed, draftKey);
       await refreshExternalList(cur.workspaceId);
     });
   }
@@ -978,55 +1006,65 @@ export function App() {
   }
   /** 记录一条真正发出的输入；空白与连续重复不增加，每个作用域最多保留最近 100 条。 */
   function rememberPrompt(text: string, scope = draftScope): void {
-    const history = promptHistory.current.get(scope) ?? { entries: [], index: 0 };
-    if (text.trim() && history.entries.at(-1) !== text) history.entries.push(text);
-    if (history.entries.length > 100) history.entries.splice(0, history.entries.length - 100);
-    history.index = history.entries.length;
-    history.draft = undefined;
-    promptHistory.current.set(scope, history);
-  }
-
-  /** 是否正在历史浏览（已上翻离开最新草稿）：↓ 只在这种情况下接管按键。 */
-  function browsingPromptHistory(): boolean {
-    const history = promptHistory.current.get(draftScope);
-    return Boolean(history && history.index < history.entries.length);
+    promptHistory.current.set(scope, rememberPromptEntry(promptHistory.current.get(scope), text));
   }
 
   /** 用户手动编辑或从补全/示例/回填写入草稿后退出历史浏览态，防止后续按 ↓ 抹掉刚编辑的内容。 */
   function resetPromptHistoryBrowsing(scope = draftScope): void {
-    const history = promptHistory.current.get(scope);
-    if (!history) return;
-    history.index = history.entries.length;
-    history.draft = undefined;
+    resetPromptBrowsing(promptHistory.current.get(scope));
   }
 
   /**
    * ↑/↓ 在已发送输入之间浏览，返回是否消费了按键。
    * 首次上翻保存当前未提交草稿，下翻越过最新项时原样恢复而不是清空。
    */
-  function recallPrompt(direction: -1 | 1): boolean {
-    const history = promptHistory.current.get(draftScope);
-    if (!history?.entries.length) return false;
-    if (direction === -1) {
-      if (history.index <= 0) return false;
-      if (history.index === history.entries.length) history.draft = draft;
-      history.index -= 1;
-    } else {
-      if (history.index >= history.entries.length) return false;
-      history.index += 1;
-    }
-    const value =
-      history.index === history.entries.length
-        ? (history.draft ?? '')
-        : history.entries[history.index];
+  function recallPrompt(
+    direction: -1 | 1,
+    scope = draftScope,
+    currentDraft = draft,
+    targetElement: HTMLTextAreaElement | null = composerInput.current,
+  ): boolean {
+    const step = stepPromptHistory(promptHistory.current.get(scope), direction, currentDraft);
+    if (!step.consumed || step.value === undefined) return false;
+    const value = step.value;
     // 在离散按键事件内同步提交受控值并就地定位末尾光标：用 requestAnimationFrame 延迟到下一帧
     // 会在后续全选替换或 Home 移光标之间插入旧的末尾定位，吞掉刚建立的选区导致文本重复拼接。
     flushSync(() => {
-      ui.draft(draftScope, value);
+      ui.draft(scope, value);
     });
-    const element = composerInput.current;
-    if (element) element.selectionStart = element.selectionEnd = element.value.length;
+    if (targetElement) {
+      targetElement.selectionStart = targetElement.selectionEnd = targetElement.value.length;
+    }
     return true;
+  }
+
+  /**
+   * 补全面板关闭时 ↑/↓ 召回历史问句：上翻只在光标位于开头（或在历史浏览中位于末尾）时接管，
+   * 下翻只在历史浏览且光标位于末尾时接管，避免抢占多行编辑的正常行移动。
+   */
+  function handlePromptHistoryKeyDown(
+    event: KeyboardEvent<HTMLTextAreaElement>,
+    scope = draftScope,
+    currentDraft = draft,
+    targetElement: HTMLTextAreaElement | null = composerInput.current,
+  ): boolean {
+    const element = event.currentTarget;
+    const collapsed = element.selectionStart === element.selectionEnd;
+    const atStart = collapsed && element.selectionStart === 0;
+    const atEnd = collapsed && element.selectionStart === element.value.length;
+    const browsing = isPromptHistoryBrowsing(promptHistory.current.get(scope));
+    if (event.key === 'ArrowUp' && (atStart || (browsing && atEnd))) {
+      // 已到最旧项也要吞掉按键：否则浏览中的光标会被浏览器从末尾弹回开头。
+      event.preventDefault();
+      recallPrompt(-1, scope, currentDraft, targetElement ?? element);
+      return true;
+    }
+    if (event.key === 'ArrowDown' && browsing && atEnd) {
+      event.preventDefault();
+      recallPrompt(1, scope, currentDraft, targetElement ?? element);
+      return true;
+    }
+    return false;
   }
 
   async function send() {
@@ -1043,6 +1081,8 @@ export function App() {
           prompt: input,
         });
         ui.draft(':new', '');
+        rememberPrompt(input);
+        rememberPrompt(input, `ext:${workspace.id}:${snapshot.session.id}`);
         setPendingHarness(undefined);
         await openExternalSession(workspace, snapshot.session.id);
       });
@@ -1548,24 +1588,7 @@ export function App() {
                 return;
               }
             }
-            // 补全面板关闭时 ↑/↓ 召回已发送输入：上翻只在光标位于开头（或在历史浏览中）时接管，
-            // 下翻只在历史浏览且光标位于末尾时接管，避免抢占多行编辑的正常行移动。
-            const element = event.currentTarget;
-            const collapsed = element.selectionStart === element.selectionEnd;
-            const atStart = collapsed && element.selectionStart === 0;
-            const atEnd = collapsed && element.selectionStart === draft.length;
-            const browsing = browsingPromptHistory();
-            if (event.key === 'ArrowUp' && (atStart || (browsing && atEnd))) {
-              // 已到最旧项也要吞掉按键：否则浏览中的光标会被浏览器从末尾弹回开头。
-              event.preventDefault();
-              recallPrompt(-1);
-              return;
-            }
-            if (event.key === 'ArrowDown' && browsing && atEnd) {
-              event.preventDefault();
-              recallPrompt(1);
-              return;
-            }
+            if (handlePromptHistoryKeyDown(event)) return;
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
               void send();
@@ -2072,9 +2095,20 @@ export function App() {
               wide={wide}
               detailsOpen={Boolean(details)}
               scrollRef={scrollRef}
-              onDraftChange={(value) =>
-                ui.draft(`ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`, value)
-              }
+              onDraftChange={(value) => {
+                const extScope = `ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`;
+                resetPromptHistoryBrowsing(extScope);
+                ui.draft(extScope, value);
+              }}
+              onHistoryKeyDown={(event) => {
+                const extScope = `ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`;
+                return handlePromptHistoryKeyDown(
+                  event,
+                  extScope,
+                  ui.drafts[extScope] ?? '',
+                  event.currentTarget,
+                );
+              }}
               onSend={(text) => void sendExternalPrompt(text)}
               onCancel={() => void cancelExternal()}
               onApprove={(approvalId, optionId, cancel) =>
@@ -2123,6 +2157,7 @@ export function App() {
                     ? () => {
                         void act(async () => {
                           await client.start(scopeOf(opened), '继续');
+                          rememberPrompt('继续');
                         });
                       }
                     : undefined

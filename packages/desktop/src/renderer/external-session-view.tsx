@@ -12,7 +12,14 @@ import {
   TerminalWindowIcon,
   WarningCircleIcon,
 } from '@phosphor-icons/react';
-import { type CSSProperties, type RefObject, useEffect, useRef, useState } from 'react';
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { MessageList } from './message-list.js';
 import { TaskPanel } from './task-panel.js';
 
@@ -151,6 +158,7 @@ export function ExternalSessionView({
   detailsOpen,
   scrollRef,
   onDraftChange,
+  onHistoryKeyDown,
   onSend,
   onCancel,
   onApprove,
@@ -170,6 +178,8 @@ export function ExternalSessionView({
   readonly detailsOpen: boolean;
   readonly scrollRef: RefObject<HTMLDivElement | null>;
   readonly onDraftChange: (value: string) => void;
+  /** 外部会话输入区 ↑/↓ 历史问句召回回调；返回 true 表示按键已消费。 */
+  readonly onHistoryKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
   readonly onSend: (text: string) => void;
   readonly onCancel: () => void;
   readonly onApprove: (approvalId: string, optionId?: string, cancel?: boolean) => void;
@@ -299,6 +309,7 @@ export function ExternalSessionView({
               className="max-h-[200px] rounded-none bg-transparent px-2 py-1 ring-0 focus:ring-0"
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
+                if (onHistoryKeyDown?.(event)) return;
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
                   if (canSend) onSend(draft.trim());

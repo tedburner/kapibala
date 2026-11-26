@@ -135,3 +135,112 @@ test('任务面板：pill 进度、浮层四态与底栏状态条', async () => 
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('后续轮次自动收起已完成任务看板，且继续历史会话支持 ↑/↓ 召回历史问句', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-electron-todos-settled-'));
+  const root = path.join(home, '.kapibala/workspaces/default');
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(
+    path.join(home, '.kapibala/settings.json'),
+    JSON.stringify({
+      profiles: [
+        {
+          id: 'fixture',
+          name: '离线观察模型',
+          provider: 'openai-compatible',
+          modelName: 'fixture',
+          baseURL: 'http://127.0.0.1:1/v1',
+          apiKeyEnv: 'FIXTURE_KEY',
+          apiKey: 'test-only-offline-key',
+          contextWindow: 32000,
+        },
+      ],
+      defaultModel: 'fixture',
+    }),
+  );
+
+  // 构造两轮历史：第 1 轮任务清单全部完成，第 2 轮用户继续提问且未再写新清单。
+  const handle = await new SessionManager({
+    workspaceRoot: root,
+    projectRootMode: 'exact',
+    homeDirectory: home,
+  }).create();
+  await handle.store.append({
+    role: 'user',
+    interactionId: 'run-1',
+    content: [{ type: 'text', text: '历史第一问：升级依赖版本' }],
+  });
+  await handle.store.append({
+    role: 'assistant',
+    interactionId: 'run-1',
+    content: [
+      {
+        type: 'tool_use',
+        id: 'todo-done',
+        name: 'todo_write',
+        input: {
+          items: [
+            { id: '1', title: '修改版本号', status: 'completed' },
+            { id: '2', title: '执行编译检查', status: 'completed' },
+          ],
+        },
+      },
+    ],
+  });
+  await handle.store.append({
+    role: 'tool',
+    interactionId: 'run-1',
+    content: [
+      { type: 'tool_result', toolUseId: 'todo-done', content: '任务清单已更新：2/2 已完成' },
+    ],
+  });
+  await handle.store.append({
+    role: 'assistant',
+    interactionId: 'run-1',
+    content: [{ type: 'text', text: '依赖升级已完成。' }],
+  });
+  await handle.store.append({
+    role: 'user',
+    interactionId: 'run-2',
+    content: [{ type: 'text', text: '历史第二问：如何验证版本升级兼容性问题?' }],
+  });
+  await handle.store.append({
+    role: 'assistant',
+    interactionId: 'run-2',
+    content: [{ type: 'text', text: '需要从编译期和运行期两个层面验证。' }],
+  });
+  await handle.release();
+
+  const app = await electron.launch({
+    args: [entry],
+    env: environment(home, path.join(home, 'desktop-state')),
+  });
+  try {
+    const page = await app.firstWindow();
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.getByRole('searchbox', { name: '搜索空间与对话' }).fill('历史第一问');
+    await page.getByRole('button', { name: '历史第一问：升级依赖版本', exact: true }).click();
+
+    await expect(page.getByText('需要从编译期和运行期两个层面验证。')).toBeVisible({
+      timeout: 15_000,
+    });
+    // 上一轮已全部完成的任务看板，在后续轮次中不再继续停留。
+    await expect(page.getByRole('button', { name: '任务清单', exact: true })).toHaveCount(0);
+
+    // 继续历史会话时，输入框直接按 ↑/↓ 即可召回历史问句并恢复未提交草稿。
+    const input = page.getByLabel('发送消息');
+    await expect(input).toBeEnabled({ timeout: 15_000 });
+    await input.click();
+    await input.press('ArrowUp');
+    await expect(input).toHaveValue('历史第二问：如何验证版本升级兼容性问题?');
+    await input.press('ArrowUp');
+    await expect(input).toHaveValue('历史第一问：升级依赖版本');
+    await input.press('ArrowDown');
+    await expect(input).toHaveValue('历史第二问：如何验证版本升级兼容性问题?');
+    await input.press('ArrowDown');
+    await expect(input).toHaveValue('');
+  } finally {
+    await app.close().catch(() => {});
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

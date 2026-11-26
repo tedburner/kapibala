@@ -99,9 +99,11 @@ export class ExternalTranscriptProjector {
 
   /**
    * 在发起实时 `prompt(text)` 前写入用户消息，并开启对部分 ACP 代理回显 `user_message_chunk` 的前缀去重窗口。
+   * 若上一轮计划已全部完结（无进行中或待办项），同步清出旧计划看板，避免长期滞留在后续对话轮次。
    */
   beginUserTurn(rawText: string): ViewMessage {
     this.sealStreamingMessages('completed');
+    this.clearSettledPlan();
     const clamped = clampBlockText(this.cleanText(rawText));
     if (clamped.truncated) this.truncated = true;
     this.pendingEchoRemainder = rawText.replace(/\r\n?/g, '\n');
@@ -135,6 +137,7 @@ export class ExternalTranscriptProjector {
         if (!event.replay && this.consumeExpectedEcho(event.text)) {
           return;
         }
+        this.clearSettledPlan();
         this.appendTextBlock('user', 'text', event.text, Boolean(event.replay));
         return;
       }
@@ -481,6 +484,18 @@ export class ExternalTranscriptProjector {
 
     if (droppedMessages) {
       this.rebuildToolLocations();
+    }
+  }
+
+  /** 已全部完结（无 pending/in_progress）的计划只展示到所属轮次结束，进入后续用户轮次自动清空。 */
+  private clearSettledPlan(): void {
+    if (
+      this.planState &&
+      !this.planState.items.some(
+        (item) => item.status === 'pending' || item.status === 'in_progress',
+      )
+    ) {
+      this.planState = undefined;
     }
   }
 
