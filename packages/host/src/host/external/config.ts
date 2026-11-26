@@ -107,6 +107,18 @@ function isAllowedConfiguredCommandPath(raw: string): boolean {
   return false;
 }
 
+function containsPlaintextSecret(value: string): boolean {
+  if (redactCommonSecrets(value) !== value || looksLikePastedSecretToken(value)) {
+    return true;
+  }
+  const eqIdx = value.indexOf('=');
+  if (eqIdx > 0 && eqIdx < value.length - 1) {
+    const rhs = value.slice(eqIdx + 1).trim();
+    if (looksLikePastedSecretToken(rhs)) return true;
+  }
+  return false;
+}
+
 function validateCommandField(label: string, command: string): void {
   const trimmed = command.trim();
   if (!trimmed || hasAsciiControlCharacter(trimmed)) {
@@ -121,7 +133,7 @@ function validateCommandField(label: string, command: string): void {
       `[${label}] 禁止使用相对路径命令 '${trimmed}'（请填写裸命令名或绝对路径）`,
     );
   }
-  if (redactCommonSecrets(trimmed) !== trimmed) {
+  if (containsPlaintextSecret(trimmed)) {
     throw new ExternalHarnessError(
       'EXTERNAL_CONFIG_INVALID',
       `[${label}] 命令中包含疑似明文凭据，请改用 envFrom 转发环境变量名`,
@@ -143,7 +155,7 @@ function validateArgsField(label: string, args: readonly string[]): void {
         `[${label}] 启动参数必须为不含空字节且长度不超过 16KiB 的字符串`,
       );
     }
-    if (redactCommonSecrets(item) !== item) {
+    if (containsPlaintextSecret(item)) {
       throw new ExternalHarnessError(
         'EXTERNAL_CONFIG_INVALID',
         `[${label}] 启动参数中包含疑似明文密钥，严禁将 API Key 写入参数列表`,
@@ -172,7 +184,7 @@ function validateEnvField(label: string, env: Readonly<Record<string, string>>):
         `[${label}] 环境变量 '${key}' 值包含非法控制字符`,
       );
     }
-    if (redactCommonSecrets(value) !== value) {
+    if (containsPlaintextSecret(value)) {
       throw new ExternalHarnessError(
         'EXTERNAL_CONFIG_INVALID',
         `[${label}] 环境变量 '${key}' 值包含疑似明文密钥，请改用 envFrom 按名透传`,
@@ -501,7 +513,7 @@ export function listResolvedExternalHarnesses(
         ...builtin,
         command: effectiveCommand,
         ...(ov?.args !== undefined ? { args: ov.args } : {}),
-        ...(ov?.env !== undefined ? { env: ov.env } : {}),
+        ...(builtin.env || ov?.env ? { env: { ...builtin.env, ...ov?.env } } : {}),
         ...(ov?.envFrom !== undefined ? { envFrom: ov.envFrom } : {}),
         enabled: effectiveEnabled,
         builtin: true,

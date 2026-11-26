@@ -13,6 +13,7 @@ import {
 import { afterEach, expect, it, vi } from 'vitest';
 import { SettingsService } from '../src/agent-host/settings-service.js';
 import { Workspaces } from '../src/agent-host/workspaces.js';
+import { RESULTS } from '../src/shared/contracts.js';
 
 const roots: string[] = [];
 function fixture() {
@@ -533,7 +534,7 @@ it('anthropic 端点探测携带 x-api-key 与 anthropic-version，官方 API �
   }
 });
 
-it('设为默认与角色绑定只写引用：内置模型不物化条目进用户文件', () => {
+it('设为默认与角色绑定只写引用：内置模型不物化条目进用户文件，且部分角色路由不产生 undefined 键破坏 RPC 校验', () => {
   const { root, workspaces } = fixture();
   const service = new SettingsService(workspaces);
   service.setDefault('deepseek-flash');
@@ -542,6 +543,29 @@ it('设为默认与角色绑定只写引用：内置模型不物化条目进用�
   expect(stored.defaultModel).toBe('deepseek-flash');
   expect(stored.modelRouting).toEqual({ planning: 'claude-opus-5' });
   expect(stored.profiles).toEqual([]);
+
+  // 回归守卫：RpcEndpoint 在 JSON.stringify 前直接对内存对象跑 RESULTS['settings.read'].parse；
+  // 只绑定部分角色时，未绑定的 summary/fast/execution 绝不能成为值为 undefined 的自有属性，
+  // 否则 z.record(z.string(), z.string()) 抛错会导致整个预设厂商与模型列表在桌面端消失。
+  const rawRead = service.read();
+  expect(Object.hasOwn(rawRead.routing, 'planning')).toBe(true);
+  expect(Object.hasOwn(rawRead.routing, 'summary')).toBe(false);
+  expect(Object.hasOwn(rawRead.routing, 'fast')).toBe(false);
+  const parsed = RESULTS['settings.read'].parse(rawRead);
+  expect(parsed.routing).toEqual({ planning: 'claude-opus-5' });
+  expect(parsed.providers.map((item) => item.key)).toEqual(
+    expect.arrayContaining([
+      'deepseek',
+      'openai',
+      'anthropic',
+      'google',
+      'qwen',
+      'moonshot',
+      'zhipu',
+      'ollama',
+      'custom',
+    ]),
+  );
 });
 
 it('项目级模型在目录投影中标记 scope=project，供页面禁用管理操作', () => {

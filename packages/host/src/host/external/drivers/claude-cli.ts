@@ -296,54 +296,62 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       };
     }
 
-    const launchEnv = buildExternalLaunchEnv({
-      hostEnv: this.options.hostEnv,
-      env: def.env,
-      envFrom: def.envFrom,
-      extraPathDirs: resolvedCmd.extraPathDirs,
-      platform: this.options.platform,
-    });
-
     const deadline = Date.now() + (this.options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS);
-    // CLI 认证状态只读；共享同一探测预算，输出仅用于提取版本与认证布尔值。
-    const probe = async (args: string[]) => {
-      if (signal?.aborted) throw new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消');
-      const proc = ExternalProcessSupervisor.spawn({
-        executable: resolvedCmd.executable,
-        args: [...resolvedCmd.args, ...args],
-        cwd,
-        env: launchEnv.env,
-      });
-      let stdout = '';
-      proc.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.subarray(0, Math.max(0, 8192 - stdout.length)).toString('utf8');
-      });
-      const abort = () => void proc.close();
-      signal?.addEventListener('abort', abort, { once: true });
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const exit = await Promise.race([
-          proc.waitForClose(),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => {
-                reject(new ExternalHarnessError('EXTERNAL_TIMEOUT', 'Claude Code 探测超时'));
-              },
-              Math.max(1, deadline - Date.now()),
-            );
-            timer.unref?.();
-          }),
-        ]);
-        if (signal?.aborted) throw new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消');
-        return { code: exit.code, stdout };
-      } finally {
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', abort);
-        await proc.close();
-      }
-    };
 
     try {
+      const launchEnv = buildExternalLaunchEnv({
+        hostEnv: this.options.hostEnv,
+        env: def.env,
+        envFrom: def.envFrom,
+        extraPathDirs: resolvedCmd.extraPathDirs,
+        platform: this.options.platform,
+      });
+      // 若底层经 node 解包脚本，保留前置脚本路径参数；若是测试夹具显式传入的脚本路径也予以保留，但剔除用户附加的会话级 CLI 标志以防破坏 `auth status` 子命令解析。
+      const prefixCount = Math.max(0, resolvedCmd.args.length - def.args.length);
+      const scriptArgFromDef =
+        prefixCount === 0 && def.args.length > 0 && /\.[cm]?[jt]s$/i.test(def.args[0]!)
+          ? [def.args[0]!, ...def.args.slice(1).filter((a) => a === '--auth-fail')]
+          : [];
+      const baseExecArgs = [...resolvedCmd.args.slice(0, prefixCount), ...scriptArgFromDef];
+
+      // CLI 认证状态只读；共享同一探测预算，输出仅用于提取版本与认证布尔值。
+      const probe = async (args: string[]) => {
+        if (signal?.aborted) throw new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消');
+        const proc = ExternalProcessSupervisor.spawn({
+          executable: resolvedCmd.executable,
+          args: [...baseExecArgs, ...args],
+          cwd,
+          env: launchEnv.env,
+        });
+        let stdout = '';
+        proc.stdout.on('data', (chunk: Buffer) => {
+          stdout += chunk.subarray(0, Math.max(0, 8192 - stdout.length)).toString('utf8');
+        });
+        const abort = () => void proc.close();
+        signal?.addEventListener('abort', abort, { once: true });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const exit = await Promise.race([
+            proc.waitForClose(),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => {
+                  reject(new ExternalHarnessError('EXTERNAL_TIMEOUT', 'Claude Code 探测超时'));
+                },
+                Math.max(1, deadline - Date.now()),
+              );
+              timer.unref?.();
+            }),
+          ]);
+          if (signal?.aborted) throw new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消');
+          return { code: exit.code, stdout };
+        } finally {
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', abort);
+          await proc.close();
+        }
+      };
+
       const versionResult = await probe(['--version']);
       if (versionResult.code !== 0) {
         throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', 'Claude Code 版本探测未成功退出');
@@ -546,7 +554,11 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
             return;
           }
           if (subtype === 'api_retry') {
-            activeTurn?.bumpActivity();
+            if (activeTurn) {
+              activeTurn.sawStreamText = false;
+              activeTurn.sawStreamThinking = false;
+              activeTurn.bumpActivity();
+            }
             input.onEvent({
               type: 'diagnostic',
               level: 'warning',
@@ -702,6 +714,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
               pendingApprovalResolvers.delete(cancelledId);
               settle({ outcome: 'cancelled' }, true);
             }
+            input.onEvent({ type: 'approval_cancelled', requestId: cancelledId });
           }
           return;
         }
@@ -719,7 +732,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
                 ? clampCallId(req.tool_use_id, requestId)
                 : requestId;
 
-            if (!activeTurn) {
+            if (!activeTurn || activeTurn.cancelled) {
               try {
                 channel.send({
                   type: 'control_response',
@@ -728,7 +741,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
                     request_id: requestId,
                     response: {
                       behavior: 'deny',
-                      message: '当前无活跃执行轮次，已拒绝非预期工具调用',
+                      message: '当前无活跃执行轮次或本轮已取消，已拒绝工具调用',
                       interrupt: true,
                       toolUseID: toolUseId,
                     },
@@ -774,6 +787,18 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
               }
               if (suppressReply) return;
               const allowed = decision.outcome === 'selected' && decision.optionId === 'allow_once';
+              if (!allowed) {
+                const tracked = toolsByCallId.get(toolUseId);
+                if (tracked?.view.status === 'running') {
+                  emitToolUpsert(
+                    {
+                      ...tracked.view,
+                      status: decision.outcome === 'cancelled' ? 'interrupted' : 'failed',
+                    },
+                    tracked.startedAt,
+                  );
+                }
+              }
               try {
                 if (allowed) {
                   channel.send({
@@ -925,9 +950,11 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
     });
 
     void proc.waitForClose().then(async (exit) => {
+      const tail = exit.stderrTail ? `：${exit.stderrTail}` : '';
       const closeErr = new ExternalHarnessError(
         'EXTERNAL_PROTOCOL_ERROR',
-        `Claude Code 进程已退出（code=${exit.code ?? 'null'}）`,
+        `Claude Code 进程已退出（code=${exit.code ?? 'null'}${exit.signal ? `, signal=${exit.signal}` : ''}）${tail}`,
+        { processTerminated: true },
       );
       await channel.drainAndClose(closeErr);
       settleHandshakeErr(closeErr);
@@ -1136,6 +1163,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       },
     };
 
+    // 驱动层声明协议支持 `--resume`，但离线持久化与续聊门禁（registry / canContinueRecord）仍要求已拿到合法 nativeSessionId。
     return {
       handle,
       ...(currentSessionId ? { nativeSessionId: currentSessionId } : {}),

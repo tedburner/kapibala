@@ -551,15 +551,22 @@ export function SettingsDialog({
   const [fieldErrors, setFieldErrors] = useState<CustomFieldErrors>({});
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('light');
   const initialized = useRef(false);
+  const retriedCatalogOnOpen = useRef(false);
   useEffect(() => {
     if (!open) {
       initialized.current = false;
+      retriedCatalogOnOpen.current = false;
       setKey('');
       setNotice('');
       setFieldErrors({});
       setModels(undefined);
       setFetchStatus('');
       setManualModel(false);
+    } else if (!catalog && !hostDown && !retriedCatalogOnOpen.current) {
+      retriedCatalogOnOpen.current = true;
+      void reload().catch((error) =>
+        report(error instanceof Error ? error.message : '读取模型配置失败，请重试。'),
+      );
     } else if (!initialized.current && catalog) {
       initialized.current = true;
       void window.kapibala.app
@@ -577,7 +584,7 @@ export function SettingsDialog({
         setProviderSel(model?.providerKey ?? 'custom');
       }
     }
-  }, [open, catalog, report]);
+  }, [open, catalog, hostDown, reload, report]);
   /** 归档页数据按空间聚合；一次读取失败整体报错，不展示半份分组。 */
   const [archive, setArchive] = useState<{
     loading: boolean;
@@ -703,7 +710,7 @@ export function SettingsDialog({
   }, [catalog, groupedModels, providerSel]);
   const providerMeta = (catalog?.providers ?? []).find((item) => item.key === providerSel);
   /** 自建端点分组（含用户命名的厂商与通用兜底桶）才放开端点、厂商名与协议编辑。 */
-  const customGroup = Boolean(providerMeta?.custom);
+  const customGroup = Boolean(providerMeta?.custom) || providerSel === 'custom';
   /** 探测状态属于「正在编辑的端点」，切换厂商或模型时一并清空，避免串到别的表单。 */
   function resetProbe() {
     probeToken.current += 1;
@@ -1117,7 +1124,9 @@ export function SettingsDialog({
                         );
                       })}
                       {visibleProviders.length === 0 && (
-                        <p className="kapibala-models-empty">没有匹配的提供商或模型</p>
+                        <p className="kapibala-models-empty">
+                          {catalog ? '没有匹配的提供商或模型' : '正在加载提供商与模型目录…'}
+                        </p>
                       )}
                     </div>
                     <div className="kapibala-models-detail">

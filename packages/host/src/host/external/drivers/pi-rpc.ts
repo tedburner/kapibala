@@ -375,6 +375,7 @@ interface ActivePiTurn {
   pendingApprovals: number;
   latestUsage?: ViewUsage;
   lastErrorText?: string;
+  graceTimer?: ReturnType<typeof setTimeout>;
   bumpActivity: () => void;
   resolve: (res: ExternalTurnResult) => void;
   reject: (err: unknown) => void;
@@ -448,117 +449,132 @@ export class PiRpcDriver implements ExternalHarnessDriver {
       };
     }
 
-    const launchEnv = buildExternalLaunchEnv({
-      hostEnv: this.options.hostEnv,
-      env: def.env,
-      envFrom: def.envFrom,
-      extraPathDirs: resolvedCmd.extraPathDirs,
-      platform: this.options.platform,
-    });
     const timeoutMs = this.options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
-
-    // 1. 快速读取 `--version`
     let version: string | undefined;
+    let proc: ExternalProcessSupervisor | undefined;
+    let channel: NdjsonChannel | undefined;
+
     try {
-      const verProc = ExternalProcessSupervisor.spawn({
-        executable: resolvedCmd.executable,
-        args: [...resolvedCmd.args, '--version'],
+      const launchEnv = buildExternalLaunchEnv({
+        hostEnv: this.options.hostEnv,
+        env: def.env,
+        envFrom: def.envFrom,
+        extraPathDirs: resolvedCmd.extraPathDirs,
+        platform: this.options.platform,
+      });
+
+      const prefixCount = Math.max(0, resolvedCmd.args.length - def.args.length);
+      const scriptArgFromDef =
+        prefixCount === 0 && def.args.length > 0 && /\.[cm]?[jt]s$/i.test(def.args[0]!)
+          ? [def.args[0]!]
+          : [];
+      const verBaseArgs = [...resolvedCmd.args.slice(0, prefixCount), ...scriptArgFromDef];
+
+      // 1. 快速读取 `--version`
+      try {
+        const verProc = ExternalProcessSupervisor.spawn({
+          executable: resolvedCmd.executable,
+          args: [...verBaseArgs, '--version'],
+          cwd,
+          env: launchEnv.env,
+        });
+        let verOut = '';
+        verProc.stdout.on('data', (chunk: Buffer) => {
+          if (verOut.length < 256) verOut += chunk.toString('utf8');
+        });
+        const verTimer = setTimeout(
+          () => {
+            void verProc.close(200);
+          },
+          Math.min(timeoutMs, 5_000),
+        );
+        verTimer.unref?.();
+        await verProc.waitForClose();
+        clearTimeout(verTimer);
+        const firstLine = sanitizeDisplayText(verOut.trim().split(/\r?\n/)[0] ?? '', 64);
+        if (firstLine) {
+          version = firstLine.replace(/^pi\s+/i, '').trim() || firstLine;
+        }
+      } catch {
+        /* version probe optional */
+      }
+
+      // 2. 启动无副作用 `--mode rpc --no-session`（始终在 `--` 分隔符之前注入探测标志）执行 `get_state` 与可用模型就绪核验
+      const sepIdx = def.args.indexOf('--');
+      const headUserArgs = sepIdx >= 0 ? def.args.slice(0, sepIdx) : def.args;
+      const tailUserArgs = sepIdx >= 0 ? def.args.slice(sepIdx) : [];
+      const probeArgs = resolveExternalCommand({
+        command: def.command,
+        args: [
+          ...headUserArgs,
+          ...(headUserArgs.includes('--mode') ? [] : ['--mode', 'rpc']),
+          '--no-session',
+          '--no-extensions',
+          '--no-mcp',
+          '--no-skills',
+          '--no-approve',
+          '--offline',
+          ...tailUserArgs,
+        ],
+        platform: this.options.platform,
+        homeDir: this.options.homeDir,
+        hostEnv: this.options.hostEnv,
+      });
+
+      proc = ExternalProcessSupervisor.spawn({
+        executable: probeArgs.executable,
+        args: probeArgs.args,
         cwd,
         env: launchEnv.env,
       });
-      let verOut = '';
-      verProc.stdout.on('data', (chunk: Buffer) => {
-        if (verOut.length < 256) verOut += chunk.toString('utf8');
-      });
-      const verTimer = setTimeout(
-        () => {
-          void verProc.close(200);
-        },
-        Math.min(timeoutMs, 5_000),
-      );
-      verTimer.unref?.();
-      await verProc.waitForClose();
-      clearTimeout(verTimer);
-      const firstLine = sanitizeDisplayText(verOut.trim().split(/\r?\n/)[0] ?? '', 64);
-      if (firstLine) {
-        version = firstLine.replace(/^pi\s+/i, '').trim() || firstLine;
-      }
-    } catch {
-      /* version probe optional */
-    }
 
-    // 2. 启动无副作用 `--mode rpc --no-session` 执行 `get_state` 与可用模型就绪核验
-    const probeArgs = resolveExternalCommand({
-      command: def.command,
-      args: [
-        ...def.args,
-        ...(def.args.includes('--mode') ? [] : ['--mode', 'rpc']),
-        '--no-session',
-        '--no-extensions',
-        '--no-mcp',
-        '--no-skills',
-        '--no-approve',
-        '--offline',
-      ],
-      platform: this.options.platform,
-      homeDir: this.options.homeDir,
-      hostEnv: this.options.hostEnv,
-    });
-
-    const proc = ExternalProcessSupervisor.spawn({
-      executable: probeArgs.executable,
-      args: probeArgs.args,
-      cwd,
-      env: launchEnv.env,
-    });
-
-    const pending = new Map<string, (resp: Record<string, unknown>) => void>();
-    const channel = new NdjsonChannel(proc.stdout, proc.stdin, {
-      onMessage: (payload) => {
-        if (payload.type === 'response' && typeof payload.id === 'string') {
-          const cb = pending.get(payload.id);
-          if (cb) {
-            pending.delete(payload.id);
-            cb(payload);
+      const pending = new Map<string, (resp: Record<string, unknown>) => void>();
+      channel = new NdjsonChannel(proc.stdout, proc.stdin, {
+        onMessage: (payload) => {
+          if (payload.type === 'response' && typeof payload.id === 'string') {
+            const cb = pending.get(payload.id);
+            if (cb) {
+              pending.delete(payload.id);
+              cb(payload);
+            }
           }
-        }
-      },
-    });
-
-    const callProbe = (id: string, type: string): Promise<Record<string, unknown>> =>
-      new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(
-            new ExternalHarnessError(
-              'EXTERNAL_TIMEOUT',
-              `等待 Pi RPC ${type} 响应超时（${timeoutMs}ms）`,
-            ),
-          );
-        }, timeoutMs);
-        timer.unref?.();
-        const onAbort = (): void => {
-          clearTimeout(timer);
-          pending.delete(id);
-          reject(new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消'));
-        };
-        signal?.addEventListener('abort', onAbort, { once: true });
-        pending.set(id, (resp) => {
-          clearTimeout(timer);
-          signal?.removeEventListener('abort', onAbort);
-          resolve(resp);
-        });
-        try {
-          channel.send({ id, type });
-        } catch (err) {
-          clearTimeout(timer);
-          signal?.removeEventListener('abort', onAbort);
-          pending.delete(id);
-          reject(err);
-        }
+        },
       });
+      const activeChannel = channel;
 
-    try {
+      const callProbe = (id: string, type: string): Promise<Record<string, unknown>> =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            reject(
+              new ExternalHarnessError(
+                'EXTERNAL_TIMEOUT',
+                `等待 Pi RPC ${type} 响应超时（${timeoutMs}ms）`,
+              ),
+            );
+          }, timeoutMs);
+          timer.unref?.();
+          const onAbort = (): void => {
+            clearTimeout(timer);
+            pending.delete(id);
+            reject(new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消'));
+          };
+          signal?.addEventListener('abort', onAbort, { once: true });
+          pending.set(id, (resp) => {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+            resolve(resp);
+          });
+          try {
+            activeChannel.send({ id, type });
+          } catch (err) {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+            pending.delete(id);
+            reject(err);
+          }
+        });
+
       const stateResp = await callProbe('probe_state', 'get_state');
       channel.markHandshakeCompleted();
       if (stateResp.success !== true) {
@@ -610,8 +626,28 @@ export class PiRpcDriver implements ExternalHarnessDriver {
         status: 'ready',
       };
     } catch (err) {
+      if (err instanceof ExternalHarnessError) {
+        if (err.code === 'EXTERNAL_COMMAND_NOT_FOUND') {
+          return {
+            available: false,
+            loadSupported: false,
+            status: 'not_installed',
+            reason: err.message,
+            installHint: PI_INSTALL_HINT,
+          };
+        }
+        if (err.code === 'EXTERNAL_UNSUPPORTED_SHIM' || err.code === 'EXTERNAL_NODE_NOT_FOUND') {
+          return {
+            available: false,
+            loadSupported: false,
+            status: 'invalid_shim',
+            reason: err.message,
+            installHint: PI_INSTALL_HINT,
+          };
+        }
+      }
       const msg = err instanceof Error ? err.message : String(err);
-      const diag = `${msg} ${proc.getStderrTail()}`.trim();
+      const diag = `${msg} ${proc?.getStderrTail() ?? ''}`.trim();
       if (isPiAuthErrorText(diag)) {
         return {
           available: false,
@@ -633,8 +669,8 @@ export class PiRpcDriver implements ExternalHarnessDriver {
         loginHint: PI_LOGIN_HINT,
       };
     } finally {
-      channel.close();
-      await proc.close();
+      channel?.close();
+      await proc?.close();
     }
   }
 
@@ -863,6 +899,10 @@ export class PiRpcDriver implements ExternalHarnessDriver {
                 }
               }
             }
+            // 每条 assistant 消息收尾后重置流式文本观测位，防止单轮多步工具调用后续非流式步骤正文被吞
+            if (activeTurn) {
+              activeTurn.emittedAnyText = false;
+            }
           }
           return;
         }
@@ -902,8 +942,12 @@ export class PiRpcDriver implements ExternalHarnessDriver {
 
           if (!reqId) return;
 
-          // 无活跃轮次或遇到不支持自由文本输入的对话框（input/editor），立即回传取消防子进程永久挂起。
-          if (!activeTurn || (uiMethod !== 'select' && uiMethod !== 'confirm')) {
+          // 无活跃轮次、当前轮次已取消或遇到不支持自由文本输入的对话框（input/editor），立即回传取消防子进程永久挂起。
+          if (
+            !activeTurn ||
+            activeTurn.cancelled ||
+            (uiMethod !== 'select' && uiMethod !== 'confirm')
+          ) {
             if (uiMethod === 'input' || uiMethod === 'editor') {
               input.onEvent({
                 type: 'diagnostic',
@@ -968,7 +1012,7 @@ export class PiRpcDriver implements ExternalHarnessDriver {
             toolTitle = card.displayName;
             options = [
               { optionId: 'allow_once', label: '允许本次', kind: 'allow_once' },
-              { optionId: 'allow_session', label: '本会话允许', kind: 'allow_session' },
+              { optionId: 'allow_session', label: '本会话允许同类工具', kind: 'allow_session' },
               { optionId: 'reject_once', label: '拒绝', kind: 'reject_once' },
             ];
             replyMapper = (decision) =>
@@ -1046,6 +1090,22 @@ export class PiRpcDriver implements ExternalHarnessDriver {
             if (activeTurn) {
               activeTurn.pendingApprovals = Math.max(0, activeTurn.pendingApprovals - 1);
               activeTurn.bumpActivity();
+            }
+            const isDenied =
+              decision.outcome === 'cancelled' ||
+              decision.optionId === 'reject_once' ||
+              decision.optionId === 'confirm_no';
+            if (isDenied) {
+              const tracked = toolsByCallId.get(toolCallId);
+              if (tracked?.view.status === 'running') {
+                emitTool(
+                  {
+                    ...tracked.view,
+                    status: decision.outcome === 'cancelled' ? 'interrupted' : 'failed',
+                  },
+                  tracked.args,
+                );
+              }
             }
             try {
               channel.send(replyMapper(decision));
@@ -1125,9 +1185,11 @@ export class PiRpcDriver implements ExternalHarnessDriver {
     });
 
     void proc.waitForClose().then(async (exit) => {
+      const tail = exit.stderrTail ? `：${exit.stderrTail}` : '';
       const closeErr = new ExternalHarnessError(
         'EXTERNAL_PROTOCOL_ERROR',
-        `Pi 进程已退出（code=${exit.code ?? 'null'}）`,
+        `Pi 进程已退出（code=${exit.code ?? 'null'}${exit.signal ? `, signal=${exit.signal}` : ''}）${tail}`,
+        { processTerminated: true },
       );
       await channel.drainAndClose(closeErr);
       rejectAllPendingCommands(closeErr);
@@ -1289,6 +1351,10 @@ export class PiRpcDriver implements ExternalHarnessDriver {
 
           const cleanup = (): void => {
             clearInterval(watchdogTimer);
+            if (currentTurn.graceTimer !== undefined) {
+              clearTimeout(currentTurn.graceTimer);
+              currentTurn.graceTimer = undefined;
+            }
             signal?.removeEventListener('abort', onAbort);
           };
 
@@ -1314,11 +1380,18 @@ export class PiRpcDriver implements ExternalHarnessDriver {
               }
             })
             .catch((err) => {
-              if (activeTurn === currentTurn && !currentTurn.cancelled) {
+              if (activeTurn === currentTurn) {
                 activeTurn = undefined;
                 cleanup();
                 settleAllApprovalsCancelled();
-                reject(err);
+                if (currentTurn.cancelled) {
+                  resolve({
+                    stopReason: 'cancelled',
+                    ...(proc.isClosed ? { processTerminated: true } : {}),
+                  });
+                } else {
+                  reject(err);
+                }
               }
             });
         });
@@ -1342,6 +1415,7 @@ export class PiRpcDriver implements ExternalHarnessDriver {
           }
         }, CANCEL_SETTLE_GRACE_MS);
         graceTimer.unref?.();
+        snapshotTurn.graceTimer = graceTimer;
       },
       async close(): Promise<void> {
         closingByClient = true;

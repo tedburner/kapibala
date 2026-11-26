@@ -230,10 +230,11 @@ export class NdjsonChannel {
     this.close(reason);
   }
 
-  /** 关闭通道并拒绝所有在途请求。 */
+  /** 关闭通道并拒绝所有在途请求；若曾因背压暂停输入流则主动恢复排空，防阻塞子进程退出。 */
   close(reason?: ExternalHarnessError): void {
     if (this.closed) return;
     this.closed = true;
+    const wasPaused = this.streamPaused;
     this.readable.off('data', this.handleData);
     this.readable.off('end', this.handleEnd);
     this.readable.off('error', this.handleStreamError);
@@ -242,6 +243,13 @@ export class NdjsonChannel {
     this.queuedBytes = 0;
     this.streamPaused = false;
     this.bufferedBytes = 0;
+    if (wasPaused && typeof this.readable.resume === 'function') {
+      try {
+        this.readable.resume();
+      } catch {
+        /* ignore destroyed stream */
+      }
+    }
 
     const rejection =
       reason ??

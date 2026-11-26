@@ -316,6 +316,24 @@ export const editFileTool = defineTool({
   },
 });
 
+/**
+ * 文件树扫描（glob / grep）统一剪枝的依赖、虚拟环境与缓存目录集合：
+ * 多仓库工作区（如含数十个 Python `.venv` 或前端 `node_modules`）若不剪枝，单次扫描会遍历数十万第三方文件阻塞 20s+。
+ */
+const IGNORED_SCAN_DIRECTORIES = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  '.venv',
+  'venv',
+  '__pycache__',
+  '.next',
+  '.nuxt',
+  '.tox',
+  '.mypy_cache',
+  '.pytest_cache',
+]);
+
 // 4. glob
 export const globTool = defineTool({
   name: 'glob',
@@ -339,6 +357,7 @@ export const globTool = defineTool({
     required: ['pattern'],
   },
   async execute(input: { pattern: string; subDirectory?: string }, ctx) {
+    if (ctx.signal?.aborted) throw new AbortError();
     if (typeof input.pattern !== 'string' || !input.pattern.trim()) {
       throw new ToolError('Search pattern must not be empty');
     }
@@ -346,7 +365,9 @@ export const globTool = defineTool({
     // 枚举根与相对化基准都取沙箱的 native 物理根：宿主传入的 rootDir 可能是 Windows 8.3 短名或
     // 软链接别名，与 resolveSafePath 的长路径身份混用会让 path.relative 产出 "../.." 逃逸串。
     const relBase = sandbox.workspaceRoot;
-    const searchRoot = input.subDirectory ? sandbox.resolveSafePath(input.subDirectory) : relBase;
+    const searchRoot = input.subDirectory
+      ? sandbox.resolveSafePath(input.subDirectory, { mode: 'read' })
+      : relBase;
 
     if (!fs.existsSync(searchRoot)) {
       throw new ToolError(`Directory not found: ${input.subDirectory ?? '.'}`);
@@ -354,30 +375,46 @@ export const globTool = defineTool({
 
     const results: string[] = [];
     const maxResults = 100;
+    // 广度优先 + 逐层排序：保证根目录与浅层目标文件优先命中，避免深度优先先钻入首个子目录的深层树耗尽预算。
+    const queue: string[] = [searchRoot];
 
-    function walk(currentDir: string) {
-      if (results.length >= maxResults) return;
-      const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    while (queue.length > 0 && results.length < maxResults) {
+      if (ctx.signal?.aborted) throw new AbortError();
+      const currentDir = queue.shift()!;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(currentDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      const subDirs: string[] = [];
+      const files: string[] = [];
       for (const entry of entries) {
-        if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') {
-          continue;
-        }
-        const fullPath = path.join(currentDir, entry.name);
-        const relPath = path.relative(relBase, fullPath).replace(/\\/g, '/');
-
+        if (IGNORED_SCAN_DIRECTORIES.has(entry.name)) continue;
+        if (entry.isSymbolicLink()) continue;
         if (entry.isDirectory()) {
-          walk(fullPath);
+          subDirs.push(entry.name);
         } else {
-          // 简易 glob 模式匹配
-          if (simpleMatch(entry.name, input.pattern) || simpleMatch(relPath, input.pattern)) {
-            results.push(relPath);
-            if (results.length >= maxResults) return;
-          }
+          files.push(entry.name);
         }
+      }
+      files.sort((a, b) => a.localeCompare(b));
+      subDirs.sort((a, b) => a.localeCompare(b));
+
+      for (const name of files) {
+        const fullPath = path.join(currentDir, name);
+        const relPath = path.relative(relBase, fullPath).replace(/\\/g, '/');
+        if (simpleMatch(name, input.pattern) || simpleMatch(relPath, input.pattern)) {
+          results.push(relPath);
+          if (results.length >= maxResults) break;
+        }
+      }
+      if (results.length >= maxResults) break;
+      for (const dirName of subDirs) {
+        queue.push(path.join(currentDir, dirName));
       }
     }
 
-    walk(searchRoot);
     return results.length > 0 ? results.join('\n') : 'No matching files found.';
   },
 });
@@ -418,12 +455,13 @@ export const grepTool = defineTool({
     // 与 list_dir 同理：命中行的相对路径必须以沙箱 native 物理根为基准，否则短名/软链接别名根
     // 会渲染成 "../../…" 这种对模型无意义且无法回读的路径。
     const relBase = sandbox.workspaceRoot;
-    const target = input.path ? sandbox.resolveSafePath(input.path) : relBase;
+    const target = input.path ? sandbox.resolveSafePath(input.path, { mode: 'read' }) : relBase;
 
     if (!fs.existsSync(target)) {
       throw new ToolError(`Path not found: ${input.path ?? '.'}`);
     }
 
+    // 保持公开泛型签名 Tool<{ pattern; path? }, string> 与公共 API 快照零破坏兼容，可选 include 经运行期收窄读取。
     const rawInclude = (input as { include?: unknown }).include;
     const includeFilter =
       typeof rawInclude === 'string' && rawInclude.trim() ? rawInclude.trim() : undefined;
@@ -493,7 +531,7 @@ export const grepTool = defineTool({
       const entries = fs.readdirSync(dirPath, { withFileTypes: true });
       for (const entry of entries) {
         if (ctx.signal?.aborted) throw new AbortError();
-        if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') {
+        if (IGNORED_SCAN_DIRECTORIES.has(entry.name)) {
           continue;
         }
         if (entry.isSymbolicLink()) continue;
@@ -536,10 +574,16 @@ function simpleMatch(str: string, pattern: string): boolean {
   if (pattern === '*' || pattern === '**') return true;
   // 单趟替换，同时完成特殊字符转义与通配符展开：
   // 1. 避免 pattern 里的 ( + [ 等字符炸出非法正则或意外语义；
-  // 2. 通配符是纯字面匹配，不存在回溯放大，天然规避 ReDoS。
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]|\*{1,2}/g, (match) =>
-    match === '**' ? '.*' : match === '*' ? '[^/]*' : `\\${match}`,
-  );
+  // 2. 支持 `/**/` 匹配零层或多层子目录（如 `src/**/*.ts` 同时命中 `src/a.ts` 与 `src/sub/b.ts`）；
+  // 3. 通配符不存在嵌套歧义回溯，天然规避 ReDoS。
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]|\/\*\*\/|\*\*\/|\/\*\*|\*{1,2}/g, (match) => {
+    if (match === '/**/') return '(?:/|/.+/)';
+    if (match === '**/') return '(?:.+/)?';
+    if (match === '/**') return '(?:/.*)?';
+    if (match === '**') return '.*';
+    if (match === '*') return '[^/]*';
+    return `\\${match}`;
+  });
   return new RegExp(`^${escaped}$`, 'i').test(str);
 }
 

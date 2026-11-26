@@ -480,15 +480,20 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
             .harnesses.filter((h) => h.enabled)
             .map((h) => h.id);
       for (const id of targets) {
-        const probe = await service.testHarness(id, workspaceRoot);
-        const ver = probe.version ? ` v${probe.version}` : '';
-        const detail = probe.reason ? ` — ${probe.reason}` : '';
-        const hint = probe.loginHint
-          ? ` (登录: ${probe.loginHint})`
-          : probe.installHint
-            ? ` (安装: ${probe.installHint})`
-            : '';
-        output.log(`• ${id}: ${probe.status}${ver}${detail}${hint}`);
+        try {
+          const probe = await service.testHarness(id, workspaceRoot);
+          const ver = probe.version ? ` v${probe.version}` : '';
+          const detail = probe.reason ? ` — ${probe.reason}` : '';
+          const hint = probe.loginHint
+            ? ` (登录: ${probe.loginHint})`
+            : probe.installHint
+              ? ` (安装: ${probe.installHint})`
+              : '';
+          output.log(`• ${id}: ${probe.status}${ver}${detail}${hint}`);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          output.error(`• ${id}: handshake_failed — ${errMsg}`);
+        }
       }
       return;
     }
@@ -573,8 +578,8 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
       });
     } catch (err) {
       const latest = service.getSnapshot(opened.session.id, workspaceRoot);
-      if (latest.session.status === 'idle' && latest.messages.length === 0) {
-        await service.closeSession(opened.session.id, workspaceRoot).catch(() => {});
+      if (latest.messages.length === 0 && !latest.session.hasArchive) {
+        await service.deleteSession(opened.session.id, workspaceRoot).catch(() => {});
       }
       throw err;
     }
@@ -583,7 +588,11 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
   }
 
   if (sub === 'prompt') {
-    if (workspaceRoot && !(await ensureCliWorkspaceTrusted(workspaceRoot, ctx, output))) {
+    if (!workspaceRoot) {
+      output.error('缺少工作区根目录，无法向外部代理会话发送消息。');
+      return;
+    }
+    if (!(await ensureCliWorkspaceTrusted(workspaceRoot, ctx, output))) {
       return;
     }
     const { head, tail } = splitFirstNTokens(raw, 2);
@@ -606,7 +615,11 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
   }
 
   if (sub === 'show') {
-    if (workspaceRoot && !(await ensureCliWorkspaceTrusted(workspaceRoot, ctx, output))) {
+    if (!workspaceRoot) {
+      output.error('缺少工作区根目录，无法读取外部代理会话。');
+      return;
+    }
+    if (!(await ensureCliWorkspaceTrusted(workspaceRoot, ctx, output))) {
       return;
     }
     const sessionId = tokens[1];

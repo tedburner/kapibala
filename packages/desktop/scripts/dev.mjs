@@ -221,10 +221,10 @@ function changed() {
 
 function sharedBuild() {
   return new Promise((resolve, reject) => {
-    const proc = spawn(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', ['build'], {
+    // 直接以当前 Node 运行 scripts/build.mjs，省去 cmd -> pnpm.cmd 中转并消除 Node 24 DEP0190 告警。
+    const proc = spawn(process.execPath, [path.join(repository, 'scripts/build.mjs')], {
       cwd: repository,
       stdio: 'inherit',
-      shell: process.platform === 'win32',
       // 构建子进程只剥离外部预加载钩子，保留 HOME / CI 变量与堆参数。
       env: toolchainEnv(process.env, repository),
     });
@@ -256,6 +256,7 @@ async function stopChild() {
 }
 async function launch() {
   const externalEnv = await desktopExternalLaunchEnv(process.env);
+  if (stopping) return;
   child = spawn(executable, [desktop, `--user-data-dir=${devUserData}`], {
     cwd: desktop,
     // 白名单构造：宿主的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE 绝不能进主进程（会让应用启动即退出）。
@@ -315,10 +316,51 @@ async function finish() {
   try {
     if (readDevLock()?.owner?.token === devLockToken) fs.unlinkSync(devLockFile);
   } catch {}
+  if (process.connected) process.disconnect();
+  process.exit(process.exitCode ?? 0);
+}
+
+/**
+ * 清理上次开发会话因终端强制关闭或 Windows 控制台 CTRL_C_EVENT 中断遗留的 dev 专用栅栏。
+ *
+ * 安全边界：
+ * - 仅作用于 `.workbuddy/desktop-dev/userData/host-guard.json`（与生产 userData 物理隔离）；
+ * - 仅在已取得唯一 `dev.lock` 且 Chromium 实例锁（`lockfile` / `SingletonLock`）确认未被存活进程占用时执行；
+ * - 单次开发会话运行期间若 Host 崩溃，`stopChild()` 与应用内 `HostGuard` 仍按原契约阻断。
+ */
+function clearStaleDevGuardIfUnlocked() {
+  const guardFile = path.join(devUserData, 'host-guard.json');
+  if (!fs.existsSync(guardFile)) return;
+  if (process.platform === 'win32') {
+    const chromiumLock = path.join(devUserData, 'lockfile');
+    if (fs.existsSync(chromiumLock)) {
+      try {
+        const fd = fs.openSync(chromiumLock, 'r+');
+        fs.closeSync(fd);
+      } catch {
+        // 旧开发态 Electron 仍在占用 userData，保留栅栏交由人工核查。
+        return;
+      }
+    }
+  } else {
+    const singletonLock = path.join(devUserData, 'SingletonLock');
+    try {
+      const target = fs.readlinkSync(singletonLock);
+      const pid = Number(/-(\d+)$/.exec(target)?.[1]);
+      if (Number.isSafeInteger(pid) && lockOwnerAlive(pid)) return;
+    } catch {}
+  }
+  try {
+    fs.unlinkSync(guardFile);
+  } catch {}
 }
 
 acquireDevLock();
+clearStaleDevGuardIfUnlocked();
 const heartbeat = startDevLockHeartbeat();
+process.on('message', (msg) => {
+  if (msg && typeof msg === 'object' && msg.kind === 'kpbl:dev-parent-stop') void finish();
+});
 await sharedBuild();
 await build({ root: desktop });
 const config = await resolveConfig({ root: desktop }, 'serve', 'development');

@@ -62,4 +62,26 @@ it('后台通知只定位窗口，去重且迟到点击在关闭、过期和换 
   foreground = true;
   notices.observe({ type: 'run.changed', receipt: { ...receipt, runId: 'r2' } });
   expect(shown).toHaveLength(3);
+
+  // 窗口在前台时收到 external.attention 不占用 seen 去重槽，切回后台后再次请求审批仍须弹出系统通知
+  notices.observe({
+    type: 'external.attention',
+    kind: 'approval_requested',
+    workspaceId: 'w',
+    sessionId: 'ext_1',
+    title: '任务',
+    harnessName: 'Codex',
+  });
+  expect(shown).toHaveLength(3);
+  foreground = false;
+  notices.observe({
+    type: 'external.attention',
+    kind: 'approval_requested',
+    workspaceId: 'w',
+    sessionId: 'ext_1',
+    title: '任务',
+    harnessName: 'Codex',
+  });
+  expect(shown).toHaveLength(4);
+  expect(shown[3]?.title).toBe('Codex 等待审批');
 });

@@ -30,7 +30,7 @@ import {
 
 /** 设置页「检测连接」默认超时（20 秒；兼容 Oh My Pi 等首次初始化模型/扩展耗时约 12 秒的代理）。 */
 const DEFAULT_INSPECT_TIMEOUT_MS = 20_000;
-/** 设置页非破坏性探测阶段的 `authenticate` 子步骤超时上限（3.5 秒），避免未登录 OAuth 回调阻塞按钮 15 秒。 */
+/** 设置页非破坏性探测阶段的 `authenticate` 子步骤超时上限（3.5 秒），避免未登录 OAuth 回调长时间阻塞探测按钮。 */
 const INSPECT_AUTH_PROBE_TIMEOUT_MS = 3_500;
 /** 会话启动握手默认超时（60 秒）。 */
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 60_000;
@@ -135,27 +135,29 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       };
     }
 
-    const launchEnv = buildExternalLaunchEnv({
-      hostEnv: this.options.hostEnv,
-      env: def.env,
-      envFrom: def.envFrom,
-      extraPathDirs: resolvedCmd.extraPathDirs,
-      platform: this.options.platform,
-    });
-
-    const proc = ExternalProcessSupervisor.spawn({
-      executable: resolvedCmd.executable,
-      args: resolvedCmd.args,
-      cwd,
-      env: launchEnv.env,
-    });
-
-    const channel = new NdjsonChannel(proc.stdout, proc.stdin);
+    let proc: ExternalProcessSupervisor | undefined;
+    let channel: NdjsonChannel | undefined;
     const timeoutMs = this.options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
     const deadline = Date.now() + timeoutMs;
     const remainingBudgetMs = (): number => Math.max(1_000, deadline - Date.now());
 
     try {
+      const launchEnv = buildExternalLaunchEnv({
+        hostEnv: this.options.hostEnv,
+        env: def.env,
+        envFrom: def.envFrom,
+        extraPathDirs: resolvedCmd.extraPathDirs,
+        platform: this.options.platform,
+      });
+
+      proc = ExternalProcessSupervisor.spawn({
+        executable: resolvedCmd.executable,
+        args: resolvedCmd.args,
+        cwd,
+        env: launchEnv.env,
+      });
+
+      channel = new NdjsonChannel(proc.stdout, proc.stdin);
       const initRaw = await channel.request(
         'initialize',
         {
@@ -271,12 +273,32 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         status: 'ready',
       };
     } catch (err) {
+      if (err instanceof ExternalHarnessError) {
+        if (err.code === 'EXTERNAL_COMMAND_NOT_FOUND') {
+          return {
+            available: false,
+            loadSupported: false,
+            status: 'not_installed',
+            reason: err.message,
+            ...(flavor.installHint ? { installHint: flavor.installHint } : {}),
+          };
+        }
+        if (err.code === 'EXTERNAL_UNSUPPORTED_SHIM' || err.code === 'EXTERNAL_NODE_NOT_FOUND') {
+          return {
+            available: false,
+            loadSupported: false,
+            status: 'invalid_shim',
+            reason: err.message,
+            ...(flavor.installHint ? { installHint: flavor.installHint } : {}),
+          };
+        }
+      }
       const rpcCode =
         err && typeof err === 'object' && typeof (err as { rpcCode?: unknown }).rpcCode === 'number'
           ? (err as { rpcCode: number }).rpcCode
           : undefined;
       const errMsg = err instanceof Error ? err.message : String(err);
-      const stderrTail = proc.getStderrTail();
+      const stderrTail = proc?.getStderrTail() ?? '';
       const combinedDiag = [errMsg, stderrTail].filter(Boolean).join(' | ');
 
       if (isAcpAuthRequiredError(combinedDiag, rpcCode)) {
@@ -298,8 +320,8 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         ...(flavor.loginHint ? { loginHint: flavor.loginHint } : {}),
       };
     } finally {
-      channel.close();
-      await proc.close();
+      channel?.close();
+      await proc?.close();
     }
   }
 
@@ -352,7 +374,12 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
     let boundSessionId: string | undefined = input.nativeSessionId?.trim();
     let replayingLoad = false;
     let replayProjector: ExternalTranscriptProjector | undefined;
-    let activeTurnCancel: (() => Promise<void>) | undefined;
+    let activeTurnState:
+      | {
+          cancelled: boolean;
+          cancel: () => Promise<void>;
+        }
+      | undefined;
     let lastActivityAt = Date.now();
     let userClosed = false;
     let fatalChannelError: ExternalHarnessError | undefined;
@@ -480,13 +507,20 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
             rpcCode: -32601,
           });
         }
-        // 握手重放期或无活跃轮次时自动按取消回绝，防悬空权限请求锁死握手或空闲态。
-        if (replayingLoad || !activeTurnCancel) {
+        const reqObj = asRecord(params);
+        if (
+          boundSessionId &&
+          typeof reqObj?.sessionId === 'string' &&
+          reqObj.sessionId !== boundSessionId
+        ) {
+          return { outcome: { outcome: 'cancelled' } };
+        }
+        // 握手重放期、无活跃轮次或当前轮次已发起取消时自动按取消回绝，防在途帧将状态倒退回 waiting_approval。
+        if (replayingLoad || !activeTurnState || activeTurnState.cancelled) {
           return { outcome: { outcome: 'cancelled' } };
         }
         const requestKey = String(id).slice(0, 256);
         const fallbackCallId = `perm-${requestKey}`.slice(0, 256);
-        const reqObj = asRecord(params);
         const rawToolCall = asRecord(reqObj?.toolCall);
         const rawCallId = (
           typeof rawToolCall?.toolCallId === 'string'
@@ -533,12 +567,27 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         });
 
         if (decision.outcome === 'selected') {
+          const pickedOpt = normalized.options.find((o) => o.optionId === decision.optionId);
+          if (pickedOpt?.kind.startsWith('reject')) {
+            const currentTool = knownTools.get(normalized.tool.callId);
+            if (currentTool?.status === 'running') {
+              const rejectedTool: ViewTool = { ...currentTool, status: 'failed' };
+              knownTools.set(rejectedTool.callId, rejectedTool);
+              onEvent({ type: 'tool_upsert', tool: rejectedTool });
+            }
+          }
           return {
             outcome: {
               outcome: 'selected',
               optionId: decision.optionId,
             },
           };
+        }
+        const cancelledTool = knownTools.get(normalized.tool.callId);
+        if (cancelledTool?.status === 'running') {
+          const interruptedTool: ViewTool = { ...cancelledTool, status: 'interrupted' };
+          knownTools.set(interruptedTool.callId, interruptedTool);
+          onEvent({ type: 'tool_upsert', tool: interruptedTool });
         }
         return {
           outcome: {
@@ -661,7 +710,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       const handle: ExternalDriverSessionHandle = {
         pid: proc.pid,
         prompt: async (text: string, turnSignal?: AbortSignal): Promise<ExternalTurnResult> => {
-          if (activeTurnCancel) {
+          if (activeTurnState) {
             throw new ExternalHarnessError(
               'EXTERNAL_SESSION_BUSY',
               '当前外部代理会话已有运行中的轮次，禁止并发发送 Prompt',
@@ -680,6 +729,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
           const sendCancelAndSettle = async (): Promise<void> => {
             if (cancelRequested || timedOutByWatchdog) return;
             cancelRequested = true;
+            if (activeTurnState) activeTurnState.cancelled = true;
             settlePendingApprovalsAsCancelled();
             try {
               channel.notify('session/cancel', { sessionId: boundSessionId });
@@ -692,7 +742,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
             graceTimer.unref?.();
           };
 
-          activeTurnCancel = sendCancelAndSettle;
+          activeTurnState = { cancelled: false, cancel: sendCancelAndSettle };
           const onExternalAbort = (): void => {
             void sendCancelAndSettle();
           };
@@ -780,17 +830,35 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
                 },
               );
             }
+            if (!proc.isClosed) {
+              await Promise.race([
+                proc.waitForClose(),
+                new Promise<void>((resolve) => setTimeout(resolve, 60)),
+              ]);
+            }
+            if (proc.isClosed) {
+              userClosed = true;
+              channel.close();
+              const closed = await proc.close();
+              const detail = closed.stderrTail
+                ? `外部代理进程异常退出：${closed.stderrTail}`
+                : `外部代理进程异常退出（code=${closed.code ?? 'null'}${closed.signal ? `, signal=${closed.signal}` : ''}）`;
+              throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', detail, {
+                processTerminated: true,
+                cause: err,
+              });
+            }
             throw err;
           } finally {
             if (graceTimer !== undefined) clearTimeout(graceTimer);
             clearInterval(watchdogInterval);
             turnSignal?.removeEventListener('abort', onExternalAbort);
-            activeTurnCancel = undefined;
+            activeTurnState = undefined;
           }
         },
         cancel: async (): Promise<void> => {
-          if (activeTurnCancel) {
-            await activeTurnCancel();
+          if (activeTurnState) {
+            await activeTurnState.cancel();
           }
         },
         close: async (): Promise<void> => {

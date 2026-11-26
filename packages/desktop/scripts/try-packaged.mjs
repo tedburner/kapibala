@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { toolchainEnv } from '../../../scripts/process-env.mjs';
+import { resolvePnpmCommand, toolchainEnv } from '../../../scripts/process-env.mjs';
 import { desktopExternalLaunchEnv, desktopLaunchEnv } from './launch-env.mjs';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -55,12 +55,12 @@ const packArgs = [
   '--dir',
   ...(args.includes('--no-verify') ? ['--no-verify'] : []),
 ];
-const packed = spawn(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', packArgs, {
+const packInvocation = resolvePnpmCommand(packArgs, process.env);
+const packed = spawn(packInvocation.command, packInvocation.args, {
   cwd: repository,
   // 打包子进程只剥掉外部预加载钩子，否则 tsup 清理 dist 时会撞上宿主的批量删除守卫。
   env: toolchainEnv(process.env, repository, { GITHUB_OUTPUT: output }),
   stdio: 'inherit',
-  shell: process.platform === 'win32',
 });
 const exit = await new Promise((resolve, reject) => {
   packed.once('error', reject);

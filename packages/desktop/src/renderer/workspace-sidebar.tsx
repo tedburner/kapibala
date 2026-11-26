@@ -116,7 +116,6 @@ export function WorkspaceSidebar({
   onCloseExternal?(space: Workspace, sessionId: string): void;
   onDeleteExternal?(space: Workspace, row: ExternalSessionRow): void;
 }) {
-  const [version, setVersion] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
   const [searchPages, setSearchPages] = useState<Record<string, number>>({});
@@ -158,12 +157,6 @@ export function WorkspaceSidebar({
     };
   }, [keyword, spaces, searchPages]);
 
-  useEffect(() => {
-    void window.kapibala.app
-      .getInfo()
-      .then((info) => setVersion(info.version))
-      .catch(() => {});
-  }, []);
   const items = runtime?.items ?? [];
   const externalRunning = Object.values(externalSessions ?? {})
     .flat()
@@ -197,11 +190,7 @@ export function WorkspaceSidebar({
   const noMatch = keyword !== '' && !searching && !search.error && visible.length === 0;
   return (
     <Sidebar aria-label="空间与会话">
-      <Sidebar.Header className="kapibala-sidebar-header">
-        <span className="kapibala-sidebar-wordmark flex h-10 items-center px-1 font-semibold group-data-[state=collapsed]/sidebar:hidden">
-          Kapibala
-        </span>
-      </Sidebar.Header>
+      <Sidebar.Header className="kapibala-sidebar-header" />
       <Sidebar.Content>
         <Sidebar.Group className="kapibala-sidebar-actions">
           <Sidebar.Menu>
@@ -276,7 +265,7 @@ export function WorkspaceSidebar({
                         title={title}
                         tooltip={title}
                         aria-label={`${title} · ${space?.name ?? '未知空间'} 临时对话`}
-                        disabled={!space}
+                        disabled={!space || busy}
                         onClick={() => space && onOpen(space, item.conversationId)}
                       >
                         <span className="min-w-0 truncate">{title}</span>
@@ -735,11 +724,6 @@ export function WorkspaceSidebar({
             </Button>
           )}
         </span>
-        {version && (
-          <span className="kapibala-sidebar-version group-data-[state=collapsed]/sidebar:hidden">
-            v{version}
-          </span>
-        )}
       </Sidebar.Footer>
     </Sidebar>
   );

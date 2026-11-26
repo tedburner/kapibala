@@ -295,20 +295,22 @@ export class ExternalSessionRegistry {
       truncated = true;
     }
 
-    const redactedPlan: ViewTodoState | undefined = payload.plan
+    let redactedPlan: ViewTodoState | undefined = payload.plan
       ? {
           ...payload.plan,
           items: payload.plan.items.slice(0, 100).map((item) => ({
             ...item,
-            title: redactFn(item.title),
+            id: sliceUtf16Safe(item.id, 256),
+            title: sliceUtf16Safe(redactFn(item.title), 500),
           })),
         }
       : undefined;
 
-    const redactedNotices: ViewNotice[] | undefined = payload.notices?.length
+    let redactedNotices: ViewNotice[] | undefined = payload.notices?.length
       ? payload.notices.slice(-20).map((n) => ({
           ...n,
-          text: redactFn(n.text),
+          id: sliceUtf16Safe(n.id, 128),
+          text: sliceUtf16Safe(redactFn(n.text), 500),
         }))
       : undefined;
 
@@ -374,6 +376,14 @@ export class ExternalSessionRegistry {
         content = serialize(redactedMessages, true);
         budgetUnits = Math.floor(budgetUnits / 2);
       }
+    }
+
+    if (Buffer.byteLength(content, 'utf8') > MAX_EXTERNAL_ARCHIVE_BYTES) {
+      redactedNotices = undefined;
+      redactedPlan = undefined;
+      redactedMessages = [];
+      truncated = true;
+      content = serialize([], true);
     }
 
     fs.mkdirSync(this.snapshotsDirPath, { recursive: true, mode: 0o700 });
@@ -492,19 +502,28 @@ export class ExternalSessionRegistry {
         if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
           throw err;
         }
-        // 检查锁持有进程是否已死亡，若是崩溃遗留僵尸锁则安全清理后立即重试
+        // 检查锁持有进程是否已死亡或为崩溃遗留超过 5 秒的空锁文件，安全清理后立即重试
         try {
-          const rawLock = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as {
-            pid?: unknown;
-          };
-          if (
-            typeof rawLock.pid === 'number' &&
-            Number.isSafeInteger(rawLock.pid) &&
-            rawLock.pid > 0 &&
-            !isProcessAlive(rawLock.pid)
-          ) {
-            fs.unlinkSync(lockPath);
-            continue;
+          const rawText = fs.readFileSync(lockPath, 'utf8');
+          if (!rawText.trim()) {
+            const st = fs.statSync(lockPath);
+            if (Date.now() - st.mtimeMs > 5_000) {
+              fs.unlinkSync(lockPath);
+              continue;
+            }
+          } else {
+            const rawLock = JSON.parse(rawText) as {
+              pid?: unknown;
+            };
+            if (
+              typeof rawLock.pid === 'number' &&
+              Number.isSafeInteger(rawLock.pid) &&
+              rawLock.pid > 0 &&
+              !isProcessAlive(rawLock.pid)
+            ) {
+              fs.unlinkSync(lockPath);
+              continue;
+            }
           }
         } catch {
           /* 锁文件正由其他进程写入或刚释放，进入短退避重试 */

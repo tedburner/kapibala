@@ -203,10 +203,13 @@ export function resolveAcpFlavor(input: {
  * 判定 JSON-RPC 错误或标准错误尾部是否属于外部 CLI 未登录 / 缺凭据故障。
  */
 export function isAcpAuthRequiredError(message: string, rpcCode?: number): boolean {
-  if (rpcCode === -32000 && /auth|login|credential|token|oauth|api[_ -]?key/i.test(message)) {
+  if (
+    rpcCode === -32000 &&
+    /auth|login|credential|token|oauth|api[_ -]?key|登录|鉴权|认证|凭据|密钥/i.test(message)
+  ) {
     return true;
   }
-  return /(?:authentication\s+required|not\s+logged\s+in|please\s+login|use\s+\/login|no\s+model\s+selected|oauth.*expired|missing.*api[_ -]?key|no\s+api\s+key\s+(?:found\s+)?for(?:\s+provider)?|unauthorized|invalid\s+api\s+key)/i.test(
+  return /(?:authentication\s+required|not\s+logged\s+in|please\s+login|use\s+\/login|no\s+model\s+selected|oauth.*expired|missing.*api[_ -]?key|no\s+api\s+key\s+(?:found\s+)?for(?:\s+provider)?|unauthorized|invalid\s+api\s+key|未登录|请先登录|需要登录|登录已过期|缺少.*(?:密钥|凭据)|鉴权失败|认证失败)/i.test(
     message,
   );
 }

@@ -320,25 +320,27 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       };
     }
 
-    const launchEnv = buildExternalLaunchEnv({
-      hostEnv: this.options.hostEnv,
-      env: def.env,
-      envFrom: def.envFrom,
-      extraPathDirs: resolvedCmd.extraPathDirs,
-      platform: this.options.platform,
-    });
-
-    const proc = ExternalProcessSupervisor.spawn({
-      executable: resolvedCmd.executable,
-      args: resolvedCmd.args,
-      cwd,
-      env: launchEnv.env,
-    });
-
-    const channel = new NdjsonChannel(proc.stdout, proc.stdin);
+    let proc: ExternalProcessSupervisor | undefined;
+    let channel: NdjsonChannel | undefined;
     const timeoutMs = this.options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
 
     try {
+      const launchEnv = buildExternalLaunchEnv({
+        hostEnv: this.options.hostEnv,
+        env: def.env,
+        envFrom: def.envFrom,
+        extraPathDirs: resolvedCmd.extraPathDirs,
+        platform: this.options.platform,
+      });
+
+      proc = ExternalProcessSupervisor.spawn({
+        executable: resolvedCmd.executable,
+        args: resolvedCmd.args,
+        cwd,
+        env: launchEnv.env,
+      });
+
+      channel = new NdjsonChannel(proc.stdout, proc.stdin);
       const initRes = await channel.request(
         'initialize',
         {
@@ -412,8 +414,28 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
         status: 'ready',
       };
     } catch (err) {
+      if (err instanceof ExternalHarnessError) {
+        if (err.code === 'EXTERNAL_COMMAND_NOT_FOUND') {
+          return {
+            available: false,
+            loadSupported: false,
+            status: 'not_installed',
+            reason: err.message,
+            installHint: CODEX_INSTALL_HINT,
+          };
+        }
+        if (err.code === 'EXTERNAL_UNSUPPORTED_SHIM' || err.code === 'EXTERNAL_NODE_NOT_FOUND') {
+          return {
+            available: false,
+            loadSupported: false,
+            status: 'invalid_shim',
+            reason: err.message,
+            installHint: CODEX_INSTALL_HINT,
+          };
+        }
+      }
       const errText = err instanceof Error ? err.message : String(err);
-      const stderrTail = proc.getStderrTail();
+      const stderrTail = proc?.getStderrTail() ?? '';
       const combined = redactCommonSecrets(
         sanitizeUntrustedOutput([errText, stderrTail].filter(Boolean).join(' | ')),
       );
@@ -436,8 +458,8 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
         installHint: CODEX_INSTALL_HINT,
       };
     } finally {
-      channel.close();
-      await proc.close();
+      channel?.close();
+      await proc?.close();
     }
   }
 
@@ -486,14 +508,17 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       string,
       { view: ViewTool; startedAt: number; outputBuffer: string }
     >();
-    const streamedAgentTextLen = new Map<string, number>();
-    const streamedReasoningIds = new Set<string>();
 
     interface ActiveCodexTurn {
       turnId?: string;
       cancelled: boolean;
       pendingApprovals: number;
       latestUsage?: ViewUsage;
+      readonly streamedAgentTextLen: Map<string, number>;
+      fallbackStreamedTextLen: number;
+      readonly streamedReasoningIds: Set<string>;
+      sawFallbackReasoning: boolean;
+      graceTimer?: ReturnType<typeof setTimeout>;
       bumpActivity: () => void;
       resolve: (res: ExternalTurnResult) => void;
       reject: (err: unknown) => void;
@@ -552,11 +577,15 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           const delta = typeof p.delta === 'string' ? p.delta : '';
           const itemId = typeof p.itemId === 'string' ? clampCodexCallId(p.itemId, '') : '';
           if (delta) {
-            if (itemId) {
-              streamedAgentTextLen.set(
-                itemId,
-                (streamedAgentTextLen.get(itemId) ?? 0) + delta.length,
-              );
+            if (activeTurn) {
+              if (itemId) {
+                activeTurn.streamedAgentTextLen.set(
+                  itemId,
+                  (activeTurn.streamedAgentTextLen.get(itemId) ?? 0) + delta.length,
+                );
+              } else {
+                activeTurn.fallbackStreamedTextLen += delta.length;
+              }
             }
             input.onEvent({ type: 'text_delta', text: delta });
           }
@@ -568,7 +597,10 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           const delta = typeof p.delta === 'string' ? p.delta : '';
           const itemId = typeof p.itemId === 'string' ? clampCodexCallId(p.itemId, '') : '';
           if (delta) {
-            if (itemId) streamedReasoningIds.add(itemId);
+            if (activeTurn) {
+              if (itemId) activeTurn.streamedReasoningIds.add(itemId);
+              else activeTurn.sawFallbackReasoning = true;
+            }
             input.onEvent({ type: 'thought_delta', text: delta });
           }
           return;
@@ -612,20 +644,41 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           const completed = method === 'item/completed';
 
           if (kind === 'agentMessage' && completed && typeof item.text === 'string') {
-            const alreadyStreamed = itemId ? (streamedAgentTextLen.get(itemId) ?? 0) : 0;
-            const suffix = item.text.slice(alreadyStreamed);
+            const alreadyStreamed = activeTurn
+              ? itemId
+                ? (activeTurn.streamedAgentTextLen.get(itemId) ??
+                  activeTurn.fallbackStreamedTextLen)
+                : activeTurn.fallbackStreamedTextLen
+              : 0;
+            if (activeTurn) {
+              if (itemId) activeTurn.streamedAgentTextLen.delete(itemId);
+              activeTurn.fallbackStreamedTextLen = 0;
+            }
+            const suffix =
+              alreadyStreamed >= item.text.length ? '' : item.text.slice(alreadyStreamed);
             if (suffix) {
               input.onEvent({ type: 'text_delta', text: suffix });
             }
             return;
           }
 
-          if (kind === 'reasoning' && completed && itemId && !streamedReasoningIds.has(itemId)) {
-            const summary = Array.isArray(item.summary)
-              ? item.summary.filter((s): s is string => typeof s === 'string').join('\n')
-              : '';
-            if (summary) {
-              input.onEvent({ type: 'thought_delta', text: summary });
+          if (kind === 'reasoning' && completed) {
+            const alreadyReasoned = activeTurn
+              ? itemId
+                ? activeTurn.streamedReasoningIds.has(itemId) || activeTurn.sawFallbackReasoning
+                : activeTurn.sawFallbackReasoning
+              : false;
+            if (activeTurn) {
+              if (itemId) activeTurn.streamedReasoningIds.delete(itemId);
+              activeTurn.sawFallbackReasoning = false;
+            }
+            if (!alreadyReasoned) {
+              const summary = Array.isArray(item.summary)
+                ? item.summary.filter((s): s is string => typeof s === 'string').join('\n')
+                : '';
+              if (summary) {
+                input.onEvent({ type: 'thought_delta', text: summary });
+              }
             }
             return;
           }
@@ -748,7 +801,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           });
         }
 
-        if (!activeTurn) {
+        if (!activeTurn || activeTurn.cancelled) {
           return { decision: isLegacyV1Approval ? 'abort' : 'cancel' };
         }
 
@@ -831,6 +884,14 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
               activeTurn.bumpActivity();
             }
             if (decision.outcome === 'cancelled') {
+              const tracked = toolsById.get(itemId);
+              if (tracked?.view.status === 'running') {
+                emitToolUpsert(
+                  { ...tracked.view, status: 'interrupted' },
+                  tracked.startedAt,
+                  tracked.outputBuffer,
+                );
+              }
               resolve({ decision: isLegacyV1Approval ? 'abort' : 'cancel' });
               return;
             }
@@ -843,6 +904,14 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
             if (decision.optionId === 'accept') {
               resolve({ decision: isLegacyV1Approval ? 'approved' : 'accept' });
               return;
+            }
+            const tracked = toolsById.get(itemId);
+            if (tracked?.view.status === 'running') {
+              emitToolUpsert(
+                { ...tracked.view, status: 'failed' },
+                tracked.startedAt,
+                tracked.outputBuffer,
+              );
             }
             resolve({ decision: isLegacyV1Approval ? 'denied' : 'decline' });
           };
@@ -894,9 +963,11 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
     });
 
     void proc.waitForClose().then(async (exit) => {
+      const tail = exit.stderrTail ? `：${exit.stderrTail}` : '';
       const closeErr = new ExternalHarnessError(
         'EXTERNAL_PROTOCOL_ERROR',
-        `Codex app-server 进程已退出（code=${exit.code ?? 'null'}）`,
+        `Codex app-server 进程已退出（code=${exit.code ?? 'null'}${exit.signal ? `, signal=${exit.signal}` : ''}）${tail}`,
+        { processTerminated: true },
       );
       await channel.drainAndClose(closeErr);
       settleAllApprovalsCancelled();
@@ -1052,12 +1123,20 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
 
           const cleanup = (): void => {
             clearInterval(watchdogTimer);
+            if (currentTurn.graceTimer !== undefined) {
+              clearTimeout(currentTurn.graceTimer);
+              currentTurn.graceTimer = undefined;
+            }
             signal?.removeEventListener('abort', onAbort);
           };
 
           const currentTurn: ActiveCodexTurn = {
             cancelled: false,
             pendingApprovals: 0,
+            streamedAgentTextLen: new Map(),
+            fallbackStreamedTextLen: 0,
+            streamedReasoningIds: new Set(),
+            sawFallbackReasoning: false,
             bumpActivity: () => {
               lastActivityAt = Date.now();
             },
@@ -1102,11 +1181,18 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
               }
             })
             .catch((err) => {
-              if (activeTurn === currentTurn && !currentTurn.cancelled) {
+              if (activeTurn === currentTurn) {
                 activeTurn = undefined;
                 cleanup();
                 settleAllApprovalsCancelled();
-                reject(err);
+                if (currentTurn.cancelled) {
+                  resolve({
+                    stopReason: 'cancelled',
+                    ...(proc.isClosed ? { processTerminated: true } : {}),
+                  });
+                } else {
+                  reject(err);
+                }
               }
             });
         });
@@ -1141,6 +1227,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           }
         }, CANCEL_SETTLE_GRACE_MS);
         graceTimer.unref?.();
+        snapshotTurn.graceTimer = graceTimer;
       },
       async close(): Promise<void> {
         closingByClient = true;

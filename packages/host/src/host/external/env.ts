@@ -57,7 +57,7 @@ const NETWORK_AND_TLS_ENV_KEYS = [
   'SSH_AUTH_SOCK',
 ] as const;
 
-/** 任何路径（含静态 `env` 与 `envFrom`）均禁止覆盖或注入的宿主路径、运行时钩子及动态链接器变量。 */
+/** 任何路径（含静态 `env` 与 `envFrom`）均禁止覆盖或注入的宿主路径、家目录身份、Shell/Git/语言运行时钩子及动态链接器变量。 */
 export const FORBIDDEN_EXTERNAL_ENV_KEYS = new Set([
   'PATH',
   'PATHEXT',
@@ -65,10 +65,43 @@ export const FORBIDDEN_EXTERNAL_ENV_KEYS = new Set([
   'SYSTEMROOT',
   'SYSTEMDRIVE',
   'WINDIR',
+  'HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'XDG_CONFIG_HOME',
+  'BASH_ENV',
+  'ENV',
+  'ZDOTDIR',
+  'SHELLOPTS',
+  'BASHOPTS',
+  'CDPATH',
+  'IFS',
+  'GIT_SSH',
+  'GIT_SSH_COMMAND',
+  'GIT_ASKPASS',
+  'SSH_ASKPASS',
+  'GIT_EXEC_PATH',
+  'GIT_TEMPLATE_DIR',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_SYSTEM',
   'NODE_OPTIONS',
   'NODE_PATH',
   'ELECTRON_RUN_AS_NODE',
   'ELECTRON_NO_ATTACH_CONSOLE',
+  'PYTHONPATH',
+  'PYTHONSTARTUP',
+  'RUBYOPT',
+  'PERL5OPT',
+  'JAVA_TOOL_OPTIONS',
+  'JDK_JAVA_OPTIONS',
+  'DOTNET_STARTUP_HOOKS',
+  'OPENSSL_CONF',
+  'OPENSSL_ENGINES',
+  'CURL_CA_BUNDLE',
+  'REQUESTS_CA_BUNDLE',
   'LD_PRELOAD',
   'LD_LIBRARY_PATH',
   'LD_AUDIT',
@@ -232,7 +265,10 @@ export function buildExternalLaunchEnv(
   const sanitizedPathEntries: string[] = [];
   const seenPathDirs = new Set<string>();
   const appendPathDir = (rawDir: string): void => {
-    const trimmed = rawDir.trim();
+    const trimmed = rawDir
+      .trim()
+      .replace(/^"(.*)"$/, '$1')
+      .trim();
     if (!isStrictAbsoluteEnvPath(trimmed, platform)) return;
     const norm = isWin ? trimmed.toLowerCase() : trimmed;
     if (!seenPathDirs.has(norm)) {
@@ -266,15 +302,7 @@ export function buildExternalLaunchEnv(
           `外部代理环境变量 ${key} 包含非法控制字符`,
         );
       }
-      if (key.toUpperCase() === 'PATH') {
-        const customDirs = value
-          .split(pathDelimiter)
-          .map((d) => d.trim())
-          .filter((d) => isStrictAbsoluteEnvPath(d, platform));
-        setEnvKey('PATH', customDirs.join(pathDelimiter));
-      } else {
-        setEnvKey(key, value);
-      }
+      setEnvKey(key, value);
     }
   }
 

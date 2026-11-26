@@ -1,3 +1,4 @@
+import { detectShell } from '@kiturone/kapibala';
 import { RpcEndpoint, safeError } from '../shared/rpc.js';
 import type { ControlIdentity } from '../shared/transport.js';
 import { DesktopHost } from './desktop-host.js';
@@ -105,6 +106,16 @@ parent.on('message', (event) => {
       port.on('close', () => rpc.peer.close());
       port.start();
       parent.postMessage({ kind: 'host.connected', controlEpoch: identity.controlEpoch });
+      // 连接就绪后空闲预热一次默认解释器探针缓存，使首屏用户输完问题按 Enter 新建会话时零阻塞命中缓存。
+      const homeDir = data.homeDirectory;
+      setTimeout(() => {
+        if (!current || cleaned) return;
+        try {
+          detectShell({ cwd: homeDir });
+        } catch {
+          /* 无可用解释器时保持原降级语义，不阻断宿主空闲态。 */
+        }
+      }, 250).unref();
     } catch {
       port.close();
       parent.postMessage({ kind: 'host.attachFailed', controlEpoch: identity.controlEpoch });

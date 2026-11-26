@@ -124,7 +124,7 @@ export function toExternalSnapshotWire(snap: ViewExternalSnapshot): ExternalSnap
     approvals: snap.approvals.map((a) => ({
       approvalId: a.approvalId,
       sessionId: a.sessionId,
-      toolCallId: a.toolCallId,
+      toolCallId: a.toolCallId.slice(0, 256) || 'tool',
       toolTitle: a.toolTitle,
       target: a.target ?? null,
       warning: a.warning ?? null,

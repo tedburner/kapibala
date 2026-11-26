@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { PathSandbox } from '../src/capabilities/security/sandbox.js';
 import { countLineDiff } from '../src/capabilities/tools/builtin/file-diff.js';
 import {
   builtinTools,
@@ -261,6 +262,31 @@ describe('builtin fs tools', () => {
         'No matching files found.',
       );
     });
+
+    it('应剪枝 .venv/venv/__pycache__ 且按广度优先先返回浅层文件，不让深层大目录挤掉根目录结果', async () => {
+      fs.mkdirSync(path.join(rootDir, '.venv', 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(rootDir, 'venv', 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(rootDir, '__pycache__'), { recursive: true });
+      fs.writeFileSync(path.join(rootDir, '.venv', 'lib', 'venv-pkg.ts'), '');
+      fs.writeFileSync(path.join(rootDir, 'venv', 'lib', 'venv2-pkg.ts'), '');
+      fs.writeFileSync(path.join(rootDir, '__pycache__', 'cached.ts'), '');
+
+      const deepDir = path.join(rootDir, 'aaa-first', 'l1', 'l2');
+      fs.mkdirSync(deepDir, { recursive: true });
+      for (let i = 0; i < 110; i++) {
+        fs.writeFileSync(path.join(deepDir, `deep-${String(i).padStart(3, '0')}.ps1`), '');
+      }
+      fs.writeFileSync(path.join(rootDir, 'zzz-update-all.ps1'), '');
+
+      const tsResult = await globTool.execute({ pattern: '*.ts' }, { rootDir });
+      expect(tsResult).not.toContain('.venv');
+      expect(tsResult).not.toContain('venv/');
+      expect(tsResult).not.toContain('__pycache__');
+
+      const psResult = await globTool.execute({ pattern: '*.ps1' }, { rootDir });
+      const lines = psResult.split('\n');
+      expect(lines[0]).toBe('zzz-update-all.ps1');
+    });
   });
 
   describe('grep', () => {
@@ -376,6 +402,38 @@ describe('builtin fs tools', () => {
         { rootDir },
       );
       expect(onlyXml).toBe('pom.xml:1: <guava.version>33.4.8</guava.version>');
+    });
+
+    it('glob 与 grep include 支持零级子目录 src/**/*.ts 匹配，并对只读豁免目录传递 read 模式', async () => {
+      fs.mkdirSync(path.join(rootDir, 'src', 'nested'), { recursive: true });
+      fs.writeFileSync(path.join(rootDir, 'src', 'nested', 'b.ts'), 'const alpha = 99;');
+
+      const globOut = await globTool.execute({ pattern: 'src/**/*.ts' }, { rootDir });
+      expect(globOut.split('\n').sort()).toEqual(['src/a.ts', 'src/nested/b.ts']);
+
+      const grepOut = await grepTool.execute(
+        { pattern: 'alpha', include: 'src/**/*.ts' } as { pattern: string; path?: string },
+        { rootDir },
+      );
+      expect(grepOut).toContain('src/a.ts:1:');
+      expect(grepOut).toContain('src/nested/b.ts:1:');
+
+      const exemptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-readonly-exempt-'));
+      try {
+        const exemptFile = path.join(exemptDir, 'result.log');
+        fs.writeFileSync(exemptFile, 'alpha from managed result');
+        const sandbox = new PathSandbox({
+          workspaceRoot: rootDir,
+          readOnlyExemptions: () => [exemptDir],
+        });
+        const exemptGrep = await grepTool.execute(
+          { pattern: 'alpha', path: exemptFile },
+          { rootDir, sandbox },
+        );
+        expect(exemptGrep).toContain('alpha from managed result');
+      } finally {
+        fs.rmSync(exemptDir, { recursive: true, force: true });
+      }
     });
   });
 

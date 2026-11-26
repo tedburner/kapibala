@@ -180,7 +180,7 @@ export function ExternalSessionView({
   readonly onDraftChange: (value: string) => void;
   /** 外部会话输入区 ↑/↓ 历史问句召回回调；返回 true 表示按键已消费。 */
   readonly onHistoryKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
-  readonly onSend: (text: string) => void;
+  readonly onSend: (text: string, clearDraft?: boolean) => void;
   readonly onCancel: () => void;
   readonly onApprove: (approvalId: string, optionId?: string, cancel?: boolean) => void;
   readonly onNewSameHarness: () => void;
@@ -258,7 +258,9 @@ export function ExternalSessionView({
                   : snapshot.operation
           }
           latestErrorNotice={session.lastError}
-          onContinue={session.canContinue && !activeRun && !busy ? () => onSend('继续') : undefined}
+          onContinue={
+            session.canContinue && !activeRun && !busy ? () => onSend('继续', false) : undefined
+          }
           onRetry={() => {}}
           root={workspaceRoot}
           scrollRef={scrollRef}

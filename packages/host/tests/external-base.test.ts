@@ -6,7 +6,11 @@ import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildExternalLaunchEnv } from '../src/host/external/env.js';
 import { NdjsonChannel } from '../src/host/external/ndjson-channel.js';
-import { ExternalProcessSupervisor, resolveExternalCommand } from '../src/host/external/process.js';
+import {
+  ExternalProcessSupervisor,
+  resolveExternalCommand,
+  tryResolveInstalledExternalExecutable,
+} from '../src/host/external/process.js';
 import { ExternalHarnessError } from '../src/host/external/types.js';
 
 const tempDirs: string[] = [];
@@ -484,5 +488,162 @@ describe('ExternalProcessSupervisor', () => {
       grandchildAlive = (err as NodeJS.ErrnoException).code !== 'ESRCH';
     }
     expect(grandchildAlive).toBe(false);
+  });
+
+  it('拦截非 PE 占位 .exe（如跳过 postinstall 的文本脚本）、扩展受保护环境变量黑名单、恢复背压流并回收 EOF 后残留孙进程', async () => {
+    const root = makeTempDir('kpbl-ext-red-');
+
+    // 1. H1: Windows 非 PE 文本占位 .exe 与指向它的 .cmd 均拒绝为 EXTERNAL_UNSUPPORTED_SHIM，自动发现返回 undefined
+    const npmBin = path.join(root, 'npm');
+    const pkgBin = path.join(npmBin, 'node_modules', '@opencode', 'cli', 'bin');
+    fs.mkdirSync(pkgBin, { recursive: true });
+    const fakePlaceholderExe = path.join(pkgBin, 'opencode.exe');
+    fs.writeFileSync(
+      fakePlaceholderExe,
+      'echo "Error: @opencode/cli postinstall script was not run."\n',
+      'utf8',
+    );
+    const shimCmd = path.join(npmBin, 'opencode.cmd');
+    fs.writeFileSync(
+      shimCmd,
+      '@ECHO off\r\n"%dp0%\\node_modules\\@opencode\\cli\\bin\\opencode.exe" %*\r\n',
+      'utf8',
+    );
+    expect(() =>
+      resolveExternalCommand({
+        command: 'opencode',
+        args: ['acp'],
+        platform: 'win32',
+        envPath: npmBin,
+        homeDir: root,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_UNSUPPORTED_SHIM' }));
+    expect(
+      tryResolveInstalledExternalExecutable({
+        command: 'opencode',
+        platform: 'win32',
+        homeDir: root,
+        hostEnv: { PATH: npmBin },
+      }),
+    ).toBeUndefined();
+
+    // 2. M8: POSIX 无后缀 Node shebang 脚本自动走 node 解包，并保留软链词法目录进 extraPathDirs（仅在 POSIX 路径语义宿主执行）
+    if (process.platform !== 'win32') {
+      const posixCellar = path.join(root, 'cellar', 'pkg');
+      const posixBin = path.join(root, 'homebrew-bin');
+      fs.mkdirSync(posixCellar, { recursive: true });
+      fs.mkdirSync(posixBin, { recursive: true });
+      const nodeBinDir = path.dirname(process.execPath);
+      const cliScript = path.join(posixCellar, 'my-acp-cli');
+      fs.writeFileSync(cliScript, '#!/usr/bin/env node\nconsole.log("ok");\n', { mode: 0o755 });
+      const linkPath = path.join(posixBin, 'my-acp-cli');
+      fs.symlinkSync(cliScript, linkPath);
+      const resolvedShebang = resolveExternalCommand({
+        command: 'my-acp-cli',
+        args: ['--acp'],
+        platform: process.platform,
+        envPath: `${posixBin}:${nodeBinDir}`,
+        homeDir: root,
+      });
+      expect(resolvedShebang.unwrapKind).toBe('node-script');
+      expect(resolvedShebang.extraPathDirs).toContain(posixBin);
+    }
+
+    // 3. M9: 拒绝注入 BASH_ENV / GIT_SSH_COMMAND / PYTHONPATH / HOME，且剥离带引号 PATH 段
+    for (const forbidden of ['BASH_ENV', 'GIT_SSH_COMMAND', 'PYTHONPATH', 'HOME', 'USERPROFILE']) {
+      expect(() =>
+        buildExternalLaunchEnv({
+          hostEnv: { PATH: '/usr/bin' },
+          env: { [forbidden]: '/tmp/hijack' },
+          platform: 'linux',
+        }),
+      ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_CONFIG_INVALID' }));
+    }
+    const quotedPathEnv = buildExternalLaunchEnv({
+      hostEnv: { Path: '"C:\\Windows\\System32";C:\\Windows' },
+      platform: 'win32',
+    });
+    expect(quotedPathEnv.env.PATH).toContain('C:\\Windows\\System32');
+
+    // 4. M10: NdjsonChannel.close() 恢复因 8MiB 积压而 pause 的输入流
+    const pausedReadable = new PassThrough();
+    const dummyWritable = new PassThrough();
+    let resumeCalled = false;
+    const origResume = pausedReadable.resume.bind(pausedReadable);
+    pausedReadable.resume = () => {
+      resumeCalled = true;
+      return origResume();
+    };
+    const ch = new NdjsonChannel(pausedReadable, dummyWritable);
+    const bigLine = `${JSON.stringify({ type: 'chunk', pad: 'A'.repeat(1_050_000) })}\n`;
+    for (let i = 0; i < 9; i++) {
+      pausedReadable.write(bigLine);
+    }
+    ch.close();
+    expect(resumeCalled).toBe(true);
+
+    // 5. H2: 主进程收到 stdin EOF 立即退出，但派生的孙进程继承并占住 stdout/stderr 管道时，close() 仍须强杀孙进程并结算 waitForClose/onClose
+    const holderChild = path.join(root, 'pipe-holder-grandchild.mjs');
+    fs.writeFileSync(
+      holderChild,
+      'process.stdout.write("HELD\\n"); setInterval(() => { process.stdout.write("."); }, 40);\n',
+    );
+    const leaderScript = path.join(root, 'eof-exit-leader.mjs');
+    fs.writeFileSync(
+      leaderScript,
+      `import { spawn } from 'node:child_process';
+       const sub = spawn(process.execPath, [${JSON.stringify(holderChild)}], { stdio: ['ignore', 'inherit', 'inherit'] });
+       process.stdout.write('PID:' + String(sub.pid) + '\\n');
+       process.stdin.resume();
+       process.stdin.on('end', () => process.exit(0));
+      `,
+    );
+    let onCloseFired = false;
+    const sup = ExternalProcessSupervisor.spawn({
+      executable: process.execPath,
+      args: [leaderScript],
+      cwd: root,
+      env: buildExternalLaunchEnv({ platform: process.platform }).env,
+      onClose: () => {
+        onCloseFired = true;
+      },
+    });
+    const leakedGrandchildPid = await new Promise<number>((resolve) => {
+      let out = '';
+      const onChunk = (chunk: Buffer) => {
+        out += chunk.toString('utf8');
+        const pidMatch = /PID:(\d+)/.exec(out);
+        if (pidMatch && out.includes('HELD')) {
+          sup.stdout.off('data', onChunk);
+          sup.stdout.resume();
+          resolve(Number.parseInt(pidMatch[1]!, 10));
+        }
+      };
+      sup.stdout.on('data', onChunk);
+    });
+    expect(leakedGrandchildPid).toBeGreaterThan(0);
+
+    const closeRes = await sup.close(200);
+    const waitedRes = await Promise.race([
+      sup.waitForClose(),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 500)),
+    ]);
+    expect(waitedRes).not.toBe('hung');
+    expect(onCloseFired).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 150));
+    let stillAlive = true;
+    try {
+      process.kill(leakedGrandchildPid, 0);
+    } catch (err) {
+      stillAlive = (err as NodeJS.ErrnoException).code !== 'ESRCH';
+    }
+    try {
+      if (stillAlive) process.kill(leakedGrandchildPid, 'SIGKILL');
+    } catch {
+      /* ignore */
+    }
+    expect(stillAlive).toBe(false);
+    expect(closeRes.code === 0 || closeRes.forcedKill).toBe(true);
   });
 });

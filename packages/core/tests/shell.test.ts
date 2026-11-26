@@ -61,7 +61,7 @@ describe('cross-platform shell discovery and execution', () => {
     expect(classifyBashOutput('', 'win32')).toBeUndefined();
   });
 
-  it('uses the WSL launcher as fallback before PowerShell on Windows', () => {
+  it('prefers native PowerShell before WSL on Windows auto mode and preserves $var in explicit WSL', async () => {
     if (process.platform !== 'win32') return;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-wsl-fallback-'));
     directories.push(root);
@@ -75,11 +75,33 @@ describe('cross-platform shell discovery and execution', () => {
     };
     // 显式 native bash：System32 里只有 WSL launcher（或没有 bash），必须失败
     expect(() => detectShell({ ...options, preference: 'bash' })).toThrow(/unavailable/);
-    // auto：System32 的 bash.exe 是 WSL launcher 时选 wsl，否则退到 PowerShell
-    expect(['wsl', 'powershell']).toContain(detectShell(options).kind);
+    // auto：无 Git Bash 时优先走原生 PowerShell，避免默认落入 WSL 触发 NAT 代理告警与 /mnt 慢盘超时
+    const autoEnv = detectShell(options);
+    expect(autoEnv.kind).toBe('powershell');
+    // 同盘符二次发现应命中二进制指纹探针缓存，不再重复阻塞 spawnSync 数秒
+    const warmStart = Date.now();
+    expect(detectShell(options).executable).toBe(autoEnv.executable);
+    expect(Date.now() - warmStart).toBeLessThan(150);
+
     const powershell = detectShell({ ...options, preference: 'powershell' });
     expect(powershell.kind).toBe('powershell');
     expect(path.basename(powershell.executable).toLowerCase()).toBe('powershell.exe');
+
+    // 若本机存在可用 WSL，显式请求 wsl 时不得经旧版 System32\bash.exe 二次展开吞掉 $d / $0 变量
+    let wslEnv: ReturnType<typeof detectShell> | undefined;
+    try {
+      wslEnv = detectShell({ ...options, preference: 'wsl' });
+    } catch {
+      wslEnv = undefined;
+    }
+    if (wslEnv) {
+      const res = await createRunCommandTool(wslEnv).execute(
+        { command: 'for d in r1 r2; do printf "[%s]" "$d"; done' },
+        { rootDir: root },
+      );
+      expect(res.exitCode).toBe(0);
+      expect(res.output).toContain('[r1][r2]');
+    }
   }, 30_000);
 
   it('selects and probes a native bash explicitly when the environment provides one', () => {

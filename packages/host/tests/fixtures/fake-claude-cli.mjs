@@ -214,6 +214,43 @@ rl.on('line', (line) => {
       });
     }
 
+    if (text.includes('cancel-approval')) {
+      const reqId = `perm_cancel_${turnCount}`;
+      const toolUseId = `toolu_cancel_${turnCount}`;
+      emit({
+        type: 'control_request',
+        request_id: reqId,
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'Bash',
+          input: { command: 'echo transient' },
+          tool_use_id: toolUseId,
+        },
+      });
+      setTimeout(() => {
+        emit({
+          type: 'control_cancel_request',
+          request_id: reqId,
+        });
+        emit({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            delta: { type: 'text_delta', text: 'Approval withdrawn cleanly.' },
+          },
+        });
+        emit({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          session_id: sessionId,
+          result: 'Approval withdrawn cleanly.',
+          usage: { input_tokens: 12, output_tokens: 6 },
+        });
+      }, 60);
+      return;
+    }
+
     if (text.includes('approval')) {
       const reqId = `perm_req_${turnCount}`;
       const toolUseId = `toolu_bash_${turnCount}`;

@@ -45,7 +45,12 @@ export class SettingsService {
         this.publicProfile(item, loaded.settings, globalIds),
       ),
       defaultModel: loaded.settings.defaultModel,
-      routing: { ...loaded.settings.modelRouting },
+      // 过滤空值与未绑定角色键，确保内存态对象严格满足 contracts.ts 中 z.record(z.string(), z.string()) 契约。
+      routing: Object.fromEntries(
+        Object.entries(loaded.settings.modelRouting ?? {}).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0,
+        ),
+      ),
       // loadSettings 已把全局 FullAccess 降级为 Approval；这里只做投影，不再二次裁决。
       permissionMode: loaded.settings.permissionMode ?? 'Approval',
       providers: listProviderMetas(loaded.settings.profiles).map((item) => ({

@@ -56,8 +56,11 @@ const STREAM_COALESCE_MS = 50;
 const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
 /** 空闲外部子进程自动回收时间（30 分钟；回收后保留会话记录与只读展示快照）。 */
 const DEFAULT_IDLE_REAP_MS = 30 * 60_000;
+/** 运行期单会话保留的诊断通知条数上限，防高频异常告警无限增长突破单帧预算。 */
+const MAX_LIVE_NOTICES = 32;
 
 interface LiveApprovalEntry {
+  readonly requestId: string;
   readonly view: ViewExternalApproval;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly respond: (decision: ExternalApprovalDecision) => void;
@@ -217,10 +220,11 @@ export class ExternalSessionService {
     };
   }
 
-  /** 保存内置代理的增量覆写并使旧探测缓存失效；配置指纹变更后不匹配的离线会话将自动降级为只读归档。 */
+  /** 保存内置代理的增量覆写并使旧探测缓存失效；配置指纹变更后自动回收不匹配的存量会话并降级为只读归档。 */
   saveBuiltinOverride(id: string, override: BuiltinHarnessOverride): ViewExternalHarness[] {
     saveBuiltinHarnessOverride(id, override, { homeDir: this.homeDir });
     this.probeCache.delete(id);
+    this.reconcileLiveSlotsForHarness(id);
     this.notifyListChanged();
     return this.listHarnesses().harnesses;
   }
@@ -229,37 +233,42 @@ export class ExternalSessionService {
   resetBuiltinOverride(id: string): ViewExternalHarness[] {
     resetBuiltinHarnessOverride(id, { homeDir: this.homeDir });
     this.probeCache.delete(id);
+    this.reconcileLiveSlotsForHarness(id);
     this.notifyListChanged();
     return this.listHarnesses().harnesses;
   }
 
-  /** 显式持久化内置或自定义外部代理的启用状态；停用后拒绝新建或离线恢复该代理的会话。 */
+  /** 显式持久化内置或自定义外部代理的启用状态；停用后同步关闭存活会话并拒绝新建或继续发送。 */
   toggleHarness(id: string, enabled: boolean): ViewExternalHarness[] {
     toggleExternalHarness(id, enabled, { homeDir: this.homeDir });
+    this.reconcileLiveSlotsForHarness(id);
     this.notifyListChanged();
     return this.listHarnesses().harnesses;
   }
 
   /** 新增或覆盖自定义 `Local ACP Command` 代理（校验阻断原型保留键、内置 ID 碰撞与敏感凭据误填）。 */
   saveCustomHarness(entry: CustomExternalHarnessInput): ViewExternalHarness[] {
+    const trimmedId = entry.id.trim();
     upsertCustomExternalHarness(entry, { homeDir: this.homeDir });
-    this.probeCache.delete(entry.id.trim());
+    this.probeCache.delete(trimmedId);
+    this.reconcileLiveSlotsForHarness(trimmedId);
     this.notifyListChanged();
     return this.listHarnesses().harnesses;
   }
 
-  /** 从磁盘配置移除指定自定义外部代理并清理其内存探测缓存（历史归档仍保留只读可查）。 */
+  /** 从磁盘配置移除指定自定义外部代理并回收其存活进程（历史归档仍保留只读可查）。 */
   deleteCustomHarness(id: string): ViewExternalHarness[] {
     removeCustomExternalHarness(id, { homeDir: this.homeDir });
     this.probeCache.delete(id);
+    this.reconcileLiveSlotsForHarness(id);
     this.notifyListChanged();
     return this.listHarnesses().harnesses;
   }
 
   /**
-   * 对已保存代理或草稿配置执行真实非破坏性握手探测（默认 15s 超时）。
+   * 对已保存代理或草稿配置执行真实非破坏性握手探测（按驱动默认 15s–20s 超时）。
    *
-   * 信任门禁：当指定具体 `workspaceRoot` 时强制核验 `isProjectTrusted`；未指定时在系统临时目录安全执行版本与协议握手探测。
+   * 信任门禁：当指定具体 `workspaceRoot` 时强制核验 `isProjectTrusted`；未指定时在受管 `probe-cwd` 空目录安全执行握手探测。
    */
   async testHarness(
     target: string | ExternalHarnessDefinition,
@@ -330,10 +339,11 @@ export class ExternalSessionService {
 
   /** 列出指定已信任工作区（或全部已信任工作区）下的外部会话摘要。 */
   listSessions(workspaceRoot?: string): ViewExternalSession[] {
+    const harnessMap = this.buildResolvedHarnessMap();
     if (workspaceRoot) {
       const nativeRoot = this.requireTrustedWorkspace(workspaceRoot);
       const records = this.registry.listRecords(nativeRoot);
-      return records.map((rec) => this.toViewSession(rec));
+      return records.map((rec) => this.toViewSession(rec, harnessMap));
     }
     const records = this.registry.listRecords();
     return records
@@ -345,7 +355,7 @@ export class ExternalSessionService {
           return false;
         }
       })
-      .map((rec) => this.toViewSession(rec));
+      .map((rec) => this.toViewSession(rec, harnessMap));
   }
 
   /** 支持精确会话 ID 或唯一前缀解析（方便 CLI `/external show <前缀>` 交互）。 */
@@ -508,11 +518,13 @@ export class ExternalSessionService {
         signal,
       );
     } catch (err) {
+      const live = this.liveSlots.get(opened.session.id);
       if (
-        opened.session.status === 'idle' &&
-        this.liveSlots.get(opened.session.id)?.projector.getMessages().length === 0
+        live &&
+        live.projector.getMessages().length === 0 &&
+        !this.registry.hasArchive(opened.session.id)
       ) {
-        await this.closeSession(opened.session.id).catch(() => {});
+        await this.deleteSession(opened.session.id).catch(() => {});
       }
       throw err;
     }
@@ -577,6 +589,13 @@ export class ExternalSessionService {
     }
 
     let slot = this.liveSlots.get(resolvedId);
+    if (slot) {
+      const currentDef = this.requireEnabledHarnessDefinition(slot.record.harnessId);
+      if (computeHarnessConfigDigest(currentDef) !== slot.record.configDigest) {
+        await this.closeSession(resolvedId).catch(() => {});
+        slot = undefined;
+      }
+    }
     if (!slot) {
       if (this.openingSessions.has(resolvedId)) {
         throw new ExternalHarnessError(
@@ -588,11 +607,18 @@ export class ExternalSessionService {
       if (!record) {
         throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未找到外部会话 '${resolvedId}'`);
       }
-      this.requireTrustedWorkspace(record.workspaceRoot);
+      const nativeResumeRoot = this.requireTrustedWorkspace(record.workspaceRoot);
+      if (normalizeProjectRoot(nativeResumeRoot) !== normalizeProjectRoot(record.workspaceRoot)) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_UNTRUSTED_WORKSPACE',
+          `工作区目录物理身份已变更，拒绝恢复外部会话 '${resolvedId}'`,
+        );
+      }
       this.verifyExpectedWorkspace(record.workspaceRoot, input.expectedWorkspaceRoot);
       if (record.owner) {
         throw new ExternalHarnessError('EXTERNAL_SESSION_BUSY', '外部会话由另一个宿主持有');
       }
+      const def = this.requireEnabledHarnessDefinition(record.harnessId);
       if (!this.canContinueRecord(record)) {
         throw new ExternalHarnessError(
           'EXTERNAL_PROTOCOL_ERROR',
@@ -602,7 +628,6 @@ export class ExternalSessionService {
       this.ensureProcessCapacity();
       this.ensureWorkspaceNotRunning(record.workspaceRoot, resolvedId);
 
-      const def = this.requireEnabledHarnessDefinition(record.harnessId);
       const driver = this.requireDriver(def.transport);
       slot = await this.spawnAndBindSlot({ record, def, driver, resume: true, signal });
     }
@@ -692,7 +717,7 @@ export class ExternalSessionService {
             300,
           ) ?? '执行失败';
         activeSlot.operation = { id: opId, phase: 'idle', result: 'failed' };
-        activeSlot.notices.push({
+        this.pushSlotNotice(activeSlot, {
           id: `notice-${randomUUID().slice(0, 8)}`,
           level: 'error',
           text: safeErr,
@@ -1050,10 +1075,22 @@ export class ExternalSessionService {
       this.cancelAllSlotApprovals(slot);
       const aborted = openingAbort.signal.aborted;
       const rawErr = err instanceof Error ? err.message : String(err);
-      this.updateSlotRecordSafe(slot, {
-        status: aborted ? 'ended' : 'failed',
-        lastError: aborted ? undefined : sanitizeDisplayText(redactText(rawErr, secrets), 300),
-      });
+      if (
+        !params.resume &&
+        slot.projector.getMessages().length === 0 &&
+        !this.registry.hasArchive(claimed.id)
+      ) {
+        try {
+          this.registry.deleteRecord(claimed.id);
+        } catch {
+          /* ignore cleanup failure */
+        }
+      } else {
+        this.updateSlotRecordSafe(slot, {
+          status: aborted ? 'ended' : 'failed',
+          lastError: aborted ? undefined : sanitizeDisplayText(redactText(rawErr, secrets), 300),
+        });
+      }
       this.notifyListChanged(claimed.workspaceRoot);
       throw this.redactErrorInstance(err, secrets);
     } finally {
@@ -1089,7 +1126,7 @@ export class ExternalSessionService {
         if (slot.projector.wasTruncated()) {
           slot.truncatedArchive = true;
         }
-        this.flushSlotImmediate(slot);
+        this.emitSnapshotImmediate(slot);
         return;
       }
       case 'config_updated': {
@@ -1102,13 +1139,42 @@ export class ExternalSessionService {
         this.flushSlotImmediate(slot);
         return;
       }
+      case 'approval_cancelled': {
+        let removed = false;
+        for (const [aprId, entry] of slot.approvals) {
+          if (entry.requestId === event.requestId) {
+            clearTimeout(entry.timer);
+            slot.approvals.delete(aprId);
+            removed = true;
+          }
+        }
+        if (removed) {
+          if (slot.approvals.size === 0 && slot.record.status === 'waiting_approval') {
+            const nextStatus = slot.operation?.phase === 'running' ? 'running' : 'idle';
+            this.updateSlotRecordSafe(slot, { status: nextStatus });
+            if (nextStatus === 'idle') {
+              this.armIdleTimer(slot);
+            }
+          }
+          this.flushSlotImmediate(slot);
+        }
+        return;
+      }
       case 'approval_requested': {
+        if (
+          slot.closing ||
+          slot.record.status === 'cancelling' ||
+          slot.operation?.phase !== 'running'
+        ) {
+          event.respond({ outcome: 'cancelled' });
+          return;
+        }
         const approvalId = `extapr_${randomUUID().slice(0, 12)}`;
         const expiresAt = Date.now() + this.approvalTimeoutMs;
         const view: ViewExternalApproval = {
           approvalId,
           sessionId: slot.record.id,
-          toolCallId: event.toolCallId,
+          toolCallId: event.toolCallId.slice(0, 256) || 'tool',
           toolTitle: redactText(event.toolTitle, slot.secrets),
           ...(event.target ? { target: redactText(event.target, slot.secrets) } : {}),
           ...(event.warning ? { warning: redactText(event.warning, slot.secrets) } : {}),
@@ -1124,7 +1190,7 @@ export class ExternalSessionService {
           if (!slot.approvals.has(approvalId)) return;
           slot.approvals.delete(approvalId);
           event.respond({ outcome: 'cancelled' });
-          slot.notices.push({
+          this.pushSlotNotice(slot, {
             id: `notice-${randomUUID().slice(0, 8)}`,
             level: 'warning',
             text: `外部审批「${view.toolTitle}」已超时（${Math.round(this.approvalTimeoutMs / 1000)}s），已自动按取消拒绝`,
@@ -1141,6 +1207,7 @@ export class ExternalSessionService {
         timer.unref?.();
 
         slot.approvals.set(approvalId, {
+          requestId: event.requestId,
           view,
           timer,
           respond: event.respond,
@@ -1155,12 +1222,12 @@ export class ExternalSessionService {
       }
       case 'diagnostic': {
         if (event.level === 'warning' || event.level === 'error') {
-          slot.notices.push({
+          this.pushSlotNotice(slot, {
             id: `notice-${randomUUID().slice(0, 8)}`,
             level: event.level,
             text: redactText(event.text, slot.secrets),
           });
-          this.flushSlotImmediate(slot);
+          this.emitSnapshotImmediate(slot);
         }
         return;
       }
@@ -1169,13 +1236,17 @@ export class ExternalSessionService {
         const running = slot.operation?.phase === 'running';
         slot.projector.interruptTurn();
         slot.operation = undefined;
-        const crashed = running || (event.code !== 0 && event.code !== null);
+        const crashed =
+          running || event.signal !== null || (event.code !== 0 && event.code !== null);
         const errTail = event.stderrTail
           ? sanitizeDisplayText(redactText(event.stderrTail, slot.secrets), 240)
           : undefined;
+        const fallbackCrashMsg = event.signal
+          ? `外部代理进程因信号 ${event.signal} 终止`
+          : '外部代理进程已异常退出';
         this.finishSlot(slot, {
           status: crashed ? 'failed' : 'ended',
-          lastError: crashed ? (errTail ?? '外部代理进程已退出') : undefined,
+          lastError: crashed ? (errTail ?? fallbackCrashMsg) : undefined,
         });
         if (running)
           this.options.onAttentionEvent?.({
@@ -1184,6 +1255,13 @@ export class ExternalSessionService {
           });
         return;
       }
+    }
+  }
+
+  private pushSlotNotice(slot: LiveSessionSlot, notice: ViewNotice): void {
+    slot.notices.push(notice);
+    if (slot.notices.length > MAX_LIVE_NOTICES) {
+      slot.notices.splice(0, slot.notices.length - MAX_LIVE_NOTICES);
     }
   }
 
@@ -1196,13 +1274,17 @@ export class ExternalSessionService {
     slot.coalesceTimer.unref?.();
   }
 
-  private flushSlotImmediate(slot: LiveSessionSlot): void {
+  private emitSnapshotImmediate(slot: LiveSessionSlot): void {
     if (slot.coalesceTimer !== undefined) {
       clearTimeout(slot.coalesceTimer);
       slot.coalesceTimer = undefined;
     }
-    this.notifyListChanged(slot.record.workspaceRoot);
     this.emitSnapshot(slot);
+  }
+
+  private flushSlotImmediate(slot: LiveSessionSlot): void {
+    this.emitSnapshotImmediate(slot);
+    this.notifyListChanged(slot.record.workspaceRoot);
   }
 
   private emitSnapshot(slot: LiveSessionSlot): void {
@@ -1343,21 +1425,58 @@ export class ExternalSessionService {
     };
   }
 
-  private canContinueRecord(record: ExternalSessionRecord): boolean {
+  private buildResolvedHarnessMap(): Map<string, ExternalHarnessDefinition> {
+    const map = new Map<string, ExternalHarnessDefinition>();
+    for (const item of listResolvedExternalHarnesses({
+      homeDir: this.homeDir,
+      hostEnv: this.options.hostEnv,
+    })) {
+      map.set(item.definition.id, item.definition);
+    }
+    return map;
+  }
+
+  private reconcileLiveSlotsForHarness(harnessId: string): void {
+    const currentDef = this.buildResolvedHarnessMap().get(harnessId);
+    const nextDigest = currentDef?.enabled ? computeHarnessConfigDigest(currentDef) : undefined;
+    for (const [sid, opening] of this.openingSessions) {
+      if (opening.slot.record.harnessId === harnessId) {
+        if (!nextDigest || opening.slot.record.configDigest !== nextDigest) {
+          opening.abort.abort();
+        }
+      }
+      void sid;
+    }
+    for (const [sid, slot] of this.liveSlots) {
+      if (slot.record.harnessId === harnessId) {
+        if (!nextDigest || slot.record.configDigest !== nextDigest) {
+          void this.closeSession(sid).catch(() => {});
+        }
+      }
+    }
+  }
+
+  private canContinueRecord(
+    record: ExternalSessionRecord,
+    harnessMap?: ReadonlyMap<string, ExternalHarnessDefinition>,
+  ): boolean {
+    const def = harnessMap
+      ? harnessMap.get(record.harnessId)
+      : this.buildResolvedHarnessMap().get(record.harnessId);
+    if (!def || !def.enabled) return false;
+    if (!this.drivers[def.transport]) return false;
+    if (computeHarnessConfigDigest(def) !== record.configDigest) return false;
+
     const live = this.liveSlots.get(record.id);
     if (live) return !live.closing;
     if (record.owner) return false;
-    if (!record.resumable || !record.nativeSessionId) return false;
-    const entry = listResolvedExternalHarnesses({
-      homeDir: this.homeDir,
-      hostEnv: this.options.hostEnv,
-    }).find((i) => i.definition.id === record.harnessId);
-    if (!entry || !entry.definition.enabled) return false;
-    if (!this.drivers[entry.definition.transport]) return false;
-    return computeHarnessConfigDigest(entry.definition) === record.configDigest;
+    return Boolean(record.resumable && record.nativeSessionId);
   }
 
-  private toViewSession(record: ExternalSessionRecord): ViewExternalSession {
+  private toViewSession(
+    record: ExternalSessionRecord,
+    harnessMap?: ReadonlyMap<string, ExternalHarnessDefinition>,
+  ): ViewExternalSession {
     const live = this.liveSlots.get(record.id);
     const effective = live ? live.record : record;
     return {
@@ -1369,7 +1488,7 @@ export class ExternalSessionService {
       title: effective.title,
       status: effective.status,
       resumable: effective.resumable,
-      canContinue: this.canContinueRecord(effective),
+      canContinue: this.canContinueRecord(effective, harnessMap),
       hasArchive: Boolean(
         (live && live.projector.getMessages().length > 0) || this.registry.hasArchive(effective.id),
       ),

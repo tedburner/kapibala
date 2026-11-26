@@ -455,14 +455,19 @@ function remapLegacyReferences(settings: UserSettings): UserSettings {
   };
 
   settings.defaultModel = remap(settings.defaultModel) ?? DEFAULT_MODEL_ID;
-  if (settings.modelRouting) {
+  if (settings.modelRouting && typeof settings.modelRouting === 'object') {
     const routing = settings.modelRouting;
-    settings.modelRouting = {
-      planning: remap(routing.planning),
-      execution: remap(routing.execution),
-      summary: remap(routing.summary),
-      fast: remap(routing.fast),
-    };
+    // 仅挂载实际绑定的非空角色键，禁止写入值为 undefined 的自有属性：
+    // 桌面端 RpcEndpoint 在 JSON 序列化前直接对内存对象执行 Zod z.record(z.string(), z.string()) 校验，
+    // 挂载 { summary: undefined } 会令 settings.read 整体校验失败。
+    const nextRouting: ModelRoutingConfig = {};
+    for (const role of ['planning', 'execution', 'summary', 'fast'] as const) {
+      const target = typeof routing[role] === 'string' ? remap(routing[role].trim()) : undefined;
+      if (target) nextRouting[role] = target;
+    }
+    settings.modelRouting = Object.keys(nextRouting).length > 0 ? nextRouting : undefined;
+  } else {
+    settings.modelRouting = undefined;
   }
   return settings;
 }

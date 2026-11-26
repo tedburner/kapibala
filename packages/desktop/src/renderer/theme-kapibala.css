@@ -619,7 +619,7 @@ body {
   }
 }
 
-/* ---------- 窗口骨架：46px 标题栏、可拖拽区与侧栏 ---------- */
+/* ---------- 窗口骨架：46px 标题栏、跨平台窗口控制安全区与侧栏收敛 ---------- */
 .kapibala-titlebar {
   height: var(--kapibala-titlebar-height);
   background: var(--color-kumo-base);
@@ -627,22 +627,39 @@ body {
 }
 .kapibala-titlebar button,
 .kapibala-titlebar [role="button"],
-.kapibala-no-drag {
+.kapibala-no-drag,
+[data-layer-dialog-backdrop],
+[role="dialog"]:not(.kapibala-settings-popup),
+[role="alertdialog"] {
   -webkit-app-region: no-drag;
 }
+/* Windows 与 Linux 侧栏左上角不再重复渲染 Kapibala 标题行，仅留紧凑顶部间距供拖拽与视觉呼吸。 */
 .kapibala-sidebar-header {
-  height: var(--kapibala-titlebar-height);
-  padding: 0 10px;
+  height: 10px;
+  padding: 0;
   -webkit-app-region: drag;
 }
+/* macOS 红绿灯（x: 16..68, y: 15）内嵌于窗口左上角：展开态由侧栏头部留出 46px 高度承载；
+   侧栏折叠为 48px 图标轨或窄屏抽屉收起时，主标题栏自动让出红绿灯安全距离，防遮挡侧栏开关按钮。 */
 [data-platform="darwin"] .kapibala-sidebar-header {
-  padding-left: 72px;
+  height: var(--kapibala-titlebar-height);
+  padding: 0 10px 0 72px;
 }
-[data-platform="darwin"] .kapibala-sidebar-wordmark {
-  display: none;
+[data-platform="darwin"] [data-state="collapsed"] ~ div .kapibala-titlebar {
+  padding-left: 36px;
 }
-[data-platform="darwin"] .kapibala-titlebar {
-  padding-left: 28px;
+@media (max-width: 767.98px) {
+  [data-platform="darwin"] .kapibala-titlebar {
+    padding-left: 80px;
+  }
+}
+/* Windows 启用沉浸式 titleBarOverlay 后，右上角系统最小化/最大化/关闭按钮占据约 138px 宽、46px 高：
+   未展开右侧常驻抽屉时由主标题栏右侧留白避让；展开右侧抽屉时由抽屉头部下移避让，防按钮重叠。 */
+[data-platform="win32"] .kapibala-titlebar:not([data-dock-open]) {
+  padding-right: calc(100vw - env(titlebar-area-width, calc(100vw - 140px)) + 12px);
+}
+[data-platform="win32"] .kapibala-dock-header {
+  padding-top: calc(var(--kapibala-titlebar-height) + 6px);
 }
 [data-sidebar="sidebar"] {
   border-right: 0;
@@ -857,13 +874,30 @@ body {
 }
 [data-platform="darwin"] .kapibala-settings-rail {
   padding-top: 46px;
-  /* 整页设置覆盖了应用标题栏，左栏顶部继续承担窗口拖拽；导航与关闭按钮保持可点。 */
+}
+[data-platform="darwin"] .kapibala-settings-rail,
+[data-platform="win32"] .kapibala-settings-rail {
+  /* 整页设置覆盖了应用标题栏，沉浸式窗口下左栏空白区继续承担窗口拖拽；导航与关闭按钮保持可点。 */
   -webkit-app-region: drag;
 }
 [data-platform="darwin"] .kapibala-settings-rail-top button,
 [data-platform="darwin"] .kapibala-settings-nav,
-[data-platform="darwin"] .kapibala-settings-rail-footer {
+[data-platform="darwin"] .kapibala-settings-rail-footer,
+[data-platform="win32"] .kapibala-settings-rail-top button,
+[data-platform="win32"] .kapibala-settings-nav,
+[data-platform="win32"] .kapibala-settings-rail-footer {
   -webkit-app-region: no-drag;
+}
+[data-platform="darwin"] .kapibala-settings-popup::before,
+[data-platform="win32"] .kapibala-settings-popup::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: var(--kapibala-sidebar-width);
+  right: 0;
+  height: var(--kapibala-titlebar-height);
+  pointer-events: none;
+  -webkit-app-region: drag;
 }
 .kapibala-settings-rail-top {
   display: flex;
@@ -1366,9 +1400,4 @@ body {
   align-items: center;
   gap: 6px;
   padding: 8px 2px;
-}
-.kapibala-sidebar-version {
-  margin-left: auto;
-  color: var(--text-color-kumo-subtle);
-  font-size: 11px;
 }

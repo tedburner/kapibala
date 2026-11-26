@@ -256,6 +256,9 @@ export function App() {
   const spacesRef = useRef<Workspace[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pendingLaunchPrompt, setPendingLaunchPrompt] = useState<string>();
+  const [replyingApprovals, setReplyingApprovals] = useState<Record<string, true>>({});
+  const [approvalError, setApprovalError] = useState('');
   const [fullAccess, setFullAccess] = useState(false);
   // 新对话在创建前没有会话配置，先把用户选的模型暂存；创建成功后立即 configure 再启动，
   // 避免「输入区显示 A 模型、实际用 B 模型」的静默不一致。
@@ -466,7 +469,12 @@ export function App() {
   useEffect(() => {
     const hasNew = approvalsCount > seenApprovals.current;
     seenApprovals.current = approvalsCount;
-    if (hasNew && approvalsCount > 0 && !approvalsOpen) openApprovals(true);
+    if (approvalsCount === 0) {
+      setApprovalError('');
+      if (approvalsOpen) openApprovals(false);
+      return;
+    }
+    if (hasNew && !approvalsOpen) openApprovals(true);
   }, [approvalsCount, approvalsOpen, openApprovals]);
   // 自动预览只在「基线之外的新产物」出现时触发一次；首帧、历史重放与切回会话都只刷新基线。
   useEffect(() => {
@@ -504,27 +512,46 @@ export function App() {
     },
     [historyClient],
   );
-  const refreshExternalList = useCallback(async (spaceId?: string) => {
-    const targets = spaceId
-      ? spacesRef.current.filter((item) => item.id === spaceId && item.trusted)
-      : spacesRef.current.filter((item) => item.trusted);
-    if (
-      spaceId &&
-      targets.length === 0 &&
-      current.current?.id === spaceId &&
-      current.current.trusted
-    ) {
-      targets.push(current.current);
+  const externalListInFlight = useRef(new Map<string, { running: boolean; queued: boolean }>());
+  const refreshExternalSpace = useCallback(async (id: string) => {
+    const state = externalListInFlight.current.get(id);
+    if (state?.running) {
+      state.queued = true;
+      return;
     }
-    for (const item of targets) {
-      try {
-        const result = await api.external.list(item.id);
-        setExternalLists((prev) => ({ ...prev, [item.id]: result.items }));
-      } catch {
-        // 空间失效或断连期间静默保留既有列表，由宿主恢复后重刷。
-      }
+    const tracker = { running: true, queued: false };
+    externalListInFlight.current.set(id, tracker);
+    try {
+      do {
+        tracker.queued = false;
+        try {
+          const result = await api.external.list(id);
+          setExternalLists((prev) => ({ ...prev, [id]: result.items }));
+        } catch {
+          // 空间失效或断连期间静默保留既有列表，由宿主恢复后重刷。
+        }
+      } while (tracker.queued);
+    } finally {
+      externalListInFlight.current.delete(id);
     }
   }, []);
+  const refreshExternalList = useCallback(
+    async (spaceId?: string) => {
+      const targets = spaceId
+        ? spacesRef.current.filter((item) => item.id === spaceId && item.trusted)
+        : spacesRef.current.filter((item) => item.trusted);
+      if (
+        spaceId &&
+        targets.length === 0 &&
+        current.current?.id === spaceId &&
+        current.current.trusted
+      ) {
+        targets.push(current.current);
+      }
+      await Promise.all(targets.map((item) => refreshExternalSpace(item.id)));
+    },
+    [refreshExternalSpace],
+  );
   const detachActiveExternal = useCallback(async () => {
     externalNavGen.current += 1;
     const prev = activeExternalRef.current;
@@ -663,25 +690,18 @@ export function App() {
     const off = api.onEvent((event) => {
       if (event.type === 'external.listChanged') {
         void refreshExternalList(event.workspaceId);
-        const cur = activeExternalRef.current;
-        if (cur && (!event.workspaceId || event.workspaceId === cur.workspaceId)) {
-          void api.external
-            .snapshot({ workspaceId: cur.workspaceId, sessionId: cur.sessionId })
-            .then((snapshot) => {
-              setActiveExternal((prev) =>
-                prev && prev.sessionId === cur.sessionId ? { ...prev, snapshot } : prev,
-              );
-            })
-            .catch(() => {});
-        }
         return;
       }
       if (event.type === 'external.snapshotChanged') {
-        setActiveExternal((prev) =>
-          prev && prev.subscriptionId === event.subscriptionId
-            ? { ...prev, snapshot: event.snapshot }
-            : prev,
-        );
+        setActiveExternal((prev) => {
+          if (!prev || prev.subscriptionId !== event.subscriptionId) return prev;
+          if (event.snapshot.sequence !== 0 && event.snapshot.sequence < prev.snapshot.sequence) {
+            return prev;
+          }
+          const next = { ...prev, snapshot: event.snapshot };
+          activeExternalRef.current = next;
+          return next;
+        });
         return;
       }
       if (event.type === 'external.snapshotInvalidated') {
@@ -857,7 +877,7 @@ export function App() {
     setExternalToasts((prev) => prev.filter((item) => item.sessionId !== sessionId));
     await refreshExternalList(space.id);
   }
-  async function sendExternalPrompt(text: string) {
+  async function sendExternalPrompt(text: string, clearDraft = true) {
     const cur = activeExternalRef.current;
     const trimmed = text.trim();
     if (!cur || !trimmed || busy) return;
@@ -868,10 +888,18 @@ export function App() {
         sessionId: cur.sessionId,
         text: trimmed,
       });
-      setActiveExternal((prev) =>
-        prev && prev.sessionId === cur.sessionId ? { ...prev, snapshot } : prev,
-      );
-      ui.draft(draftKey, '');
+      setActiveExternal((prev) => {
+        if (!prev || prev.sessionId !== cur.sessionId) return prev;
+        if (snapshot.sequence !== 0 && snapshot.sequence < prev.snapshot.sequence) {
+          return prev;
+        }
+        const next = { ...prev, snapshot };
+        activeExternalRef.current = next;
+        return next;
+      });
+      if (clearDraft) {
+        ui.draft(draftKey, '');
+      }
       rememberPrompt(trimmed, draftKey);
       await refreshExternalList(cur.workspaceId);
     });
@@ -1073,18 +1101,28 @@ export function App() {
     if (!opened && (!workspace?.trusted || !facts.runtimeValid)) return;
     if (!opened && workspace && composerHarness) {
       if (!selectedHarnessAvailable) return;
+      const targetSpace = workspace;
+      const targetHarnessId = composerHarness.id;
+      const navSnapshotBefore = externalNavGen.current;
       await act(async () => {
         // 宿主原子承接首轮：先验工作区并发，启动失败时保留草稿，接受后再订阅消息流。
         const snapshot = await api.external.open({
-          workspaceId: workspace.id,
-          harnessId: composerHarness.id,
+          workspaceId: targetSpace.id,
+          harnessId: targetHarnessId,
           prompt: input,
         });
-        ui.draft(':new', '');
         rememberPrompt(input);
-        rememberPrompt(input, `ext:${workspace.id}:${snapshot.session.id}`);
-        setPendingHarness(undefined);
-        await openExternalSession(workspace, snapshot.session.id);
+        rememberPrompt(input, `ext:${targetSpace.id}:${snapshot.session.id}`);
+        if (
+          current.current?.id === targetSpace.id &&
+          externalNavGen.current === navSnapshotBefore
+        ) {
+          ui.draft(':new', '');
+          setPendingHarness(undefined);
+          await openExternalSession(targetSpace, snapshot.session.id);
+        } else {
+          await refreshExternalList(targetSpace.id);
+        }
       });
       return;
     }
@@ -1137,10 +1175,18 @@ export function App() {
     }
     if (opened) {
       if (!facts.valid || !readyToSend || running) return;
+      const scopeKey = `${opened.workspaceId}:${opened.conversationId}`;
+      const previousDraft = draft;
+      // 按下 Enter 当帧即清空输入框，避免等待宿主同步读取配置与收据往返造成输入残留卡顿感；发送失败时无损回填。
+      ui.draft(scopeKey, '');
       await act(async () => {
-        await client.start(scopeOf(opened), input);
-        ui.draft(`${opened.workspaceId}:${opened.conversationId}`, '');
-        rememberPrompt(input);
+        try {
+          await client.start(scopeOf(opened), input);
+          rememberPrompt(input, scopeKey);
+        } catch (err) {
+          if (!useUI.getState().drafts[scopeKey]) ui.draft(scopeKey, previousDraft);
+          throw err;
+        }
       });
       return;
     }
@@ -1152,20 +1198,28 @@ export function App() {
       report('还没有可用模型，请先在设置中为模型填写密钥。');
       return;
     }
+    const previousDraft = draft;
+    ui.draft(':new', '');
+    setPendingLaunchPrompt(input);
     await act(async () => {
-      const result = await createSession(workspace);
-      const targetScope = `${result.workspaceId}:${result.conversationId}`;
+      let targetScope: string | undefined;
       try {
+        const result = await createSession(workspace);
+        targetScope = `${result.workspaceId}:${result.conversationId}`;
         await client.start(scopeOf(result), input);
+        // 首页发出的第一问同时记到新会话作用域：进入会话后 ↑ 仍能召回它。
+        rememberPrompt(input, ':new');
+        rememberPrompt(input, targetScope);
       } catch (err) {
-        ui.draft(targetScope, draft);
-        ui.draft(':new', '');
+        if (targetScope) {
+          ui.draft(targetScope, previousDraft);
+        } else if (!useUI.getState().drafts[':new']) {
+          ui.draft(':new', previousDraft);
+        }
         throw err;
+      } finally {
+        setPendingLaunchPrompt(undefined);
       }
-      ui.draft(':new', '');
-      // 首页发出的第一问同时记到新会话作用域：进入会话后 ↑ 仍能召回它。
-      rememberPrompt(input);
-      rememberPrompt(input, targetScope);
     });
   }
   /**
@@ -1260,8 +1314,10 @@ export function App() {
     // 技能目录双数据源：会话内用运行时目录（「现在就能跑」）；未打开会话时退化为
     // 配置层快照预览（新会话将可用的技能），两条路径同一条过滤口径——否则 home
     // 态 `/` 面板只剩命令组，技能搜索看起来像坏了。
+    // 注意：spaces 数组始终把「默认空间」排在第 0 项，未打开会话时必须取当前选中的已信任空间 trustedWorkspaceId，
+    // 否则切换到非默认项目（如 aigc）的新建对话首页时 `@` 文件补全与 `/` 项目技能预览都会误读空默认空间。
     if (!openedWorkspaceId || !openedSessionId) {
-      const previewSpace = openedWorkspaceId ?? spaces[0]?.id;
+      const previewSpace = openedWorkspaceId ?? trustedWorkspaceId;
       if (!previewSpace) {
         setSkillList(undefined);
       } else {
@@ -1302,7 +1358,7 @@ export function App() {
           if (generation === fileListGeneration.current) setSkillList(undefined);
         });
     }
-    const workspaceId = openedWorkspaceId ?? spaces[0]?.id;
+    const workspaceId = openedWorkspaceId ?? trustedWorkspaceId;
     if (!workspaceId) {
       setFileList(undefined);
       return;
@@ -1315,7 +1371,7 @@ export function App() {
       .catch(() => {
         if (generation === fileListGeneration.current) setFileList(undefined);
       });
-  }, [openedWorkspaceId, openedSessionId, spaces]);
+  }, [openedWorkspaceId, openedSessionId, trustedWorkspaceId]);
   useEffect(() => {
     refreshCompletionSources();
   }, [refreshCompletionSources]);
@@ -1428,7 +1484,7 @@ export function App() {
                   }
                   onMouseDown={(event) => {
                     event.preventDefault();
-                    acceptCompletion(completion);
+                    acceptCompletion({ ...completion, index });
                   }}
                 >
                   <span className="min-w-0 flex-1 truncate">{item.label}</span>
@@ -1496,7 +1552,7 @@ export function App() {
         </div>
       )}
       {/* 触发符激活但零匹配时也要出现面板：搜索「看起来坏了」比「无匹配」更伤可用性。
-          覆盖两种触发形态（/ 前缀、/skill 名字段）；任务段态与 @ 态不在此列。 */}
+          覆盖两种触发形态（/ 前缀、/skill 名字段）与行首/空白后 @ 文件过滤。 */}
       {!composerHarness &&
         !completion &&
         (/^\/\S*$/.test(draft) || /^\/skill\s+\S*$/.test(draft)) && (
@@ -1508,6 +1564,17 @@ export function App() {
             </div>
           </div>
         )}
+      {!composerHarness && !completion && fileList && /(?:^|\s)@[^\s@]+$/.test(draft) && (
+        <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
+          <div className="rounded-lg border border-kumo-line bg-kumo-recessed p-1 shadow-lg">
+            <p className="px-2 py-1 text-xs text-kumo-subtle">
+              {fileList.truncated
+                ? '已扫描的前 5000 个文件中无匹配项；可直接输入相对路径。'
+                : '当前工作区没有匹配的文件。'}
+            </p>
+          </div>
+        </div>
+      )}
       {commandFeedbacks.length > 0 && (
         <div className="mx-auto flex w-full max-w-[var(--kapibala-content-max)] flex-col gap-2">
           {commandFeedbacks.map((entry) => (
@@ -1957,7 +2024,10 @@ export function App() {
       />
       <div ref={containerRef} className="relative flex min-w-0 flex-1">
         <main className="flex min-w-0 flex-1 flex-col bg-kumo-base">
-          <header className="kapibala-titlebar flex shrink-0 items-center justify-between gap-3 px-4">
+          <header
+            data-dock-open={Boolean(details && wide) || undefined}
+            className="kapibala-titlebar flex shrink-0 items-center justify-between gap-3 px-4"
+          >
             <div className="flex min-w-0 items-center gap-2">
               <Sidebar.Trigger aria-label="展开或收起侧栏" />
               <div className="min-w-0">
@@ -2109,7 +2179,7 @@ export function App() {
                   event.currentTarget,
                 );
               }}
-              onSend={(text) => void sendExternalPrompt(text)}
+              onSend={(text, clearDraft) => void sendExternalPrompt(text, clearDraft)}
               onCancel={() => void cancelExternal()}
               onApprove={(approvalId, optionId, cancel) =>
                 void approveExternal(approvalId, optionId, cancel)
@@ -2149,6 +2219,9 @@ export function App() {
                       ? { id: run.sessionId, phase: run.phase }
                       : facts.state.operation
                 }
+                hasPendingApproval={facts.approvals.some(
+                  (item) => item.sessionId === opened.sessionId,
+                )}
                 latestErrorNotice={
                   [...facts.state.notices].reverse().find((item) => item.level === 'error')?.text
                 }
@@ -2201,9 +2274,36 @@ export function App() {
               />
             ) : (
               <div className="min-h-0 flex-1 p-6 text-sm text-kumo-subtle" aria-busy="true">
-                正在加载历史…
+                {pendingLaunchPrompt ? (
+                  <div className="kapibala-thread space-y-4">
+                    <div className="ml-auto w-fit max-w-[85%] kapibala-user-bubble text-kumo-default whitespace-pre-wrap break-words">
+                      {pendingLaunchPrompt}
+                    </div>
+                    <output className="block text-xs text-kumo-subtle">正在启动任务…</output>
+                  </div>
+                ) : (
+                  '正在加载历史…'
+                )}
               </div>
             )
+          ) : pendingLaunchPrompt ? (
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto p-6" aria-busy="true">
+                <div className="kapibala-thread space-y-4">
+                  <div className="ml-auto w-fit max-w-[85%] kapibala-user-bubble text-kumo-default whitespace-pre-wrap break-words">
+                    {pendingLaunchPrompt}
+                  </div>
+                  <output className="block text-xs text-kumo-subtle">正在创建会话…</output>
+                </div>
+              </div>
+              <footer
+                className={`kapibala-composer-dock shrink-0 ${
+                  details && !wide ? 'mr-(--kapibala-dock-width)' : ''
+                }`}
+              >
+                {composer}
+              </footer>
+            </div>
           ) : (
             <div className="kapibala-home">
               {/* 首页只保留吉祥物、标题与输入卡：动作入口在侧栏与输入卡内，首屏不再堆叠重复按钮。 */}
@@ -2264,7 +2364,9 @@ export function App() {
                       className="kapibala-action shrink-0"
                       variant="secondary"
                       size="sm"
+                      disabled={busy}
                       onClick={() => {
+                        if (busy) return;
                         setExternalToasts((prev) => prev.filter((item) => item.id !== toast.id));
                         const targetSpace = spacesRef.current.find(
                           (item) => item.id === toast.workspaceId,
@@ -2571,71 +2673,111 @@ export function App() {
             {/* 弹窗正文按可用宽度换行：长路径与 JSON 参数不能把滚动内容撑得比弹窗更宽，
                 否则右侧按钮会被裁到浮层外，看起来像被遮挡。 */}
             <div className="min-w-0 space-y-5">
+              {approvalError && (
+                <p
+                  role="alert"
+                  className="rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-danger"
+                >
+                  {approvalError}
+                </p>
+              )}
               {facts.approvals.length === 0 && (
                 <p className="text-sm text-kumo-subtle">当前没有待处理请求。</p>
               )}
-              {facts.approvals.map((approval) => (
-                <LayerCard key={approval.approvalId} className="min-w-0 space-y-3 p-4">
-                  <p className="font-medium">{approval.toolName}</p>
-                  <p className="break-all text-xs text-kumo-subtle">
-                    空间：{approval.workspaceName}
-                    <br />
-                    {approval.workspaceRoot}
-                    <br />
-                    会话 {approval.conversationId} · 运行 {approval.runId}
-                  </p>
-                  <p className="break-all text-sm text-kumo-subtle">
-                    {approval.capabilities.join('、')}
-                  </p>
-                  <pre className="max-h-48 min-w-0 overflow-auto font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere]">
-                    {approval.description}
-                  </pre>
-                  <div className="flex flex-wrap justify-end gap-3">
-                    {(
-                      [
-                        'deny_once',
-                        'allow_once',
-                        ...(approval.sessionAllowed ? ['allow_session'] : []),
-                      ] as const
-                    ).map((choice) => (
-                      <Button
-                        key={choice}
-                        className="kapibala-action"
-                        variant={choice === 'allow_once' ? 'primary' : 'secondary'}
-                        onClick={() =>
-                          void api.approval
-                            .reply({
-                              workspaceId: approval.workspaceId,
-                              sessionId: approval.sessionId,
-                              runId: approval.runId,
-                              approvalId: approval.approvalId,
-                              choice: choice as 'deny_once' | 'allow_once' | 'allow_session',
-                            })
-                            // 队列清空就必须收起面板：审批已生效却留着一张挡住正文的空卡片，
-                            // 用户会以为「批了没反应」，还得再手动叉一次。仍有其它待处理请求时保持打开。
-                            .then(() => {
-                              const remaining = client
-                                .snapshot()
-                                .approvals.filter(
-                                  (item) => item.approvalId !== approval.approvalId,
-                                );
-                              if (remaining.length === 0) openApprovals(false);
-                            })
-                            .catch((reason) => report(failure(reason)))
-                        }
-                      >
-                        {
+              {facts.approvals.map((approval) => {
+                const isReplying = Boolean(replyingApprovals[approval.approvalId]);
+                return (
+                  <LayerCard key={approval.approvalId} className="min-w-0 space-y-3 p-4">
+                    <p className="font-medium">{approval.toolName}</p>
+                    <p className="break-all text-xs text-kumo-subtle">
+                      空间：{approval.workspaceName}
+                      <br />
+                      {approval.workspaceRoot}
+                      <br />
+                      会话 {approval.conversationId} · 运行 {approval.runId}
+                    </p>
+                    <p className="break-all text-sm text-kumo-subtle">
+                      {approval.capabilities.join('、')}
+                    </p>
+                    <pre className="max-h-48 min-w-0 overflow-auto font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere]">
+                      {approval.description}
+                    </pre>
+                    <div className="flex flex-wrap justify-end gap-3">
+                      {(
+                        [
+                          'deny_once',
+                          'allow_once',
+                          ...(approval.sessionAllowed ? ['allow_session'] : []),
+                        ] as const
+                      ).map((choice) => (
+                        <Button
+                          key={choice}
+                          className="kapibala-action"
+                          variant={choice === 'allow_once' ? 'primary' : 'secondary'}
+                          disabled={isReplying}
+                          onClick={() => {
+                            if (replyingApprovals[approval.approvalId]) return;
+                            setApprovalError('');
+                            setReplyingApprovals((prev) => ({
+                              ...prev,
+                              [approval.approvalId]: true,
+                            }));
+                            void api.approval
+                              .reply({
+                                workspaceId: approval.workspaceId,
+                                sessionId: approval.sessionId,
+                                runId: approval.runId,
+                                approvalId: approval.approvalId,
+                                choice: choice as 'deny_once' | 'allow_once' | 'allow_session',
+                              })
+                              // 队列清空就必须收起面板：审批已生效却留着一张挡住正文的空卡片，
+                              // 用户会以为「批了没反应」，还得再手动叉一次。仍有其它待处理请求时保持打开。
+                              .then(() => {
+                                client.dismissApproval(approval.approvalId);
+                                if (client.snapshot().approvals.length === 0) openApprovals(false);
+                              })
+                              .catch((reason: unknown) => {
+                                const code = (reason as { code?: string } | undefined)?.code;
+                                const msg = failure(reason);
+                                if (
+                                  code === 'APPROVAL_EXPIRED' ||
+                                  code === 'SESSION_NOT_FOUND' ||
+                                  code === 'SESSION_CLOSED' ||
+                                  code === 'HOST_UNAVAILABLE' ||
+                                  msg.includes('CONTROL_CLOSED') ||
+                                  msg.includes('PEER_CLOSED')
+                                ) {
+                                  client.dismissApproval(approval.approvalId);
+                                  if (client.snapshot().approvals.length === 0)
+                                    openApprovals(false);
+                                  report(msg);
+                                } else {
+                                  setApprovalError(msg);
+                                  report(msg);
+                                }
+                              })
+                              .finally(() => {
+                                setReplyingApprovals((prev) => {
+                                  const next = { ...prev };
+                                  delete next[approval.approvalId];
+                                  return next;
+                                });
+                              });
+                          }}
+                        >
                           {
-                            deny_once: '拒绝',
-                            allow_once: '批准一次',
-                            allow_session: '本会话允许相同调用',
-                          }[choice as 'deny_once' | 'allow_once' | 'allow_session']
-                        }
-                      </Button>
-                    ))}
-                  </div>
-                </LayerCard>
-              ))}
+                            {
+                              deny_once: '拒绝',
+                              allow_once: isReplying ? '处理中…' : '批准一次',
+                              allow_session: '本会话允许相同调用',
+                            }[choice as 'deny_once' | 'allow_once' | 'allow_session']
+                          }
+                        </Button>
+                      ))}
+                    </div>
+                  </LayerCard>
+                );
+              })}
             </div>
           </LayerDialog.Body>
         </LayerDialog.Content>

@@ -130,10 +130,10 @@ export class NativeNotices {
     body: string,
     valid: () => boolean,
   ): void {
+    if (!this.background()) return;
     if (this.seen.has(identity)) return;
     this.seen.add(identity);
     if (this.seen.size > 1024) this.seen.delete(this.seen.values().next().value!);
-    if (!this.background()) return;
     const epoch = this.epoch;
     this.dismiss(key);
     this.visible.set(

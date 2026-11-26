@@ -9,3 +9,9 @@ export function toolchainEnv(
   repository?: string,
   extra?: Record<string, string>,
 ): Record<string, string>;
+/** 解析跨平台 pnpm 调用目标（优先直跑 npm_execpath JS 入口，Windows 回退 ComSpec），不启用 shell 选项以规避 Node 24+ DEP0190。 */
+export function resolvePnpmCommand(
+  args: readonly string[],
+  env?: NodeJS.ProcessEnv,
+  platform?: NodeJS.Platform,
+): { command: string; args: string[] };

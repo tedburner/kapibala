@@ -9,6 +9,7 @@
  * 边界：这里只处理"能预加载代码"的选项与运行模式开关，**不整体删除** `NODE_OPTIONS` ——
  * `--max-old-space-size` 这类纯参数与注入无关，抹掉会连累 CI 的大堆构建与调试体验。
  */
+import fs from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -91,4 +92,36 @@ export function toolchainEnv(base = process.env, repository = process.cwd(), ext
   return Object.fromEntries(
     Object.entries(env).filter(([, value]) => typeof value === 'string' && value !== ''),
   );
+}
+
+/**
+ * 解析跨平台 `pnpm` 子进程调用参数，彻底规避 `shell: true` 在 Node 24+ 触发的 `DEP0190` 告警与参数拼接注入风险。
+ *
+ * 前置约束与回退策略：
+ * - 若当前由 `pnpm` 拉起且 `npm_execpath` 指向真实存在的 pnpm JS 入口，直接用 `process.execPath` 执行该脚本，省去 `.cmd` 包装层开销；
+ * - Windows 裸 `node` 入口回退到 `ComSpec /d /s /c pnpm.cmd ...`，以 `shell: false` 传递参数数组；
+ * - POSIX 直接调用 `pnpm` 可执行文件。
+ *
+ * @param {readonly string[]} args 传给 pnpm 的子命令与参数列表。
+ * @param {NodeJS.ProcessEnv} [env] 环境变量来源（默认 `process.env`）。
+ * @param {NodeJS.Platform} [platform] 目标平台（默认 `process.platform`）。
+ * @returns {{ command: string; args: string[] }}
+ */
+export function resolvePnpmCommand(args, env = process.env, platform = process.platform) {
+  const execPath = env?.npm_execpath;
+  if (
+    typeof execPath === 'string' &&
+    /\.[cm]?js$/i.test(execPath) &&
+    path.basename(execPath).toLowerCase().includes('pnpm') &&
+    fs.existsSync(execPath)
+  ) {
+    return { command: process.execPath, args: [execPath, ...args] };
+  }
+  if (platform === 'win32') {
+    return {
+      command: env?.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', 'pnpm.cmd', ...args],
+    };
+  }
+  return { command: 'pnpm', args: [...args] };
 }

@@ -210,6 +210,42 @@ function hasNodeShebang(filePath: string): boolean {
   }
 }
 
+/**
+ * 核验 Windows `.exe` 文件头是否具备合法 PE 魔数 `MZ`（`0x4D 0x5A`）。
+ *
+ * 实战防坑：当用户环境禁用 npm/pnpm `postinstall` 脚本时，部分包（如 `@opencode/cli`）保留在磁盘上的 `.exe`
+ * 实际是纯文本占位脚本，直接交由 `CreateProcessW` 启动会同步抛出 `spawn UNKNOWN`。
+ */
+function hasWindowsPeMagic(filePath: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(2);
+    const bytesRead = fs.readSync(fd, buf, 0, 2, 0);
+    return bytesRead === 2 && buf[0] === 0x4d && buf[1] === 0x5a;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+function hasPosixExecutePermission(filePath: string, targetPlatform: NodeJS.Platform): boolean {
+  if (targetPlatform === 'win32' || process.platform === 'win32') return true;
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolveNodeExecutable(options: {
   shimDir?: string;
   searchDirs: readonly string[];
@@ -394,6 +430,12 @@ function unwrapWindowsCmdShim(
 
   const ext = path.win32.extname(physicalTarget).toLowerCase();
   if (ext === '.exe') {
+    if (!hasWindowsPeMagic(physicalTarget)) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_UNSUPPORTED_SHIM',
+        `垫片 '${shimBaseName}' 指向的 '${path.win32.basename(physicalTarget)}' 不是有效的 Windows PE 可执行文件（疑似包安装 postinstall 脚本未执行，请重新完整安装该 CLI）`,
+      );
+    }
     return {
       executable: physicalTarget,
       args: [...userArgs],
@@ -481,16 +523,29 @@ export function resolveExternalCommand(
 
   const envPath =
     options.envPath ?? (isWin ? (hostEnv.PATH ?? hostEnv.Path ?? '') : (hostEnv.PATH ?? ''));
-  // 仅接纳严格绝对路径的 PATH 段，杜绝 `.` 或 `./node_modules/.bin` 借宿主 process.cwd() 执行工作区二进制。
+  // 仅接纳严格绝对路径的 PATH 段（兼容剥离外层双引号），杜绝 `.` 或 `./node_modules/.bin` 借宿主 process.cwd() 执行工作区二进制。
   const explicitDirs = envPath
     .split(pathApi.delimiter)
-    .map((dir) => dir.trim())
+    .map((dir) =>
+      dir
+        .trim()
+        .replace(/^"(.*)"$/, '$1')
+        .trim(),
+    )
     .filter((dir) => Boolean(dir) && isStrictAbsolutePath(dir, platform));
   const fallbackDirs = getStandardCliFallbackDirs({ platform, homeDir, hostEnv });
   const allSearchDirs = [...explicitDirs, ...fallbackDirs];
 
   let matchedPath: string | undefined;
+  let matchedLexicalDir: string | undefined;
   let usedFallbackDir = false;
+
+  const isRunnableCandidate = (realFile: string): boolean => {
+    if (isWin) return true;
+    const candidateExt = path.extname(realFile).toLowerCase();
+    if (candidateExt === '.js' || candidateExt === '.mjs' || candidateExt === '.cjs') return true;
+    return hasPosixExecutePermission(realFile, platform);
+  };
 
   const hasSeparator = expandedCommand.includes('/') || expandedCommand.includes('\\');
   if (hasSeparator) {
@@ -504,10 +559,22 @@ export function resolveExternalCommand(
     if (isWin && !ext) {
       for (const candidateExt of ['.exe', '.cmd']) {
         matchedPath = toPhysicalFileIfExists(expandedCommand + candidateExt);
-        if (matchedPath) break;
+        if (matchedPath) {
+          matchedLexicalDir = pathApi.dirname(expandedCommand + candidateExt);
+          break;
+        }
       }
     } else {
       matchedPath = toPhysicalFileIfExists(expandedCommand);
+      if (matchedPath) {
+        matchedLexicalDir = pathApi.dirname(expandedCommand);
+      }
+    }
+    if (matchedPath && !isRunnableCandidate(matchedPath)) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_INVALID_COMMAND',
+        `外部代理目标文件缺少可执行权限：'${rawCommand}'`,
+      );
     }
   } else {
     const explicitExt = pathApi.extname(expandedCommand).toLowerCase();
@@ -517,8 +584,12 @@ export function resolveExternalCommand(
       for (const ext of probeExts) {
         const candidate = pathApi.join(dir, expandedCommand + ext);
         if (hasWindowsReservedSegment(candidate)) continue;
-        matchedPath = toPhysicalFileIfExists(candidate);
-        if (matchedPath) break;
+        const found = toPhysicalFileIfExists(candidate);
+        if (found && isRunnableCandidate(found)) {
+          matchedPath = found;
+          matchedLexicalDir = dir;
+          break;
+        }
       }
       if (matchedPath) break;
     }
@@ -528,8 +599,10 @@ export function resolveExternalCommand(
         for (const ext of probeExts) {
           const candidate = pathApi.join(dir, expandedCommand + ext);
           if (hasWindowsReservedSegment(candidate)) continue;
-          matchedPath = toPhysicalFileIfExists(candidate);
-          if (matchedPath) {
+          const found = toPhysicalFileIfExists(candidate);
+          if (found && isRunnableCandidate(found)) {
+            matchedPath = found;
+            matchedLexicalDir = dir;
             usedFallbackDir = true;
             break;
           }
@@ -554,6 +627,10 @@ export function resolveExternalCommand(
     );
   }
 
+  const dedupeDirs = (dirs: readonly (string | undefined)[]): string[] => [
+    ...new Set(dirs.filter((d): d is string => Boolean(d))),
+  ];
+
   const finalExt = path.extname(matchedPath).toLowerCase();
   if (isWin) {
     if (finalExt === '.cmd') {
@@ -564,13 +641,21 @@ export function resolveExternalCommand(
       };
     }
     if (finalExt === '.js' || finalExt === '.mjs' || finalExt === '.cjs') {
-      const nodeExe = resolveNodeExecutable({ searchDirs: allSearchDirs, platform });
+      const nodeExe = resolveNodeExecutable({
+        shimDir: matchedLexicalDir,
+        searchDirs: allSearchDirs,
+        platform,
+      });
       return {
         executable: nodeExe,
         args: [matchedPath, ...options.args],
         unwrapKind: 'node-script',
         usedFallbackDir,
-        extraPathDirs: [path.dirname(matchedPath), path.dirname(nodeExe)],
+        extraPathDirs: dedupeDirs([
+          matchedLexicalDir,
+          path.dirname(matchedPath),
+          path.dirname(nodeExe),
+        ]),
       };
     }
     if (finalExt !== '.exe') {
@@ -579,14 +664,33 @@ export function resolveExternalCommand(
         `Windows 下不支持直接以无 Shell 模式启动 '${path.basename(matchedPath)}'（仅支持 .exe 与标准 npm/pnpm .cmd）`,
       );
     }
-  } else if (finalExt === '.js' || finalExt === '.mjs' || finalExt === '.cjs') {
-    const nodeExe = resolveNodeExecutable({ searchDirs: allSearchDirs, platform });
+    if (!hasWindowsPeMagic(matchedPath)) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_UNSUPPORTED_SHIM',
+        `可执行文件 '${path.basename(matchedPath)}' 不是有效的 Windows PE 二进制程序（疑似包安装 postinstall 未完成，请重新安装）`,
+      );
+    }
+  } else if (
+    finalExt === '.js' ||
+    finalExt === '.mjs' ||
+    finalExt === '.cjs' ||
+    (finalExt === '' && hasNodeShebang(matchedPath))
+  ) {
+    const nodeExe = resolveNodeExecutable({
+      shimDir: matchedLexicalDir,
+      searchDirs: allSearchDirs,
+      platform,
+    });
     return {
       executable: nodeExe,
       args: [matchedPath, ...options.args],
       unwrapKind: 'node-script',
       usedFallbackDir,
-      extraPathDirs: [path.dirname(matchedPath), path.dirname(nodeExe)],
+      extraPathDirs: dedupeDirs([
+        matchedLexicalDir,
+        path.dirname(matchedPath),
+        path.dirname(nodeExe),
+      ]),
     };
   }
 
@@ -595,7 +699,7 @@ export function resolveExternalCommand(
     args: [...options.args],
     unwrapKind: 'direct',
     usedFallbackDir,
-    extraPathDirs: [path.dirname(matchedPath)],
+    extraPathDirs: dedupeDirs([matchedLexicalDir, path.dirname(matchedPath)]),
   };
 }
 
@@ -714,6 +818,10 @@ export class ExternalProcessSupervisor {
   private stderrBytes = 0;
   private closedResult?: ExternalProcessCloseResult;
   private forcedKill = false;
+  private readonly finalizeClose: (
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ) => ExternalProcessCloseResult;
   private readonly closePromise: Promise<ExternalProcessCloseResult>;
   private closingPromise?: Promise<ExternalProcessCloseResult>;
 
@@ -733,29 +841,35 @@ export class ExternalProcessSupervisor {
       this.appendStderr(chunk);
     });
 
+    let resolveClose!: (res: ExternalProcessCloseResult) => void;
     this.closePromise = new Promise<ExternalProcessCloseResult>((resolve) => {
-      const finalize = (code: number | null, signal: NodeJS.Signals | null): void => {
-        if (this.closedResult) return;
-        const result: ExternalProcessCloseResult = {
-          code,
-          signal,
-          forcedKill: this.forcedKill,
-          stderrTail: this.getStderrTail(),
-        };
-        this.closedResult = result;
-        onClose?.(result);
-        resolve(result);
+      resolveClose = resolve;
+    });
+    this.finalizeClose = (
+      code: number | null,
+      signal: NodeJS.Signals | null,
+    ): ExternalProcessCloseResult => {
+      if (this.closedResult) return this.closedResult;
+      const result: ExternalProcessCloseResult = {
+        code,
+        signal,
+        forcedKill: this.forcedKill,
+        stderrTail: this.getStderrTail(),
       };
+      this.closedResult = result;
+      onClose?.(result);
+      resolveClose(result);
+      return result;
+    };
 
-      child.once('close', (code, signal) => finalize(code, signal));
-      child.once('error', (err) => {
-        this.appendStderr(Buffer.from(`\n[spawn error] ${err.message}`, 'utf8'));
-        finalize(null, null);
-      });
+    child.once('close', (code, signal) => this.finalizeClose(code, signal));
+    child.once('error', (err) => {
+      this.appendStderr(Buffer.from(`\n[spawn error] ${err.message}`, 'utf8'));
+      this.finalizeClose(null, null);
     });
   }
 
-  /** 以严格 `shell: false, windowsHide: true` 启动受监管的外部代理子进程。 */
+  /** 以严格 `shell: false, windowsHide: true` 启动受监管的外部代理子进程；同步系统拉起失败统一归一为 `ExternalHarnessError`。 */
   static spawn(options: SpawnExternalProcessOptions): ExternalProcessSupervisor {
     let nativeCwd: string;
     try {
@@ -771,14 +885,38 @@ export class ExternalProcessSupervisor {
       );
     }
 
-    const child = spawn(options.executable, [...options.args], {
-      cwd: nativeCwd,
-      env: options.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false,
-      windowsHide: true,
-      detached: process.platform !== 'win32',
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(options.executable, [...options.args], {
+        cwd: nativeCwd,
+        env: options.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+      });
+    } catch (cause) {
+      const errno = (cause as NodeJS.ErrnoException)?.code;
+      if (errno === 'ENOENT') {
+        throw new ExternalHarnessError(
+          'EXTERNAL_COMMAND_NOT_FOUND',
+          `无法启动外部代理可执行文件：${options.executable}`,
+          { cause },
+        );
+      }
+      if (errno === 'UNKNOWN' || errno === 'EACCES' || errno === 'EPERM' || errno === 'ENOEXEC') {
+        throw new ExternalHarnessError(
+          'EXTERNAL_UNSUPPORTED_SHIM',
+          `无法直接拉起外部代理二进制 '${path.basename(options.executable)}'（${errno}，请检查可执行文件完整性与权限）`,
+          { cause },
+        );
+      }
+      throw new ExternalHarnessError(
+        'EXTERNAL_PROTOCOL_ERROR',
+        `启动外部代理进程失败：${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      );
+    }
 
     return new ExternalProcessSupervisor(child, options.onClose);
   }
@@ -823,52 +961,42 @@ export class ExternalProcessSupervisor {
     const graceful = await this.raceClose(graceMs);
     if (graceful) return graceful;
 
-    const childStillAlive = this.child.exitCode === null && this.child.signalCode === null;
+    // 无论领头子进程是否已响应 EOF 退出，只要 close 事件未触发，即表明该进程或继承了管道的孙进程仍在存活，必须执行进程树/进程组清理。
     const pid = this.child.pid;
-
-    if (childStillAlive) {
-      this.forcedKill = true;
-      if (pid && pid > 0) {
-        if (process.platform === 'win32') {
-          await terminateWindowsProcessTreeAsync(pid, () => {
-            if (this.child.exitCode === null && this.child.signalCode === null) {
-              try {
-                this.child.kill('SIGKILL');
-              } catch {
-                /* ignore */
-              }
+    this.forcedKill = true;
+    if (pid && pid > 0) {
+      if (process.platform === 'win32') {
+        await terminateWindowsProcessTreeAsync(pid, () => {
+          if (this.child.exitCode === null && this.child.signalCode === null) {
+            try {
+              this.child.kill('SIGKILL');
+            } catch {
+              /* ignore */
             }
-          });
-        } else {
-          this.signalPosixGroup(pid, 'SIGTERM');
-          const afterTerm = await this.raceClose(500);
-          if (afterTerm) return afterTerm;
-          this.signalPosixGroup(pid, 'SIGKILL');
-        }
+          }
+        });
       } else {
-        try {
-          this.child.kill('SIGKILL');
-        } catch {
-          /* ignore */
-        }
+        this.signalPosixGroup(pid, 'SIGTERM');
+        const afterTerm = await this.raceClose(500);
+        if (afterTerm) return afterTerm;
+        this.signalPosixGroup(pid, 'SIGKILL');
       }
-
-      const forced = await this.raceClose(1_500);
-      if (forced) return forced;
+    } else if (this.child.exitCode === null && this.child.signalCode === null) {
+      try {
+        this.child.kill('SIGKILL');
+      } catch {
+        /* ignore */
+      }
     }
 
-    // 若孙进程继承了未关闭的管道句柄导致 close 事件迟滞，主动销毁宿主持有的流引用并加 3s 最终上限保底收口。
+    const forced = await this.raceClose(1_500);
+    if (forced) return forced;
+
+    // 若孙进程脱离了父进程树但仍继承未关闭的管道句柄导致 close 事件迟滞，主动销毁宿主持有的流引用并调用 finalizeClose 保底结算，防止 waitForClose 死锁。
     this.destroyStreams();
     const bounded = await this.raceClose(3_000);
     if (bounded) return bounded;
-    const fallback: ExternalProcessCloseResult = {
-      code: this.child.exitCode,
-      signal: this.child.signalCode,
-      forcedKill: this.forcedKill,
-      stderrTail: this.getStderrTail(),
-    };
-    this.closedResult = fallback;
-    return fallback;
+    return this.finalizeClose(this.child.exitCode, this.child.signalCode);
   }
 
   private signalPosixGroup(pid: number, sig: NodeJS.Signals): void {

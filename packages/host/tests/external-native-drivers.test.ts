@@ -634,4 +634,69 @@ describe('ClaudeCliDriver, CodexAppServerDriver & Multi-Workspace Concurrency (M
     expect(earlyCancelRes.stopReason).toBe('cancelled');
     await codexOpened.handle.close();
   });
+
+  it('Codex 多轮复用相同 itemId 不截断第 2 轮正文与思考，且 Claude control_cancel_request 同步清理挂起审批卡片', async () => {
+    const homeDir = makeTempDir('kpbl-m3-turn2-home-');
+    const cwd = makeTempDir('kpbl-m3-turn2-ws-');
+    const settings = createUserSettingsSkeleton();
+    trustProject(settings, cwd, { homeDir });
+
+    // 1. H4: 同一 Codex 进程连续两轮均使用 itemId='msg-1' / 'rsn-1'
+    const codexDriver = new CodexAppServerDriver({ hostEnv: {} });
+    let turnTexts: string[] = [];
+    let turnThoughts: string[] = [];
+    const codexOpened = await codexDriver.open({
+      def: {
+        id: 'codex',
+        name: 'Codex',
+        transport: 'codex-app-server',
+        command: process.execPath,
+        args: [fakeCodexScript],
+        enabled: true,
+      },
+      workspaceRoot: cwd,
+      onEvent: (ev) => {
+        if (ev.type === 'text_delta') turnTexts.push(ev.text);
+        if (ev.type === 'thought_delta') turnThoughts.push(ev.text);
+      },
+    });
+    closeHandles.push(() => codexOpened.handle.close());
+
+    await codexOpened.handle.prompt('first question');
+    expect(turnTexts.join('')).toBe(`Codex [${codexOpened.nativeSessionId}] reply: first question`);
+    expect(turnThoughts.join('')).toBe('Thinking in Codex...');
+
+    turnTexts = [];
+    turnThoughts = [];
+    await codexOpened.handle.prompt('second question');
+    expect(turnTexts.join('')).toBe(
+      `Codex [${codexOpened.nativeSessionId}] reply: second question`,
+    );
+    expect(turnThoughts.join('')).toBe('Thinking in Codex...');
+    await codexOpened.handle.close();
+
+    // 2. M4: Claude 发出 control_request 后主动发 control_cancel_request 撤回时，Service 不得残留僵尸审批卡
+    saveBuiltinHarnessOverride(
+      'claude-code',
+      {
+        command: process.execPath,
+        args: [fakeClaudeScript],
+        enabled: true,
+      },
+      { homeDir },
+    );
+    const service = new ExternalSessionService({ homeDir, hostEnv: {} });
+    services.push(service);
+    const claudeSnap1 = await service.openSession({ workspaceRoot: cwd, harnessId: 'claude-code' });
+    const settled = await service.promptSession({
+      sessionId: claudeSnap1.session.id,
+      text: 'please cancel-approval',
+    });
+    expect(settled.approvals).toHaveLength(0);
+    expect(settled.session.status).toBe('idle');
+    expect(settled.session.resumable).toBe(true);
+    expect(settled.messages.at(-1)?.blocks.some((b) => b.text.includes('Approval withdrawn'))).toBe(
+      true,
+    );
+  });
 });

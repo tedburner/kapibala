@@ -279,6 +279,11 @@ if (mode === 'tui-flood') {
       const text = msg.params?.prompt?.[0]?.text ?? '';
       const sessionId = msg.params?.sessionId ?? 'ses_demo_1';
 
+      if (text === 'CRASH_MID_TURN') {
+        process.stderr.write('acp fatal crash mid turn\n');
+        process.exit(137);
+      }
+
       if (text === 'HANG_FOREVER') {
         activePromptId = msg.id;
         return;

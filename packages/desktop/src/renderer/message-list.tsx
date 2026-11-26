@@ -28,6 +28,7 @@ import { artifactFileName } from './artifact-model.js';
 import { toolPreview } from './html-preview-model.js';
 import { HtmlPreview, HtmlPreviewButton } from './html-preview.js';
 import { MessageMarkdown } from './message-markdown.js';
+import { aggregateTurnUsage } from './turn-usage.js';
 import { useUI } from './ui-state.js';
 
 type StatusIcon = typeof CheckCircleIcon;
@@ -748,11 +749,13 @@ function TurnProcessSection({
 function TurnStatusLine({
   operation,
   messages,
+  hasPendingApproval,
   latestErrorNotice,
   onContinue,
 }: {
   operation?: ViewOperation;
   messages: readonly ViewMessage[];
+  hasPendingApproval?: boolean;
   latestErrorNotice?: string;
   onContinue?: () => void;
 }) {
@@ -785,13 +788,15 @@ function TurnStatusLine({
         ? '正在停止本轮任务…'
         : phase === 'settling'
           ? '正在收尾并保存记录…'
-          : runningTool
-            ? `正在${runningTool.verb ?? '执行'}${runningTool.chip ? ` ${runningTool.chip}` : ` ${runningTool.displayName}`}…`
-            : streamingBlock?.kind === 'thinking'
-              ? '正在深度思考…'
-              : streamingBlock?.kind === 'text'
-                ? '正在生成回答…'
-                : '正在思考下一步…';
+          : hasPendingApproval
+            ? `等待审批确认${runningTool?.chip ? ` ${runningTool.chip}` : runningTool ? ` ${runningTool.displayName}` : ''}…`
+            : runningTool
+              ? `正在${runningTool.verb ?? '执行'}${runningTool.chip ? ` ${runningTool.chip}` : ` ${runningTool.displayName}`}…`
+              : streamingBlock?.kind === 'thinking'
+                ? '正在深度思考…'
+                : streamingBlock?.kind === 'text'
+                  ? '正在生成回答…'
+                  : '正在思考下一步…';
 
     const elapsedMs = Math.max(0, now - startedRef.current.at);
     return (
@@ -861,6 +866,7 @@ function TurnStatusLine({
 export function MessageList({
   messages,
   operation,
+  hasPendingApproval,
   latestErrorNotice,
   onContinue,
   retryableMessageId,
@@ -879,6 +885,8 @@ export function MessageList({
   messages: readonly ViewMessage[];
   /** 当前会话运行阶段与终态结果；驱动对话流尾部实时状态行与中断续跑入口。 */
   operation?: ViewOperation;
+  /** 当前会话是否存在待用户确认的审批请求；置位时状态行显示「等待审批确认」而非误导性的「正在运行」。 */
+  hasPendingApproval?: boolean;
   /** 最近一条运行期错误说明（脱敏）；在失败收口条中内联提示原因。 */
   latestErrorNotice?: string;
   /** 在步数耗尽、审批暂停或手动停止后一键发送「继续」续跑剩余任务。 */
@@ -1158,7 +1166,7 @@ export function MessageList({
             const retryable = Boolean(
               retryableMessageId && turnMessages.some((m) => m.id === retryableMessageId),
             );
-            const latestUsage = [...turnMessages].reverse().find((m) => m.usage)?.usage;
+            const latestUsage = aggregateTurnUsage(turnMessages);
 
             return (
               <div
@@ -1266,6 +1274,7 @@ export function MessageList({
           <TurnStatusLine
             operation={operation}
             messages={messages}
+            hasPendingApproval={hasPendingApproval}
             latestErrorNotice={latestErrorNotice}
             onContinue={onContinue}
           />

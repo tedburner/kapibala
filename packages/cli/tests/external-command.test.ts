@@ -198,5 +198,25 @@ describe('/external CLI 命令组与补全兼容', () => {
     expect(selectCalls).toBe(1);
     expect(logs.join('\n')).toContain('已信任工作区');
     expect(logs.join('\n')).toContain('执行完毕（allow-session）');
+
+    // 3. 无参 /external harness test 遇到单个探针异常时记录错误并继续检测后续已启用代理
+    logs.length = 0;
+    errors.length = 0;
+    const isolatedExternal = new ExternalSessionService({ homeDir, hostEnv: { PATH: '' } });
+    services.push(isolatedExternal);
+    isolatedExternal.registerDriver({
+      transport: 'pi-rpc',
+      inspect: async () => {
+        throw new Error('simulated spawn UNKNOWN');
+      },
+      open: async () => {
+        throw new Error('unused');
+      },
+    });
+    isolatedExternal.toggleHarness('pi', true);
+    await dispatcher.dispatch('/external harness test', { ...ctx, external: isolatedExternal });
+    const batchTestOut = [...logs, ...errors].join('\n');
+    expect(batchTestOut).toContain('cli-apr-acp: ready');
+    expect(batchTestOut).toContain('pi: handshake_failed');
   });
 });

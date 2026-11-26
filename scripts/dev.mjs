@@ -4,7 +4,7 @@
  *
  * 设计要点：
  * 1. 所有逻辑只写在这里，`dev.sh` / `dev.cmd` 只是转发参数的薄壳。
- * 2. 全程使用 spawnSync + 显式 shell:true，不依赖 bash / cmd 语义差异。
+ * 2. 全程使用 spawnSync + 无 shell 参数调用（Windows 经 ComSpec / npm_execpath 解析），规避 Node 24+ DEP0190。
  * 3. 输出统一走 process.stdout.write，避免 Windows ANSI 兼容问题。
  *
  * 用法：node scripts/dev.mjs [选项]
@@ -23,6 +23,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolvePnpmCommand } from './process-env.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -167,16 +168,30 @@ function parseArgs(argv) {
 }
 
 /**
+ * 将命令与参数解析为直接可执行调用（不启用 shell 选项），规避 Node 24+ `DEP0190` 告警。
+ */
+function resolveSpawnTarget(command, args) {
+  if (command === 'node') return { command: process.execPath, args };
+  if (command === 'pnpm') return resolvePnpmCommand(args, process.env);
+  if (IS_WINDOWS) {
+    return {
+      command: process.env.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', command, ...args],
+    };
+  }
+  return { command, args };
+}
+
+/**
  * 执行外部命令并继承 stdio（进度实时可见）。
- * Windows 上 pnpm 实际是 .cmd，必须经 shell 才能解析，因此统一 shell:true。
  * 返回 true 表示退出码为 0。
  */
 function run(command, args) {
   say(`${C.dim}  $ ${command} ${args.join(' ')}${C.reset}`);
-  const result = spawnSync(command, args, {
+  const target = resolveSpawnTarget(command, args);
+  const result = spawnSync(target.command, target.args, {
     cwd: ROOT,
     stdio: 'inherit',
-    shell: true,
   });
 
   if (result.error) {
@@ -187,7 +202,8 @@ function run(command, args) {
 }
 
 function detect(bin, args = ['--version']) {
-  const result = spawnSync(bin, args, { stdio: 'pipe', shell: true, encoding: 'utf8' });
+  const target = resolveSpawnTarget(bin, args);
+  const result = spawnSync(target.command, target.args, { stdio: 'pipe', encoding: 'utf8' });
   if (result.error || result.status !== 0) return null;
   return (result.stdout || result.stderr || '').trim().split('\n')[0];
 }

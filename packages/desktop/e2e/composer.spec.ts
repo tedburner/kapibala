@@ -115,6 +115,58 @@ test.describe
       await expect(page.getByLabel('发送消息')).toHaveValue(/@src[\\/]demo\.ts $/);
     });
 
+    test('切换到非默认项目空间的新建对话首页时，@ 搜索命中当前项目文件且支持鼠标点选非首项', async () => {
+      const projectDir = path.join(home, 'aigc-fixture');
+      fs.mkdirSync(path.join(projectDir, 'sub'), { recursive: true });
+      execFileSync('git', ['init', '--quiet', projectDir]);
+      fs.writeFileSync(path.join(projectDir, 'update-all.ps1'), 'echo 1');
+      fs.writeFileSync(path.join(projectDir, 'sub/update.sh'), 'echo 2');
+
+      await app.evaluate(({ dialog }, selection) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selection] });
+      }, projectDir);
+      await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
+      await page.getByRole('menuitem', { name: '新建项目' }).click();
+      const creation = page.getByRole('dialog', { name: '创建项目', exact: true });
+      await creation.getByRole('textbox', { name: '项目名称', exact: true }).fill('aigc');
+      await creation.getByRole('button', { name: '选择文件夹', exact: true }).click();
+      await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+      await page
+        .getByRole('dialog', { name: '信任此文件夹吗？', exact: true })
+        .getByRole('button', { name: '信任文件夹并创建', exact: true })
+        .click();
+      await expect(page.getByRole('button', { name: '会话空间：aigc' })).toBeVisible();
+
+      // 回归守卫 1：非默认项目 aigc 的「新建对话」首页（opened === undefined）输入 @update 必须命中 aigc 内的文件。
+      await page.getByLabel('发送消息').fill('@update');
+      await expect(page.getByRole('button', { name: 'update-all.ps1', exact: true })).toBeVisible({
+        timeout: 5_000,
+      });
+      const secondOption = page.getByRole('button', { name: /sub[/\\]update\.sh/ });
+      await expect(secondOption).toBeVisible();
+
+      // 回归守卫 2：鼠标直接按下第 2 项，必须插入被点击项而非停留在 index=0 的首项。
+      await secondOption.dispatchEvent('mousedown');
+      await expect(page.getByLabel('发送消息')).toHaveValue(/@sub[\\/]update\.sh $/);
+
+      // 回归守卫 3：侧栏左下角不再展示常驻版本号。
+      await expect(page.locator('.kapibala-sidebar-version')).toHaveCount(0);
+
+      // 回归守卫 4：Windows 主进程生成有效的多分辨率 kapibala-brand-*.ico 供任务栏 setAppDetails 使用。
+      if (process.platform === 'win32') {
+        const icoFiles = fs
+          .readdirSync(userData)
+          .filter((name) => /^kapibala-brand-[a-f0-9]+\.ico$/.test(name));
+        expect(icoFiles).toHaveLength(1);
+        const icoPath = path.join(userData, icoFiles[0]!);
+        const validIco = await app.evaluate(
+          ({ nativeImage }, file) => !nativeImage.createFromPath(file).isEmpty(),
+          icoPath,
+        );
+        expect(validIco).toBe(true);
+      }
+    });
+
     test('/ 输入被命令系统拦截，不作为普通消息发给模型', async () => {
       // 无会话场景：斜杠命令被守卫拦截并明示原因；草稿不进入模型发送通道
       await page.getByLabel('发送消息').fill('/nosuchcmd');

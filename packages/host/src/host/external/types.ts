@@ -178,6 +178,10 @@ export type ExternalEvent =
       readonly respond: (decision: ExternalApprovalDecision) => void;
     }
   | {
+      readonly type: 'approval_cancelled';
+      readonly requestId: string;
+    }
+  | {
       readonly type: 'diagnostic';
       readonly level: 'info' | 'warning' | 'error';
       readonly text: string;

@@ -7,6 +7,7 @@ import {
   normalizeSingleDollarMath,
   prepareMarkdownText,
 } from '../src/renderer/message-markdown-model.js';
+import { aggregateTurnUsage } from '../src/renderer/turn-usage.js';
 
 describe('行内公式特征判别', () => {
   it('识别标准数学表达式、单符号变量与显式 LaTeX 命令', () => {
@@ -95,5 +96,22 @@ describe('代码围栏沙箱预览资格', () => {
     expect(codePreviewKind('tsx', 120)).toBeUndefined();
     expect(codePreviewKind('html', 120, true)).toBeUndefined();
     expect(codePreviewKind('html', HTML_PREVIEW_LIMIT + 1)).toBeUndefined();
+  });
+});
+
+describe('多步助手回合 Token 用量聚合', () => {
+  it('累加同一视觉回合内多条消息的 usage，整轮缺失时返回 undefined', () => {
+    expect(aggregateTurnUsage([{}, {}])).toBeUndefined();
+    expect(
+      aggregateTurnUsage([
+        { usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120 } },
+        {},
+        { usage: { promptTokens: 180, completionTokens: 45, totalTokens: 225 } },
+      ]),
+    ).toEqual({
+      promptTokens: 280,
+      completionTokens: 65,
+      totalTokens: 345,
+    });
   });
 });

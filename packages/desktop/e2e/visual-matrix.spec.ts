@@ -71,6 +71,19 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
   try {
     // 操作、搜索和空间树在正常尺寸与最小窗口的展开/折叠状态下保持可达。
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
+    if (process.platform !== 'darwin') {
+      const menuBarVisible = await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].isMenuBarVisible(),
+      );
+      expect(menuBarVisible).toBe(false);
+    }
+    await expect(page.locator('.kapibala-sidebar-wordmark')).toHaveCount(0);
+    if (process.platform === 'win32') {
+      const paddingRight = await page
+        .locator('.kapibala-titlebar')
+        .evaluate((el) => Number.parseFloat(getComputedStyle(el).paddingRight));
+      expect(paddingRight).toBeGreaterThanOrEqual(130);
+    }
     const sidebar = page.getByRole('complementary', { name: '空间与会话' });
     const search = page.getByRole('searchbox', { name: '搜索空间与对话' });
     await expect(search).toBeVisible();

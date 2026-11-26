@@ -127,3 +127,35 @@ it('快照校验失败清空暂存，不允许混用订阅身份或留下半份�
   expect(assembler.accept(chunks[0])).toBeUndefined();
   expect(assembler.accept(chunks[1])).toEqual(state);
 });
+it('单侧主动 close 时向对端发送同代次关闭帧，避免无 close 事件的 Web MessagePort 悬挂 30 秒', async () => {
+  let bClosed = '';
+  const a = new BoundedPeer(
+    { hostInstanceId: 'host', controlEpoch: 3 },
+    (frame) => {
+      queueMicrotask(() => void b.receive(frame));
+    },
+    () => {},
+  );
+  const b = new BoundedPeer(
+    { hostInstanceId: 'host', controlEpoch: 3 },
+    (frame) => {
+      queueMicrotask(() => void a.receive(frame));
+    },
+    () => {},
+    (reason) => {
+      bClosed = reason;
+    },
+  );
+  // 旧代次关闭帧必须被忽略，不能误断新连接。
+  await b.receive(
+    JSON.stringify({
+      kind: 'close',
+      hostInstanceId: 'host',
+      controlEpoch: 2,
+    }),
+  );
+  expect(bClosed).toBe('');
+  a.close('RENDERER_NAVIGATED');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(bClosed).toBe('PEER_CLOSED');
+});

@@ -526,7 +526,10 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     description: '管理外部代理（ACP / Claude / Codex / Pi）并运行独立外部任务会话',
     group: 'session',
     mutates: (args) => {
-      const first = (args[0] ?? '').trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+      const parts = (args[0] ?? '').trim().split(/\s+/);
+      const first = parts[0]?.toLowerCase() ?? '';
+      const second = parts[1]?.toLowerCase() ?? '';
+      if (first === 'harness' && second === 'test') return false;
       return !['', 'list', 'harnesses', 'show', 'approve', 'cancel'].includes(first);
     },
     validate: validateExternalCommandArgs,

@@ -566,7 +566,7 @@ export class DesktopHost {
               expectedWorkspaceRoot: ws.root,
             });
           } catch (err) {
-            await this.external.closeSession(opened.session.id, ws.root).catch(() => {});
+            await this.external.deleteSession(opened.session.id, ws.root).catch(() => {});
             throw err;
           }
         }
@@ -575,7 +575,7 @@ export class DesktopHost {
       case 'external.snapshot': {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
-        const snap = this.external.getSnapshot(p.sessionId);
+        const snap = this.external.getSnapshot(p.sessionId, ws.root);
         if (this.workspaces.findIdByRoot(snap.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
@@ -584,7 +584,7 @@ export class DesktopHost {
       case 'external.subscribe': {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
-        const snap = this.external.getSnapshot(p.sessionId);
+        const snap = this.external.getSnapshot(p.sessionId, ws.root);
         if (this.workspaces.findIdByRoot(snap.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
@@ -647,7 +647,7 @@ export class DesktopHost {
       case 'external.prompt': {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
-        const current = this.external.getSnapshot(p.sessionId);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
         if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
@@ -660,7 +660,7 @@ export class DesktopHost {
       case 'external.approve': {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
-        const current = this.external.getSnapshot(p.sessionId);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
         if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
@@ -676,7 +676,7 @@ export class DesktopHost {
       case 'external.cancel': {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
-        const current = this.external.getSnapshot(p.sessionId);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
         if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
@@ -686,7 +686,7 @@ export class DesktopHost {
       case 'external.close': {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
-        const current = this.external.getSnapshot(p.sessionId);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
         if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
@@ -696,7 +696,7 @@ export class DesktopHost {
       case 'external.delete': {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
-        const current = this.external.getSnapshot(p.sessionId);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
         if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
           throw new Error('FORBIDDEN');
         }

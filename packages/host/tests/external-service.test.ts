@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AcpStdioDriver } from '../src/host/external/drivers/acp/acp-driver.js';
 import { ExternalSessionRegistry } from '../src/host/external/registry.js';
 import { ExternalSessionService } from '../src/host/external/service.js';
+import { ExternalHarnessError } from '../src/host/external/types.js';
 import { createUserSettingsSkeleton, trustProject } from '../src/host/settings.js';
+import { toWireErrorCode } from '../src/protocol/errors.js';
 import type { ViewMessage } from '../src/view-model/index.js';
 
 const fixtureScript = fileURLToPath(new URL('./fixtures/fake-acp-agent.mjs', import.meta.url));
@@ -526,5 +528,79 @@ describe('ExternalSessionService 会话编排、审批、空闲回收与 configD
         updatedAt: 2,
       }),
     ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_CONFIG_CORRUPT' }));
+  });
+
+  it('修复回归：Wire 错误映射、禁用存活会话联动、失败 open 清理幽灵记录、ACP 轮中崩溃转 failed 与工具流不刷爆列表事件', async () => {
+    // 1. M3: Wire 错误码精确映射 EXTERNAL_APPROVAL_EXPIRED 与 EXTERNAL_HARNESS_DISABLED
+    expect(toWireErrorCode(new ExternalHarnessError('EXTERNAL_APPROVAL_EXPIRED', 'expired'))).toBe(
+      'APPROVAL_EXPIRED',
+    );
+    expect(toWireErrorCode(new ExternalHarnessError('EXTERNAL_HARNESS_DISABLED', 'disabled'))).toBe(
+      'CONFIG_REQUIRED',
+    );
+
+    const homeDir = makeTempDir('kpbl-ext-svc-reg-home-');
+    const workspaceRoot = makeTempDir('kpbl-ext-svc-reg-ws-');
+    const settings = createUserSettingsSkeleton();
+    trustProject(settings, workspaceRoot, { homeDir });
+
+    const service = new ExternalSessionService({
+      homeDir,
+      hostEnv: {},
+      drivers: {
+        acp: new AcpStdioDriver({ homeDir, hostEnv: {} }),
+      },
+    });
+    activeServices.push(service);
+
+    // 2. M2: 握手失败的新会话不得在侧边栏残留 0 消息 failed 幽灵记录
+    service.saveCustomHarness({
+      id: 'broken-acp',
+      name: 'Broken ACP',
+      command: process.execPath,
+      args: [fixtureScript, '--mode=agy-auth-fail'],
+      flavor: 'antigravity',
+      enabled: true,
+    });
+    await expect(
+      service.openSession({ workspaceRoot, harnessId: 'broken-acp' }),
+    ).rejects.toMatchObject({ code: 'EXTERNAL_AUTH_REQUIRED' });
+    expect(service.listSessions(workspaceRoot)).toHaveLength(0);
+
+    // 3. H6 & H3: ACP 轮中崩溃应收敛为 failed 而非 idle/ended，且高频 tool_upsert 不重复轰炸 subscribeList
+    service.saveCustomHarness({
+      id: 'live-acp',
+      name: 'Live ACP',
+      command: process.execPath,
+      args: [fixtureScript, '--mode=normal'],
+      flavor: 'opencode',
+      enabled: true,
+    });
+    const crashOpened = await service.openSession({ workspaceRoot, harnessId: 'live-acp' });
+    await expect(
+      service.promptSession({ sessionId: crashOpened.session.id, text: 'CRASH_MID_TURN' }),
+    ).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 80));
+    const afterCrash = service.getSnapshot(crashOpened.session.id, workspaceRoot);
+    expect(afterCrash.session.status).toBe('failed');
+
+    // 4. M1: 设置中停用外部代理后，内存中处于 idle 的存量会话立即关闭且禁止继续发送新轮次
+    const idleOpened = await service.openSession({ workspaceRoot, harnessId: 'live-acp' });
+    let listNotifies = 0;
+    const unsubList = service.subscribeList(() => {
+      listNotifies += 1;
+    });
+    await service.promptSession({ sessionId: idleOpened.session.id, text: 'HUGE_OUTPUT' });
+    unsubList();
+    // 单轮起止只通知有限次列表状态变化（running -> idle），绝不为每次块/工具输出刷列表
+    expect(listNotifies).toBeLessThanOrEqual(4);
+
+    service.toggleHarness('live-acp', false);
+    await new Promise((r) => setTimeout(r, 80));
+    const disabledSnap = service.getSnapshot(idleOpened.session.id, workspaceRoot);
+    expect(disabledSnap.session.canContinue).toBe(false);
+    await expect(
+      service.promptSession({ sessionId: idleOpened.session.id, text: 'try after disable' }),
+    ).rejects.toMatchObject({ code: 'EXTERNAL_HARNESS_DISABLED' });
   });
 });

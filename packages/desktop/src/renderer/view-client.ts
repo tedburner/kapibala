@@ -141,6 +141,18 @@ export class ViewClient {
     if (receipt)
       this.update({ ...this.facts, runs: { ...this.facts.runs, [receipt.sessionId]: receipt } });
   }
+  /**
+   * 审批应答完成或因过期/会话关闭失败后就地移除残留请求：
+   * 正常路径与 `approval.closed` 幂等对齐；异常路径防止失效卡片锁死模态遮罩。
+   */
+  dismissApproval(approvalId: string): void {
+    this.approvalContexts.delete(approvalId);
+    if (!this.facts.approvals.some((item) => item.approvalId === approvalId)) return;
+    this.update({
+      ...this.facts,
+      approvals: this.facts.approvals.filter((item) => item.approvalId !== approvalId),
+    });
+  }
   /** 全应用仅一份后台摘要，不随详细消息列表切换；旧初始回复不能覆盖较新通知。 */
   async connectRuntime(): Promise<void> {
     const previous = this.runtimeSubscription;
