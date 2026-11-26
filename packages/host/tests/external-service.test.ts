@@ -441,4 +441,90 @@ describe('ExternalSessionService 会话编排、审批、空闲回收与 configD
     // 自定义标题不被首轮输入 NEED_APPROVAL 覆盖
     expect(finished.session.title).toBe('自定义标题 [REDACTED]');
   });
+
+  it('损坏的 sessions.json 抛 EXTERNAL_CONFIG_CORRUPT 拒绝静默清空，死进程残留锁可自愈，且超大中文归档严格控制在 680KiB 内', () => {
+    const homeDir = makeTempDir('kpbl-ext-reg-hardening-');
+    const workspaceRoot = makeTempDir('kpbl-ext-reg-hardening-ws-');
+    const registry = new ExternalSessionRegistry({ homeDir });
+
+    // 1. 写入死进程残留锁（PID 99999999 不存在），验证自动摘除僵尸锁并正常落盘
+    fs.mkdirSync(path.dirname(registry.sessionsFilePath), { recursive: true });
+    fs.writeFileSync(
+      `${registry.sessionsFilePath}.lock`,
+      JSON.stringify({ owner: 'stale', pid: 99_999_999 }),
+    );
+    registry.upsertRecord({
+      id: 'ext-stale-lock-ok',
+      harnessId: 'opencode',
+      harnessName: 'OpenCode',
+      transport: 'acp',
+      workspaceRoot,
+      configDigest: 'sha256:demo',
+      title: '僵尸锁自愈',
+      status: 'ended',
+      resumable: false,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(registry.getRecord('ext-stale-lock-ok')?.title).toBe('僵尸锁自愈');
+
+    // 2. 单条包含超长多字节中文与 Emoji 的归档，UTF-8 编码体积严格不超过 680 KiB 且 JSON 合法
+    const hugeCjk = '中😀'.repeat(300_000);
+    registry.saveArchive('ext-stale-lock-ok', {
+      messages: [
+        {
+          id: 'm-cjk',
+          role: 'assistant',
+          state: 'completed',
+          persisted: true,
+          blocks: [
+            { id: 'b0', kind: 'text', text: hugeCjk, state: 'completed', revision: 0 },
+            {
+              id: 'b1',
+              kind: 'tool',
+              text: 'tool',
+              state: 'completed',
+              revision: 0,
+              tool: {
+                callId: 'c1',
+                name: 'bash',
+                displayName: '终端命令',
+                invocation: '运行',
+                input: hugeCjk,
+                result: hugeCjk,
+                status: 'succeeded',
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const savedArchive = registry.readArchive('ext-stale-lock-ok');
+    expect(savedArchive?.truncated).toBe(true);
+    const snapshotFiles = fs.readdirSync(registry.snapshotsDirPath);
+    expect(snapshotFiles).toHaveLength(1);
+    const archiveStat = fs.statSync(path.join(registry.snapshotsDirPath, snapshotFiles[0]!));
+    expect(archiveStat.size).toBeLessThanOrEqual(680 * 1024);
+
+    // 3. 顶层结构非法或版本不符的 sessions.json 必须抛 EXTERNAL_CONFIG_CORRUPT，绝不在下次写入时抹空原文件
+    fs.writeFileSync(registry.sessionsFilePath, JSON.stringify({ version: 99, sessions: [] }));
+    expect(() => registry.listRecords()).toThrowError(
+      expect.objectContaining({ code: 'EXTERNAL_CONFIG_CORRUPT' }),
+    );
+    expect(() =>
+      registry.upsertRecord({
+        id: 'ext-2',
+        harnessId: 'opencode',
+        harnessName: 'OpenCode',
+        transport: 'acp',
+        workspaceRoot,
+        configDigest: 'sha256:demo',
+        title: '不应覆盖损坏文件',
+        status: 'ended',
+        resumable: false,
+        createdAt: 2,
+        updatedAt: 2,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_CONFIG_CORRUPT' }));
+  });
 });

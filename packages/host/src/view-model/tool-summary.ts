@@ -44,6 +44,9 @@ export function summarizeToolGroup(tools: readonly ViewTool[]): ToolGroupSummary
   // 混合工具：过滤与实质工作混排的 todo_write（除非全部都是 todo_write），按首次出现顺序归并类别短句。
   const substantive = tools.filter((tool) => tool.name !== 'todo_write');
   const source = substantive.length > 0 ? substantive : tools;
+  const effectiveTotal = source.length;
+  const effectiveFailed = source.filter((tool) => tool.status === 'failed').length;
+  const effectiveFailSuffix = effectiveFailed > 0 ? `，${effectiveFailed} 次失败` : '';
   const buckets = new Map<string, { count: number; render: (n: number) => string }>();
   const touch = (key: string, render: (n: number) => string) => {
     const existing = buckets.get(key);
@@ -68,6 +71,12 @@ export function summarizeToolGroup(tools: readonly ViewTool[]): ToolGroupSummary
   }
   const clauses = [...buckets.values()].map((item) => item.render(item.count));
   const joined =
-    clauses.length <= 3 ? clauses.join('、') : `${clauses.slice(0, 2).join('、')} 等 ${total} 步`;
-  return { text: `${joined}${failSuffix}`, total, failed };
+    clauses.length <= 3
+      ? clauses.join('、')
+      : `${clauses.slice(0, 3).join('、')} 等 ${effectiveTotal} 步`;
+  return {
+    text: `${joined}${effectiveFailSuffix}`,
+    total: effectiveTotal,
+    failed: effectiveFailed,
+  };
 }

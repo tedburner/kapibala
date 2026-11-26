@@ -637,6 +637,17 @@ export function App() {
     const off = api.onEvent((event) => {
       if (event.type === 'external.listChanged') {
         void refreshExternalList(event.workspaceId);
+        const cur = activeExternalRef.current;
+        if (cur && (!event.workspaceId || event.workspaceId === cur.workspaceId)) {
+          void api.external
+            .snapshot({ workspaceId: cur.workspaceId, sessionId: cur.sessionId })
+            .then((snapshot) => {
+              setActiveExternal((prev) =>
+                prev && prev.sessionId === cur.sessionId ? { ...prev, snapshot } : prev,
+              );
+            })
+            .catch(() => {});
+        }
         return;
       }
       if (event.type === 'external.snapshotChanged') {
@@ -1041,6 +1052,34 @@ export function App() {
     // `/skill <名称>` 无任务直发由宿主层承接（合成启动任务走收据管线），此处不拦。
     if (input.startsWith('/')) {
       if (!opened) {
+        // 新对话草稿态直接提交 `/skill <名称>` 时自动创建会话并转交宿主执行，对齐首页普通提问体验。
+        if (/^\/skill(?:\s|$)/i.test(input) && workspace?.trusted) {
+          if (!composerModel) {
+            report('还没有可用模型，请先在设置中为模型填写密钥。');
+            return;
+          }
+          await act(async () => {
+            const created = await createSession(workspace);
+            const targetScope = `${created.workspaceId}:${created.conversationId}`;
+            try {
+              const result = await api.run.command({
+                ...scopeOf(created),
+                input,
+              });
+              if (!result.handled) report(`未知命令：${input.split(/\s+/)[0]}`);
+              else if (result.feedback.length) pushFeedback(result.feedback);
+              ui.draft(':new', '');
+              ui.draft(targetScope, '');
+              rememberPrompt(input);
+              rememberPrompt(input, targetScope);
+            } catch (err) {
+              ui.draft(targetScope, draft);
+              ui.draft(':new', '');
+              throw err;
+            }
+          });
+          return;
+        }
         report('斜杠命令需要在已打开的会话中使用。');
         return;
       }
@@ -1075,11 +1114,18 @@ export function App() {
     }
     await act(async () => {
       const result = await createSession(workspace);
-      await client.start(scopeOf(result), input);
+      const targetScope = `${result.workspaceId}:${result.conversationId}`;
+      try {
+        await client.start(scopeOf(result), input);
+      } catch (err) {
+        ui.draft(targetScope, draft);
+        ui.draft(':new', '');
+        throw err;
+      }
       ui.draft(':new', '');
       // 首页发出的第一问同时记到新会话作用域：进入会话后 ↑ 仍能召回它。
       rememberPrompt(input);
-      rememberPrompt(input, `${result.workspaceId}:${result.conversationId}`);
+      rememberPrompt(input, targetScope);
     });
   }
   /**
@@ -1717,14 +1763,10 @@ export function App() {
                 onModel={chooseModel}
                 onHarness={setPendingHarness}
                 onSettings={() => ui.settings(true)}
-                onExternalSettings={
-                  trustedWorkspaceId
-                    ? () => {
-                        setSettingsInitialTab('external');
-                        ui.settings(true);
-                      }
-                    : undefined
-                }
+                onExternalSettings={() => {
+                  setSettingsInitialTab('external');
+                  ui.settings(true);
+                }}
               />
             )}
           </div>
@@ -2291,7 +2333,10 @@ export function App() {
         hostDown={facts.error !== undefined || facts.runtimeValid === false}
         spaces={spaces}
         workspaceId={
-          activeExternal?.workspaceId ?? opened?.workspaceId ?? workspace?.id ?? spaces[0]?.id
+          activeExternal?.workspaceId ??
+          opened?.workspaceId ??
+          (workspace?.trusted ? workspace.id : undefined) ??
+          spaces.find((item) => item.trusted)?.id
         }
         inspection={facts.inspection}
         archiveRevision={archiveRevision}

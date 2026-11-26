@@ -104,7 +104,7 @@ export class ExternalTranscriptProjector {
     this.sealStreamingMessages('completed');
     const clamped = clampBlockText(this.cleanText(rawText));
     if (clamped.truncated) this.truncated = true;
-    this.pendingEchoRemainder = rawText;
+    this.pendingEchoRemainder = rawText.replace(/\r\n?/g, '\n');
 
     const msgId = this.nextMessageId('user');
     const message: MutableMessage = {
@@ -249,11 +249,12 @@ export class ExternalTranscriptProjector {
 
   private consumeExpectedEcho(chunk: string): boolean {
     if (!this.pendingEchoRemainder) return false;
-    if (this.pendingEchoRemainder.startsWith(chunk)) {
-      this.pendingEchoRemainder = this.pendingEchoRemainder.slice(chunk.length);
+    const normalizedChunk = chunk.replace(/\r\n?/g, '\n');
+    if (this.pendingEchoRemainder.startsWith(normalizedChunk)) {
+      this.pendingEchoRemainder = this.pendingEchoRemainder.slice(normalizedChunk.length);
       return true;
     }
-    if (this.pendingEchoRemainder.trim() === chunk.trim()) {
+    if (this.pendingEchoRemainder.trim() === normalizedChunk.trim()) {
       this.pendingEchoRemainder = '';
       return true;
     }
@@ -276,20 +277,18 @@ export class ExternalTranscriptProjector {
       targetMsg.role !== role ||
       (!completedImmediately && targetMsg.state !== 'streaming')
     ) {
-      if (!targetMsg || targetMsg.role !== role) {
-        if (targetMsg && targetMsg.state === 'streaming') {
-          this.sealMessage(targetMsg, 'completed');
-        }
-        const id = this.nextMessageId(role);
-        targetMsg = {
-          id,
-          role,
-          state: completedImmediately ? 'completed' : 'streaming',
-          persisted: true,
-          blocks: [],
-        };
-        this.messages.push(targetMsg);
+      if (targetMsg && targetMsg.state === 'streaming') {
+        this.sealMessage(targetMsg, 'completed');
       }
+      const id = this.nextMessageId(role);
+      targetMsg = {
+        id,
+        role,
+        state: completedImmediately ? 'completed' : 'streaming',
+        persisted: true,
+        blocks: [],
+      };
+      this.messages.push(targetMsg);
     }
 
     const lastBlock = targetMsg.blocks.at(-1);
@@ -369,7 +368,11 @@ export class ExternalTranscriptProjector {
     }
 
     let assistantMsg = this.messages.at(-1);
-    if (!assistantMsg || assistantMsg.role !== 'assistant') {
+    if (
+      !assistantMsg ||
+      assistantMsg.role !== 'assistant' ||
+      (!replay && assistantMsg.state !== 'streaming')
+    ) {
       if (assistantMsg && assistantMsg.state === 'streaming') {
         this.sealMessage(assistantMsg, 'completed');
       }

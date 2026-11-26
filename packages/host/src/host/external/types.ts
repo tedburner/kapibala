@@ -20,6 +20,8 @@ export type ExternalErrorCode =
   | 'EXTERNAL_CONFIG_BUSY'
   | 'EXTERNAL_CONFIG_CORRUPT'
   | 'EXTERNAL_CONFIG_INVALID'
+  | 'EXTERNAL_HARNESS_DISABLED'
+  | 'EXTERNAL_APPROVAL_EXPIRED'
   | 'EXTERNAL_CAPACITY'
   | 'EXTERNAL_WORKSPACE_BUSY'
   | 'EXTERNAL_SESSION_BUSY'
@@ -147,9 +149,9 @@ export type ExternalApprovalDecision =
   | { readonly outcome: 'cancelled' };
 
 /**
- * 三套底层传输驱动统一产出的协议中立事件流。
+ * 四套底层传输驱动统一产出的协议中立事件流。
  *
- * 隔离不变量：任何 ACP / Claude `stream-json` / Codex `app-server` 原始线帧均在驱动内部消化，
+ * 隔离不变量：任何 ACP / Claude `stream-json` / Codex `app-server` / Pi `--mode rpc` 原始线帧均在驱动内部消化，
  * 不得越过此联合类型泄漏到 `ExternalSessionService` 或 UI 视图模型。
  */
 export type ExternalEvent =
@@ -218,15 +220,21 @@ export interface ExternalDriverOpenResult {
 /**
  * 协议无关的外部代理驱动统一接口。
  *
- * `acp-stdio`、`claude-cli` 与 `codex-app-server` 均实现本接口，供上层会话服务零分支调度。
+ * `acp`、`claude-cli`、`codex-app-server` 与 `pi-rpc` 四套驱动均实现本接口，供上层会话服务零分支调度。
  */
 export interface ExternalHarnessDriver {
   readonly transport: ExternalTransportKind;
+  /**
+   * 执行非破坏性可执行文件解析、协议握手与登录态探测；探测完成后立即回收临时子进程，不落盘会话状态。
+   */
   inspect(
     def: ExternalHarnessDefinition,
     cwd: string,
     signal?: AbortSignal,
   ): Promise<ExternalInspectResult>;
+  /**
+   * 在已信任工作区启动外部代理子进程并完成新建或恢复握手；失败或取消时保证在返回前回收子进程。
+   */
   open(input: {
     def: ExternalHarnessDefinition;
     workspaceRoot: string;

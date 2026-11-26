@@ -9,8 +9,10 @@ import {
   ENV_VAR_NAME_PATTERN,
   FORBIDDEN_EXTERNAL_ENV_KEYS,
   hasAsciiControlCharacter,
+  looksLikePastedSecretToken,
 } from './env.js';
 import { BUILTIN_EXTERNAL_HARNESSES, findBuiltinExternalHarness } from './presets.js';
+import { tryResolveInstalledExternalExecutable } from './process.js';
 import {
   type ExternalHarnessDefinition,
   ExternalHarnessError,
@@ -60,12 +62,12 @@ export interface ResolvedExternalHarnessEntry {
   readonly hasOverride: boolean;
 }
 
-/** 获取外部代理状态根目录（`~/.kapibala/external`）。 */
+/** 获取外部代理状态根目录（缺省定位至当前用户主目录下的 `~/.kapibala/external`）。 */
 export function getExternalStateDirPath(homeDir?: string): string {
   return path.join(homeDir ?? os.homedir(), '.kapibala', EXTERNAL_STATE_DIR_NAME);
 }
 
-/** 获取外部代理定义配置文件路径（`~/.kapibala/external/harnesses.json`）。 */
+/** 获取外部代理定义配置文件路径（`~/.kapibala/external/harnesses.json`，仅由独占锁事务原子写入）。 */
 export function getExternalHarnessesConfigPath(homeDir?: string): string {
   return path.join(getExternalStateDirPath(homeDir), EXTERNAL_HARNESSES_FILE_NAME);
 }
@@ -73,12 +75,13 @@ export function getExternalHarnessesConfigPath(homeDir?: string): string {
 /**
  * 计算外部代理启动配置的确定性 SHA-256 指纹（对齐 Maka Continuity 守卫）。
  *
- * 参与字段：`transport`、`command`、`args`、`env`、`envFrom`；任一字段改动后指纹即变，
+ * 参与字段：`transport`、`flavor`、`command`、`args`、`env`、`envFrom`；任一字段改动后指纹即变，
  * 会话管理层据此禁止向旧 `nativeSessionId` 盲目续聊，退化为安全只读历史归档。
  */
 export function computeHarnessConfigDigest(def: ExternalHarnessDefinition): string {
   const normalized = {
     transport: def.transport,
+    flavor: def.flavor ?? '',
     command: def.command.trim(),
     args: [...def.args],
     env: def.env ?? {},
@@ -88,11 +91,19 @@ export function computeHarnessConfigDigest(def: ExternalHarnessDefinition): stri
 }
 
 function isAllowedConfiguredCommandPath(raw: string): boolean {
-  if (!raw.includes('/') && !raw.includes('\\')) return true;
-  if (raw.startsWith('~/') || raw.startsWith('~\\')) return true;
-  if (/^[A-Za-z]:[\\/]/.test(raw) || /^\\\\[^\\]+\\[^\\]+/.test(raw)) return true;
+  // 禁止远程 UNC/设备路径与 NTFS 备用数据流或盘符相对路径（如 `C:evil.exe`、`file.exe:stream`）。
+  if (raw.startsWith('\\\\') || raw.startsWith('//')) return false;
+  if (!raw.includes('/') && !raw.includes('\\')) {
+    return !raw.includes(':');
+  }
+  if (raw.startsWith('~/') || raw.startsWith('~\\')) {
+    return !raw.slice(2).includes(':');
+  }
+  if (/^[A-Za-z]:[\\/]/.test(raw)) {
+    return !raw.slice(2).includes(':');
+  }
   // POSIX 绝对路径（排除单反斜杠开头的 Windows 盘内根相对路径 `\foo`）
-  if (raw.startsWith('/') && !raw.startsWith('//')) return true;
+  if (raw.startsWith('/')) return true;
   return false;
 }
 
@@ -185,11 +196,12 @@ function validateEnvFromField(label: string, envFrom: readonly string[]): string
     if (
       name.length > 64 ||
       !ENV_VAR_NAME_PATTERN.test(name) ||
-      FORBIDDEN_EXTERNAL_ENV_KEYS.has(name.toUpperCase())
+      FORBIDDEN_EXTERNAL_ENV_KEYS.has(name.toUpperCase()) ||
+      looksLikePastedSecretToken(name)
     ) {
       throw new ExternalHarnessError(
         'EXTERNAL_CONFIG_INVALID',
-        `[${label}] envFrom 包含非法或受禁的变量名：${name}`,
+        `[${label}] envFrom 包含非法、受禁或疑似明文密钥的内容：${redactCommonSecrets(name).slice(0, 24)}`,
       );
     }
     if (!seen.has(name)) {
@@ -402,27 +414,96 @@ export function readExternalHarnessesConfig(
   return parseAndValidateConfigObject(parsed);
 }
 
+function resolveDefaultBuiltinEnabled(params: {
+  readonly builtin: ExternalHarnessDefinition;
+  readonly command: string;
+  readonly resolvedExecutable: string | undefined;
+  readonly homeDir: string;
+}): boolean {
+  const { builtin, resolvedExecutable, homeDir } = params;
+  if (!resolvedExecutable) return false;
+  // TRAE 国际版与国内版共用默认命令 `traecli`：优先读取安装目录下的 `trae-installation.json` channel 字段，其次按路径与目录归属单选归类。
+  if (builtin.id === 'trae' || builtin.id === 'trae-cn') {
+    const normExe = resolvedExecutable.replace(/\\/g, '/').toLowerCase();
+    if (normExe.includes('/.trae-cn/') || normExe.includes('traecn')) {
+      return builtin.id === 'trae-cn';
+    }
+    if (normExe.includes('/.trae/')) {
+      return builtin.id === 'trae';
+    }
+    try {
+      const installMetaPath = path.join(path.dirname(resolvedExecutable), 'trae-installation.json');
+      const meta = JSON.parse(fs.readFileSync(installMetaPath, 'utf8')) as { channel?: unknown };
+      if (typeof meta.channel === 'string' && meta.channel.trim()) {
+        const isCnChannel = /(?:^|[-_])cn(?:$|[-_])|china|marscode[-_]?cn/i.test(meta.channel);
+        return isCnChannel ? builtin.id === 'trae-cn' : builtin.id === 'trae';
+      }
+    } catch {
+      /* installation metadata optional */
+    }
+    const hasCnDir = fs.existsSync(path.join(homeDir, '.trae-cn'));
+    const hasIntlDir = fs.existsSync(path.join(homeDir, '.trae'));
+    if (hasCnDir && !hasIntlDir) return builtin.id === 'trae-cn';
+    return builtin.id === 'trae';
+  }
+  return true;
+}
+
 /**
  * 合并内置预设与用户磁盘配置，产出完整的外部代理列表（内置在前、自定义按 ID 排序在后）。
+ *
+ * 默认启停策略：当用户尚未对某内置预设手动拨动开关（`overrides[id].enabled === undefined`）时，
+ * 零子进程静态探测该命令是否已在本机安装——本机未安装的预设一律默认 `enabled: false`，避免污染输入框代理列表。
  */
 export function listResolvedExternalHarnesses(
-  options: { readonly homeDir?: string } = {},
+  options: {
+    readonly homeDir?: string;
+    readonly hostEnv?: Readonly<Record<string, string | undefined>>;
+    readonly platform?: NodeJS.Platform;
+  } = {},
 ): ResolvedExternalHarnessEntry[] {
-  const file = readExternalHarnessesConfig(options);
+  const homeDir = options.homeDir ?? os.homedir();
+  const file = readExternalHarnessesConfig({ homeDir });
+  const installCache = new Map<string, string | undefined>();
+  const probeInstalled = (cmd: string): string | undefined => {
+    if (!installCache.has(cmd)) {
+      installCache.set(
+        cmd,
+        tryResolveInstalledExternalExecutable({
+          command: cmd,
+          homeDir,
+          hostEnv: options.hostEnv,
+          platform: options.platform,
+        }),
+      );
+    }
+    return installCache.get(cmd);
+  };
+
   const results: ResolvedExternalHarnessEntry[] = [];
 
   for (const builtin of BUILTIN_EXTERNAL_HARNESSES) {
     const ov = Object.hasOwn(file.overrides, builtin.id) ? file.overrides[builtin.id] : undefined;
     const hasOverride = Boolean(ov && Object.keys(ov).length > 0);
+    const effectiveCommand = ov?.command !== undefined ? ov.command : builtin.command;
+    const effectiveEnabled =
+      ov?.enabled !== undefined
+        ? ov.enabled
+        : resolveDefaultBuiltinEnabled({
+            builtin,
+            command: effectiveCommand,
+            resolvedExecutable: probeInstalled(effectiveCommand),
+            homeDir,
+          });
     results.push({
       hasOverride,
       definition: {
         ...builtin,
-        ...(ov?.command !== undefined ? { command: ov.command } : {}),
+        command: effectiveCommand,
         ...(ov?.args !== undefined ? { args: ov.args } : {}),
         ...(ov?.env !== undefined ? { env: ov.env } : {}),
         ...(ov?.envFrom !== undefined ? { envFrom: ov.envFrom } : {}),
-        ...(ov?.enabled !== undefined ? { enabled: ov.enabled } : {}),
+        enabled: effectiveEnabled,
         builtin: true,
       },
     });
@@ -527,11 +608,15 @@ export function mutateExternalHarnessesConfig<T>(
   }
 }
 
+function stringArraysEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((val, idx) => val === b[idx]);
+}
+
 /**
  * 保存内置外部代理的路径、参数或 `envFrom` 覆写差量。
  *
- * 置空回退语义：当传入 `override.command === ''`（或与内置默认命令相同）时，显式移除 `command` 覆写键回退至内置命令，
- * 同时保留已配置的 `args` / `envFrom`；若合并后所有字段均回到内置默认值，自动清理空 `overrides[id]` 条目。
+ * 置空与去冗余语义：当 `command`、`args` 或 `envFrom` 与代码侧内置默认值完全一致时自动消解为 `undefined`，
+ * 防止未改动的默认字段物化落盘遮蔽未来版本更新；全部覆写字段清空时自动移除 `overrides[id]`。
  */
 export function saveBuiltinHarnessOverride(
   id: string,
@@ -560,8 +645,17 @@ export function saveBuiltinHarnessOverride(
     ) {
       next.command = undefined;
     }
+    if (next.args !== undefined && stringArraysEqual(next.args, builtin.args)) {
+      next.args = undefined;
+    }
+    if (next.envFrom !== undefined) {
+      const cleanedEnvFrom = validateEnvFromField(id, next.envFrom);
+      next.envFrom = stringArraysEqual(cleanedEnvFrom, builtin.envFrom ?? [])
+        ? undefined
+        : cleanedEnvFrom;
+    }
     if (
-      (next.enabled === undefined || next.enabled === builtin.enabled) &&
+      next.enabled === undefined &&
       next.command === undefined &&
       next.args === undefined &&
       next.env === undefined &&
@@ -574,7 +668,7 @@ export function saveBuiltinHarnessOverride(
   }, options);
 }
 
-/** 清除指定内置外部代理的全部覆写字段，一键恢复代码默认设定。 */
+/** 清除指定内置外部代理的全部覆写字段（含手动启停锁），恢复按本机安装状态自动判定。 */
 export function resetBuiltinHarnessOverride(
   id: string,
   options: { readonly homeDir?: string } = {},
@@ -589,7 +683,12 @@ export function resetBuiltinHarnessOverride(
   }, options);
 }
 
-/** 切换内置或自定义外部代理的启用状态。 */
+/**
+ * 切换内置或自定义外部代理的启用状态。
+ *
+ * 前置与持久化边界：由于内置预设默认启停由本机安装检测动态决定，用户显式拨动开关后必须将 `enabled` 布尔值落盘到 `overrides[id]`，
+ * 避免停用已安装预设时误将覆写项删空而重新自动开启；仅 `resetBuiltinHarnessOverride` 会清除手动开关。
+ */
 export function toggleExternalHarness(
   id: string,
   enabled: boolean,
@@ -602,18 +701,7 @@ export function toggleExternalHarness(
     const builtin = findBuiltinExternalHarness(id);
     if (builtin) {
       const prev = Object.hasOwn(draft.overrides, id) ? draft.overrides[id]! : {};
-      const next = { ...prev, enabled };
-      if (
-        enabled === builtin.enabled &&
-        next.command === undefined &&
-        next.args === undefined &&
-        next.env === undefined &&
-        next.envFrom === undefined
-      ) {
-        delete draft.overrides[id];
-      } else {
-        draft.overrides[id] = next;
-      }
+      draft.overrides[id] = { ...prev, enabled };
       return;
     }
     const custom = Object.hasOwn(draft.custom, id) ? draft.custom[id] : undefined;
@@ -624,7 +712,10 @@ export function toggleExternalHarness(
   }, options);
 }
 
-/** 新增或更新一条自定义 `Local ACP Command` 外部代理。 */
+/**
+ * 新增或更新一条自定义 `Local ACP Command` 外部代理；
+ * 失败边界：拒绝原型保留键名、与内置预设重名、相对路径/UNC 命令及疑似明文密钥，写入走独占锁原子事务。
+ */
 export function upsertCustomExternalHarness(
   entry: CustomExternalHarnessInput,
   options: { readonly homeDir?: string } = {},

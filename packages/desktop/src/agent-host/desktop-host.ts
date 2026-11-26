@@ -61,7 +61,7 @@ const DESKTOP_UNHANDLED_COMMANDS: ReadonlyMap<string, string> = new Map([
   ['model', '会话内模型切换依赖 CLI 宿主回调，桌面端请在设置面板管理模型。'],
   ['exit', '桌面端没有退出命令；请直接关闭窗口或会话标签。'],
   ['prompt', '提示词任务依赖运行收据管线适配，桌面端暂未开放；可改用该服务的 MCP 工具。'],
-  ['external', '桌面端请通过左侧栏「外部代理」或设置面板管理与运行外部代理会话。'],
+  ['external', '桌面端请在新对话输入框选择外部代理，或在设置面板「外部代理」中管理配置。'],
 ]);
 
 type Scope = { workspaceId: string; sessionId: string };

@@ -39,6 +39,8 @@ interface CustomHarnessDraft {
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const HARNESS_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const PASTED_SECRET_RE =
+  /^(?:sk-[A-Za-z0-9_-]{8,}|sk_[A-Za-z0-9_]{8,}|pk_[A-Za-z0-9_]{8,}|rk_[A-Za-z0-9_]{8,}|ghp_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|xox[abprs]-[A-Za-z0-9-]{8,}|hf_[A-Za-z0-9]{12,}|gsk_[A-Za-z0-9]{12,}|AIza[0-9A-Za-z_-]{16,}|AKIA[0-9A-Z]{12,})$/;
 
 /**
  * 为外部代理管理与探测请求包裹前端看门狗；
@@ -71,15 +73,23 @@ function parseEnvNames(text: string): { names: string[]; error?: string } {
   const names: string[] = [];
   for (const item of raw) {
     if (item.includes('=')) {
+      const keyPreview = item.slice(0, item.indexOf('=')).slice(0, 48) || '***';
       return {
         names: [],
-        error: `环境变量名「${item}」不应包含 "=" 或密钥值，请仅填写变量名。`,
+        error: `环境变量名「${keyPreview}=***」不应包含 "=" 或密钥值，请仅填写变量名。`,
+      };
+    }
+    if (PASTED_SECRET_RE.test(item)) {
+      return {
+        names: [],
+        error: '检测到疑似直接粘贴了密钥明文，请仅填写系统环境变量名称（如 OPENAI_API_KEY）。',
       };
     }
     if (!ENV_NAME_RE.test(item)) {
+      const safePreview = item.length > 24 ? `${item.slice(0, 12)}…` : item;
       return {
         names: [],
-        error: `环境变量名「${item}」格式不合法（需以字母或下划线开头，仅含字母、数字与下划线）。`,
+        error: `环境变量名「${safePreview}」格式不合法（需以字母或下划线开头，仅含字母、数字与下划线）。`,
       };
     }
     if (!seen.has(item)) {
@@ -90,15 +100,25 @@ function parseEnvNames(text: string): { names: string[]; error?: string } {
   return { names };
 }
 
-/** 根据显示名称派生默认 kebab-case 代理标识，仅在用户尚未手改 ID 时辅助回填。 */
-function suggestHarnessId(name: string): string {
+/**
+ * 根据显示名称派生默认 kebab-case 代理标识，并自动避让已有内置或自定义代理 ID（如纯中文名称自动生成 `custom-acp`、`custom-acp-2`）。
+ */
+function suggestHarnessId(name: string, occupiedIds?: ReadonlySet<string>): string {
   const slug = name
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 48);
-  return slug || 'custom-acp';
+  const base = slug || 'custom-acp';
+  if (!occupiedIds || !occupiedIds.has(base)) {
+    return base;
+  }
+  let suffix = 2;
+  while (occupiedIds.has(`${base}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${base}-${suffix}`;
 }
 
 function transportBadgeText(transport: HarnessItem['transport']): string {
@@ -209,7 +229,7 @@ export function ExternalSettingsPanel({
       const result = await withExternalWatchdog(
         window.kapibala.external.testHarness({ id: item.id, workspaceId }),
         `检测 ${item.name} 超时，请检查本机命令是否可正常退出或响应。`,
-        20_000,
+        25_000,
       );
       if (!mountedRef.current) return;
       setProbes((prev) => ({ ...prev, [item.id]: result }));
@@ -276,7 +296,6 @@ export function ExternalSettingsPanel({
           command: overrideDraft.command.trim(),
           args: parseArgsLines(overrideDraft.argsText),
           envFrom: parsedEnv.names,
-          enabled: item.enabled,
         }),
         '保存覆盖设置超时。',
       );
@@ -401,7 +420,7 @@ export function ExternalSettingsPanel({
           },
         }),
         '握手测试超时，请确认命令支持标准输入输出 ACP 协议。',
-        20_000,
+        25_000,
       );
       if (!mountedRef.current) return;
       setDraftProbe(result);
@@ -415,8 +434,9 @@ export function ExternalSettingsPanel({
 
   async function saveCustomDraft(): Promise<void> {
     if (!customDraft || busy || hostDown) return;
+    const occupiedIds = new Set(harnesses.map((item) => item.id));
     const name = customDraft.name.trim();
-    const id = (customDraft.id.trim() || suggestHarnessId(name)).toLowerCase();
+    const id = (customDraft.id.trim() || suggestHarnessId(name, occupiedIds)).toLowerCase();
     const command = customDraft.command.trim();
     if (!name) {
       setPanelError('请填写自定义代理的显示名称。');
@@ -428,6 +448,10 @@ export function ExternalSettingsPanel({
     }
     if (builtinHarnesses.some((item) => item.id === id)) {
       setPanelError(`标识「${id}」与内置代理冲突，请更换其它 ID。`);
+      return;
+    }
+    if (!customDraft.idLocked && customHarnesses.some((item) => item.id === id)) {
+      setPanelError(`标识「${id}」已被现有自定义代理占用，请更换其它 ID 或直接编辑原条目。`);
       return;
     }
     if (!command) {
@@ -832,7 +856,7 @@ export function ExternalSettingsPanel({
                       id:
                         customDraft.idLocked || customDraft.idTouched
                           ? customDraft.id
-                          : suggestHarnessId(value),
+                          : suggestHarnessId(value, new Set(harnesses.map((item) => item.id))),
                     })
                   }
                 />

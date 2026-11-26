@@ -65,6 +65,47 @@ export interface ExternalSessionArchive {
   readonly notices?: readonly ViewNotice[];
 }
 
+const LOCK_RETRY_ATTEMPTS = 12;
+const LOCK_RETRY_DELAY_MS = 15;
+const RENAME_RETRY_ATTEMPTS = 3;
+const SharedWaitCell = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(ms: number): void {
+  Atomics.wait(SharedWaitCell, 0, 0, ms);
+}
+
+/** 截断字符串且避免切裂 UTF-16 高低代理对，防止 `JSON.stringify` 产出孤立代理字符。 */
+function sliceUtf16Safe(text: string, maxUnits: number): string {
+  if (text.length <= maxUnits) return text;
+  if (maxUnits <= 0) return '';
+  let end = maxUnits;
+  const code = text.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) {
+    end -= 1;
+  }
+  return text.slice(0, end);
+}
+
+function renameWithWindowsRetry(tempPath: string, targetPath: string): void {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      fs.renameSync(tempPath, targetPath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (
+        process.platform === 'win32' &&
+        (code === 'EPERM' || code === 'EACCES') &&
+        attempt < RENAME_RETRY_ATTEMPTS
+      ) {
+        sleepSync(LOCK_RETRY_DELAY_MS);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 function isLiveStatus(status: ViewExternalSessionStatus): boolean {
   return (
     status === 'starting' ||
@@ -293,43 +334,53 @@ export class ExternalSessionRegistry {
       content = serialize(redactedMessages, true);
     }
 
-    // 若极端情况下单条超大消息仍超过 680 KiB，按块预算截断文本与工具详情保底落盘。
+    // 若极端情况下单条超大消息（含多字节中文/Emoji）仍超过 680 KiB，递减块预算循环截断直至严格低于上限。
     if (
       Buffer.byteLength(content, 'utf8') > MAX_EXTERNAL_ARCHIVE_BYTES &&
       redactedMessages.length === 1
     ) {
       const only = redactedMessages[0]!;
-      const maxCharsPerBlock = Math.max(
-        1024,
-        Math.floor((420 * 1024) / Math.max(1, only.blocks.length)),
-      );
-      redactedMessages = [
-        {
-          ...only,
-          blocks: only.blocks.slice(-64).map((b) => ({
-            ...b,
-            text: b.text.slice(0, maxCharsPerBlock),
-            ...(b.tool
-              ? {
-                  tool: {
-                    ...b.tool,
-                    input: b.tool.input.slice(0, Math.min(maxCharsPerBlock, 16 * 1024)),
-                    ...(b.tool.result ? { result: b.tool.result.slice(0, maxCharsPerBlock) } : {}),
-                  },
-                }
-              : {}),
-          })),
-        },
-      ];
-      truncated = true;
-      content = serialize(redactedMessages, true);
+      const keptBlocks = only.blocks.slice(-64);
+      let budgetUnits = 420 * 1024;
+      while (
+        Buffer.byteLength(content, 'utf8') > MAX_EXTERNAL_ARCHIVE_BYTES &&
+        budgetUnits >= 1024
+      ) {
+        const maxCharsPerBlock = Math.max(
+          256,
+          Math.floor(budgetUnits / Math.max(1, keptBlocks.length)),
+        );
+        redactedMessages = [
+          {
+            ...only,
+            blocks: keptBlocks.map((b) => ({
+              ...b,
+              text: sliceUtf16Safe(b.text, maxCharsPerBlock),
+              ...(b.tool
+                ? {
+                    tool: {
+                      ...b.tool,
+                      input: sliceUtf16Safe(b.tool.input, Math.min(maxCharsPerBlock, 16 * 1024)),
+                      ...(b.tool.result
+                        ? { result: sliceUtf16Safe(b.tool.result, maxCharsPerBlock) }
+                        : {}),
+                    },
+                  }
+                : {}),
+            })),
+          },
+        ];
+        truncated = true;
+        content = serialize(redactedMessages, true);
+        budgetUnits = Math.floor(budgetUnits / 2);
+      }
     }
 
     fs.mkdirSync(this.snapshotsDirPath, { recursive: true, mode: 0o700 });
     const tempPath = `${filePath}.${randomUUID()}.tmp`;
     try {
       fs.writeFileSync(tempPath, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-      fs.renameSync(tempPath, filePath);
+      renameWithWindowsRetry(tempPath, filePath);
     } catch (err) {
       try {
         fs.unlinkSync(tempPath);
@@ -377,10 +428,23 @@ export class ExternalSessionRegistry {
         { cause },
       );
     }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return emptyMap();
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_CONFIG_CORRUPT',
+        `外部会话登记簿 ${this.sessionsFilePath} 顶层结构非法`,
+      );
+    }
     const container = parsed as { version?: unknown; sessions?: unknown };
-    if (container.version !== 1 || !container.sessions || typeof container.sessions !== 'object') {
-      return emptyMap();
+    if (
+      container.version !== 1 ||
+      !container.sessions ||
+      typeof container.sessions !== 'object' ||
+      Array.isArray(container.sessions)
+    ) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_CONFIG_CORRUPT',
+        `外部会话登记簿 ${this.sessionsFilePath} 版本或 sessions 字段损坏`,
+      );
     }
     const map = emptyMap();
     for (const [id, rawItem] of Object.entries(container.sessions as Record<string, unknown>)) {
@@ -420,22 +484,47 @@ export class ExternalSessionRegistry {
     return map;
   }
 
+  private acquireLockFd(lockPath: string): number {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return fs.openSync(lockPath, 'wx', 0o600);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw err;
+        }
+        // 检查锁持有进程是否已死亡，若是崩溃遗留僵尸锁则安全清理后立即重试
+        try {
+          const rawLock = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as {
+            pid?: unknown;
+          };
+          if (
+            typeof rawLock.pid === 'number' &&
+            Number.isSafeInteger(rawLock.pid) &&
+            rawLock.pid > 0 &&
+            !isProcessAlive(rawLock.pid)
+          ) {
+            fs.unlinkSync(lockPath);
+            continue;
+          }
+        } catch {
+          /* 锁文件正由其他进程写入或刚释放，进入短退避重试 */
+        }
+        if (attempt >= LOCK_RETRY_ATTEMPTS) {
+          throw new ExternalHarnessError(
+            'EXTERNAL_CONFIG_BUSY',
+            `外部会话登记簿正在被其他进程写入（${lockPath}）`,
+          );
+        }
+        sleepSync(LOCK_RETRY_DELAY_MS);
+      }
+    }
+  }
+
   private mutateRecords<T>(mutate: (records: Record<string, ExternalSessionRecord>) => T): T {
     fs.mkdirSync(path.dirname(this.sessionsFilePath), { recursive: true, mode: 0o700 });
     const lockPath = `${this.sessionsFilePath}.lock`;
     const owner = randomUUID();
-    let fd: number;
-    try {
-      fd = fs.openSync(lockPath, 'wx', 0o600);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new ExternalHarnessError(
-          'EXTERNAL_CONFIG_BUSY',
-          `外部会话登记簿正在被其他进程写入（${lockPath}）`,
-        );
-      }
-      throw err;
-    }
+    const fd = this.acquireLockFd(lockPath);
 
     try {
       fs.writeFileSync(fd, JSON.stringify({ owner, pid: process.pid }));
@@ -450,7 +539,7 @@ export class ExternalSessionRegistry {
       const tempPath = `${this.sessionsFilePath}.${randomUUID()}.tmp`;
       try {
         fs.writeFileSync(tempPath, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-        fs.renameSync(tempPath, this.sessionsFilePath);
+        renameWithWindowsRetry(tempPath, this.sessionsFilePath);
       } catch (writeErr) {
         try {
           fs.unlinkSync(tempPath);

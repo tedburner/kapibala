@@ -280,7 +280,8 @@ async function ensureCliWorkspaceTrusted(
     return true;
   }
 
-  return true;
+  output.error(`当前工作区 (${workspaceRoot}) 尚未被信任，无法在非交互模式下自动授权外部代理。`);
+  return false;
 }
 
 /**
@@ -557,6 +558,9 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
       customTitle: false,
       requireIdleWorkspace: true,
     });
+    output.log(
+      `已创建外部会话 [${opened.session.id}] (${opened.session.harnessName})，正在执行首轮任务…`,
+    );
     let snap: ViewExternalSnapshot;
     try {
       snap = await runPromptWithLiveCliApprovals({

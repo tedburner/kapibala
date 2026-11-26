@@ -60,9 +60,16 @@ test.describe
       await expect(builtinRegion.getByText('Pi Coding Agent', { exact: true })).toBeVisible();
       await expect(builtinRegion.getByText('Antigravity', { exact: true })).toBeVisible();
       await expect(builtinRegion.getByText('OpenCode', { exact: true })).toBeVisible();
+      await expect(builtinRegion.getByText('Oh My Pi (OMP)', { exact: true })).toBeVisible();
+      await expect(builtinRegion.getByText('Qoder', { exact: true })).toBeVisible();
+      await expect(builtinRegion.getByText('Qoder CN', { exact: true })).toBeVisible();
+      await expect(builtinRegion.getByText('TRAE', { exact: true })).toBeVisible();
+      await expect(builtinRegion.getByText('TRAE CN', { exact: true })).toBeVisible();
 
-      // 1. 切换内置代理启停开关，验证只写 overrides 差量而不物化全部内置项
-      await page.getByLabel('启用 Gemini CLI', { exact: true }).click();
+      // 1. 本地未安装的预设默认不启用；切换启停开关只写 overrides 差量而不物化全部内置项
+      const geminiSwitch = page.getByLabel('启用 Gemini CLI', { exact: true });
+      const initialChecked = (await geminiSwitch.getAttribute('aria-checked')) === 'true';
+      await geminiSwitch.click();
       const configPath = path.join(home, '.kapibala/external/harnesses.json');
       await expect
         .poll(
@@ -78,7 +85,7 @@ test.describe
           },
           { timeout: 15_000 },
         )
-        .toBe(false);
+        .toBe(!initialChecked);
 
       // 2. 从官方 ACP 目录模板回填表单，并替换为本地受控假 ACP 子进程测试保存前握手
       await page.getByRole('button', { name: '从 ACP 目录选择模板' }).click();
@@ -131,6 +138,11 @@ test.describe
             'deepseek-harness': { enabled: false },
             gemini: { enabled: false },
             'qwen-code': { enabled: false },
+            omp: { enabled: false },
+            qoder: { enabled: false },
+            'qoder-cn': { enabled: false },
+            trae: { enabled: false },
+            'trae-cn': { enabled: false },
           },
           custom: {
             'e2e-acp': {

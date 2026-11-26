@@ -31,12 +31,20 @@ export type IncomingRpcRequestHandler = (
   params: unknown,
 ) => Promise<unknown> | unknown;
 
-/** `NdjsonChannel` 构造配置。 */
+/**
+ * `NdjsonChannel` 构造配置。
+ *
+ * 调用方按底层协议形态订阅对应回调：标准 JSON-RPC 走 `onRequest` / `onNotification`，
+ * 顶层带 `type` 的事件流协议（Claude `stream-json`、Pi `--mode rpc`）走 `onMessage`。
+ */
 export interface NdjsonChannelOptions {
+  /** 单行帧最大允许字节数（默认 8 MiB，小于 64 字节时抛协议配置错误）。 */
   readonly maxFrameBytes?: number;
+  /** 处理子进程发往宿主的双向 JSON-RPC 请求（如权限确认）；未提供时默认回复 `-32601`。 */
   readonly onRequest?: IncomingRpcRequestHandler;
+  /** 处理子进程发往宿主的单向 JSON-RPC 通知（无 `id`）。 */
   readonly onNotification?: (method: string, params: unknown) => void;
-  /** 非 JSON-RPC 形态的结构化 JSON 行回调（供 Claude `stream-json` 等纯事件流协议消费）。 */
+  /** 非 JSON-RPC 形态的结构化 JSON 行回调（供 Claude `stream-json` 与 Pi `--mode rpc` 等事件流协议消费）。 */
   readonly onMessage?: (payload: Record<string, unknown>) => void;
   /** 收到非 JSON 启动横幅时的脱敏诊断回调。 */
   readonly onNonJsonLine?: (redactedLine: string) => void;
@@ -44,9 +52,11 @@ export interface NdjsonChannelOptions {
   readonly onFatalError?: (error: ExternalHarnessError) => void;
 }
 
-/** 单次 `request` 调用的可选控制项。 */
+/** 单次 `NdjsonChannel.request` 调用的超时、取消与线格式控制项。 */
 export interface NdjsonRequestOptions {
+  /** 请求超时毫秒数；到期自动清理挂起项并拒绝为 `EXTERNAL_TIMEOUT`。 */
   readonly timeoutMs?: number;
+  /** 外部取消信号；触发时立即摘除挂起表并以 `EXTERNAL_ABORTED` 拒绝。 */
   readonly signal?: AbortSignal;
   /** 为 `true` 时不附带 `"jsonrpc": "2.0"` 字段（供 Codex `app-server` JSON-RPC lite 使用）。 */
   readonly omitJsonRpcVersion?: boolean;
@@ -65,7 +75,7 @@ interface PendingRpcCall {
  * 解决的四类跨 CLI 实战边界：
  * 1. **非 JSON 横幅容错 + TUI 误配快败熔断**：容忍 CLI 启动打印的版本提示，但握手前超 100 行或 64KiB 立即报 `EXTERNAL_NON_JSON_FLOOD`；
  * 2. **大帧串行让出队列**：`>= 64KiB` 大帧让出事件循环时，后续小帧排在同一 FIFO 队列之后，杜绝 `session/prompt` 结算响应超车大体积 `tool_call_update`；
- * 3. **多协议同源承载**：同时兼容标准 JSON-RPC 2.0（ACP）、无 `jsonrpc` 字段的 JSON-RPC lite（Codex）以及纯 JSON 事件流（Claude `stream-json`）；
+ * 3. **多协议同源承载**：同时兼容标准 JSON-RPC 2.0（ACP）、无 `jsonrpc` 字段的 JSON-RPC lite（Codex）以及带顶层 `type` 的纯 JSON 事件流（Claude `stream-json`、Pi `--mode rpc`）；
  * 4. **默认拒绝反向工具**：未注册 `onRequest` 或处理函数未覆盖的方法自动回复 `-32601 Method not found`。
  */
 export class NdjsonChannel {
@@ -199,6 +209,25 @@ export class NdjsonChannel {
         reject(err);
       }
     });
+  }
+
+  /**
+   * 排空当前已入列但因 64KiB 大帧让出事件循环而尚未消费的帧后再关闭通道。
+   *
+   * 用于子进程退出收尾，确保紧邻进程退出前输出的大体积最终结果帧不会被 `close()` 提前清空；
+   * 若通道已触发致命错误或已关闭则立即收口。
+   */
+  async drainAndClose(reason?: ExternalHarnessError): Promise<void> {
+    if (!this.closed && !this.fatalError) {
+      if (this.frameHead < this.frameQueue.length && !this.pumping) {
+        await this.pumpFrames();
+      } else {
+        while (this.pumping && !this.closed && !this.fatalError) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      }
+    }
+    this.close(reason);
   }
 
   /** 关闭通道并拒绝所有在途请求。 */
@@ -464,10 +493,27 @@ export class NdjsonChannel {
       if (obj.error && typeof obj.error === 'object') {
         const rpcErr = obj.error as { code?: unknown; message?: unknown; data?: unknown };
         const codeNum = typeof rpcErr.code === 'number' ? rpcErr.code : -32603;
-        const msg =
+        const baseMsg =
           typeof rpcErr.message === 'string'
             ? redactCommonSecrets(sanitizeUntrustedOutput(rpcErr.message))
             : 'Unknown RPC error';
+        const dataObj =
+          rpcErr.data && typeof rpcErr.data === 'object' && !Array.isArray(rpcErr.data)
+            ? (rpcErr.data as Record<string, unknown>)
+            : undefined;
+        const rawDataDetail =
+          typeof rpcErr.data === 'string'
+            ? rpcErr.data
+            : typeof dataObj?.details === 'string'
+              ? dataObj.details
+              : typeof dataObj?.message === 'string'
+                ? dataObj.message
+                : '';
+        const cleanDetail = rawDataDetail
+          ? sanitizeDisplayText(redactCommonSecrets(sanitizeUntrustedOutput(rawDataDetail)), 320)
+          : undefined;
+        const msg =
+          cleanDetail && !baseMsg.includes(cleanDetail) ? `${baseMsg}: ${cleanDetail}` : baseMsg;
         const wrapped = Object.assign(
           new ExternalHarnessError(
             'EXTERNAL_PROTOCOL_ERROR',

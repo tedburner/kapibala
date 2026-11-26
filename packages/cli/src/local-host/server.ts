@@ -426,10 +426,11 @@ export class LocalHostServer {
         }
         case 'external/cancel': {
           requireExternalCapability();
-          const resolvedId = this.attachOrVerifyExternalController(
-            request.params.sessionId,
-            clientId,
-          );
+          const resolvedId = this.external.resolveSessionId(request.params.sessionId);
+          const owner = this.externalControllers.get(resolvedId);
+          if (owner !== undefined && owner !== clientId) {
+            throw new Error('CONTROL_REQUIRED');
+          }
           await this.external.cancelSession(resolvedId);
           return { cancellationRequested: true };
         }

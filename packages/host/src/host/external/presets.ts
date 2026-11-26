@@ -19,7 +19,7 @@ export interface AcpRegistryTemplate {
 }
 
 /**
- * 首批内置外部代理预设真源。
+ * 首批内置外部代理预设真源（静态 `enabled: false`，未手动覆写时由 `listResolvedExternalHarnesses` 按本机是否已安装对应命令自动决定默认启停）。
  *
  * 持久化边界（与 `BUILTIN_PROFILES` 同口径）：
  * 内置预设仅由代码侧提供，绝不整份物化写入 `~/.kapibala/external/harnesses.json`；
@@ -34,7 +34,7 @@ export const BUILTIN_EXTERNAL_HARNESSES: readonly ExternalHarnessDefinition[] = 
     args: [],
     envFrom: ['ANTHROPIC_API_KEY'],
     builtin: true,
-    enabled: true,
+    enabled: false,
   },
   {
     id: 'codex',
@@ -44,7 +44,7 @@ export const BUILTIN_EXTERNAL_HARNESSES: readonly ExternalHarnessDefinition[] = 
     args: [],
     envFrom: ['OPENAI_API_KEY'],
     builtin: true,
-    enabled: true,
+    enabled: false,
   },
   {
     id: 'pi',
@@ -54,7 +54,7 @@ export const BUILTIN_EXTERNAL_HARNESSES: readonly ExternalHarnessDefinition[] = 
     args: [],
     envFrom: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'DEEPSEEK_API_KEY'],
     builtin: true,
-    enabled: true,
+    enabled: false,
   },
   {
     id: 'antigravity',
@@ -64,7 +64,7 @@ export const BUILTIN_EXTERNAL_HARNESSES: readonly ExternalHarnessDefinition[] = 
     command: 'agy',
     args: ['acp'],
     builtin: true,
-    enabled: true,
+    enabled: false,
   },
   {
     id: 'opencode',
@@ -74,7 +74,7 @@ export const BUILTIN_EXTERNAL_HARNESSES: readonly ExternalHarnessDefinition[] = 
     command: 'opencode',
     args: ['acp'],
     builtin: true,
-    enabled: true,
+    enabled: false,
   },
   {
     id: 'deepseek-harness',
@@ -85,7 +85,7 @@ export const BUILTIN_EXTERNAL_HARNESSES: readonly ExternalHarnessDefinition[] = 
     args: ['--profile', 'acp'],
     envFrom: ['DEEPSEEK_API_KEY'],
     builtin: true,
-    enabled: true,
+    enabled: false,
   },
   {
     id: 'gemini',
@@ -96,7 +96,7 @@ export const BUILTIN_EXTERNAL_HARNESSES: readonly ExternalHarnessDefinition[] = 
     args: ['--acp'],
     envFrom: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
     builtin: true,
-    enabled: true,
+    enabled: false,
   },
   {
     id: 'qwen-code',
@@ -107,7 +107,61 @@ export const BUILTIN_EXTERNAL_HARNESSES: readonly ExternalHarnessDefinition[] = 
     args: ['--acp'],
     envFrom: ['DASHSCOPE_API_KEY'],
     builtin: true,
-    enabled: true,
+    enabled: false,
+  },
+  {
+    id: 'omp',
+    name: 'Oh My Pi (OMP)',
+    transport: 'acp',
+    flavor: 'omp',
+    command: 'omp',
+    args: ['acp'],
+    env: { PI_NO_PTY: '1' },
+    envFrom: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'DEEPSEEK_API_KEY'],
+    builtin: true,
+    enabled: false,
+  },
+  {
+    id: 'qoder',
+    name: 'Qoder',
+    transport: 'acp',
+    flavor: 'qoder',
+    command: 'qodercli',
+    args: ['--acp'],
+    builtin: true,
+    enabled: false,
+  },
+  {
+    id: 'qoder-cn',
+    name: 'Qoder CN',
+    transport: 'acp',
+    flavor: 'qoder-cn',
+    command: 'qoderclicn',
+    args: ['--acp'],
+    builtin: true,
+    enabled: false,
+  },
+  {
+    id: 'trae',
+    name: 'TRAE',
+    transport: 'acp',
+    flavor: 'trae',
+    command: 'traecli',
+    args: ['acp', 'serve'],
+    envFrom: ['TRAECLI_PERSONAL_ACCESS_TOKEN'],
+    builtin: true,
+    enabled: false,
+  },
+  {
+    id: 'trae-cn',
+    name: 'TRAE CN',
+    transport: 'acp',
+    flavor: 'trae-cn',
+    command: 'traecli',
+    args: ['acp', 'serve'],
+    envFrom: ['TRAECLI_PERSONAL_ACCESS_TOKEN'],
+    builtin: true,
+    enabled: false,
   },
 ];
 
@@ -180,7 +234,7 @@ export const ACP_REGISTRY_TEMPLATES: readonly AcpRegistryTemplate[] = [
   },
 ];
 
-/** 按 ID 查找内置外部代理预设。 */
+/** 按 ID 查找内置外部代理预设；未命中内置清单时返回 `undefined`（用于区分内置增量覆写与用户自定义条目）。 */
 export function findBuiltinExternalHarness(id: string): ExternalHarnessDefinition | undefined {
   return BUILTIN_EXTERNAL_HARNESSES.find((item) => item.id === id);
 }

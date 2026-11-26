@@ -283,11 +283,15 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
 
   constructor(private readonly options: CodexAppServerDriverOptions = {}) {}
 
+  /** 执行无会话副作用的 `codex app-server` `initialize` 与 `account/read` 登录态探测。 */
   async inspect(
     def: ExternalHarnessDefinition,
     cwd: string,
     signal?: AbortSignal,
   ): Promise<ExternalInspectResult> {
+    if (signal?.aborted) {
+      throw new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消');
+    }
     let resolvedCmd: ReturnType<typeof resolveExternalCommand>;
     try {
       resolvedCmd = resolveExternalCommand({
@@ -437,6 +441,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
     }
   }
 
+  /** 启动 `codex app-server` 并完成 `thread/start` 或 `thread/resume` 线程绑定。 */
   async open(input: {
     def: ExternalHarnessDefinition;
     workspaceRoot: string;
@@ -444,6 +449,9 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
     onEvent: (event: ExternalEvent) => void;
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult> {
+    if (input.signal?.aborted) {
+      throw new ExternalHarnessError('EXTERNAL_ABORTED', 'Codex 启动已取消');
+    }
     if (input.nativeSessionId !== undefined && !isValidNativeSessionId(input.nativeSessionId)) {
       throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', 'Codex 恢复会话 threadId 格式非法');
     }
@@ -493,13 +501,24 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
     }
 
     let activeTurn: ActiveCodexTurn | undefined;
+    const pendingApprovalResolvers = new Map<
+      string,
+      (decision: ExternalApprovalDecision) => void
+    >();
 
-    const emitToolUpsert = (tool: ViewTool, startedAt?: number, outputBuffer = ''): void => {
+    const settleAllApprovalsCancelled = (): void => {
+      for (const [reqId, settle] of pendingApprovalResolvers) {
+        pendingApprovalResolvers.delete(reqId);
+        settle({ outcome: 'cancelled' });
+      }
+    };
+
+    const emitToolUpsert = (tool: ViewTool, startedAt?: number, outputBuffer?: string): void => {
       const prev = toolsById.get(tool.callId);
       toolsById.set(tool.callId, {
         view: tool,
         startedAt: startedAt ?? prev?.startedAt ?? Date.now(),
-        outputBuffer: outputBuffer || prev?.outputBuffer || '',
+        outputBuffer: outputBuffer !== undefined ? outputBuffer : (prev?.outputBuffer ?? ''),
       });
       input.onEvent({ type: 'tool_upsert', tool });
     };
@@ -507,6 +526,26 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
     const channel = new NdjsonChannel(proc.stdout, proc.stdin, {
       onNotification: (method, params) => {
         const p = asRecord(params) ?? {};
+
+        if (method === 'turn/started') {
+          activeTurn?.bumpActivity();
+          const turnObj = asRecord(p.turn) ?? p;
+          const startedId =
+            typeof turnObj.id === 'string' && turnObj.id.trim() ? turnObj.id.trim() : undefined;
+          if (activeTurn && startedId && !activeTurn.turnId) {
+            activeTurn.turnId = startedId;
+            if (activeTurn.cancelled && threadId) {
+              void channel
+                .request(
+                  'turn/interrupt',
+                  { threadId, turnId: startedId },
+                  { omitJsonRpcVersion: true, timeoutMs: 3_000 },
+                )
+                .catch(() => {});
+            }
+          }
+          return;
+        }
 
         if (method === 'item/agentMessage/delta') {
           activeTurn?.bumpActivity();
@@ -602,7 +641,8 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
             durationMs,
           );
           if (built) {
-            emitToolUpsert(built, tracked?.startedAt, tracked?.outputBuffer);
+            // item/completed 结算后释放流式增量累积缓冲区，避免长会话常驻占用内存
+            emitToolUpsert(built, tracked?.startedAt, completed ? '' : tracked?.outputBuffer);
           }
           return;
         }
@@ -650,6 +690,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           const turn = activeTurn;
           activeTurn = undefined;
           turn.cleanup();
+          settleAllApprovalsCancelled();
 
           const status = typeof turnObj.status === 'string' ? turnObj.status.toLowerCase() : '';
           if (
@@ -689,19 +730,26 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       },
       onRequest: async (id, method, params) => {
         const p = asRecord(params) ?? {};
+        const isLegacyV1Approval =
+          method === 'execCommandApproval' || method === 'applyPatchApproval';
         const isCmdApproval =
           method === 'item/commandExecution/requestApproval' || method === 'execCommandApproval';
         const isFileApproval =
           method === 'item/fileChange/requestApproval' || method === 'applyPatchApproval';
 
         if (!isCmdApproval && !isFileApproval) {
+          input.onEvent({
+            type: 'diagnostic',
+            level: 'warning',
+            text: `Codex 请求了当前外部会话不支持的客户端交互（${method}），已自动拒绝`,
+          });
           throw Object.assign(new Error(`Unsupported Codex client request: ${method}`), {
             rpcCode: -32601,
           });
         }
 
         if (!activeTurn) {
-          return { decision: 'cancel' };
+          return { decision: isLegacyV1Approval ? 'abort' : 'cancel' };
         }
 
         const itemId =
@@ -771,11 +819,37 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
         activeTurn.pendingApprovals += 1;
         activeTurn.bumpActivity();
 
+        const reqKey = clampCodexCallId(String(id), 'codex-req');
         return await new Promise<Record<string, unknown>>((resolve) => {
           let settled = false;
+          const finish = (decision: ExternalApprovalDecision): void => {
+            if (settled) return;
+            settled = true;
+            pendingApprovalResolvers.delete(reqKey);
+            if (activeTurn) {
+              activeTurn.pendingApprovals = Math.max(0, activeTurn.pendingApprovals - 1);
+              activeTurn.bumpActivity();
+            }
+            if (decision.outcome === 'cancelled') {
+              resolve({ decision: isLegacyV1Approval ? 'abort' : 'cancel' });
+              return;
+            }
+            if (decision.optionId === 'acceptForSession') {
+              resolve({
+                decision: isLegacyV1Approval ? 'approved_for_session' : 'acceptForSession',
+              });
+              return;
+            }
+            if (decision.optionId === 'accept') {
+              resolve({ decision: isLegacyV1Approval ? 'approved' : 'accept' });
+              return;
+            }
+            resolve({ decision: isLegacyV1Approval ? 'denied' : 'decline' });
+          };
+          pendingApprovalResolvers.set(reqKey, finish);
           input.onEvent({
             type: 'approval_requested',
-            requestId: clampCodexCallId(String(id), 'codex-req'),
+            requestId: reqKey,
             toolCallId: itemId,
             toolTitle: isCmdApproval ? '终端命令执行' : '文件写入修改',
             ...(safeTarget ? { target: safeTarget } : {}),
@@ -799,27 +873,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
                   },
                   { optionId: 'decline', label: '拒绝', kind: 'reject_once' },
                 ],
-            respond: (decision: ExternalApprovalDecision) => {
-              if (settled) return;
-              settled = true;
-              if (activeTurn) {
-                activeTurn.pendingApprovals = Math.max(0, activeTurn.pendingApprovals - 1);
-                activeTurn.bumpActivity();
-              }
-              if (decision.outcome === 'cancelled') {
-                resolve({ decision: 'cancel' });
-                return;
-              }
-              if (decision.optionId === 'acceptForSession') {
-                resolve({ decision: 'acceptForSession' });
-                return;
-              }
-              if (decision.optionId === 'accept') {
-                resolve({ decision: 'accept' });
-                return;
-              }
-              resolve({ decision: 'decline' });
-            },
+            respond: finish,
           });
         });
       },
@@ -827,6 +881,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
         input.onEvent({ type: 'diagnostic', level: 'info', text: line });
       },
       onFatalError: (err) => {
+        settleAllApprovalsCancelled();
         if (activeTurn) {
           const turn = activeTurn;
           activeTurn = undefined;
@@ -838,12 +893,13 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       },
     });
 
-    void proc.waitForClose().then((exit) => {
+    void proc.waitForClose().then(async (exit) => {
       const closeErr = new ExternalHarnessError(
         'EXTERNAL_PROTOCOL_ERROR',
         `Codex app-server 进程已退出（code=${exit.code ?? 'null'}）`,
       );
-      channel.close(closeErr);
+      await channel.drainAndClose(closeErr);
+      settleAllApprovalsCancelled();
       if (activeTurn) {
         const turn = activeTurn;
         activeTurn = undefined;
@@ -1018,18 +1074,18 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
                 threadId: activeThreadId,
                 input: [{ type: 'text', text }],
               },
-              { omitJsonRpcVersion: true, signal },
+              { omitJsonRpcVersion: true, timeoutMs: handshakeTimeoutMs },
             )
             .then((startedRaw) => {
               const started = asRecord(startedRaw);
               const turnObj = asRecord(started?.turn);
               const idStr =
-                typeof turnObj?.id === 'string'
-                  ? turnObj.id
-                  : typeof started?.turnId === 'string'
-                    ? started.turnId
-                    : `turn-${randomUUID().slice(0, 8)}`;
-              if (activeTurn === currentTurn) {
+                typeof turnObj?.id === 'string' && turnObj.id.trim()
+                  ? turnObj.id.trim()
+                  : typeof started?.turnId === 'string' && started.turnId.trim()
+                    ? started.turnId.trim()
+                    : undefined;
+              if (activeTurn === currentTurn && idStr) {
                 currentTurn.turnId = idStr;
                 if (currentTurn.cancelled && activeThreadId) {
                   void channel
@@ -1046,14 +1102,11 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
               }
             })
             .catch((err) => {
-              if (activeTurn === currentTurn) {
+              if (activeTurn === currentTurn && !currentTurn.cancelled) {
                 activeTurn = undefined;
                 cleanup();
-                if (currentTurn.cancelled) {
-                  resolve({ stopReason: 'cancelled' });
-                } else {
-                  reject(err);
-                }
+                settleAllApprovalsCancelled();
+                reject(err);
               }
             });
         });
@@ -1061,6 +1114,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       async cancel(): Promise<void> {
         if (!activeTurn || activeTurn.cancelled) return;
         activeTurn.cancelled = true;
+        settleAllApprovalsCancelled();
         if (activeTurn.turnId) {
           void channel
             .request(
@@ -1079,6 +1133,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
           if (activeTurn === snapshotTurn) {
             activeTurn = undefined;
             snapshotTurn.cleanup();
+            settleAllApprovalsCancelled();
             closingByClient = true;
             void proc.close().finally(() => {
               snapshotTurn.resolve({ stopReason: 'cancelled', processTerminated: true });
@@ -1089,10 +1144,12 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       },
       async close(): Promise<void> {
         closingByClient = true;
+        settleAllApprovalsCancelled();
         if (activeTurn) {
           const turn = activeTurn;
           activeTurn = undefined;
           turn.cleanup();
+          settleAllApprovalsCancelled();
           turn.resolve({ stopReason: 'cancelled', processTerminated: true });
         }
         channel.close();

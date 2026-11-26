@@ -93,7 +93,7 @@
 | `approval_closed` | `{ approvalId }` |
 | `diagnostic` | `{ code, message }` |
 
-声明 `external-session` 能力的连接另可通过 `external/event` 通知接收已 `external/attach` 外部会话的实时快照流（`ExternalSnapshotEvent = { sessionId, sequence, snapshot }`），其中 `transport` 枚举支持 `'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc'`。未声明 `external-session` 的客户端不会收到任何 `external/event` 帧，调用 `external/*` 方法返回 `PROTOCOL_MISMATCH`。
+声明 `external-session` 能力的连接另可通过 `external/event` 通知接收已 `external/attach` 外部会话的实时快照流（`ExternalWireEvent = { sessionId, sequence, snapshot }`），其中 `transport` 枚举支持 `'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc'`。未声明 `external-session` 的客户端不会收到任何 `external/event` 帧，调用 `external/*` 方法返回 `PROTOCOL_MISMATCH`。
 
 ## 4. 快照与游标
 

@@ -164,16 +164,16 @@ test.describe
       await expect(page.getByLabel('发送消息')).toHaveValue('/skill demo-skill ');
     });
 
-    test('技能无任务直发：发送即执行', async () => {
-      await page.getByLabel('发送消息').fill('hi');
+    test('技能无任务直发：新对话与已打开会话均发送即执行', async () => {
+      // 1. 新对话草稿态直接发送 /skill demo-skill：自动创建会话并执行，不再报「需在已打开会话中使用」
+      await page.getByLabel('发送消息').fill('/skill demo-skill');
       await page.getByLabel('发送消息').press('Enter');
-      await expect(page.getByRole('article', { name: '你的消息' }).first()).toBeVisible({
-        timeout: 15_000,
-      });
+      await expect(page.getByText(/斜杠命令需要在已打开的会话中使用/)).toHaveCount(0);
+      await expect(page.getByText(/请输入合法技能名和非空任务/)).toHaveCount(0);
+      await expect(page.getByLabel('发送消息')).toHaveValue('', { timeout: 10_000 });
       await expect(page.getByLabel('发送消息')).toBeEnabled({ timeout: 15_000 });
-      // `/skill <名称>` 无任务 = 选了就跑：宿主合成启动任务走收据管线（沙箱无模型，
-      // 运行会快速失败——收据链路由单测覆盖）；此处断言分发走通了拦截而不是
-      // 命中 CLI 的「非空任务」校验（校验报错会在反馈卡可见）。
+
+      // 2. 已打开会话内再次无任务直发 /skill demo-skill 同样走通收据管线
       await page.getByLabel('发送消息').fill('/skill demo-skill');
       await page.getByLabel('发送消息').press('Enter');
       await expect(page.getByText(/请输入合法技能名和非空任务/)).toHaveCount(0);

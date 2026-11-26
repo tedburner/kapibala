@@ -368,6 +368,7 @@ export function normalizeAcpToolUpdate(
 export function normalizeAcpPermissionRequest(
   params: unknown,
   existingTool?: ViewTool,
+  fallbackCallId = 'perm-tool',
 ): {
   readonly tool: ViewTool;
   readonly toolTitle: string;
@@ -377,17 +378,24 @@ export function normalizeAcpPermissionRequest(
 } {
   const obj = asRecord(params) ?? {};
   const rawToolCall = asRecord(obj.toolCall) ?? obj;
+  const resolvedCallId =
+    rawToolCall.toolCallId ??
+    rawToolCall.id ??
+    rawToolCall.callId ??
+    obj.toolCallId ??
+    existingTool?.callId ??
+    fallbackCallId;
   const synthesizedTool =
     normalizeAcpToolUpdate(
       {
         ...rawToolCall,
-        toolCallId: rawToolCall.toolCallId ?? obj.toolCallId ?? existingTool?.callId ?? 'perm-tool',
+        toolCallId: resolvedCallId,
         status: existingTool?.status ?? 'running',
       },
       existingTool,
     ) ??
     ({
-      callId: existingTool?.callId ?? 'perm-tool',
+      callId: existingTool?.callId ?? fallbackCallId,
       name: 'permission',
       displayName: '权限确认',
       invocation: '请求执行外部操作',

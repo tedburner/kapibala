@@ -81,7 +81,7 @@ export class RpcEndpoint {
     const timeoutMs =
       method === 'app.downloadUpdate'
         ? LIMITS.downloadTimeout
-        : method === 'external.open'
+        : method === 'external.open' || method === 'external.prompt'
           ? LIMITS.externalOpenTimeout
           : LIMITS.requestTimeout;
     return new Promise<Output<M>>((resolve, reject) => {
@@ -263,6 +263,8 @@ const messages: Record<string, string> = {
   EXTERNAL_CONFIG_BUSY: '外部代理配置正在修改，请稍后重试。',
   EXTERNAL_CONFIG_CORRUPT: '外部代理配置文件损坏，已拒绝覆盖写入；请检查 ~/.kapibala/external/。',
   EXTERNAL_CONFIG_INVALID: '外部代理配置校验未通过（禁止明文密钥、相对路径或与内置 ID 重名）。',
+  EXTERNAL_HARNESS_DISABLED: '所选外部代理当前已停用，请先在设置面板「外部代理」中启用。',
+  EXTERNAL_APPROVAL_EXPIRED: '该外部审批请求已处理或已超时过期。',
   EXTERNAL_CAPACITY:
     '外部代理并发进程数（4）或历史保留数（50）已达上限，请先关闭或删除已结束会话。',
   EXTERNAL_WORKSPACE_BUSY: '当前工作区已有运行中的外部代理会话，请等待其完成或取消后再试。',

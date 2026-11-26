@@ -28,8 +28,8 @@ import {
   normalizeAcpUsage,
 } from './tolerance.js';
 
-/** 设置页「检测连接」默认超时（15 秒）。 */
-const DEFAULT_INSPECT_TIMEOUT_MS = 15_000;
+/** 设置页「检测连接」默认超时（20 秒；兼容 Oh My Pi 等首次初始化模型/扩展耗时约 12 秒的代理）。 */
+const DEFAULT_INSPECT_TIMEOUT_MS = 20_000;
 /** 设置页非破坏性探测阶段的 `authenticate` 子步骤超时上限（3.5 秒），避免未登录 OAuth 回调阻塞按钮 15 秒。 */
 const INSPECT_AUTH_PROBE_TIMEOUT_MS = 3_500;
 /** 会话启动握手默认超时（60 秒）。 */
@@ -76,18 +76,25 @@ function pickAuthMethodId(
  * 标准 ACP（Agent Client Protocol）JSON-RPC 2.0 over NDJSON stdio 传输驱动。
  *
  * 承载范围：Antigravity（`agy acp`）、OpenCode（`opencode acp`）、DeepSeek Harness（`dsh --profile acp`）、
- * Gemini CLI、Qwen Code、官方 ACP Registry 模板与任意第三方 `Local ACP Command`。
+ * Gemini CLI、Qwen Code、Oh My Pi（`omp acp`）、Qoder / Qoder CN（`qodercli --acp` / `qoderclicn --acp`）、
+ * TRAE / TRAE CN（`traecli acp serve`）、官方 ACP Registry 模板与任意第三方 `Local ACP Command`。
  */
 export class AcpStdioDriver implements ExternalHarnessDriver {
   readonly transport = 'acp' as const;
 
   constructor(private readonly options: AcpStdioDriverOptions = {}) {}
 
+  /**
+   * 非破坏性握手探测：校验可执行文件解析、完成 `initialize` 能力交换并惰性探明登录态，探测结束后立即回收临时进程。
+   */
   async inspect(
     def: ExternalHarnessDefinition,
     cwd: string,
     signal?: AbortSignal,
   ): Promise<ExternalInspectResult> {
+    if (signal?.aborted) {
+      throw new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消');
+    }
     let flavor = resolveAcpFlavor({ flavor: def.flavor, command: def.command, args: def.args });
 
     let resolvedCmd: ReturnType<typeof resolveExternalCommand>;
@@ -145,6 +152,8 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
 
     const channel = new NdjsonChannel(proc.stdout, proc.stdin);
     const timeoutMs = this.options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
+    const remainingBudgetMs = (): number => Math.max(1_000, deadline - Date.now());
 
     try {
       const initRaw = await channel.request(
@@ -173,22 +182,70 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       });
 
       const authMethodId = pickAuthMethodId(flavor, init.authMethods);
-      if (authMethodId) {
+      if (authMethodId || init.authMethods.length > 0) {
+        // 惰性认证探测：对声明了 authMethods 的代理（如 Antigravity / Gemini / TRAE / OMP）先试调 session/new 核验既有登录态，
+        // 避免盲目触发交互式浏览器 OAuth 弹窗；仅当报未鉴权且存在首选静默认证方法时才降级尝试 authenticate。
+        let probeNewRes: unknown;
         try {
-          await channel.request(
-            'authenticate',
-            { methodId: authMethodId },
-            { timeoutMs: Math.min(timeoutMs, INSPECT_AUTH_PROBE_TIMEOUT_MS), signal },
+          probeNewRes = await channel.request(
+            'session/new',
+            { cwd, mcpServers: [] },
+            { timeoutMs: remainingBudgetMs(), signal },
           );
-        } catch (authErr) {
-          const authMsg = authErr instanceof Error ? authErr.message : String(authErr);
+        } catch (probeErr) {
+          const probeRpcCode =
+            probeErr &&
+            typeof probeErr === 'object' &&
+            typeof (probeErr as { rpcCode?: unknown }).rpcCode === 'number'
+              ? (probeErr as { rpcCode: number }).rpcCode
+              : undefined;
+          const probeMsg = probeErr instanceof Error ? probeErr.message : String(probeErr);
+          if (!isAcpAuthRequiredError(`${probeMsg} ${proc.getStderrTail()}`, probeRpcCode)) {
+            throw probeErr;
+          }
+          if (!authMethodId) {
+            return {
+              available: false,
+              ...(init.agentName ? { agentName: init.agentName } : {}),
+              ...(init.version ? { version: init.version } : {}),
+              loadSupported: Boolean(init.loadMethod),
+              status: 'needs_login',
+              reason: '已完成协议握手，但尚未完成登录鉴权',
+              ...(flavor.loginHint ? { loginHint: flavor.loginHint } : {}),
+            };
+          }
+          try {
+            await channel.request(
+              'authenticate',
+              { methodId: authMethodId },
+              { timeoutMs: Math.min(remainingBudgetMs(), INSPECT_AUTH_PROBE_TIMEOUT_MS), signal },
+            );
+            probeNewRes = await channel.request(
+              'session/new',
+              { cwd, mcpServers: [] },
+              { timeoutMs: remainingBudgetMs(), signal },
+            );
+          } catch (authErr) {
+            const authMsg = authErr instanceof Error ? authErr.message : String(authErr);
+            return {
+              available: false,
+              ...(init.agentName ? { agentName: init.agentName } : {}),
+              ...(init.version ? { version: init.version } : {}),
+              loadSupported: Boolean(init.loadMethod),
+              status: 'needs_login',
+              reason: `已完成协议握手，但认证未通过（${authMsg}）`,
+              ...(flavor.loginHint ? { loginHint: flavor.loginHint } : {}),
+            };
+          }
+        }
+        if (flavor.id === 'omp' && !normalizeAcpConfigSummary(probeNewRes).modelLabel) {
           return {
             available: false,
             ...(init.agentName ? { agentName: init.agentName } : {}),
             ...(init.version ? { version: init.version } : {}),
             loadSupported: Boolean(init.loadMethod),
             status: 'needs_login',
-            reason: `已完成协议握手，但认证未通过（${authMsg}）`,
+            reason: 'Oh My Pi 尚未配置默认模型或登录凭据（请在终端运行 omp 执行 /login 与 /model）',
             ...(flavor.loginHint ? { loginHint: flavor.loginHint } : {}),
           };
         }
@@ -246,6 +303,9 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
     }
   }
 
+  /**
+   * 在已信任工作区启动 ACP 子进程并完成新建或 `session/load` 恢复握手；惰性按需调用 `authenticate`，失败时确保回收子进程。
+   */
   async open(input: {
     def: ExternalHarnessDefinition;
     workspaceRoot: string;
@@ -254,6 +314,9 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult> {
     const { def, onEvent, signal } = input;
+    if (signal?.aborted) {
+      throw new ExternalHarnessError('EXTERNAL_ABORTED', '外部会话启动已取消');
+    }
     if (input.nativeSessionId !== undefined && !isValidNativeSessionId(input.nativeSessionId)) {
       throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', '外部会话恢复标识格式非法');
     }
@@ -292,6 +355,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
     let activeTurnCancel: (() => Promise<void>) | undefined;
     let lastActivityAt = Date.now();
     let userClosed = false;
+    let fatalChannelError: ExternalHarnessError | undefined;
 
     const settlePendingApprovalsAsCancelled = (): void => {
       for (const [reqId, resolveDecision] of pendingApprovalResolvers) {
@@ -306,16 +370,17 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       cwd: nativeWorkspaceRoot,
       env: launchEnv.env,
       onClose: (closeRes) => {
-        settlePendingApprovalsAsCancelled();
-        channel.close();
-        if (!userClosed) {
-          onEvent({
-            type: 'closed',
-            code: closeRes.code,
-            signal: closeRes.signal,
-            ...(closeRes.stderrTail ? { stderrTail: closeRes.stderrTail } : {}),
-          });
-        }
+        void channel.drainAndClose().finally(() => {
+          settlePendingApprovalsAsCancelled();
+          if (!userClosed) {
+            onEvent({
+              type: 'closed',
+              code: closeRes.code,
+              signal: closeRes.signal,
+              ...(closeRes.stderrTail ? { stderrTail: closeRes.stderrTail } : {}),
+            });
+          }
+        });
       },
     });
 
@@ -334,6 +399,12 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
     const channel = new NdjsonChannel(proc.stdout, proc.stdin, {
       onNonJsonLine: (line) => {
         onEvent({ type: 'diagnostic', level: 'info', text: line });
+      },
+      onFatalError: (err) => {
+        fatalChannelError = err;
+        settlePendingApprovalsAsCancelled();
+        onEvent({ type: 'diagnostic', level: 'error', text: err.message });
+        void proc.close();
       },
       onNotification: (method, rawParams) => {
         if (method !== 'session/update') return;
@@ -372,7 +443,9 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
                 ? update.toolCallId
                 : typeof update.id === 'string'
                   ? update.id
-                  : ''
+                  : typeof update.callId === 'string'
+                    ? update.callId
+                    : ''
             )
               .trim()
               .slice(0, 256);
@@ -411,23 +484,32 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         if (replayingLoad || !activeTurnCancel) {
           return { outcome: { outcome: 'cancelled' } };
         }
+        const requestKey = String(id).slice(0, 256);
+        const fallbackCallId = `perm-${requestKey}`.slice(0, 256);
         const reqObj = asRecord(params);
         const rawToolCall = asRecord(reqObj?.toolCall);
         const rawCallId = (
           typeof rawToolCall?.toolCallId === 'string'
             ? rawToolCall.toolCallId
-            : typeof reqObj?.toolCallId === 'string'
-              ? reqObj.toolCallId
-              : `perm-${String(id)}`
+            : typeof rawToolCall?.id === 'string'
+              ? rawToolCall.id
+              : typeof rawToolCall?.callId === 'string'
+                ? rawToolCall.callId
+                : typeof reqObj?.toolCallId === 'string'
+                  ? reqObj.toolCallId
+                  : fallbackCallId
         )
           .trim()
           .slice(0, 256);
-        const normalized = normalizeAcpPermissionRequest(params, knownTools.get(rawCallId));
+        const normalized = normalizeAcpPermissionRequest(
+          params,
+          knownTools.get(rawCallId),
+          fallbackCallId,
+        );
 
         knownTools.set(normalized.tool.callId, normalized.tool);
         onEvent({ type: 'tool_upsert', tool: normalized.tool });
 
-        const requestKey = String(id).slice(0, 256);
         const decision = await new Promise<ExternalApprovalDecision>((resolve) => {
           let settled = false;
           const finish = (res: ExternalApprovalDecision): void => {
@@ -495,44 +577,38 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
       });
 
       const authMethodId = pickAuthMethodId(flavor, init.authMethods);
-      if (authMethodId) {
-        await channel.request(
-          'authenticate',
-          { methodId: authMethodId },
-          { timeoutMs: handshakeTimeoutMs, signal },
-        );
-      }
-
-      let sessionResultRaw: unknown;
-      if (boundSessionId) {
-        if (!init.loadMethod) {
-          throw new ExternalHarnessError(
-            'EXTERNAL_PROTOCOL_ERROR',
-            `外部代理 '${def.name}' 不支持加载已有会话`,
-          );
+      const openOrLoadSession = async (): Promise<unknown> => {
+        if (boundSessionId) {
+          if (!init.loadMethod) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_PROTOCOL_ERROR',
+              `外部代理 '${def.name}' 不支持加载已有会话`,
+            );
+          }
+          replayProjector = new ExternalTranscriptProjector(`replay:${boundSessionId}`);
+          replayingLoad = true;
+          let loadedRaw: unknown;
+          try {
+            loadedRaw = await channel.request(
+              init.loadMethod,
+              {
+                sessionId: boundSessionId,
+                cwd: nativeWorkspaceRoot,
+                mcpServers: [],
+              },
+              { timeoutMs: handshakeTimeoutMs, signal },
+            );
+          } finally {
+            replayingLoad = false;
+          }
+          replayProjector.completeTurn();
+          const returnedId = asRecord(loadedRaw)?.sessionId;
+          if (isValidNativeSessionId(returnedId)) {
+            boundSessionId = returnedId.trim();
+          }
+          return loadedRaw;
         }
-        replayProjector = new ExternalTranscriptProjector(`replay:${boundSessionId}`);
-        replayingLoad = true;
-        try {
-          sessionResultRaw = await channel.request(
-            init.loadMethod,
-            {
-              sessionId: boundSessionId,
-              cwd: nativeWorkspaceRoot,
-              mcpServers: [],
-            },
-            { timeoutMs: handshakeTimeoutMs, signal },
-          );
-        } finally {
-          replayingLoad = false;
-        }
-        replayProjector.completeTurn();
-        const returnedId = asRecord(sessionResultRaw)?.sessionId;
-        if (isValidNativeSessionId(returnedId)) {
-          boundSessionId = returnedId.trim();
-        }
-      } else {
-        sessionResultRaw = await channel.request(
+        const createdRaw = await channel.request(
           'session/new',
           {
             cwd: nativeWorkspaceRoot,
@@ -540,7 +616,7 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
           },
           { timeoutMs: handshakeTimeoutMs, signal },
         );
-        const createdId = asRecord(sessionResultRaw)?.sessionId;
+        const createdId = asRecord(createdRaw)?.sessionId;
         if (typeof createdId !== 'string' || !createdId.trim()) {
           throw new ExternalHarnessError(
             'EXTERNAL_PROTOCOL_ERROR',
@@ -548,6 +624,31 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
           );
         }
         boundSessionId = createdId.trim();
+        return createdRaw;
+      };
+
+      let sessionResultRaw: unknown;
+      try {
+        sessionResultRaw = await openOrLoadSession();
+      } catch (sessionErr) {
+        const rpcCode =
+          sessionErr &&
+          typeof sessionErr === 'object' &&
+          typeof (sessionErr as { rpcCode?: unknown }).rpcCode === 'number'
+            ? (sessionErr as { rpcCode: number }).rpcCode
+            : undefined;
+        const msg = sessionErr instanceof Error ? sessionErr.message : String(sessionErr);
+        if (!authMethodId || !isAcpAuthRequiredError(`${msg} ${proc.getStderrTail()}`, rpcCode)) {
+          throw sessionErr;
+        }
+        // 仅当直接新建/加载会话报未鉴权时才按需发起 authenticate，避免对已登录 CLI 误触交互式浏览器 OAuth。
+        replayProjector = undefined;
+        await channel.request(
+          'authenticate',
+          { methodId: authMethodId },
+          { timeoutMs: handshakeTimeoutMs, signal },
+        );
+        sessionResultRaw = await openOrLoadSession();
       }
 
       const configSummary = normalizeAcpConfigSummary(sessionResultRaw);
@@ -641,6 +742,15 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
               ...(usage ? { usage } : {}),
             };
           } catch (err) {
+            if (fatalChannelError) {
+              userClosed = true;
+              channel.close(fatalChannelError);
+              await proc.close();
+              throw new ExternalHarnessError(fatalChannelError.code, fatalChannelError.message, {
+                processTerminated: true,
+                cause: fatalChannelError,
+              });
+            }
             if (timedOutByWatchdog) {
               userClosed = true;
               channel.close();
@@ -652,10 +762,14 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
               );
             }
             if (cancelRequested) {
-              userClosed = true;
-              channel.close();
-              await proc.close();
-              return { stopReason: 'cancelled', processTerminated: true };
+              // 仅当 5s 优雅取消宽限期届满或子进程已退出时才强杀回收；若对端在宽限期内正常以取消错误回复，保留存活进程供下轮复用。
+              if (turnAbortController.signal.aborted || proc.isClosed) {
+                userClosed = true;
+                channel.close();
+                await proc.close();
+                return { stopReason: 'cancelled', processTerminated: true };
+              }
+              return { stopReason: 'cancelled' };
             }
             if (err instanceof Error && isAcpAuthRequiredError(err.message)) {
               throw new ExternalHarnessError(

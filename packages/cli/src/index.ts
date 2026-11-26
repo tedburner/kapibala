@@ -265,6 +265,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const isTrusted =
       trustResult.status === 'trusted' || isProjectTrusted(settings, manager.project.projectRoot);
     const leaseCoordinator = new WorkspaceLeaseCoordinator();
+    const homeDirectory = os.homedir();
     agentRuntime = new AgentRuntime({
       runner: createCliSubagentRunner({
         manager,
@@ -273,6 +274,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         preference,
         isTrusted,
         leaseCoordinator,
+        homeDirectory,
       }),
       // 续聊执行器与首次派发共享同一套装配；缺失时 send_agent 会明确拒绝而非静默失败。
       resumer: createCliSubagentResumer({
@@ -282,6 +284,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         preference,
         isTrusted,
         leaseCoordinator,
+        homeDirectory,
       }),
       // 重启后从委派头重建幂等索引：同一 requestId 不会重复派发第二个委派会话。
       restoredRequests: readDelegationRequestEntries(manager),

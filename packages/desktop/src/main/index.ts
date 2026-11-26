@@ -431,6 +431,7 @@ async function handle(
     method === 'external.subscribe' ||
     method === 'external.prompt' ||
     method === 'external.approve' ||
+    method === 'external.cancel' ||
     method === 'external.close' ||
     method === 'external.delete'
   ) {

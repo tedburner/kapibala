@@ -76,6 +76,7 @@ function ExternalApprovalDeck({
     >
       {approvals.map((approval) => {
         const remainingSec = Math.max(0, Math.ceil((approval.expiresAt - now) / 1000));
+        const expired = remainingSec <= 0;
         return (
           <LayerCard
             key={approval.approvalId}
@@ -89,7 +90,7 @@ function ExternalApprovalDeck({
                 </span>
               </div>
               <span className="text-xs text-kumo-subtle tabular-nums">
-                剩余 {remainingSec}s（超时自动拒绝）
+                {expired ? '已超时，正在按拒绝收口…' : `剩余 ${remainingSec}s（超时自动拒绝）`}
               </span>
             </div>
             {approval.target && (
@@ -103,7 +104,7 @@ function ExternalApprovalDeck({
                 className="kapibala-action mr-auto"
                 variant="ghost"
                 size="sm"
-                disabled={busy}
+                disabled={busy || expired}
                 onClick={() => onApprove(approval.approvalId, undefined, true)}
               >
                 取消本轮
@@ -116,7 +117,7 @@ function ExternalApprovalDeck({
                     className="kapibala-action"
                     variant={!isReject && index === 0 ? 'primary' : 'secondary'}
                     size="sm"
-                    disabled={busy}
+                    disabled={busy || expired}
                     onClick={() => onApprove(approval.approvalId, option.optionId, false)}
                   >
                     {option.label}
@@ -224,7 +225,7 @@ export function ExternalSessionView({
         {snapshot.truncatedArchive && (
           <p className="text-kumo-subtle">该会话历史较长，归档仅保留最近消息快照供只读查阅。</p>
         )}
-        {session.status === 'failed' && session.lastError && (
+        {session.status === 'failed' && session.lastError && snapshot.messages.length === 0 && (
           <p role="alert" className="text-kumo-danger">
             运行失败：{session.lastError}
           </p>
@@ -244,7 +245,7 @@ export function ExternalSessionView({
                 ? { id: session.id, phase: 'running' }
                 : session.status === 'failed'
                   ? { id: session.id, phase: 'idle', result: 'failed' }
-                  : undefined
+                  : snapshot.operation
           }
           latestErrorNotice={session.lastError}
           onContinue={session.canContinue && !activeRun && !busy ? () => onSend('继续') : undefined}
@@ -265,7 +266,9 @@ export function ExternalSessionView({
         <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-sm text-kumo-subtle">
           {session.status === 'starting'
             ? `正在启动 ${session.harnessName} 外部会话…`
-            : `外部会话已就绪，在下方输入任务即可交由 ${session.harnessName} 执行。`}
+            : session.canContinue
+              ? `外部会话已就绪，在下方输入任务即可交由 ${session.harnessName} 执行。`
+              : '该外部会话已结束，且没有可展示的历史输出。'}
         </div>
       )}
 

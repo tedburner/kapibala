@@ -71,6 +71,28 @@ describe('buildExternalLaunchEnv', () => {
     expect(result.env.PATH).toContain('C:\\Windows\\System32');
     expect(result.env.PATH).toContain('C:\\Users\\Demo\\.local\\bin');
   });
+
+  it('拦截 envFrom 透传 PATH/NODE_PATH/COMSPEC，且仅对敏感变量名或高熵凭据执行脱敏（不误伤 true/info 等布尔配置值）', async () => {
+    const { resolveForwardedEnvSecrets } = await import('../src/host/external/env.js');
+    expect(() =>
+      buildExternalLaunchEnv({
+        hostEnv: { PATH: '.:/usr/bin' },
+        envFrom: ['PATH'],
+        platform: 'linux',
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_CONFIG_INVALID' }));
+
+    const secrets = resolveForwardedEnvSecrets(
+      ['CLAUDE_CODE_ENABLE_TELEMETRY', 'RUST_LOG', 'DEEPSEEK_API_KEY'],
+      {
+        CLAUDE_CODE_ENABLE_TELEMETRY: 'true',
+        RUST_LOG: 'info',
+        DEEPSEEK_API_KEY: 'dsh-secret-value-123456',
+      },
+      'linux',
+    );
+    expect(secrets).toEqual(['dsh-secret-value-123456']);
+  });
 });
 
 describe('resolveExternalCommand', () => {

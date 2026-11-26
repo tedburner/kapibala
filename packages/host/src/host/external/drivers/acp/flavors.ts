@@ -76,6 +76,61 @@ const FLAVORS: Readonly<Record<string, AcpHarnessFlavor>> = {
         ? undefined
         : 'Qwen Code 需传入 "--acp" 参数',
   },
+  omp: {
+    id: 'omp',
+    displayName: 'Oh My Pi (OMP)',
+    verifiedResumable: true,
+    loginHint: '在终端运行 omp 后输入 /login，或转发对应模型厂商 API_KEY',
+    installHint:
+      'bun install -g @oh-my-pi/pi-coding-agent（或 npm install -g @oh-my-pi/pi-coding-agent）',
+    misconfiguredCommandHint: (_cmd, args) =>
+      args.includes('acp') ? undefined : 'Oh My Pi 需传入子命令 "acp"（即 omp acp）',
+  },
+  qoder: {
+    id: 'qoder',
+    displayName: 'Qoder',
+    verifiedResumable: true,
+    loginHint: 'qodercli login',
+    installHint: 'npm install -g @qoder-ai/qodercli（或通过 Qoder 国际版客户端安装 CLI）',
+    misconfiguredCommandHint: (_cmd, args) =>
+      args.some((a) => a === '--acp' || a === 'acp')
+        ? undefined
+        : 'Qoder CLI 需传入 "--acp" 参数（即 qodercli --acp）',
+  },
+  'qoder-cn': {
+    id: 'qoder-cn',
+    displayName: 'Qoder CN',
+    verifiedResumable: true,
+    loginHint: 'qoderclicn login',
+    installHint: '通过 Qoder 国内版客户端安装 CLI（~/.qoder-cn/bin/qoderclicn）',
+    misconfiguredCommandHint: (_cmd, args) =>
+      args.some((a) => a === '--acp' || a === 'acp')
+        ? undefined
+        : 'Qoder CN CLI 需传入 "--acp" 参数（即 qoderclicn --acp）',
+  },
+  trae: {
+    id: 'trae',
+    displayName: 'TRAE',
+    verifiedResumable: true,
+    loginHint: 'traecli login',
+    installHint: '通过 TRAE 国际版（trae.ai）安装官方 traecli 命令行工具',
+    misconfiguredCommandHint: (_cmd, args) =>
+      args.includes('acp') || args.includes('--acp')
+        ? undefined
+        : 'TRAE CLI 需传入 "acp serve"（即 traecli acp serve）',
+  },
+  'trae-cn': {
+    id: 'trae-cn',
+    displayName: 'TRAE CN',
+    verifiedResumable: true,
+    loginHint: 'traecli login',
+    installHint:
+      'Windows: irm https://trae.cn/trae-cli/install_v2.ps1 | iex · macOS/Linux: sh -c "$(curl -fsSL https://trae.cn/trae-cli/install_v2.sh)"',
+    misconfiguredCommandHint: (_cmd, args) =>
+      args.includes('acp') || args.includes('--acp')
+        ? undefined
+        : 'TRAE CN CLI 需传入 "acp serve"（即 traecli acp serve）',
+  },
   generic: {
     id: 'generic',
     displayName: 'Custom ACP Agent',
@@ -106,6 +161,18 @@ function matchFlavorKey(token: string | undefined): string | undefined {
   if (lower === 'dsh' || lower.includes('deepseek')) return 'dsh';
   if (lower.includes('gemini')) return 'gemini';
   if (lower === 'qwen' || lower.includes('qwen-code')) return 'qwen-code';
+  if (lower === 'omp' || lower.includes('oh-my-pi')) return 'omp';
+  if (
+    lower === 'qoderclicn' ||
+    lower === 'qodercn' ||
+    lower.includes('qoder-cli-cn') ||
+    lower.includes('qoder-cn')
+  ) {
+    return 'qoder-cn';
+  }
+  if (lower === 'qodercli' || lower.includes('qoder')) return 'qoder';
+  if (lower.includes('trae-cn') || lower.includes('traecn')) return 'trae-cn';
+  if (lower === 'traecli' || lower.includes('trae')) return 'trae';
   return undefined;
 }
 
@@ -139,7 +206,7 @@ export function isAcpAuthRequiredError(message: string, rpcCode?: number): boole
   if (rpcCode === -32000 && /auth|login|credential|token|oauth|api[_ -]?key/i.test(message)) {
     return true;
   }
-  return /(?:authentication\s+required|not\s+logged\s+in|please\s+login|oauth.*expired|missing.*api[_ -]?key|no\s+api\s+key\s+for\s+provider|unauthorized|invalid\s+api\s+key)/i.test(
+  return /(?:authentication\s+required|not\s+logged\s+in|please\s+login|use\s+\/login|no\s+model\s+selected|oauth.*expired|missing.*api[_ -]?key|no\s+api\s+key\s+(?:found\s+)?for(?:\s+provider)?|unauthorized|invalid\s+api\s+key)/i.test(
     message,
   );
 }

@@ -74,16 +74,29 @@ function hasWindowsReservedSegment(input: string): boolean {
     .replace(/[\\/]+/g, '/')
     .split('/')
     .filter(Boolean);
-  for (const seg of segments) {
-    const cleaned = seg.replace(/^[A-Za-z]:$/, '');
+  for (let index = 0; index < segments.length; index++) {
+    const seg = segments[index]!;
+    if (index === 0 && /^[A-Za-z]:$/.test(seg)) continue;
+    // Windows 在匹配保留设备名前会剥离尾随空格/点，且 `:` 之后视为 NTFS 备用数据流后缀。
+    const beforeStream = seg.includes(':') ? seg.slice(0, seg.indexOf(':')) : seg;
+    const cleaned = beforeStream.replace(/[ .]+$/g, '').toLowerCase();
     if (!cleaned) continue;
-    const lower = cleaned.toLowerCase();
-    const stem = lower.includes('.') ? lower.slice(0, lower.indexOf('.')) : lower;
-    if (WINDOWS_RESERVED_DEVICES.has(lower) || (stem && WINDOWS_RESERVED_DEVICES.has(stem))) {
+    const stem = cleaned.includes('.') ? cleaned.slice(0, cleaned.indexOf('.')) : cleaned;
+    if (WINDOWS_RESERVED_DEVICES.has(cleaned) || (stem && WINDOWS_RESERVED_DEVICES.has(stem))) {
       return true;
     }
   }
   return false;
+}
+
+function hasDisallowedWindowsSyntax(target: string): boolean {
+  // 拒绝 UNC/设备命名空间路径（`\\server\share`、`\\.\`、`\\?\`）以防外连 SMB 泄露凭据，
+  // 同时拒绝盘符相对路径（`C:foo`）与 NTFS 备用数据流（`file.exe:stream`）。
+  if (target.startsWith('\\\\') || target.startsWith('//')) return true;
+  if (/^[A-Za-z]:[\\/]/.test(target)) {
+    return target.slice(2).includes(':');
+  }
+  return target.includes(':');
 }
 
 function toPhysicalFileIfExists(candidate: string): string | undefined {
@@ -97,10 +110,10 @@ function toPhysicalFileIfExists(candidate: string): string | undefined {
 
 function isStrictAbsolutePath(target: string, platform: NodeJS.Platform): boolean {
   if (platform === 'win32') {
-    // 排除 `\foo`（无盘符根相对路径）与 `C:foo`（盘符当前目录相对路径），只接受完整盘符或 UNC 路径。
-    return /^[A-Za-z]:[\\/]/.test(target) || /^\\\\[^\\]+\\[^\\]+/.test(target);
+    // 严格只接受本地完整盘符绝对路径（排除 `\foo`、`C:foo`、NTFS ADS 以及远程 UNC 路径）。
+    return /^[A-Za-z]:[\\/]/.test(target) && !target.slice(2).includes(':');
   }
-  return path.posix.isAbsolute(target);
+  return path.posix.isAbsolute(target) && !target.startsWith('//');
 }
 
 /**
@@ -128,6 +141,16 @@ export function getStandardCliFallbackDirs(options: {
       path.win32.join(localAppData, 'Programs', 'Antigravity', 'bin'),
       path.win32.join(localAppData, 'Programs', 'OpenAI', 'Codex', 'bin'),
       path.win32.join(localAppData, 'qwen-code', 'bin'),
+      path.win32.join(homeDir, '.opencode', 'bin'),
+      path.win32.join(homeDir, '.omp', 'bin'),
+      path.win32.join(homeDir, '.qoder', 'bin', 'qodercli'),
+      path.win32.join(homeDir, '.qoder', 'bin'),
+      path.win32.join(homeDir, '.qoder-cn', 'bin', 'qoderclicn'),
+      path.win32.join(homeDir, '.qoder-cn', 'bin'),
+      path.win32.join(localAppData, 'Programs', 'TraeCLI', 'bin'),
+      path.win32.join(localAppData, 'Programs', 'TraeCLI'),
+      path.win32.join(homeDir, '.trae', 'bin'),
+      path.win32.join(homeDir, '.trae-cn', 'bin'),
       path.win32.join(homeDir, '.bun', 'bin'),
       path.win32.join(homeDir, '.volta', 'bin'),
       path.win32.join(homeDir, '.cargo', 'bin'),
@@ -141,6 +164,14 @@ export function getStandardCliFallbackDirs(options: {
     path.posix.join(homeDir, 'Library', 'pnpm'),
     path.posix.join(homeDir, '.local', 'share', 'pnpm'),
     path.posix.join(homeDir, '.npm-global', 'bin'),
+    path.posix.join(homeDir, '.opencode', 'bin'),
+    path.posix.join(homeDir, '.omp', 'bin'),
+    path.posix.join(homeDir, '.qoder', 'bin', 'qodercli'),
+    path.posix.join(homeDir, '.qoder', 'bin'),
+    path.posix.join(homeDir, '.qoder-cn', 'bin', 'qoderclicn'),
+    path.posix.join(homeDir, '.qoder-cn', 'bin'),
+    path.posix.join(homeDir, '.trae', 'bin'),
+    path.posix.join(homeDir, '.trae-cn', 'bin'),
     path.posix.join(homeDir, '.bun', 'bin'),
     path.posix.join(homeDir, '.volta', 'bin'),
     path.posix.join(homeDir, '.cargo', 'bin'),
@@ -294,7 +325,8 @@ function unwrapWindowsCmdShim(
   const expanded = rawTargetToken.replace(/(?:%~dp0|%dp0%)[\\/]?/gi, `${shimDir}${path.win32.sep}`);
   const lexicalTarget = path.win32.resolve(shimDir, expanded);
 
-  // 允许两类合法受管根：<shimDir>\node_modules\（全局 npm）与 <root>\node_modules\（当 shim 位于 node_modules\.bin）。
+  // 允许三类合法受管边界：<shimDir>\node_modules\（全局 npm）、<root>\node_modules\（node_modules\.bin），
+  // 以及官方独立安装器生成的同目录原生二进制包装垫片（如 Programs\TraeCLI\bin\traecli.cmd -> %~dp0traex.exe，仅限同目录 .exe）。
   const isDotBin =
     path.win32.basename(shimDir).toLowerCase() === '.bin' &&
     path.win32.basename(path.win32.dirname(shimDir)).toLowerCase() === 'node_modules';
@@ -305,14 +337,19 @@ function unwrapWindowsCmdShim(
   const isPnpmGlobalShim =
     isContainedIn(lexicalTarget, pnpmGlobalRoot, 'win32') &&
     lexicalTarget.toLowerCase().includes('\\node_modules\\');
+  const isSameDirSiblingExe =
+    path.win32.extname(lexicalTarget).toLowerCase() === '.exe' &&
+    path.win32.dirname(lexicalTarget).toLowerCase() === shimDir.toLowerCase();
 
   const lexicallyValid =
-    isContainedIn(lexicalTarget, managedNodeModulesRoot, 'win32') || isPnpmGlobalShim;
+    isContainedIn(lexicalTarget, managedNodeModulesRoot, 'win32') ||
+    isPnpmGlobalShim ||
+    isSameDirSiblingExe;
 
   if (!lexicallyValid) {
     throw new ExternalHarnessError(
       'EXTERNAL_UNSUPPORTED_SHIM',
-      `拒绝执行越出受管 node_modules 目录的垫片目标：${shimBaseName}`,
+      `拒绝执行越出受管目录的垫片目标：${shimBaseName}`,
     );
   }
 
@@ -324,13 +361,31 @@ function unwrapWindowsCmdShim(
     );
   }
 
-  // 二次物理边界核验：常规 npm 垫片目标必须落于受管父目录内，仅 pnpm 全局虚拟仓允许跨盘指向 `.pnpm` 下的 node_modules。
-  const allowedPhysicalParent = isDotBin ? path.win32.dirname(shimDir) : shimDir;
+  // 二次物理边界核验：常规 npm 垫片目标必须落于受管 node_modules 物理根内；pnpm 全局虚拟仓必须命中 `.pnpm\...\node_modules\`；同目录二进制垫片物理路径仍须位于同一 shimDir 且后缀为 .exe。
+  let physicalManagedNodeModules = managedNodeModulesRoot;
+  try {
+    physicalManagedNodeModules = fs.realpathSync.native(managedNodeModulesRoot);
+  } catch {
+    /* keep lexical if missing */
+  }
+  let physicalShimDir = shimDir;
+  try {
+    physicalShimDir = fs.realpathSync.native(shimDir);
+  } catch {
+    /* keep lexical if missing */
+  }
   const normalizedPhysicalTarget = physicalTarget.replace(/\//g, '\\').toLowerCase();
-  if (
-    !isContainedIn(physicalTarget, allowedPhysicalParent, 'win32') &&
-    !(isPnpmGlobalShim && normalizedPhysicalTarget.includes('\\node_modules\\'))
-  ) {
+  const validStandardPhysical = isContainedIn(physicalTarget, physicalManagedNodeModules, 'win32');
+  const validPnpmPhysical =
+    isPnpmGlobalShim &&
+    (isContainedIn(physicalTarget, shimDir, 'win32') ||
+      normalizedPhysicalTarget.includes('\\.pnpm\\')) &&
+    normalizedPhysicalTarget.includes('\\node_modules\\');
+  const validSiblingExePhysical =
+    isSameDirSiblingExe &&
+    path.win32.extname(physicalTarget).toLowerCase() === '.exe' &&
+    path.win32.dirname(physicalTarget).toLowerCase() === physicalShimDir.toLowerCase();
+  if (!validStandardPhysical && !validPnpmPhysical && !validSiblingExePhysical) {
     throw new ExternalHarnessError(
       'EXTERNAL_UNSUPPORTED_SHIM',
       `垫片 '${shimBaseName}' 的物理目标越出受管目录边界`,
@@ -409,6 +464,13 @@ export function resolveExternalCommand(
       : rawCommand.startsWith('~/') || rawCommand.startsWith('~\\')
         ? pathApi.join(homeDir, rawCommand.slice(2))
         : rawCommand;
+
+  if (isWin && hasDisallowedWindowsSyntax(expandedCommand)) {
+    throw new ExternalHarnessError(
+      'EXTERNAL_INVALID_COMMAND',
+      `外部代理命令包含不受支持的 Windows 路径语法（禁止盘符相对路径、UNC 远程共享与 NTFS 数据流）：${rawCommand}`,
+    );
+  }
 
   if (hasWindowsReservedSegment(expandedCommand)) {
     throw new ExternalHarnessError(
@@ -537,6 +599,30 @@ export function resolveExternalCommand(
   };
 }
 
+/**
+ * 零子进程开销探测指定外部代理命令在本机是否可被解析（用于内置预设未手动覆写时决定默认启停）。
+ *
+ * 失败边界：任何未安装、非法垫片或缺少 `node` 运行时的情形均静默返回 `undefined`，绝不抛错阻断列表读取。
+ */
+export function tryResolveInstalledExternalExecutable(options: {
+  readonly command: string;
+  readonly homeDir?: string;
+  readonly hostEnv?: Readonly<Record<string, string | undefined>>;
+  readonly platform?: NodeJS.Platform;
+}): string | undefined {
+  try {
+    return resolveExternalCommand({
+      command: options.command,
+      args: [],
+      homeDir: options.homeDir,
+      hostEnv: options.hostEnv,
+      platform: options.platform,
+    }).executable;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 子进程收口结果：区分优雅退出与升级进程树强杀。 */
 export interface ExternalProcessCloseResult {
   readonly code: number | null;
@@ -545,7 +631,10 @@ export interface ExternalProcessCloseResult {
   readonly stderrTail: string;
 }
 
-/** `ExternalProcessSupervisor.spawn` 启动参数。 */
+/**
+ * `ExternalProcessSupervisor.spawn` 启动参数：
+ * 要求 `executable` 为已完成静态解包的物理可执行路径，`cwd` 为已存在目录，`env` 为清洗后的白名单环境。
+ */
 export interface SpawnExternalProcessOptions {
   readonly executable: string;
   readonly args: readonly string[];
@@ -568,9 +657,11 @@ function getWindowsTaskkillExecutable(): string {
 function terminateWindowsProcessTreeAsync(pid: number, fallbackKill: () => void): Promise<void> {
   return new Promise((resolve) => {
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (): void => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       resolve();
     };
     try {
@@ -579,11 +670,26 @@ function terminateWindowsProcessTreeAsync(pid: number, fallbackKill: () => void)
         shell: false,
         stdio: 'ignore',
       });
+      timer = setTimeout(() => {
+        try {
+          killer.kill('SIGKILL');
+        } catch {
+          /* ignore */
+        }
+        fallbackKill();
+        finish();
+      }, 5_000);
+      timer.unref?.();
       killer.once('error', () => {
         fallbackKill();
         finish();
       });
-      killer.once('close', () => finish());
+      killer.once('close', (code) => {
+        if (code !== 0) {
+          fallbackKill();
+        }
+        finish();
+      });
     } catch {
       fallbackKill();
       finish();
@@ -717,38 +823,52 @@ export class ExternalProcessSupervisor {
     const graceful = await this.raceClose(graceMs);
     if (graceful) return graceful;
 
-    this.forcedKill = true;
+    const childStillAlive = this.child.exitCode === null && this.child.signalCode === null;
     const pid = this.child.pid;
 
-    if (pid && pid > 0) {
-      if (process.platform === 'win32') {
-        await terminateWindowsProcessTreeAsync(pid, () => {
-          try {
-            this.child.kill('SIGKILL');
-          } catch {
-            /* ignore */
-          }
-        });
+    if (childStillAlive) {
+      this.forcedKill = true;
+      if (pid && pid > 0) {
+        if (process.platform === 'win32') {
+          await terminateWindowsProcessTreeAsync(pid, () => {
+            if (this.child.exitCode === null && this.child.signalCode === null) {
+              try {
+                this.child.kill('SIGKILL');
+              } catch {
+                /* ignore */
+              }
+            }
+          });
+        } else {
+          this.signalPosixGroup(pid, 'SIGTERM');
+          const afterTerm = await this.raceClose(500);
+          if (afterTerm) return afterTerm;
+          this.signalPosixGroup(pid, 'SIGKILL');
+        }
       } else {
-        this.signalPosixGroup(pid, 'SIGTERM');
-        const afterTerm = await this.raceClose(500);
-        if (afterTerm) return afterTerm;
-        this.signalPosixGroup(pid, 'SIGKILL');
+        try {
+          this.child.kill('SIGKILL');
+        } catch {
+          /* ignore */
+        }
       }
-    } else {
-      try {
-        this.child.kill('SIGKILL');
-      } catch {
-        /* ignore */
-      }
+
+      const forced = await this.raceClose(1_500);
+      if (forced) return forced;
     }
 
-    const forced = await this.raceClose(1_500);
-    if (forced) return forced;
-
-    // 若孙进程继承了未关闭的管道句柄导致 close 事件迟滞，主动销毁宿主持有的流引用保底收口。
+    // 若孙进程继承了未关闭的管道句柄导致 close 事件迟滞，主动销毁宿主持有的流引用并加 3s 最终上限保底收口。
     this.destroyStreams();
-    return this.closePromise;
+    const bounded = await this.raceClose(3_000);
+    if (bounded) return bounded;
+    const fallback: ExternalProcessCloseResult = {
+      code: this.child.exitCode,
+      signal: this.child.signalCode,
+      forcedKill: this.forcedKill,
+      stderrTail: this.getStderrTail(),
+    };
+    this.closedResult = fallback;
+    return fallback;
   }
 
   private signalPosixGroup(pid: number, sig: NodeJS.Signals): void {

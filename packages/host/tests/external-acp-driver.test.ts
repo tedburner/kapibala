@@ -68,6 +68,34 @@ describe('ACP Flavor 与线格式宽容层', () => {
       args: [],
     }).misconfiguredCommandHint?.('opencode', []);
     expect(opencodeHint).toContain('acp');
+
+    expect(
+      resolveAcpFlavor({
+        command: 'C:\\Users\\Demo\\.omp\\bin\\omp.exe',
+        args: ['acp'],
+      }).id,
+    ).toBe('omp');
+
+    expect(
+      resolveAcpFlavor({
+        command: 'C:\\Users\\Demo\\.qoder-cn\\bin\\qoderclicn\\qoderclicn.exe',
+        args: ['--acp'],
+      }).id,
+    ).toBe('qoder-cn');
+
+    expect(
+      resolveAcpFlavor({
+        command: 'qodercli',
+        args: ['--acp'],
+      }).id,
+    ).toBe('qoder');
+
+    expect(
+      resolveAcpFlavor({
+        command: 'traecli',
+        args: ['acp', 'serve'],
+      }).id,
+    ).toBe('trae');
   });
 
   it('单条脏 configOptions 不崩整包，且双读 plan entries/plan 字段', () => {

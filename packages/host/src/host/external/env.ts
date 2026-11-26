@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { isSensitiveEnvVarName } from '@kiturone/kapibala-mcp';
+import { redactCommonSecrets } from '../redaction.js';
 import { ExternalHarnessError } from './types.js';
 
 /** Windows 子进程运行与本地登录态定位所需的最小基础环境键名集合。 */
@@ -55,19 +57,40 @@ const NETWORK_AND_TLS_ENV_KEYS = [
   'SSH_AUTH_SOCK',
 ] as const;
 
-/** 任何路径（含静态 `env` 与 `envFrom`）均禁止向子进程注入的宿主污染或动态链接器劫持变量。 */
+/** 任何路径（含静态 `env` 与 `envFrom`）均禁止覆盖或注入的宿主路径、运行时钩子及动态链接器变量。 */
 export const FORBIDDEN_EXTERNAL_ENV_KEYS = new Set([
+  'PATH',
+  'PATHEXT',
+  'COMSPEC',
+  'SYSTEMROOT',
+  'SYSTEMDRIVE',
+  'WINDIR',
   'NODE_OPTIONS',
+  'NODE_PATH',
   'ELECTRON_RUN_AS_NODE',
   'ELECTRON_NO_ATTACH_CONSOLE',
   'LD_PRELOAD',
   'LD_LIBRARY_PATH',
+  'LD_AUDIT',
   'DYLD_INSERT_LIBRARIES',
   'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH',
+  'DYLD_FALLBACK_LIBRARY_PATH',
+  'DYLD_FALLBACK_FRAMEWORK_PATH',
 ]);
 
 /** 环境变量名合法标识符正则（POSIX / Windows 通用安全子集）。 */
 export const ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** 识别常见被误粘贴进变量名输入框的下划线/无分隔符明文 API Token 前缀。 */
+export function looksLikePastedSecretToken(candidate: string): boolean {
+  const trimmed = candidate.trim();
+  if (!trimmed) return false;
+  if (redactCommonSecrets(trimmed) !== trimmed) return true;
+  return /^(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:sk|pk|rk)_[A-Za-z0-9_]{16,}|xox[abprs]_[A-Za-z0-9_]{16,}|hf_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_]{25,}|AKIA[0-9A-Z]{16})$/.test(
+    trimmed,
+  );
+}
 
 /** 检测字符串是否包含 ASCII C0 控制字符或 DEL（0x00–0x1F、0x7F）。 */
 export function hasAsciiControlCharacter(value: string): boolean {
@@ -81,12 +104,16 @@ export function hasAsciiControlCharacter(value: string): boolean {
 function isStrictAbsoluteEnvPath(dir: string, platform: NodeJS.Platform): boolean {
   if (!dir || hasAsciiControlCharacter(dir)) return false;
   if (platform === 'win32') {
-    return /^[A-Za-z]:[\\/]/.test(dir) || /^\\\\[^\\]+\\[^\\]+/.test(dir);
+    return /^[A-Za-z]:[\\/]/.test(dir) && !dir.slice(2).includes(':');
   }
   return dir.startsWith('/') && !dir.startsWith('//');
 }
 
-/** `buildExternalLaunchEnv` 入参。 */
+/**
+ * `buildExternalLaunchEnv` 入参约束：
+ * - `hostEnv` 仅提取系统与网络白名单键，默认隔离所有未显式列入 `envFrom` 的宿主凭据；
+ * - `env` 与 `envFrom` 均受 `FORBIDDEN_EXTERNAL_ENV_KEYS` 拦截，禁止覆盖清洗后的 `PATH` 或动态加载器变量。
+ */
 export interface BuildExternalLaunchEnvOptions {
   /** 宿主环境变量表；缺省读取 `process.env`。 */
   readonly hostEnv?: Readonly<Record<string, string | undefined>>;
@@ -108,9 +135,11 @@ export interface ExternalLaunchEnvResult {
 }
 
 /**
- * 提取 `envFrom` 在当前宿主环境中实际解析出的非短敏感值列表（长度 >= 4），供外部会话流式与归档脱敏使用。
+ * 提取 `envFrom` 在当前宿主环境中实际解析出的敏感凭据值列表，供外部会话流式与归档脱敏使用。
  *
- * 边界：只返回即将注入子进程的值，未声明在 `envFrom` 中的宿主环境变量绝不读取或透传。
+ * 边界与防误伤取舍：
+ * - 仅当变量名满足敏感命名（如 `*_KEY`、`*_TOKEN`、`*_SECRET`）或值自身命中常见密钥特征时才纳入字面量脱敏；
+ * - 排除 `true`/`info` 等非敏感开关值（长度不足或非敏感键名），避免把助手正常代码与正文全局误替换为 `[REDACTED]`。
  */
 export function resolveForwardedEnvSecrets(
   envFrom: readonly string[] | undefined,
@@ -132,10 +161,12 @@ export function resolveForwardedEnvSecrets(
     if (!name || !ENV_VAR_NAME_PATTERN.test(name)) continue;
     if (FORBIDDEN_EXTERNAL_ENV_KEYS.has(name.toUpperCase())) continue;
     const val = (isWin ? lookup.get(name.toUpperCase()) : hostEnv[name])?.trim();
-    if (val && val.length >= 4 && !seen.has(val)) {
-      seen.add(val);
-      secrets.push(val);
-    }
+    if (!val || val.length < 4 || seen.has(val)) continue;
+    const sensitiveKey = isSensitiveEnvVarName(name);
+    const secretShapedValue = val.length >= 8 && looksLikePastedSecretToken(val);
+    if (!sensitiveKey && !secretShapedValue) continue;
+    seen.add(val);
+    secrets.push(val);
   }
   return secrets;
 }
@@ -260,7 +291,7 @@ export function buildExternalLaunchEnv(
         );
       }
       const value = readHostVar(name);
-      if (value !== undefined && value !== '') {
+      if (value !== undefined && value !== '' && !value.includes('\0')) {
         setEnvKey(name, value);
         forwardedVars.push(name);
       } else {

@@ -515,7 +515,15 @@ export const grepTool = defineTool({
 
     const stat = fs.statSync(target);
     if (stat.isFile()) {
-      await searchFile(target);
+      if (includeFilter) {
+        const relPath = path.relative(relBase, target).replace(/\\/g, '/');
+        const baseName = path.basename(target);
+        if (simpleMatch(baseName, includeFilter) || simpleMatch(relPath, includeFilter)) {
+          await searchFile(target);
+        }
+      } else {
+        await searchFile(target);
+      }
     } else {
       await walk(target);
     }
