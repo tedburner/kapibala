@@ -40,6 +40,7 @@ export type {
   ViewTodoState,
   ViewTodoStatus,
   ViewTool,
+  ViewTurnMeta,
   ViewUsage,
 } from './types.js';
 export type {

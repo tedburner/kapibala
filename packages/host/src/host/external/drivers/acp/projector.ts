@@ -3,6 +3,7 @@ import type {
   ViewTodoItem,
   ViewTodoState,
   ViewTool,
+  ViewTurnMeta,
   ViewUsage,
 } from '../../../../view-model/index.js';
 import { redactText } from '../../../redaction.js';
@@ -31,6 +32,7 @@ interface MutableBlock {
   state: 'streaming' | 'completed' | 'interrupted';
   revision: number;
   tool?: ViewTool;
+  skillName?: string;
 }
 
 interface MutableMessage {
@@ -40,6 +42,7 @@ interface MutableMessage {
   persisted: boolean;
   blocks: MutableBlock[];
   usage?: ViewUsage;
+  turnMeta?: ViewTurnMeta;
 }
 
 function clampBlockText(value: string): { text: string; truncated: boolean } {
@@ -101,7 +104,7 @@ export class ExternalTranscriptProjector {
    * 在发起实时 `prompt(text)` 前写入用户消息，并开启对部分 ACP 代理回显 `user_message_chunk` 的前缀去重窗口。
    * 若上一轮计划已全部完结（无进行中或待办项），同步清出旧计划看板，避免长期滞留在后续对话轮次。
    */
-  beginUserTurn(rawText: string): ViewMessage {
+  beginUserTurn(rawText: string, handoffFromTitle?: string): ViewMessage {
     this.sealStreamingMessages('completed');
     this.clearSettledPlan();
     const clamped = clampBlockText(this.cleanText(rawText));
@@ -109,20 +112,32 @@ export class ExternalTranscriptProjector {
     this.pendingEchoRemainder = rawText.replace(/\r\n?/g, '\n');
 
     const msgId = this.nextMessageId('user');
+    const blocks: MutableBlock[] = [
+      {
+        id: `${msgId}:b0`,
+        kind: 'text',
+        text: clamped.text,
+        state: 'completed',
+        revision: 0,
+      },
+    ];
+    if (handoffFromTitle?.trim()) {
+      const cleanFrom = this.cleanText(handoffFromTitle.trim()).slice(0, 80) || '历史会话';
+      blocks.push({
+        id: `${msgId}:b1`,
+        kind: 'text',
+        text: '',
+        skillName: `承接 · ${cleanFrom}`,
+        state: 'completed',
+        revision: 0,
+      });
+    }
     const message: MutableMessage = {
       id: msgId,
       role: 'user',
       state: 'completed',
       persisted: true,
-      blocks: [
-        {
-          id: `${msgId}:b0`,
-          kind: 'text',
-          text: clamped.text,
-          state: 'completed',
-          revision: 0,
-        },
-      ],
+      blocks,
     };
     this.messages.push(message);
     this.enforceBudget();
@@ -167,16 +182,16 @@ export class ExternalTranscriptProjector {
     }
   }
 
-  /** 当前轮次正常完成时闭合所有流式块，并把可选 Token 用量挂在最后一条助手消息上。 */
-  completeTurn(usage?: ViewUsage): void {
+  /** 当前轮次正常完成时闭合所有流式块，并把可选 Token 用量与当轮模型/推理快照挂在最后一条助手消息上。 */
+  completeTurn(usage?: ViewUsage, turnMeta?: ViewTurnMeta): void {
     this.pendingEchoRemainder = '';
-    this.sealStreamingMessages('completed', usage);
+    this.sealStreamingMessages('completed', usage, turnMeta);
   }
 
-  /** 当前轮次被用户取消或进程异常断开时将未完结块标为 `interrupted`。 */
-  interruptTurn(): void {
+  /** 当前轮次被用户取消或进程异常断开时将未完结块标为 `interrupted`，并保留当轮模型/推理快照。 */
+  interruptTurn(turnMeta?: ViewTurnMeta): void {
     this.pendingEchoRemainder = '';
-    this.sealStreamingMessages('interrupted');
+    this.sealStreamingMessages('interrupted', undefined, turnMeta);
   }
 
   /** 用恢复阶段重放或本地归档的消息整体初始化投影器，同时推进消息序号计数器并补齐脱敏。 */
@@ -217,8 +232,25 @@ export class ExternalTranscriptProjector {
           state: b.state,
           revision: b.revision,
           ...(sanitizedTool ? { tool: sanitizedTool } : {}),
+          ...(b.skillName ? { skillName: this.cleanText(b.skillName).slice(0, 120) } : {}),
         };
       });
+      const sanitizedTurnMeta: ViewTurnMeta | undefined = msg.turnMeta
+        ? {
+            ...(msg.turnMeta.agentName
+              ? { agentName: this.cleanText(msg.turnMeta.agentName).slice(0, 80) }
+              : {}),
+            ...(msg.turnMeta.modelLabel
+              ? { modelLabel: this.cleanText(msg.turnMeta.modelLabel).slice(0, 120) }
+              : {}),
+            ...(msg.turnMeta.effortLabel
+              ? { effortLabel: this.cleanText(msg.turnMeta.effortLabel).slice(0, 64) }
+              : {}),
+            ...(msg.turnMeta.modeLabel
+              ? { modeLabel: this.cleanText(msg.turnMeta.modeLabel).slice(0, 64) }
+              : {}),
+          }
+        : undefined;
       this.messages.push({
         id: msg.id,
         role: msg.role,
@@ -226,6 +258,7 @@ export class ExternalTranscriptProjector {
         persisted: msg.persisted,
         blocks: clonedBlocks,
         ...(msg.usage ? { usage: { ...msg.usage } } : {}),
+        ...(sanitizedTurnMeta ? { turnMeta: sanitizedTurnMeta } : {}),
       });
     }
 
@@ -512,16 +545,44 @@ export class ExternalTranscriptProjector {
     };
   }
 
-  private sealStreamingMessages(finalState: 'completed' | 'interrupted', usage?: ViewUsage): void {
+  private sealStreamingMessages(
+    finalState: 'completed' | 'interrupted',
+    usage?: ViewUsage,
+    turnMeta?: ViewTurnMeta,
+  ): void {
     for (const msg of this.messages) {
       if (msg.state === 'streaming') {
         this.sealMessage(msg, finalState);
       }
     }
-    if (usage) {
-      for (let i = this.messages.length - 1; i >= 0; i--) {
+    let lastUserIndex = -1;
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i]!.role === 'user') {
+        lastUserIndex = i;
+        break;
+      }
+    }
+    if (usage || turnMeta) {
+      const cleanedMeta: ViewTurnMeta | undefined = turnMeta
+        ? {
+            ...(turnMeta.agentName
+              ? { agentName: this.cleanText(turnMeta.agentName).slice(0, 80) }
+              : {}),
+            ...(turnMeta.modelLabel
+              ? { modelLabel: this.cleanText(turnMeta.modelLabel).slice(0, 120) }
+              : {}),
+            ...(turnMeta.effortLabel
+              ? { effortLabel: this.cleanText(turnMeta.effortLabel).slice(0, 64) }
+              : {}),
+            ...(turnMeta.modeLabel
+              ? { modeLabel: this.cleanText(turnMeta.modeLabel).slice(0, 64) }
+              : {}),
+          }
+        : undefined;
+      for (let i = this.messages.length - 1; i > lastUserIndex; i--) {
         if (this.messages[i]!.role === 'assistant') {
-          this.messages[i]!.usage = usage;
+          if (usage) this.messages[i]!.usage = usage;
+          if (cleanedMeta) this.messages[i]!.turnMeta = cleanedMeta;
           break;
         }
       }
@@ -557,8 +618,10 @@ export class ExternalTranscriptProjector {
         state: b.state,
         revision: b.revision,
         ...(b.tool ? { tool: { ...b.tool } } : {}),
+        ...(b.skillName ? { skillName: b.skillName } : {}),
       })),
       ...(msg.usage ? { usage: { ...msg.usage } } : {}),
+      ...(msg.turnMeta ? { turnMeta: { ...msg.turnMeta } } : {}),
     };
   }
 

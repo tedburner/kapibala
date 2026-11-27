@@ -9,7 +9,6 @@ import {
 } from '@cloudflare/kumo';
 import brandMark from '@kapibala-assets/icon.svg';
 import {
-  type ViewExternalConfigCategory,
   type ViewMessage,
   type ViewNotice,
   selectMessages,
@@ -47,6 +46,7 @@ import { ComposerModelPicker, type SelectedHarnessChoice } from './composer-mode
 import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
 import { ExternalSessionView } from './external-session-view.js';
 import { rankFileMatches } from './file-completion.js';
+import { buildSessionHandoffPayload } from './handoff-context.js';
 import { HistoryListClient } from './history-list-client.js';
 import { KubaiIcon } from './icons/KubaiIcon.js';
 import { MessageList } from './message-list.js';
@@ -240,7 +240,17 @@ export function App() {
   }>();
   const [pendingHarness, setPendingHarness] = useState<HarnessChoice>();
   const [refreshingHarnessId, setRefreshingHarnessId] = useState<string>();
-  const [externalConfigBusy, setExternalConfigBusy] = useState(false);
+  /** 已打开本地会话的下一轮配置暂存：切换模型或角色不中断当前轮次，待下一轮发送或重试时生效。 */
+  const [stagedLocalSessionConfig, setStagedLocalSessionConfig] = useState<{
+    readonly conversationId: string;
+    readonly profileId?: string;
+    readonly role?: Opened['configuration']['role'];
+  }>();
+  /** 已打开本地会话跨代理切换暂存：下一轮发送时携带当前对话历史新建外部代理会话接力。 */
+  const [stagedLocalToExternal, setStagedLocalToExternal] = useState<{
+    readonly conversationId: string;
+    readonly harness: HarnessChoice;
+  }>();
   const [pendingExternalDelete, setPendingExternalDelete] = useState<{
     space: Workspace;
     id: string;
@@ -329,11 +339,32 @@ export function App() {
   // 新对话展示的模型必须是「发送时真会用的那个」：优先取用户临时选择，其次取当前空间生效的默认模型。
   const defaultModel =
     usableModels.find((model) => model.id === catalog?.defaultModel) ?? usableModels[0];
+  const activeStagedLocal =
+    opened && stagedLocalSessionConfig?.conversationId === opened.conversationId
+      ? stagedLocalSessionConfig
+      : undefined;
+  const activeStagedHarness =
+    opened && stagedLocalToExternal?.conversationId === opened.conversationId
+      ? stagedLocalToExternal.harness
+      : undefined;
+  const effectiveOpenedProfileId = activeStagedLocal?.profileId ?? opened?.configuration.profileId;
+  const effectiveOpenedRole = activeStagedLocal?.role ?? opened?.configuration.role;
+  const stagedModelChanged = Boolean(
+    opened &&
+      activeStagedLocal?.profileId &&
+      activeStagedLocal.profileId !== opened.configuration.profileId,
+  );
+  const stagedRoleChanged = Boolean(
+    opened && activeStagedLocal?.role && activeStagedLocal.role !== opened.configuration.role,
+  );
+  const hasStagedLocalDiff = stagedModelChanged || stagedRoleChanged;
   const composerModel = opened
-    ? selectedModel
+    ? (usableModels.find((model) => model.id === effectiveOpenedProfileId) ??
+      catalog?.profiles.find((model) => model.id === effectiveOpenedProfileId) ??
+      selectedModel)
     : (usableModels.find((model) => model.id === pendingProfile) ?? defaultModel);
   const composerMode = opened?.configuration.mode ?? pendingMode ?? catalog?.permissionMode;
-  const composerHarness = opened ? undefined : pendingHarness;
+  const composerHarness = opened ? activeStagedHarness : pendingHarness;
   const trustedWorkspaceId = workspace?.trusted ? workspace.id : undefined;
   const currentHarnessCatalog =
     harnessCatalog?.workspaceId === trustedWorkspaceId ? harnessCatalog : undefined;
@@ -418,9 +449,13 @@ export function App() {
     [trustedWorkspaceId, reloadHarnessCatalog],
   );
   // 新对话只校验当前选择的执行入口；外部代理使用自有凭证，不依赖本地模型配置。
-  // 已打开会话沿用运行事实门控，不因收尾状态重复触发任务。
+  // 已打开会话支持暂存跨代理接力：同代理续聊沿用运行事实门控，跨代理接力校验空间已信任且目标代理可用。
   const canSend = opened
-    ? Boolean(draft.trim()) && facts.valid && readyToSend && !running
+    ? Boolean(draft.trim()) &&
+      !running &&
+      (activeStagedHarness
+        ? Boolean(workspace?.trusted) && selectedHarnessAvailable
+        : facts.valid && readyToSend)
     : Boolean(draft.trim()) &&
       Boolean(workspace?.trusted) &&
       facts.runtimeValid === true &&
@@ -639,6 +674,8 @@ export function App() {
       setPendingProfile(undefined);
       setPendingMode(undefined);
       setPendingHarness(undefined);
+      setStagedLocalSessionConfig(undefined);
+      setStagedLocalToExternal(undefined);
       setCatalog(undefined);
       setError('');
       await refreshHistory(space);
@@ -885,6 +922,8 @@ export function App() {
     }
     setPendingHarness(harness);
     setPendingMode(undefined);
+    setStagedLocalSessionConfig(undefined);
+    setStagedLocalToExternal(undefined);
     requestAnimationFrame(() => composerInput.current?.focus());
   }
 
@@ -895,6 +934,8 @@ export function App() {
     const result = await api.session.open({ workspaceId: space.id, conversationId });
     ui.select(space.id, result.conversationId);
     setDetails(undefined);
+    setStagedLocalSessionConfig(undefined);
+    setStagedLocalToExternal(undefined);
     setOpened(result);
     await client.select(scopeOf(result));
     // 标题栏不再常驻审批计数，打开一个仍在等审批的会话就进入队列：否则用户手动关掉
@@ -933,41 +974,15 @@ export function App() {
     setExternalToasts((prev) => prev.filter((item) => item.sessionId !== sessionId));
     await refreshExternalList(space.id);
   }
-  async function setExternalSessionConfig(change: {
-    readonly configId: string;
-    readonly category: ViewExternalConfigCategory;
-    readonly value: string;
-  }) {
-    const cur = activeExternalRef.current;
-    if (!cur || busy || externalConfigBusy) return;
-    setExternalConfigBusy(true);
-    setError('');
-    try {
-      const snapshot = await api.external.setConfig({
-        workspaceId: cur.workspaceId,
-        sessionId: cur.sessionId,
-        configId: change.configId,
-        category: change.category,
-        value: change.value,
-      });
-      setActiveExternal((prev) => {
-        if (!prev || prev.sessionId !== cur.sessionId) return prev;
-        if (snapshot.sequence !== 0 && snapshot.sequence < prev.snapshot.sequence) {
-          return prev;
-        }
-        const next = { ...prev, snapshot };
-        activeExternalRef.current = next;
-        return next;
-      });
-      await refreshExternalList(cur.workspaceId);
-      await reloadHarnessCatalog(cur.workspaceId);
-    } catch (reason) {
-      report(failure(reason));
-    } finally {
-      setExternalConfigBusy(false);
-    }
-  }
-  async function sendExternalPrompt(text: string, clearDraft = true) {
+  async function sendExternalPrompt(
+    text: string,
+    clearDraft = true,
+    configOverrides?: {
+      readonly modelId?: string;
+      readonly modeId?: string;
+      readonly thoughtLevel?: string;
+    },
+  ) {
     const cur = activeExternalRef.current;
     const trimmed = text.trim();
     if (!cur || !trimmed || busy) return;
@@ -977,6 +992,7 @@ export function App() {
         workspaceId: cur.workspaceId,
         sessionId: cur.sessionId,
         text: trimmed,
+        ...(configOverrides ? { configOverrides } : {}),
       });
       setActiveExternal((prev) => {
         if (!prev || prev.sessionId !== cur.sessionId) return prev;
@@ -992,6 +1008,79 @@ export function App() {
       }
       rememberPrompt(trimmed, draftKey);
       await refreshExternalList(cur.workspaceId);
+      if (configOverrides) {
+        await reloadHarnessCatalog(cur.workspaceId);
+      }
+    });
+  }
+  async function handoffExternalToExternal(text: string, choice: HarnessChoice) {
+    const cur = activeExternalRef.current;
+    const trimmed = text.trim();
+    if (!cur || !trimmed || busy) return;
+    const targetSpace = spacesRef.current.find((item) => item.id === cur.workspaceId) ?? workspace;
+    if (!targetSpace?.trusted) return;
+    const oldDraftKey = `ext:${cur.workspaceId}:${cur.sessionId}`;
+    const sourceTitle = cur.snapshot.session.title.trim();
+    const handoff = buildSessionHandoffPayload(cur.snapshot.session.title, cur.snapshot.messages);
+    const navSnapshotBefore = externalNavGen.current;
+    await act(async () => {
+      const snapshot = await api.external.open({
+        workspaceId: targetSpace.id,
+        harnessId: choice.id,
+        ...(sourceTitle && sourceTitle !== '外部任务' ? { title: sourceTitle } : {}),
+        prompt: trimmed,
+        ...(choice.modelId ? { modelId: choice.modelId } : {}),
+        ...(choice.thoughtLevel ? { thoughtLevel: choice.thoughtLevel } : {}),
+        ...(choice.modeId ? { modeId: choice.modeId } : {}),
+        ...(handoff ? { handoff } : {}),
+      });
+      ui.draft(oldDraftKey, '');
+      rememberPrompt(trimmed, oldDraftKey);
+      rememberPrompt(trimmed, `ext:${targetSpace.id}:${snapshot.session.id}`);
+      await reloadHarnessCatalog(targetSpace.id);
+      if (current.current?.id === targetSpace.id && externalNavGen.current === navSnapshotBefore) {
+        await openExternalSession(targetSpace, snapshot.session.id);
+      } else {
+        await refreshExternalList(targetSpace.id);
+      }
+    });
+  }
+  async function handoffExternalToLocal(text: string, profileId: string) {
+    const cur = activeExternalRef.current;
+    const trimmed = text.trim();
+    if (!cur || !trimmed || busy) return;
+    const targetSpace = spacesRef.current.find((item) => item.id === cur.workspaceId) ?? workspace;
+    if (!targetSpace?.trusted) return;
+    const oldDraftKey = `ext:${cur.workspaceId}:${cur.sessionId}`;
+    const sourceTitle = cur.snapshot.session.title.trim();
+    const handoff = buildSessionHandoffPayload(cur.snapshot.session.title, cur.snapshot.messages);
+    await act(async () => {
+      const created = await api.session.create(targetSpace.id, profileId);
+      const configuration =
+        profileId !== created.configuration.profileId
+          ? await api.session.configure({ ...scopeOf(created), profileId })
+          : created.configuration;
+      if (sourceTitle && sourceTitle !== '外部任务') {
+        await api.session
+          .rename({
+            workspaceId: created.workspaceId,
+            conversationId: created.conversationId,
+            title: sourceTitle,
+          })
+          .catch(() => {});
+      }
+      ui.draft(oldDraftKey, '');
+      await detachActiveExternal();
+      setDetails(undefined);
+      ui.select(targetSpace.id, created.conversationId);
+      setOpened({ ...created, configuration });
+      await client.select(scopeOf(created));
+      await client.whenReady();
+      const targetScope = `${created.workspaceId}:${created.conversationId}`;
+      rememberPrompt(trimmed, oldDraftKey);
+      rememberPrompt(trimmed, targetScope);
+      await client.start(scopeOf(created), trimmed, handoff ? { handoff } : undefined);
+      await refreshHistory(targetSpace);
     });
   }
   async function approveExternal(approvalId: string, optionId?: string, cancel?: boolean) {
@@ -1111,8 +1200,8 @@ export function App() {
       await refreshHistory(space);
     });
   }
-  // 已打开会话直接改本会话配置；新对话只暂存选择，创建成功后随首个任务一起生效。
-  // 两种入口都把选择写入全局默认模型：模型偏好只存内存会让重启后回落到初始默认值。
+  // 已打开会话与新建会话统一采用「下一轮生效」暂存：选模型时不中断正在运行的轮次，也不提前改写宿主配置；
+  // 两种入口都把选择写入全局默认模型，避免重启后回落到初始默认值。
   function chooseModel(profileId: string) {
     void api.settings
       .setDefault(profileId)
@@ -1123,7 +1212,60 @@ export function App() {
       setPendingHarness(undefined);
       return;
     }
-    void act(() => configure({ ...scopeOf(opened), profileId }));
+    setStagedLocalToExternal(undefined);
+    const nextRole = effectiveOpenedRole ?? opened.configuration.role;
+    if (profileId === opened.configuration.profileId && nextRole === opened.configuration.role) {
+      setStagedLocalSessionConfig(undefined);
+      return;
+    }
+    setStagedLocalSessionConfig({
+      conversationId: opened.conversationId,
+      profileId,
+      role: nextRole,
+    });
+  }
+  function chooseOpenedRole(nextRole: Opened['configuration']['role']) {
+    if (!opened) return;
+    setStagedLocalToExternal(undefined);
+    const nextProfileId = effectiveOpenedProfileId ?? opened.configuration.profileId;
+    if (
+      nextProfileId === opened.configuration.profileId &&
+      nextRole === opened.configuration.role
+    ) {
+      setStagedLocalSessionConfig(undefined);
+      return;
+    }
+    setStagedLocalSessionConfig({
+      conversationId: opened.conversationId,
+      profileId: nextProfileId,
+      role: nextRole,
+    });
+  }
+  async function flushStagedOpenedConfig(targetOpened: Opened): Promise<void> {
+    if (stagedLocalSessionConfig?.conversationId !== targetOpened.conversationId) return;
+    const nextProfileId =
+      stagedLocalSessionConfig.profileId &&
+      stagedLocalSessionConfig.profileId !== targetOpened.configuration.profileId
+        ? stagedLocalSessionConfig.profileId
+        : undefined;
+    const nextRole =
+      stagedLocalSessionConfig.role &&
+      stagedLocalSessionConfig.role !== targetOpened.configuration.role
+        ? stagedLocalSessionConfig.role
+        : undefined;
+    if (!nextProfileId && !nextRole) {
+      setStagedLocalSessionConfig(undefined);
+      return;
+    }
+    const configuration = await api.session.configure({
+      ...scopeOf(targetOpened),
+      ...(nextProfileId ? { profileId: nextProfileId } : {}),
+      ...(nextRole ? { role: nextRole } : {}),
+    });
+    setStagedLocalSessionConfig(undefined);
+    setOpened((prev) =>
+      prev && prev.sessionId === targetOpened.sessionId ? { ...prev, configuration } : prev,
+    );
   }
   /** 记录一条真正发出的输入；空白与连续重复不增加，每个作用域最多保留最近 100 条。 */
   function rememberPrompt(text: string, scope = draftScope): void {
@@ -1188,10 +1330,55 @@ export function App() {
     return false;
   }
 
+  const currentTitle = activeExternal
+    ? activeExternal.snapshot.session.title || '外部任务'
+    : histories[workspace?.id ?? '']?.items.find(
+        (item) => item.conversationId === opened?.conversationId,
+      )?.title || '新对话';
+
   async function send() {
     const input = draft.trim();
     if (!input || busy) return;
     if (!opened && (!workspace?.trusted || !facts.runtimeValid)) return;
+    if (opened && workspace && activeStagedHarness) {
+      if (running || !workspace.trusted || !selectedHarnessAvailable) return;
+      const targetSpace = workspace;
+      const sourceOpened = opened;
+      const scopeKey = `${sourceOpened.workspaceId}:${sourceOpened.conversationId}`;
+      const handoff = buildSessionHandoffPayload(currentTitle, messages);
+      const navSnapshotBefore = externalNavGen.current;
+      await act(async () => {
+        const snapshot = await api.external.open({
+          workspaceId: targetSpace.id,
+          harnessId: activeStagedHarness.id,
+          ...(currentTitle && currentTitle !== '新对话' ? { title: currentTitle } : {}),
+          prompt: input,
+          ...(activeStagedHarness.modelId ? { modelId: activeStagedHarness.modelId } : {}),
+          ...(activeStagedHarness.thoughtLevel
+            ? { thoughtLevel: activeStagedHarness.thoughtLevel }
+            : {}),
+          ...(activeStagedHarness.modeId ? { modeId: activeStagedHarness.modeId } : {}),
+          ...(handoff ? { handoff } : {}),
+        });
+        ui.draft(scopeKey, '');
+        setStagedLocalToExternal(undefined);
+        setStagedLocalSessionConfig(undefined);
+        rememberPrompt(input, scopeKey);
+        rememberPrompt(input, `ext:${targetSpace.id}:${snapshot.session.id}`);
+        await api.session.close(scopeOf(sourceOpened)).catch(() => {});
+        await reloadHarnessCatalog(targetSpace.id);
+        if (
+          current.current?.id === targetSpace.id &&
+          externalNavGen.current === navSnapshotBefore
+        ) {
+          await openExternalSession(targetSpace, snapshot.session.id);
+          await refreshHistory(targetSpace);
+        } else {
+          await refreshExternalList(targetSpace.id);
+        }
+      });
+      return;
+    }
     if (!opened && workspace && composerHarness) {
       if (!selectedHarnessAvailable) return;
       const targetSpace = workspace;
@@ -1281,6 +1468,7 @@ export function App() {
       ui.draft(scopeKey, '');
       await act(async () => {
         try {
+          await flushStagedOpenedConfig(opened);
           await client.start(scopeOf(opened), input);
           rememberPrompt(input, scopeKey);
         } catch (err) {
@@ -1331,14 +1519,10 @@ export function App() {
     if (!opened || !retryPrompt || busy) return;
     if (!facts.valid || !readyToSend || running) return;
     await act(async () => {
+      await flushStagedOpenedConfig(opened);
       await client.start(scopeOf(opened), retryPrompt, { regenerate: true });
     });
   }
-  const currentTitle = activeExternal
-    ? activeExternal.snapshot.session.title || '外部任务'
-    : histories[workspace?.id ?? '']?.items.find(
-        (item) => item.conversationId === opened?.conversationId,
-      )?.title || '新对话';
   // 顶栏只回答「现在处于什么状态」，绝对路径与内部计数留在详情和诊断里。
   const headerHint = !workspace
     ? '选择空间后开始'
@@ -1882,85 +2066,36 @@ export function App() {
                 </DropdownMenu.Content>
               </DropdownMenu>
             )}
-            {opened ? (
-              <DropdownMenu>
-                <DropdownMenu.Trigger
-                  render={
-                    <Button
-                      className="kapibala-action kapibala-chip max-w-56"
-                      variant="ghost"
-                      size="sm"
-                      disabled={Boolean(running) || busy}
-                      aria-label={`当前会话模型：${composerModel?.name ?? '选择模型'}`}
-                    >
-                      <span className="min-w-0 truncate">
-                        {composerModel?.name ?? '未配置模型'}
-                      </span>
-                      <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
-                    </Button>
-                  }
-                />
-                <DropdownMenu.Content className="max-h-[min(20rem,var(--available-height))]">
-                  <DropdownMenu.Sub>
-                    <DropdownMenu.SubTrigger>
-                      会话角色：{ROLE_NAMES[opened.configuration.role]}
-                    </DropdownMenu.SubTrigger>
-                    <DropdownMenu.SubContent>
-                      {(
-                        [
-                          ['default', '默认'],
-                          ['planning', '规划'],
-                          ['execution', '执行'],
-                          ['fast', '快速'],
-                        ] as const
-                      ).map(([role, name]) => (
-                        <DropdownMenu.Item
-                          key={role}
-                          onClick={() => void act(() => configure({ ...scopeOf(opened), role }))}
-                        >
-                          <span className="min-w-0 flex-1">{name}</span>
-                          {opened.configuration.role === role && <CheckIcon size={14} />}
-                        </DropdownMenu.Item>
-                      ))}
-                    </DropdownMenu.SubContent>
-                  </DropdownMenu.Sub>
-                  <DropdownMenu.Separator />
-                  <DropdownMenu.Group>
-                    <DropdownMenu.Label>本会话模型</DropdownMenu.Label>
-                    {usableModels.map((model) => (
-                      <DropdownMenu.Item key={model.id} onClick={() => chooseModel(model.id)}>
-                        <span className="min-w-0 flex-1 truncate">{model.name}</span>
-                        {model.id === composerModel?.id && <CheckIcon size={14} />}
-                      </DropdownMenu.Item>
-                    ))}
-                    {usableModels.length === 0 && (
-                      <DropdownMenu.Item onClick={() => ui.settings(true)}>
-                        <span className="min-w-0 flex-1 truncate">还没有可用模型，去设置</span>
-                      </DropdownMenu.Item>
-                    )}
-                  </DropdownMenu.Group>
-                </DropdownMenu.Content>
-              </DropdownMenu>
-            ) : (
-              <ComposerModelPicker
-                models={usableModels}
-                providers={catalog?.providers ?? []}
-                harnesses={availableHarnesses}
-                model={composerModel}
-                harness={composerHarness}
-                disabled={busy}
-                harnessesFailed={currentHarnessCatalog?.failed}
-                refreshingHarnessId={refreshingHarnessId}
-                onModel={chooseModel}
-                onHarness={setPendingHarness}
-                onRefreshHarnessModels={(id, opts) => void refreshHarnessModels(id, opts)}
-                onSettings={() => ui.settings(true)}
-                onExternalSettings={() => {
-                  setSettingsInitialTab('external');
-                  ui.settings(true);
-                }}
-              />
-            )}
+            <ComposerModelPicker
+              contextMode={opened ? 'session' : 'new'}
+              models={usableModels}
+              providers={catalog?.providers ?? []}
+              harnesses={availableHarnesses}
+              model={composerModel}
+              harness={composerHarness}
+              role={opened ? effectiveOpenedRole : undefined}
+              disabled={busy}
+              harnessesFailed={currentHarnessCatalog?.failed}
+              refreshingHarnessId={refreshingHarnessId}
+              onModel={chooseModel}
+              onRole={opened ? chooseOpenedRole : undefined}
+              onHarness={(choice) => {
+                if (opened) {
+                  setStagedLocalToExternal({
+                    conversationId: opened.conversationId,
+                    harness: choice,
+                  });
+                } else {
+                  setPendingHarness(choice);
+                }
+              }}
+              onRefreshHarnessModels={(id, opts) => void refreshHarnessModels(id, opts)}
+              onSettings={() => ui.settings(true)}
+              onExternalSettings={() => {
+                setSettingsInitialTab('external');
+                ui.settings(true);
+              }}
+            />
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             {running ? (
@@ -2003,11 +2138,11 @@ export function App() {
             )}
           </div>
         </div>
-        {/* 阻断原因（空间未信任 / 没有可用模型）收进卡片底部的脚注行：给出处理入口，
-            不再悬挂在卡片外与输入坞争抢视觉；没有阻断时不占位，卡片高度不额外膨胀。 */}
+        {/* 阻断原因或下一轮切换提示收进卡片底部的脚注行；没有提示时不占位，卡片高度不额外膨胀。 */}
         {((!opened && workspace && !workspace.trusted) ||
           composerHarness ||
-          usableModels.length === 0) && (
+          (opened && hasStagedLocalDiff) ||
+          (!composerHarness && usableModels.length === 0)) && (
           <div className="mt-2 border-t border-kumo-hairline px-2 pt-2">
             {!opened && workspace && !workspace.trusted && (
               <p className="kapibala-composer-hint text-kumo-warning">
@@ -2016,9 +2151,20 @@ export function App() {
             )}
             {composerHarness && (
               <p className="kapibala-composer-hint text-kumo-subtle">
-                {selectedHarnessAvailable
-                  ? '外部代理使用该工具自有的权限与登录状态。'
-                  : '当前外部代理不可用，请重新选择或在设置中启用。'}
+                {!selectedHarnessAvailable
+                  ? '当前外部代理不可用，请重新选择或在设置中启用。'
+                  : opened
+                    ? `下一轮发送时将携带当前对话上下文，新建 ${composerHarness.name} 会话接力继续。`
+                    : '外部代理使用该工具自有的权限与登录状态。'}
+              </p>
+            )}
+            {!composerHarness && opened && hasStagedLocalDiff && (
+              <p className="kapibala-composer-hint text-kumo-subtle">
+                已切换至 {composerModel?.name ?? '新模型'}
+                {stagedRoleChanged && effectiveOpenedRole
+                  ? ` · 角色：${ROLE_NAMES[effectiveOpenedRole]}`
+                  : ''}
+                ，将在下一轮发送时生效。
               </p>
             )}
             {!composerHarness && usableModels.length === 0 && (
@@ -2263,11 +2409,22 @@ export function App() {
                 ui.drafts[`ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`] ?? ''
               }
               busy={busy}
-              configBusy={externalConfigBusy}
               localBusy={localWorkspaceBusy}
               wide={wide}
               detailsOpen={Boolean(details)}
               scrollRef={scrollRef}
+              models={usableModels}
+              providers={catalog?.providers ?? []}
+              harnesses={availableHarnesses}
+              defaultLocalModel={defaultModel}
+              harnessesFailed={currentHarnessCatalog?.failed}
+              refreshingHarnessId={refreshingHarnessId}
+              onRefreshHarnessModels={(id, opts) => void refreshHarnessModels(id, opts)}
+              onSettings={() => ui.settings(true)}
+              onExternalSettings={() => {
+                setSettingsInitialTab('external');
+                ui.settings(true);
+              }}
               onDraftChange={(value) => {
                 const extScope = `ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`;
                 resetPromptHistoryBrowsing(extScope);
@@ -2282,8 +2439,11 @@ export function App() {
                   event.currentTarget,
                 );
               }}
-              onSetConfig={(change) => void setExternalSessionConfig(change)}
-              onSend={(text, clearDraft) => void sendExternalPrompt(text, clearDraft)}
+              onSend={(text, clearDraft, configOverrides) =>
+                void sendExternalPrompt(text, clearDraft, configOverrides)
+              }
+              onHandoffToExternal={(text, choice) => void handoffExternalToExternal(text, choice)}
+              onHandoffToLocal={(text, profileId) => void handoffExternalToLocal(text, profileId)}
               onCancel={() => void cancelExternal()}
               onApprove={(approvalId, optionId, cancel) =>
                 void approveExternal(approvalId, optionId, cancel)
@@ -2333,6 +2493,7 @@ export function App() {
                   facts.valid && readyToSend && !running && !busy
                     ? () => {
                         void act(async () => {
+                          await flushStagedOpenedConfig(opened);
                           await client.start(scopeOf(opened), '继续');
                           rememberPrompt('继续');
                         });

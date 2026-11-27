@@ -13,6 +13,7 @@ import type {
   ViewExternalTemplate,
   ViewNotice,
   ViewOperation,
+  ViewTurnMeta,
 } from '../../view-model/index.js';
 import { loadCredentialSecrets } from '../managed-session.js';
 import { redactViewMessage } from '../public-projection.js';
@@ -677,12 +678,21 @@ export class ExternalSessionService {
           updated.configOptions,
         );
       }
+      const refreshedThoughtOpt = updated.configOptions?.find(
+        (opt) => opt.category === 'thought_level',
+      );
+      const clearStaleThought =
+        input.category === 'model' &&
+        updated.thoughtLevelLabel === undefined &&
+        (!refreshedThoughtOpt || refreshedThoughtOpt.options.length === 0);
       this.updateSlotRecordSafe(activeSlot, {
         ...(updated.modelLabel !== undefined ? { modelLabel: updated.modelLabel } : {}),
         ...(updated.modeLabel !== undefined ? { modeLabel: updated.modeLabel } : {}),
         ...(updated.thoughtLevelLabel !== undefined
           ? { thoughtLevelLabel: updated.thoughtLevelLabel }
-          : {}),
+          : clearStaleThought
+            ? { thoughtLevelLabel: undefined }
+            : {}),
       });
       this.flushSlotImmediate(activeSlot);
       return this.buildLiveSnapshot(activeSlot);
@@ -704,9 +714,11 @@ export class ExternalSessionService {
       readonly workspaceRoot: string;
       readonly harnessId: string;
       readonly prompt: string;
+      readonly title?: string;
       readonly modelId?: string;
       readonly modeId?: string;
       readonly thoughtLevel?: string;
+      readonly handoff?: { readonly fromTitle: string; readonly context: string };
     },
     signal?: AbortSignal,
   ): Promise<ViewExternalSnapshot> {
@@ -717,8 +729,8 @@ export class ExternalSessionService {
       {
         workspaceRoot: input.workspaceRoot,
         harnessId: input.harnessId,
-        title: input.prompt,
-        customTitle: false,
+        title: input.title?.trim() || input.prompt,
+        customTitle: Boolean(input.title?.trim()),
         requireIdleWorkspace: true,
         ...(input.modelId ? { modelId: input.modelId } : {}),
         ...(input.modeId ? { modeId: input.modeId } : {}),
@@ -731,6 +743,7 @@ export class ExternalSessionService {
         {
           sessionId: opened.session.id,
           text: input.prompt,
+          ...(input.handoff ? { handoff: input.handoff } : {}),
         },
         signal,
       );
@@ -757,6 +770,12 @@ export class ExternalSessionService {
       readonly sessionId: string;
       readonly text: string;
       readonly expectedWorkspaceRoot?: string;
+      readonly configOverrides?: {
+        readonly modelId?: string;
+        readonly modeId?: string;
+        readonly thoughtLevel?: string;
+      };
+      readonly handoff?: { readonly fromTitle: string; readonly context: string };
     },
     signal?: AbortSignal,
   ): Promise<ViewExternalSnapshot> {
@@ -778,6 +797,12 @@ export class ExternalSessionService {
       readonly sessionId: string;
       readonly text: string;
       readonly expectedWorkspaceRoot?: string;
+      readonly configOverrides?: {
+        readonly modelId?: string;
+        readonly modeId?: string;
+        readonly thoughtLevel?: string;
+      };
+      readonly handoff?: { readonly fromTitle: string; readonly context: string };
     },
     signal?: AbortSignal,
   ): Promise<ViewExternalSnapshot> {
@@ -790,6 +815,12 @@ export class ExternalSessionService {
       readonly sessionId: string;
       readonly text: string;
       readonly expectedWorkspaceRoot?: string;
+      readonly configOverrides?: {
+        readonly modelId?: string;
+        readonly modeId?: string;
+        readonly thoughtLevel?: string;
+      };
+      readonly handoff?: { readonly fromTitle: string; readonly context: string };
     },
     signal?: AbortSignal,
   ): Promise<{
@@ -853,8 +884,30 @@ export class ExternalSessionService {
       this.ensureProcessCapacity();
       this.ensureWorkspaceNotRunning(record.workspaceRoot, resolvedId);
 
+      const resumeConfig: ExternalConfigSelection[] = [];
+      if (input.configOverrides?.modelId?.trim()) {
+        resumeConfig.push({ category: 'model', value: input.configOverrides.modelId.trim() });
+      }
+      if (input.configOverrides?.thoughtLevel?.trim()) {
+        resumeConfig.push({
+          category: 'thought_level',
+          value: input.configOverrides.thoughtLevel.trim(),
+        });
+      }
+      if (input.configOverrides?.modeId?.trim()) {
+        resumeConfig.push({ category: 'mode', value: input.configOverrides.modeId.trim() });
+      }
       const driver = this.requireDriver(def.transport);
-      slot = await this.spawnAndBindSlot({ record, def, driver, resume: true, signal });
+      slot = await this.spawnAndBindSlot({
+        record,
+        def,
+        driver,
+        resume: true,
+        ...(resumeConfig.length > 0 ? { initialConfig: resumeConfig } : {}),
+        signal,
+      });
+    } else if (input.configOverrides) {
+      await this.applyPromptConfigOverrides(slot, input.configOverrides, signal);
     }
 
     if (this.disposed) {
@@ -883,7 +936,11 @@ export class ExternalSessionService {
           activeSlot.record.title)
         : activeSlot.record.title;
 
-    activeSlot.projector.beginUserTurn(promptText);
+    activeSlot.projector.beginUserTurn(promptText, input.handoff?.fromTitle);
+    const wirePromptText = input.handoff?.context
+      ? `${input.handoff.context}\n\n${promptText}`
+      : promptText;
+    const frozenTurnMeta = this.buildSlotTurnMeta(activeSlot);
     const opId = `extop_${randomUUID().slice(0, 8)}`;
     activeSlot.operation = { id: opId, phase: 'running' };
     this.updateSlotRecord(activeSlot, {
@@ -896,7 +953,7 @@ export class ExternalSessionService {
 
     const completion = (async (): Promise<ViewExternalSnapshot> => {
       try {
-        const turnRes = await activeSlot.handle.prompt(promptText, signal);
+        const turnRes = await activeSlot.handle.prompt(wirePromptText, signal);
         if (activeSlot.closing) {
           await activeSlot.closing;
           return this.buildLiveSnapshot(activeSlot);
@@ -904,11 +961,12 @@ export class ExternalSessionService {
         if (this.liveSlots.get(resolvedId) !== activeSlot)
           return this.buildLiveSnapshot(activeSlot);
         this.cancelAllSlotApprovals(activeSlot);
+        const settledTurnMeta = this.buildSlotTurnMeta(activeSlot) ?? frozenTurnMeta;
         if (turnRes.stopReason === 'cancelled') {
-          activeSlot.projector.interruptTurn();
+          activeSlot.projector.interruptTurn(settledTurnMeta);
           activeSlot.operation = { id: opId, phase: 'idle', result: 'aborted' };
         } else {
-          activeSlot.projector.completeTurn(turnRes.usage);
+          activeSlot.projector.completeTurn(turnRes.usage, settledTurnMeta);
           activeSlot.operation = { id: opId, phase: 'idle', result: 'completed' };
         }
 
@@ -935,7 +993,7 @@ export class ExternalSessionService {
         const sanitizedErr = this.redactErrorInstance(err, activeSlot.secrets);
         if (this.liveSlots.get(resolvedId) !== activeSlot) throw sanitizedErr;
         this.cancelAllSlotApprovals(activeSlot);
-        activeSlot.projector.interruptTurn();
+        activeSlot.projector.interruptTurn(this.buildSlotTurnMeta(activeSlot) ?? frozenTurnMeta);
         const safeErr =
           sanitizeDisplayText(
             redactText(err instanceof Error ? err.message : String(err), activeSlot.secrets),
@@ -1661,6 +1719,121 @@ export class ExternalSessionService {
     } finally {
       this.liveSlots.delete(slot.record.id);
       this.flushSlotImmediate(slot);
+    }
+  }
+
+  private buildSlotTurnMeta(slot: LiveSessionSlot): ViewTurnMeta {
+    const rawModel = slot.record.modelLabel?.trim();
+    let compactModel = rawModel;
+    if (rawModel) {
+      const candidates = [
+        `${slot.record.harnessId.toLowerCase()}/`,
+        `${slot.record.harnessName.toLowerCase().replace(/\s+/g, '')}/`,
+      ];
+      for (const prefix of candidates) {
+        if (rawModel.toLowerCase().startsWith(prefix) && rawModel.length > prefix.length) {
+          compactModel = rawModel.slice(prefix.length);
+          break;
+        }
+      }
+    }
+    const modeOpt = slot.configOptions?.find((opt) => opt.category === 'mode');
+    const matchedMode = modeOpt?.options.find(
+      (c) => c.name === slot.record.modeLabel || c.value === slot.record.modeLabel,
+    );
+    const modeCheck = (matchedMode?.value ?? slot.record.modeLabel ?? '').trim();
+    const nonDefaultMode =
+      slot.record.modeLabel &&
+      modeCheck &&
+      !/^(build|code|ask|default|standard|auto|workspacewrite|workspace-write)$/i.test(modeCheck)
+        ? slot.record.modeLabel
+        : undefined;
+    return {
+      agentName: slot.record.harnessName,
+      ...(compactModel ? { modelLabel: compactModel } : {}),
+      ...(slot.record.thoughtLevelLabel ? { effortLabel: slot.record.thoughtLevelLabel } : {}),
+      ...(nonDefaultMode ? { modeLabel: nonDefaultMode } : {}),
+    };
+  }
+
+  private async applyPromptConfigOverrides(
+    slot: LiveSessionSlot,
+    overrides: {
+      readonly modelId?: string;
+      readonly modeId?: string;
+      readonly thoughtLevel?: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const setConfigFn = slot.handle.setConfigOption;
+    if (!setConfigFn) return;
+
+    const desired: { category: ViewExternalConfigCategory; value: string }[] = [];
+    if (overrides.modelId?.trim()) {
+      const currentVal = slot.configOptions?.find((o) => o.category === 'model')?.currentValue;
+      if (currentVal !== overrides.modelId.trim()) {
+        desired.push({ category: 'model', value: overrides.modelId.trim() });
+      }
+    }
+    if (overrides.thoughtLevel?.trim()) {
+      const currentVal = slot.configOptions?.find(
+        (o) => o.category === 'thought_level',
+      )?.currentValue;
+      if (currentVal !== overrides.thoughtLevel.trim()) {
+        desired.push({ category: 'thought_level', value: overrides.thoughtLevel.trim() });
+      }
+    }
+    if (overrides.modeId?.trim()) {
+      const currentVal = slot.configOptions?.find((o) => o.category === 'mode')?.currentValue;
+      if (currentVal !== overrides.modeId.trim()) {
+        desired.push({ category: 'mode', value: overrides.modeId.trim() });
+      }
+    }
+    if (desired.length === 0) return;
+
+    slot.configuring = true;
+    this.clearIdleTimer(slot);
+    try {
+      for (const step of desired) {
+        // 若先切换了模型，再次核对新模型下是否确实暴露该类别配置项（例如切到无 effort 变体的模型时跳过残留档位）
+        const activeOpt = slot.configOptions?.find((o) => o.category === step.category);
+        if (step.category === 'thought_level' && slot.configOptions && !activeOpt) {
+          continue;
+        }
+        const configId = activeOpt?.id ?? step.category;
+        const updated = await setConfigFn.call(
+          slot.handle,
+          { configId, category: step.category, value: step.value },
+          signal,
+        );
+        if (updated.configOptions && updated.configOptions.length > 0) {
+          slot.configOptions = updated.configOptions;
+          mergeHarnessConfigCache(
+            this.homeDir,
+            slot.record.harnessId,
+            slot.record.configDigest,
+            updated.configOptions,
+          );
+        }
+        const refreshedThoughtOpt = updated.configOptions?.find(
+          (opt) => opt.category === 'thought_level',
+        );
+        const clearStaleThought =
+          step.category === 'model' &&
+          updated.thoughtLevelLabel === undefined &&
+          (!refreshedThoughtOpt || refreshedThoughtOpt.options.length === 0);
+        this.updateSlotRecordSafe(slot, {
+          ...(updated.modelLabel !== undefined ? { modelLabel: updated.modelLabel } : {}),
+          ...(updated.modeLabel !== undefined ? { modeLabel: updated.modeLabel } : {}),
+          ...(updated.thoughtLevelLabel !== undefined
+            ? { thoughtLevelLabel: updated.thoughtLevelLabel }
+            : clearStaleThought
+              ? { thoughtLevelLabel: undefined }
+              : {}),
+        });
+      }
+    } finally {
+      slot.configuring = false;
     }
   }
 

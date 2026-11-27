@@ -15,7 +15,27 @@ export function redactViewMessage(
   message: ViewMessage,
   redact: PublicTextRedactor = (text) => redactText(text, []),
 ): ViewMessage {
-  return { ...message, blocks: message.blocks.map((block) => redactViewBlock(block, redact)) };
+  const turnMeta = message.turnMeta
+    ? {
+        ...(message.turnMeta.agentName !== undefined
+          ? { agentName: redact(message.turnMeta.agentName) }
+          : {}),
+        ...(message.turnMeta.modelLabel !== undefined
+          ? { modelLabel: redact(message.turnMeta.modelLabel) }
+          : {}),
+        ...(message.turnMeta.effortLabel !== undefined
+          ? { effortLabel: redact(message.turnMeta.effortLabel) }
+          : {}),
+        ...(message.turnMeta.modeLabel !== undefined
+          ? { modeLabel: redact(message.turnMeta.modeLabel) }
+          : {}),
+      }
+    : undefined;
+  return {
+    ...message,
+    blocks: message.blocks.map((block) => redactViewBlock(block, redact)),
+    ...(turnMeta ? { turnMeta } : {}),
+  };
 }
 
 /** 工具卡片与普通块走同一文字出口；结构化私有字段由上游白名单投影排除。 */

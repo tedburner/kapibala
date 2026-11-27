@@ -6,6 +6,7 @@ import type {
   ViewTodoState,
   ViewTodoStatus,
   ViewTool,
+  ViewTurnMeta,
   ViewUsage,
 } from '../view-model/index.js';
 import type { ArtifactPolicy } from './preview-policy.js';
@@ -55,6 +56,8 @@ export function projectHistory(
   options?: {
     readonly artifacts?: ArtifactPolicy;
     readonly usageByMessageId?: ReadonlyMap<string, ViewUsage>;
+    /** 按 `interactionId` 归属记录的当轮模型与推理快照；重开历史或中途切模型均按轮次独立还原。 */
+    readonly turnMetaByInteraction?: ReadonlyMap<string, ViewTurnMeta>;
   },
 ): ViewMessage[] {
   const waiting = new Map<string, string>();
@@ -96,6 +99,26 @@ export function projectHistory(
       )
         continue;
       const blockId = displayBlockId(id, blockIndex);
+      if (block.type === 'text' && block.promptSource?.server === 'kapibala-handoff') {
+        const fromLabel = sanitizeUntrustedOutput(block.promptSource.name || '历史会话').slice(
+          0,
+          80,
+        );
+        blocks.push({
+          id: blockId,
+          kind: 'text',
+          state:
+            message.state === 'draft' ||
+            message.state === 'failed' ||
+            message.state === 'interrupted'
+              ? 'interrupted'
+              : 'completed',
+          revision: 0,
+          text: '',
+          skillName: `承接 · ${fromLabel}`,
+        });
+        continue;
+      }
       if (block.type === 'text' || block.type === 'thinking') {
         blocks.push({
           id: blockId,
@@ -184,12 +207,25 @@ export function projectHistory(
             totalTokens: usage.totalTokens,
           }
         : undefined;
+      const rawTurnMeta =
+        message.role === 'assistant' && message.interactionId
+          ? options?.turnMetaByInteraction?.get(message.interactionId)
+          : undefined;
+      const hasThinkingBlock =
+        message.role === 'assistant' && message.content.some((item) => item.type === 'thinking');
+      const viewTurnMeta: ViewTurnMeta | undefined = rawTurnMeta
+        ? {
+            ...rawTurnMeta,
+            ...(hasThinkingBlock && !rawTurnMeta.effortLabel ? { effortLabel: '深度思考' } : {}),
+          }
+        : undefined;
       projected.push({
         id,
         role: message.role,
         persisted: true,
         blocks,
         ...(viewUsage ? { usage: viewUsage } : {}),
+        ...(viewTurnMeta ? { turnMeta: viewTurnMeta } : {}),
         state:
           message.state === 'draft' || message.state === 'failed' || message.state === 'interrupted'
             ? 'interrupted'

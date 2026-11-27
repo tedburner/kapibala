@@ -699,14 +699,12 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
       .toBe('const answer = 42;');
     expect(await page.evaluate(() => 'forbidden' in window)).toBe(false);
     await page.getByRole('button', { name: /当前会话模型/ }).click();
-    // 通过菜单键盘操作打开子菜单，避免鼠标悬停受窗口布局影响。
-    const roleTrigger = page.getByRole('menuitem', { name: /会话角色/ });
-    const fastRole = page.getByRole('menuitem', { name: '快速', exact: true });
-    await roleTrigger.focus();
-    await roleTrigger.press('ArrowRight');
+    const roleSection = page.getByRole('region', { name: '会话角色', exact: true });
+    const fastRole = roleSection.getByRole('button', { name: '快速', exact: true });
     await expect(fastRole).toBeVisible();
     await fastRole.click();
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: /当前会话模型/ })).toContainText('快速');
     await page.getByRole('button', { name: /会话模式/ }).click();
     await page.getByRole('menuitem', { name: /计划模式/ }).click();
     await expect(page.getByRole('button', { name: /会话模式/ })).toContainText('计划模式');

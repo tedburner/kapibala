@@ -28,7 +28,7 @@ import { artifactFileName } from './artifact-model.js';
 import { toolPreview } from './html-preview-model.js';
 import { HtmlPreview, HtmlPreviewButton } from './html-preview.js';
 import { MessageMarkdown } from './message-markdown.js';
-import { aggregateTurnUsage } from './turn-usage.js';
+import { aggregateTurnUsage, formatTurnMetaBadge } from './turn-usage.js';
 import { useUI } from './ui-state.js';
 
 type StatusIcon = typeof CheckCircleIcon;
@@ -1171,6 +1171,7 @@ export function MessageList({
                 turnMessages.some((m) => m.id === retryableMessageId),
             );
             const latestUsage = aggregateTurnUsage(turnMessages);
+            const turnMetaText = formatTurnMetaBadge(turnMessages);
 
             return (
               <div
@@ -1235,8 +1236,8 @@ export function MessageList({
                       </span>
                     </output>
                   )}
-                  {!isTurnActive && (copyText || latestUsage || retryable) && (
-                    <div className="kapibala-action mt-2 flex flex-wrap items-center gap-2 text-xs text-kumo-subtle opacity-0 transition-opacity [@media(hover:none)]:opacity-100 group-hover:opacity-100 focus-within:opacity-100 focus-visible:opacity-100">
+                  {!isTurnActive && (copyText || latestUsage || turnMetaText || retryable) && (
+                    <div className="kapibala-action mt-2 flex flex-wrap items-center gap-2 text-xs text-kumo-subtle">
                       {copyText && (
                         <InlineCopyText
                           className="kapibala-action text-kumo-subtle"
@@ -1259,12 +1260,18 @@ export function MessageList({
                           <ArrowClockwiseIcon size={14} />
                         </Button>
                       )}
-                      {latestUsage && (
-                        <span
-                          className="text-2xs text-kumo-faint tabular-nums"
-                          title={`输入 ${latestUsage.promptTokens.toLocaleString('zh-CN')} · 输出 ${latestUsage.completionTokens.toLocaleString('zh-CN')}`}
-                        >
-                          | 消耗 {latestUsage.totalTokens.toLocaleString('zh-CN')} token
+                      {(turnMetaText || latestUsage) && (
+                        <span className="flex flex-wrap items-center gap-1.5 text-2xs text-kumo-faint tabular-nums">
+                          {(copyText || retryable) && <span aria-hidden="true">|</span>}
+                          {turnMetaText && <span className="text-kumo-subtle">{turnMetaText}</span>}
+                          {turnMetaText && latestUsage && <span aria-hidden="true">·</span>}
+                          {latestUsage && (
+                            <span
+                              title={`输入 ${latestUsage.promptTokens.toLocaleString('zh-CN')} · 输出 ${latestUsage.completionTokens.toLocaleString('zh-CN')}`}
+                            >
+                              消耗 {latestUsage.totalTokens.toLocaleString('zh-CN')} token
+                            </span>
+                          )}
                         </span>
                       )}
                     </div>

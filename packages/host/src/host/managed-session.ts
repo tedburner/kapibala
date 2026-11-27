@@ -39,7 +39,12 @@ import { createCliSubagentResumer, createCliSubagentRunner } from './subagent-ru
 import { registerBuiltinTools } from './tool-registration.js';
 import { formatToolDetail } from './ui/tool-presentation.js';
 
-import type { PresentationEvent, PresentationState, ViewEvidence } from '../view-model/index.js';
+import type {
+  PresentationEvent,
+  PresentationState,
+  ViewEvidence,
+  ViewTurnMeta,
+} from '../view-model/index.js';
 import type { StatusFacts } from '../view-model/status.js';
 import { buildTodoState, projectHistory } from './history-projection.js';
 import { type ManagedInspection, projectInspection } from './inspection.js';
@@ -52,18 +57,58 @@ import { projectStatusFacts } from './status-facts.js';
 import { TaskObservation } from './task-observation.js';
 import { WatchService, type WatchView } from './watch/service.js';
 import { createWatchTools } from './watch/tools.js';
+
+const NON_DEFAULT_ROLE_LABELS: Readonly<Record<string, string>> = {
+  planning: '规划',
+  execution: '执行',
+  fast: '快速',
+};
+
+function resolveLocalTurnMeta(
+  modelId: string,
+  modelRole: string | undefined,
+  settings: Pick<UserSettings, 'profiles'>,
+): ViewTurnMeta {
+  const matched =
+    settings.profiles.find((item) => item.id === modelId) ??
+    BUILTIN_PROFILES.find((item) => item.id === modelId);
+  const roleLabel =
+    modelRole && modelRole !== 'default' ? NON_DEFAULT_ROLE_LABELS[modelRole] : undefined;
+  return {
+    modelLabel: matched?.name ?? modelId,
+    ...(matched?.supportsThinking ? { effortLabel: '深度思考' } : {}),
+    ...(roleLabel ? { modeLabel: roleLabel } : {}),
+  };
+}
+
 /** 只在加载时用一次，避免把会话级记忆写回全局默认。 */
-async function readPersistedMode(store: {
+async function readPersistedSessionRecords(store: {
   loadState(): Promise<{ records: readonly { type: string; payload: Record<string, unknown> }[] }>;
-}): Promise<SessionMode | undefined> {
+}): Promise<{
+  readonly persistedMode?: SessionMode;
+  readonly turnRecords: readonly { interactionId: string; modelId: string; modelRole?: string }[];
+}> {
   const state = await store.loadState();
+  let persistedMode: SessionMode | undefined;
   for (let index = state.records.length - 1; index >= 0; index--) {
     const record = state.records[index];
-    // 最后一次写入生效；未知值忽略，退回全局默认而不是猜一个档位。
-    if (record.type === 'mode_state' && isSessionMode(record.payload.mode))
-      return record.payload.mode;
+    if (record.type === 'mode_state' && isSessionMode(record.payload.mode)) {
+      persistedMode = record.payload.mode;
+      break;
+    }
   }
-  return undefined;
+  const turnRecords: { interactionId: string; modelId: string; modelRole?: string }[] = [];
+  for (const record of state.records) {
+    if (record.type !== 'run_started') continue;
+    const interactionId = String(record.payload.interactionId ?? record.payload.runId ?? '').trim();
+    const modelId = typeof record.payload.modelId === 'string' ? record.payload.modelId.trim() : '';
+    const modelRole =
+      typeof record.payload.modelRole === 'string' ? record.payload.modelRole : undefined;
+    if (interactionId && modelId) {
+      turnRecords.push({ interactionId, modelId, ...(modelRole ? { modelRole } : {}) });
+    }
+  }
+  return { ...(persistedMode ? { persistedMode } : {}), turnRecords };
 }
 
 /** 收集可解析的模型凭证；忽略无密钥占位与过短值，避免把常见词整体替换。 */
@@ -147,7 +192,11 @@ export interface ManagedHostSession {
   run(
     input: string,
     signal?: AbortSignal,
-    options?: { readonly regenerate?: boolean },
+    options?: {
+      readonly regenerate?: boolean;
+      /** 跨代理或跨会话接力上下文：以 `promptSource` 受控块注入请求，不在用户气泡平铺历史原文。 */
+      readonly handoff?: { readonly fromTitle: string; readonly context: string };
+    },
   ): Promise<void>;
   /**
    * 显式技能直发：与 run 共用同一投影、审批与工具事务管线，事件流语义一致。
@@ -280,8 +329,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     }
     const preference = settings.shell?.preference ?? 'auto';
     // 会话级记忆优先：同一会话重开后沿用上次显式切换的档位；
-    // 没有记录时退回全局默认，且全局默认不允许是 FullAccess（配置不能默认提权）。
-    const persistedMode = await readPersistedMode(handle.store);
+    // 同时从历史 `run_started` 记录恢复每一轮实际使用的模型与角色，不被后续切换覆盖。
+    const { persistedMode, turnRecords } = await readPersistedSessionRecords(handle.store);
     runtime = new AgentRuntime({
       runner: (...args) =>
         createCliSubagentRunner({
@@ -425,11 +474,19 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     // 产物识别绑定本次会话的工作区与主目录：允许根与 `~/.kapibala` 排除都在这里固定，
     // 投影层只拿到纯函数，不接触全局状态或当前进程目录。
     const artifactPolicy = createArtifactPolicy({ workspaceRoot: root, homeDirectory });
+    const turnMetaByInteraction = new Map<string, ViewTurnMeta>();
+    for (const entry of turnRecords) {
+      turnMetaByInteraction.set(
+        entry.interactionId,
+        resolveLocalTurnMeta(entry.modelId, entry.modelRole, settings),
+      );
+    }
     const presentation = new PresentationStore(
       identity,
       projectHistory(current.getHistory(), presentationScope(identity), redact, {
         artifacts: artifactPolicy,
         usageByMessageId: current.getMessageUsages(),
+        turnMetaByInteraction,
       }),
       buildTodoState(current.getHistory(), redact),
     );
@@ -588,6 +645,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       const projected = projectHistory(current.getHistory(), scope, redact, {
         artifacts: artifactPolicy,
         usageByMessageId: current.getMessageUsages(),
+        turnMetaByInteraction,
       });
       for (const message of projected) {
         if (knownIds.has(message.id)) continue;
@@ -707,6 +765,16 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
             }
           }
         }
+        const activeRunTurnMeta = resolveLocalTurnMeta(selectedProfileId, selectedRole, settings);
+        const bindCurrentRunTurnMeta = (): void => {
+          const hist = current.getHistory();
+          for (let idx = hist.length - 1; idx >= Math.max(0, hist.length - 6); idx--) {
+            const interactionId = hist[idx]?.interactionId;
+            if (interactionId && !turnMetaByInteraction.has(interactionId)) {
+              turnMetaByInteraction.set(interactionId, activeRunTurnMeta);
+            }
+          }
+        };
         projected = new SessionPresentation(
           presentation,
           randomUUID(),
@@ -715,6 +783,10 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           artifactPolicy,
           {
             getUsage: () => current.getMessageUsages(),
+            getTurnMeta: () => {
+              bindCurrentRunTurnMeta();
+              return turnMetaByInteraction;
+            },
             ...(replaceHistory ? { replaceHistory: true } : {}),
             ...(nextBranchId ? { nextBranchId } : {}),
           },
@@ -845,7 +917,23 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       conversationId: ownedHandle.conversationId,
       session: current,
       async run(input, signal, options) {
-        for await (const _ of run(input, signal, undefined, undefined, options?.regenerate)) {
+        const handoffPrepare =
+          options?.handoff && !options.regenerate
+            ? async (): Promise<PreparedTaskResult> => ({
+                content: [
+                  {
+                    type: 'text',
+                    text: options.handoff!.context,
+                    promptSource: {
+                      version: 1,
+                      server: 'kapibala-handoff',
+                      name: options.handoff!.fromTitle || '历史会话',
+                    },
+                  },
+                ],
+              })
+            : undefined;
+        for await (const _ of run(input, signal, undefined, handoffPrepare, options?.regenerate)) {
           /* 投影已在内部完成。 */
         }
       },

@@ -1,4 +1,5 @@
 import { Button, Combobox, Popover } from '@cloudflare/kumo';
+import type { ViewExternalConfigOption } from '@kiturone/kapibala-host/view-model';
 import {
   ArrowsClockwiseIcon,
   CaretDownIcon,
@@ -13,10 +14,20 @@ import type { Output } from '../shared/contracts.js';
 
 type Catalog = Output<'settings.read'>;
 type ModelChoice = Pick<Catalog['profiles'][number], 'id' | 'name' | 'modelName' | 'providerKey'>;
+type SessionRole = Output<'session.open'>['configuration']['role'];
 type ExternalChoice = Pick<
   Output<'external.harnesses'>['harnesses'][number],
-  'id' | 'name' | 'transport' | 'cachedConfigOptions' | 'cachedConfigUpdatedAt'
->;
+  'id' | 'name' | 'transport' | 'cachedConfigUpdatedAt'
+> & {
+  readonly cachedConfigOptions?: readonly ViewExternalConfigOption[];
+};
+
+const KAPIBALA_ROLE_CHOICES: readonly { readonly value: SessionRole; readonly name: string }[] = [
+  { value: 'default', name: '默认' },
+  { value: 'planning', name: '规划' },
+  { value: 'execution', name: '执行' },
+  { value: 'fast', name: '快速' },
+];
 
 /** 新对话中选定的外部代理及可选显式模型、推理强度与运行模式（未指定子项时沿用该代理自身默认配置）。 */
 export type SelectedHarnessChoice = {
@@ -216,10 +227,13 @@ export function ComposerModelPicker({
   harnesses,
   model,
   harness,
+  contextMode = 'new',
+  role,
   disabled,
   harnessesFailed,
   refreshingHarnessId,
   onModel,
+  onRole,
   onHarness,
   onRefreshHarnessModels,
   onSettings,
@@ -230,10 +244,15 @@ export function ComposerModelPicker({
   harnesses: readonly ExternalChoice[];
   model?: Pick<ModelChoice, 'id' | 'name'>;
   harness?: SelectedHarnessChoice;
+  /** 选择器所处上下文：`'new'` 为新建对话首页，`'session'` 为已打开的历史会话（支持跨代理接力与下一轮切换）。 */
+  contextMode?: 'new' | 'session';
+  /** 本地 Kapibala 会话可选角色路由档位。 */
+  role?: SessionRole;
   disabled: boolean;
   harnessesFailed?: boolean;
   refreshingHarnessId?: string;
   onModel(id: string): void;
+  onRole?(role: SessionRole): void;
   onHarness(choice: SelectedHarnessChoice): void;
   onRefreshHarnessModels?(harnessId: string, options?: { readonly silent?: boolean }): void;
   onSettings(): void;
@@ -296,10 +315,12 @@ export function ComposerModelPicker({
   })();
 
   const visibleModeChoices = focusedModeOption?.options ?? [];
+  const showKapibalaRoleColumn = activeScope === 'kapibala' && !searching && Boolean(onRole);
   const hasRightConfigColumn =
-    Boolean(focusedHarness) &&
-    !searching &&
-    (visibleThoughtChoices.length > 0 || visibleModeChoices.length > 0);
+    showKapibalaRoleColumn ||
+    (Boolean(focusedHarness) &&
+      !searching &&
+      (visibleThoughtChoices.length > 0 || visibleModeChoices.length > 0));
 
   const effectiveThoughtValue =
     (isFocusedHarnessSelected ? harness?.thoughtLevel : undefined) ??
@@ -481,6 +502,7 @@ export function ComposerModelPicker({
         name: item.name,
         detail: provider ? `Kapibala · ${provider}` : 'Kapibala',
         search: `${item.name} ${item.modelName} ${item.id} ${provider ?? ''} Kapibala`,
+        keepOpenOnSelect: showKapibalaRoleColumn,
         select: () => onModel(item.id),
       };
     }),
@@ -508,12 +530,16 @@ export function ComposerModelPicker({
     harness?.thoughtLevel && harness.thoughtLevel !== 'default'
       ? harness.thoughtLevelName
       : undefined;
+  const nonDefaultRoleLabel =
+    !harness && role && role !== 'default'
+      ? KAPIBALA_ROLE_CHOICES.find((item) => item.value === role)?.name
+      : undefined;
 
   const triggerLabel = harness
     ? [harness.name, harness.modelName, displayThoughtInChip, harness.modeName]
         .filter(Boolean)
         .join(' · ')
-    : (model?.name ?? '选择模型或代理');
+    : [model?.name ?? '选择模型或代理', nonDefaultRoleLabel].filter(Boolean).join(' · ');
 
   const visualTriggerLead = harness
     ? [
@@ -525,7 +551,16 @@ export function ComposerModelPicker({
     : (model?.name ?? '选择模型或代理');
   const visualTriggerTail = harness
     ? [displayThoughtInChip, harness.modeName].filter(Boolean).join(' · ')
-    : '';
+    : (nonDefaultRoleLabel ?? '');
+
+  const ariaPrefix =
+    contextMode === 'session'
+      ? harness
+        ? '当前会话代理'
+        : '当前会话模型'
+      : harness
+        ? '新对话代理'
+        : '新对话模型或代理';
 
   const selectedHarnessTransport = harness
     ? harnesses.find((item) => item.id === harness.id)?.transport
@@ -536,7 +571,9 @@ export function ComposerModelPicker({
       open={open}
       onOpenChange={(next) => {
         if (next) {
-          setScope(harness ? `harness:${harness.id}` : 'all');
+          setScope(
+            harness ? `harness:${harness.id}` : contextMode === 'session' ? 'kapibala' : 'all',
+          );
           setQuery('');
         }
         setOpen(next);
@@ -549,9 +586,7 @@ export function ComposerModelPicker({
             variant="ghost"
             size="sm"
             disabled={disabled}
-            aria-label={
-              harness ? `新对话代理：${triggerLabel}` : `新对话模型或代理：${triggerLabel}`
-            }
+            aria-label={`${ariaPrefix}：${triggerLabel}`}
           >
             {harness && (
               <HarnessGlyph
@@ -720,6 +755,40 @@ export function ComposerModelPicker({
                     {searching ? '没有匹配的代理或模型' : '当前没有可用模型'}
                   </Combobox.Empty>
                 </div>
+
+                {showKapibalaRoleColumn && onRole && (
+                  <section
+                    aria-label="会话角色配置"
+                    className="flex max-h-80 flex-col overflow-y-auto border-t border-kumo-line bg-kumo-base p-2 sm:border-s sm:border-t-0"
+                  >
+                    <div className="px-2 pt-0.5 pb-1.5 text-xs font-medium text-kumo-subtle">
+                      会话角色
+                    </div>
+                    <section aria-label="会话角色" className="space-y-0.5">
+                      {KAPIBALA_ROLE_CHOICES.map((choice) => {
+                        const checked = (role ?? 'default') === choice.value;
+                        return (
+                          <button
+                            key={choice.value}
+                            type="button"
+                            aria-pressed={checked}
+                            className="kapibala-action flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm text-kumo-default hover:bg-kumo-tint aria-pressed:bg-kumo-tint aria-pressed:font-medium aria-pressed:text-kumo-strong"
+                            onClick={() => onRole(choice.value)}
+                          >
+                            <span className="truncate">{choice.name}</span>
+                            {checked && (
+                              <CheckIcon
+                                size={14}
+                                className="shrink-0 text-kumo-strong"
+                                aria-hidden="true"
+                              />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </section>
+                  </section>
+                )}
 
                 {hasRightConfigColumn && focusedHarness && (
                   <section

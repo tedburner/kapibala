@@ -106,7 +106,10 @@ export class ViewClient {
   async start(
     scope: { workspaceId: string; sessionId: string },
     input: string,
-    options?: { regenerate?: boolean },
+    options?: {
+      regenerate?: boolean;
+      handoff?: { readonly fromTitle: string; readonly context: string };
+    },
   ): Promise<void> {
     try {
       await this.api.run.start({
@@ -114,6 +117,7 @@ export class ViewClient {
         operationId: crypto.randomUUID(),
         input,
         ...(options?.regenerate ? { regenerate: true } : {}),
+        ...(options?.handoff ? { handoff: options.handoff } : {}),
       });
     } catch (error) {
       this.halted = true;

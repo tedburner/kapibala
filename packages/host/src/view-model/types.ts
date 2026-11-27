@@ -95,6 +95,20 @@ export interface ViewUsage {
   readonly totalTokens: number;
 }
 
+/**
+ * 单轮助手回答使用的执行代理、模型、推理强度与运行模式快照。
+ *
+ * 前置约束与边界：
+ * - 绑定当轮实际执行的记录，会话后续切换模型、推理档位或代理绝不反向覆盖已完成历史轮次；
+ * - 旧历史若未记录某子字段则按需省略，渲染层不猜测补齐。
+ */
+export interface ViewTurnMeta {
+  readonly agentName?: string;
+  readonly modelLabel?: string;
+  readonly effortLabel?: string;
+  readonly modeLabel?: string;
+}
+
 /** 可重建展示消息；persisted 表示已观察的提交事实，临时片段不冒充落盘。 */
 export interface ViewMessage {
   readonly id: string;
@@ -104,6 +118,8 @@ export interface ViewMessage {
   readonly blocks: readonly ViewBlock[];
   /** 该条助手消息对应的模型消耗；缺失表示旧记录未持久化 usage，渲染层不补零。 */
   readonly usage?: ViewUsage;
+  /** 该轮回答的执行代理、模型与推理强度归属快照（通常挂在每轮末尾助手消息上）。 */
+  readonly turnMeta?: ViewTurnMeta;
 }
 
 /** 受控诊断展示；仅保存宿主已经脱敏的文字，不携带 Error/Provider 原始对象。 */

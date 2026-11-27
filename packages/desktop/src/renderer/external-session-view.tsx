@@ -1,20 +1,14 @@
-import { Button, Combobox, DropdownMenu, InputArea, Popover } from '@cloudflare/kumo';
+import { Button, InputArea } from '@cloudflare/kumo';
 import type {
   ViewArtifact,
   ViewExternalApproval,
-  ViewExternalConfigCategory,
   ViewExternalConfigOption,
   ViewExternalSnapshot,
 } from '@kiturone/kapibala-host/view-model';
 import {
   ArrowUpIcon,
-  CaretDownIcon,
-  CheckIcon,
   CpuIcon,
-  MagnifyingGlassIcon,
   ShieldWarningIcon,
-  SlidersHorizontalIcon,
-  SparkleIcon,
   StopIcon,
   WarningCircleIcon,
 } from '@phosphor-icons/react';
@@ -23,11 +17,26 @@ import {
   type KeyboardEvent,
   type RefObject,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
+import type { Output } from '../shared/contracts.js';
+import { ComposerModelPicker, type SelectedHarnessChoice } from './composer-model-picker.js';
 import { MessageList } from './message-list.js';
 import { TaskPanel } from './task-panel.js';
+
+type Catalog = Output<'settings.read'>;
+type LocalModelChoice = Pick<
+  Catalog['profiles'][number],
+  'id' | 'name' | 'modelName' | 'providerKey'
+>;
+type ExternalHarnessChoice = Pick<
+  Output<'external.harnesses'>['harnesses'][number],
+  'id' | 'name' | 'transport' | 'cachedConfigUpdatedAt'
+> & {
+  readonly cachedConfigOptions?: readonly ViewExternalConfigOption[];
+};
 
 function transportLabel(transport: ViewExternalSnapshot['session']['transport']): string {
   if (transport === 'acp') return 'ACP';
@@ -145,190 +154,18 @@ function ExternalApprovalDeck({
   );
 }
 
-/** 外部会话内可搜索的模型选择浮层，支持数十条 ACP 候选模型快速筛选切换。 */
-function ExternalModelSelector({
-  option,
-  fallbackLabel,
-  disabled,
-  onSelect,
-}: {
-  readonly option: ViewExternalConfigOption;
-  readonly fallbackLabel?: string;
-  readonly disabled: boolean;
-  readonly onSelect: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-  const currentChoice = option.options.find((item) => item.value === option.currentValue);
-  const triggerLabel = currentChoice?.name ?? fallbackLabel ?? option.currentValue ?? '选择模型';
-  const filtered = option.options.filter((item) => {
-    if (terms.length === 0) return true;
-    const hay =
-      `${item.name} ${item.value} ${item.group ?? ''} ${item.description ?? ''}`.toLowerCase();
-    return terms.every((term) => hay.includes(term));
-  });
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        if (next) setQuery('');
-        setOpen(next);
-      }}
-    >
-      <Popover.Trigger
-        render={
-          <Button
-            className="kapibala-action kapibala-chip max-w-56"
-            variant="ghost"
-            size="sm"
-            disabled={disabled}
-            aria-label={`外部会话模型：${triggerLabel}`}
-          >
-            <CpuIcon size={14} className="shrink-0 text-kumo-subtle" />
-            <span className="min-w-0 truncate">{triggerLabel}</span>
-            <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
-          </Button>
-        }
-      />
-      <Popover.Portal>
-        <Popover.Positioner side="top" align="start" sideOffset={8} collisionPadding={12}>
-          <Popover.Popup
-            aria-label="切换外部代理模型"
-            className="max-h-(--available-height) w-[min(24rem,var(--available-width))] overflow-y-auto rounded-xl px-0 py-0 shadow-lg motion-reduce:transition-none"
-          >
-            <Combobox
-              inline
-              items={filtered}
-              filter={null}
-              inputValue={query}
-              onInputValueChange={setQuery}
-              itemToStringLabel={(item) => item.name}
-              value={currentChoice ?? null}
-              isItemEqualToValue={(first, second) => first.value === second.value}
-              autoHighlight
-              onValueChange={(item) => {
-                if (!item || item.value === option.currentValue) {
-                  setOpen(false);
-                  return;
-                }
-                setOpen(false);
-                onSelect(item.value);
-              }}
-            >
-              {option.options.length > 6 && (
-                <div className="relative border-b border-kumo-line px-3 py-2">
-                  <MagnifyingGlassIcon
-                    className="pointer-events-none absolute top-1/2 left-5 -translate-y-1/2 text-kumo-subtle"
-                    size={14}
-                    aria-hidden="true"
-                  />
-                  <Combobox.Input
-                    aria-label="搜索外部代理模型"
-                    placeholder="搜索模型…"
-                    className="m-0 rounded-md bg-kumo-recessed pl-7 text-sm"
-                  />
-                </div>
-              )}
-              <Combobox.List className="max-h-72 py-1.5">
-                {(item: ViewExternalConfigOption['options'][number]) => (
-                  <Combobox.Item
-                    key={item.value}
-                    value={item}
-                    aria-label={item.name}
-                    className="grid-cols-[minmax(0,1fr)_16px] text-sm"
-                  >
-                    <span className="block truncate font-medium">{item.name}</span>
-                    {(item.group || item.description) && (
-                      <span className="block truncate text-xs text-kumo-subtle">
-                        {item.group ?? item.description}
-                      </span>
-                    )}
-                  </Combobox.Item>
-                )}
-              </Combobox.List>
-              <Combobox.Empty className="py-4">没有匹配的模型</Combobox.Empty>
-            </Combobox>
-          </Popover.Popup>
-        </Popover.Positioner>
-      </Popover.Portal>
-    </Popover>
-  );
-}
-
-/** 外部会话内的模式或推理档位下拉选择器。 */
-function ExternalOptionMenu({
-  option,
-  fallbackLabel,
-  disabled,
-  onSelect,
-}: {
-  readonly option: ViewExternalConfigOption;
-  readonly fallbackLabel?: string;
-  readonly disabled: boolean;
-  readonly onSelect: (value: string) => void;
-}) {
-  const currentChoice = option.options.find((item) => item.value === option.currentValue);
-  const currentLabel = currentChoice?.name ?? fallbackLabel ?? option.currentValue ?? option.name;
-  const isThought = option.category === 'thought_level';
-  const ariaPrefix = isThought ? '外部会话推理档位' : '外部会话模式';
-
-  return (
-    <DropdownMenu>
-      <DropdownMenu.Trigger
-        render={
-          <Button
-            className="kapibala-action kapibala-chip max-w-44"
-            variant="ghost"
-            size="sm"
-            disabled={disabled}
-            aria-label={`${ariaPrefix}：${currentLabel}`}
-          >
-            {isThought ? (
-              <SparkleIcon size={14} className="shrink-0 text-kumo-subtle" />
-            ) : (
-              <SlidersHorizontalIcon size={14} className="shrink-0 text-kumo-subtle" />
-            )}
-            <span className="min-w-0 truncate">
-              {isThought ? `推理：${currentLabel}` : currentLabel}
-            </span>
-            <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
-          </Button>
-        }
-      />
-      <DropdownMenu.Content className="max-h-[min(20rem,var(--available-height))]">
-        <DropdownMenu.Group>
-          <DropdownMenu.Label>{isThought ? '推理档位' : '会话模式'}</DropdownMenu.Label>
-          {option.options.map((choice) => (
-            <DropdownMenu.Item
-              key={choice.value}
-              onClick={() => {
-                if (choice.value !== option.currentValue) onSelect(choice.value);
-              }}
-            >
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="truncate">{choice.name}</span>
-                {choice.description && (
-                  <span className="truncate text-xs text-kumo-subtle">{choice.description}</span>
-                )}
-              </span>
-              {choice.value === option.currentValue && <CheckIcon size={14} />}
-            </DropdownMenu.Item>
-          ))}
-        </DropdownMenu.Group>
-      </DropdownMenu.Content>
-    </DropdownMenu>
-  );
-}
+type StagedExternalTarget =
+  | { readonly kind: 'same-external'; readonly choice: SelectedHarnessChoice }
+  | { readonly kind: 'cross-external'; readonly choice: SelectedHarnessChoice }
+  | { readonly kind: 'local-kapibala'; readonly modelId: string };
 
 /**
  * 外部代理会话工作台主视图。
  *
  * 前置约束与复用边界：
  * - 消息流直接复用 `MessageList`，计划清单直接复用 `TaskPanel`，工具与产物点击复用右侧 `DetailsDrawer`；
- * - 顶部常驻展示外部信任边界提示，以及同工作区本地会话并发运行时的无写租约冲突预警；
- * - 当会话不可原地续聊（如通用自定义 ACP 进程已退出或配置摘要变更）时，输入框置为只读归档态并提供一键新建入口。
+ * - 底部输入区复用统一三栏 `ComposerModelPicker`：模型、推理档位、运行模式或跨代理切换均仅暂存至下一轮发送时生效，绝不打断正在生成的当前轮次；
+ * - 跨代理切换（或从只读历史归档选择任意可用模型/代理）发送下一轮时，自动携带当前对话上下文接力创建新会话继续。
  */
 export function ExternalSessionView({
   workspaceName,
@@ -336,15 +173,24 @@ export function ExternalSessionView({
   snapshot,
   draft,
   busy,
-  configBusy,
   localBusy,
   wide,
   detailsOpen,
   scrollRef,
+  models,
+  providers,
+  harnesses,
+  defaultLocalModel,
+  harnessesFailed,
+  refreshingHarnessId,
+  onRefreshHarnessModels,
+  onSettings,
+  onExternalSettings,
   onDraftChange,
   onHistoryKeyDown,
-  onSetConfig,
   onSend,
+  onHandoffToExternal,
+  onHandoffToLocal,
   onCancel,
   onApprove,
   onNewSameHarness,
@@ -357,23 +203,37 @@ export function ExternalSessionView({
   readonly snapshot: ViewExternalSnapshot;
   readonly draft: string;
   readonly busy: boolean;
-  /** 外部会话正在切换模型/模式/推理档位时为 true。 */
-  readonly configBusy?: boolean;
   /** 同一工作区是否有本地会话正在运行；为 true 时展示并发无写租约覆盖提醒。 */
   readonly localBusy: boolean;
   readonly wide: boolean;
   readonly detailsOpen: boolean;
   readonly scrollRef: RefObject<HTMLDivElement | null>;
+  readonly models: readonly LocalModelChoice[];
+  readonly providers: readonly Pick<Catalog['providers'][number], 'key' | 'name'>[];
+  readonly harnesses: readonly ExternalHarnessChoice[];
+  readonly defaultLocalModel?: Pick<LocalModelChoice, 'id' | 'name'>;
+  readonly harnessesFailed?: boolean;
+  readonly refreshingHarnessId?: string;
+  readonly onRefreshHarnessModels?: (
+    harnessId: string,
+    options?: { readonly silent?: boolean },
+  ) => void;
+  readonly onSettings: () => void;
+  readonly onExternalSettings: () => void;
   readonly onDraftChange: (value: string) => void;
   /** 外部会话输入区 ↑/↓ 历史问句召回回调；返回 true 表示按键已消费。 */
   readonly onHistoryKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
-  /** 会话空闲态切换模型、模式或推理档位回调。 */
-  readonly onSetConfig?: (input: {
-    readonly configId: string;
-    readonly category: ViewExternalConfigCategory;
-    readonly value: string;
-  }) => void;
-  readonly onSend: (text: string, clearDraft?: boolean) => void;
+  readonly onSend: (
+    text: string,
+    clearDraft?: boolean,
+    configOverrides?: {
+      readonly modelId?: string;
+      readonly modeId?: string;
+      readonly thoughtLevel?: string;
+    },
+  ) => void;
+  readonly onHandoffToExternal: (text: string, choice: SelectedHarnessChoice) => void;
+  readonly onHandoffToLocal: (text: string, profileId: string) => void;
   readonly onCancel: () => void;
   readonly onApprove: (approvalId: string, optionId?: string, cancel?: boolean) => void;
   readonly onNewSameHarness: () => void;
@@ -383,26 +243,165 @@ export function ExternalSessionView({
 }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const { session } = snapshot;
+
+  const [stagedOwnerId, setStagedOwnerId] = useState(session.id);
+  const [stagedTarget, setStagedTarget] = useState<StagedExternalTarget>();
+  if (stagedOwnerId !== session.id) {
+    setStagedOwnerId(session.id);
+    setStagedTarget(undefined);
+  }
+
   const activeRun =
     session.status === 'starting' ||
     session.status === 'running' ||
     session.status === 'waiting_approval' ||
     session.status === 'cancelling';
   const badge = statusBadge(session.status);
-  const canSend =
-    session.canContinue && !activeRun && !busy && !configBusy && Boolean(draft.trim());
+
   const modeOption = snapshot.configOptions?.find((opt) => opt.category === 'mode');
   const modelOption = snapshot.configOptions?.find((opt) => opt.category === 'model');
   const thoughtOption = snapshot.configOptions?.find((opt) => opt.category === 'thought_level');
-  const configSwitchDisabled = activeRun || busy || Boolean(configBusy);
 
-  const hasInteractiveControls = Boolean(
-    session.canContinue && onSetConfig && (modeOption || modelOption || thoughtOption),
-  );
+  // 将当前外部会话实时上报的 configOptions 合入选择器目录兜底，确保即便磁盘尚未预热也能展开三栏选择。
+  const mergedHarnesses = useMemo<readonly ExternalHarnessChoice[]>(() => {
+    const existing = harnesses.some((item) => item.id === session.harnessId);
+    const mapped = harnesses.map((item) => {
+      if (
+        item.id === session.harnessId &&
+        (!item.cachedConfigOptions || item.cachedConfigOptions.length === 0) &&
+        snapshot.configOptions &&
+        snapshot.configOptions.length > 0
+      ) {
+        return { ...item, cachedConfigOptions: snapshot.configOptions };
+      }
+      return item;
+    });
+    if (!existing) {
+      return [
+        ...mapped,
+        {
+          id: session.harnessId,
+          name: session.harnessName,
+          transport: session.transport,
+          ...(snapshot.configOptions && snapshot.configOptions.length > 0
+            ? { cachedConfigOptions: snapshot.configOptions }
+            : {}),
+        },
+      ];
+    }
+    return mapped;
+  }, [
+    harnesses,
+    session.harnessId,
+    session.harnessName,
+    session.transport,
+    snapshot.configOptions,
+  ]);
+
+  const currentHarnessBaseline = useMemo<SelectedHarnessChoice>(() => {
+    const currentModelVal = modelOption?.currentValue;
+    const currentModelName =
+      modelOption?.options.find((c) => c.value === currentModelVal)?.name ?? session.modelLabel;
+    const currentThoughtVal = thoughtOption?.currentValue;
+    const currentThoughtName =
+      thoughtOption?.options.find((c) => c.value === currentThoughtVal)?.name ??
+      session.thoughtLevelLabel;
+    const currentModeVal = modeOption?.currentValue;
+    const isRoutineMode =
+      !session.modeLabel ||
+      /^(build|code|ask|default|standard|auto|workspacewrite|workspace-write)$/i.test(
+        currentModeVal ?? session.modeLabel,
+      );
+    return {
+      id: session.harnessId,
+      name: session.harnessName,
+      ...(currentModelVal
+        ? { modelId: currentModelVal, modelName: currentModelName ?? currentModelVal }
+        : session.modelLabel
+          ? { modelName: session.modelLabel }
+          : {}),
+      ...(currentThoughtVal
+        ? {
+            thoughtLevel: currentThoughtVal,
+            thoughtLevelName: currentThoughtName ?? currentThoughtVal,
+          }
+        : session.thoughtLevelLabel
+          ? {
+              thoughtLevel: session.thoughtLevelLabel.toLowerCase(),
+              thoughtLevelName: session.thoughtLevelLabel,
+            }
+          : {}),
+      ...(currentModeVal
+        ? {
+            modeId: currentModeVal,
+            ...(!isRoutineMode && session.modeLabel ? { modeName: session.modeLabel } : {}),
+          }
+        : {}),
+    };
+  }, [
+    modeOption,
+    modelOption,
+    thoughtOption,
+    session.harnessId,
+    session.harnessName,
+    session.modelLabel,
+    session.modeLabel,
+    session.thoughtLevelLabel,
+  ]);
+
+  const pickerModel =
+    stagedTarget?.kind === 'local-kapibala'
+      ? (models.find((m) => m.id === stagedTarget.modelId) ?? defaultLocalModel)
+      : defaultLocalModel;
+
+  const pickerHarness =
+    stagedTarget?.kind === 'local-kapibala'
+      ? undefined
+      : stagedTarget
+        ? stagedTarget.choice
+        : currentHarnessBaseline;
+
+  const isHandoffStaged =
+    stagedTarget?.kind === 'cross-external' || stagedTarget?.kind === 'local-kapibala';
+  const inputWritable = session.canContinue || isHandoffStaged;
+  const canSend = inputWritable && !activeRun && !busy && Boolean(draft.trim());
+
+  const submitTurn = (rawText: string, clearDraft = true): void => {
+    const trimmed = rawText.trim();
+    if (!trimmed || !canSend) return;
+    if (stagedTarget?.kind === 'local-kapibala') {
+      const targetModelId = stagedTarget.modelId;
+      setStagedTarget(undefined);
+      onHandoffToLocal(trimmed, targetModelId);
+      return;
+    }
+    if (stagedTarget?.kind === 'cross-external') {
+      const targetChoice = stagedTarget.choice;
+      setStagedTarget(undefined);
+      onHandoffToExternal(trimmed, targetChoice);
+      return;
+    }
+    const overrides =
+      stagedTarget?.kind === 'same-external'
+        ? {
+            ...(stagedTarget.choice.modelId ? { modelId: stagedTarget.choice.modelId } : {}),
+            ...(stagedTarget.choice.modeId ? { modeId: stagedTarget.choice.modeId } : {}),
+            ...(stagedTarget.choice.thoughtLevel
+              ? { thoughtLevel: stagedTarget.choice.thoughtLevel }
+              : {}),
+          }
+        : undefined;
+    setStagedTarget(undefined);
+    onSend(
+      trimmed,
+      clearDraft,
+      overrides && Object.keys(overrides).length > 0 ? overrides : undefined,
+    );
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* 顶部外部代理权限与运行边界提示条（顶栏已展示空间名与代理名，此处仅聚焦协议、状态与信任边界，不再重复代理标题） */}
+      {/* 顶部外部代理权限与运行边界提示条 */}
       <div className="shrink-0 border-b border-kumo-hairline bg-kumo-base px-6 py-1.5 text-xs">
         <div className="mx-auto flex w-full max-w-[var(--kapibala-content-max)] flex-col gap-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-kumo-subtle">
@@ -421,7 +420,7 @@ export function ExternalSessionView({
             </span>
             <span aria-hidden="true">·</span>
             <span>{transportLabel(session.transport)}</span>
-            {!hasInteractiveControls && session.modelLabel && (
+            {session.modelLabel && (
               <>
                 <span aria-hidden="true">·</span>
                 <span className="inline-flex items-center gap-1">
@@ -430,16 +429,16 @@ export function ExternalSessionView({
                 </span>
               </>
             )}
-            {!hasInteractiveControls && session.modeLabel && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span>模式：{session.modeLabel}</span>
-              </>
-            )}
-            {!hasInteractiveControls && session.thoughtLevelLabel && (
+            {session.thoughtLevelLabel && (
               <>
                 <span aria-hidden="true">·</span>
                 <span>推理：{session.thoughtLevelLabel}</span>
+              </>
+            )}
+            {session.modeLabel && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>模式：{session.modeLabel}</span>
               </>
             )}
             <span className="ml-auto text-kumo-faint">外部代理 · 遵循该工具自有权限与登录态</span>
@@ -481,14 +480,14 @@ export function ExternalSessionView({
           hasPendingApproval={snapshot.approvals.length > 0}
           latestErrorNotice={session.lastError}
           onContinue={
-            session.canContinue && !activeRun && !busy ? () => onSend('继续', false) : undefined
+            session.canContinue && !activeRun && !busy ? () => submitTurn('继续', false) : undefined
           }
           root={workspaceRoot}
           scrollRef={scrollRef}
           onTool={onTool}
           onArtifact={onArtifact}
           onEdit={
-            session.canContinue
+            inputWritable
               ? (text) => {
                   onDraftChange(text);
                   requestAnimationFrame(() => inputRef.current?.focus());
@@ -521,13 +520,15 @@ export function ExternalSessionView({
               ref={inputRef}
               aria-label="发送消息"
               placeholder={
-                session.canContinue
-                  ? `向 ${session.harnessName} 发送后续指令…`
-                  : '当前为外部代理只读历史归档，如需继续请新建外部会话'
+                isHandoffStaged
+                  ? '继续输入，下一轮将携带当前对话历史切换至所选代理/模型…'
+                  : session.canContinue
+                    ? `向 ${session.harnessName} 发送后续指令…`
+                    : '当前为外部代理只读历史归档，如需继续请新建外部会话'
               }
-              value={session.canContinue ? draft : ''}
+              value={inputWritable ? draft : ''}
               onValueChange={onDraftChange}
-              disabled={!session.canContinue || busy}
+              disabled={!inputWritable || busy}
               autoResize
               minRows={1}
               maxRows={8}
@@ -537,67 +538,38 @@ export function ExternalSessionView({
                 if (onHistoryKeyDown?.(event)) return;
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
-                  if (canSend) onSend(draft.trim());
+                  submitTurn(draft);
                 }
               }}
             />
             <div className="flex items-center justify-between gap-2 pt-1">
               <div className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-kumo-subtle">
                 {workspaceName && <span className="truncate px-1">{workspaceName}</span>}
-                {session.canContinue &&
-                onSetConfig &&
-                (modeOption || modelOption || thoughtOption) ? (
-                  <>
-                    {modeOption && modeOption.options.length > 0 && (
-                      <ExternalOptionMenu
-                        option={modeOption}
-                        fallbackLabel={session.modeLabel}
-                        disabled={configSwitchDisabled}
-                        onSelect={(value) =>
-                          onSetConfig({
-                            configId: modeOption.id,
-                            category: 'mode',
-                            value,
-                          })
-                        }
-                      />
-                    )}
-                    {modelOption && modelOption.options.length > 0 && (
-                      <ExternalModelSelector
-                        option={modelOption}
-                        fallbackLabel={session.modelLabel}
-                        disabled={configSwitchDisabled}
-                        onSelect={(value) =>
-                          onSetConfig({
-                            configId: modelOption.id,
-                            category: 'model',
-                            value,
-                          })
-                        }
-                      />
-                    )}
-                    {thoughtOption && thoughtOption.options.length > 0 && (
-                      <ExternalOptionMenu
-                        option={thoughtOption}
-                        fallbackLabel={session.thoughtLevelLabel}
-                        disabled={configSwitchDisabled}
-                        onSelect={(value) =>
-                          onSetConfig({
-                            configId: thoughtOption.id,
-                            category: 'thought_level',
-                            value,
-                          })
-                        }
-                      />
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <span>·</span>
-                    <span className="truncate">{session.harnessName}</span>
-                  </>
-                )}
-                {!session.canContinue && (
+                <ComposerModelPicker
+                  contextMode="session"
+                  models={models}
+                  providers={providers}
+                  harnesses={mergedHarnesses}
+                  model={pickerModel}
+                  harness={pickerHarness}
+                  disabled={busy}
+                  harnessesFailed={harnessesFailed}
+                  refreshingHarnessId={refreshingHarnessId}
+                  onModel={(profileId) =>
+                    setStagedTarget({ kind: 'local-kapibala', modelId: profileId })
+                  }
+                  onHarness={(choice) => {
+                    if (choice.id === session.harnessId && session.canContinue) {
+                      setStagedTarget({ kind: 'same-external', choice });
+                    } else {
+                      setStagedTarget({ kind: 'cross-external', choice });
+                    }
+                  }}
+                  onRefreshHarnessModels={onRefreshHarnessModels}
+                  onSettings={onSettings}
+                  onExternalSettings={onExternalSettings}
+                />
+                {!session.canContinue && !isHandoffStaged && (
                   <Button
                     className="kapibala-action"
                     variant="secondary"
@@ -633,13 +605,24 @@ export function ExternalSessionView({
                     }
                     aria-label="发送"
                     disabled={!canSend}
-                    onClick={() => onSend(draft.trim())}
+                    onClick={() => submitTurn(draft)}
                   >
                     <ArrowUpIcon size={17} weight="bold" />
                   </Button>
                 )}
               </div>
             </div>
+            {stagedTarget && (
+              <div className="mt-2 border-t border-kumo-hairline px-2 pt-2">
+                <p className="kapibala-composer-hint text-kumo-subtle">
+                  {stagedTarget.kind === 'same-external'
+                    ? '已选择新模型/推理配置，将在下一轮发送时生效，不会打断当前对话。'
+                    : stagedTarget.kind === 'cross-external'
+                      ? `下一轮发送时将携带当前对话历史，切换至 ${stagedTarget.choice.name} 新会话继续。`
+                      : `下一轮发送时将携带当前对话历史，切换至 Kapibala 本地模型（${pickerModel?.name ?? stagedTarget.modelId}）继续。`}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </footer>

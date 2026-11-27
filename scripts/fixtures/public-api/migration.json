@@ -110,6 +110,7 @@
       "cli/view-model:ViewTodoItem",
       "cli/view-model:ViewTodoState",
       "cli/view-model:ViewTodoStatus",
+      "cli/view-model:ViewTurnMeta",
       "cli/view-model:ViewUsage",
       "cli/view-model:summarizeToolGroup",
       "core:DEFAULT_REFERENCE_RECORD_LIMIT",

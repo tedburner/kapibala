@@ -173,6 +173,20 @@ const usage = z
     totalTokens: z.number().nonnegative(),
   })
   .strict();
+const turnMeta = z
+  .object({
+    agentName: text.optional(),
+    modelLabel: text.optional(),
+    effortLabel: text.optional(),
+    modeLabel: text.optional(),
+  })
+  .strict();
+const handoffPayload = z
+  .object({
+    fromTitle: z.string().max(200),
+    context: z.string().min(1).max(64_000),
+  })
+  .strict();
 const message = z
   .object({
     id: text,
@@ -181,6 +195,7 @@ const message = z
     persisted: z.boolean(),
     blocks: z.array(block),
     usage: usage.optional(),
+    turnMeta: turnMeta.optional(),
   })
   .strict();
 const identity = z
@@ -1029,6 +1044,8 @@ export const PARAMS = {
     input: z.string().min(1).max(512_000),
     /** 重试：宿主先截断上一轮再按同一输入重跑；缺省为普通发送。 */
     regenerate: z.boolean().optional(),
+    /** 跨代理接力上下文：以受控 `promptSource` 注入请求，不在用户气泡平铺历史文本。 */
+    handoff: handoffPayload.optional(),
   }),
   'run.cancel': session.extend({ runId: id }),
   'run.status': session,
@@ -1095,12 +1112,24 @@ export const PARAMS = {
       modelId: z.string().min(1).max(256).optional(),
       modeId: z.string().min(1).max(256).optional(),
       thoughtLevel: z.string().min(1).max(256).optional(),
+      handoff: handoffPayload.optional(),
     })
     .strict(),
   'external.snapshot': session,
   'external.subscribe': session.extend({ subscriptionId: z.uuid() }),
   'external.unsubscribe': z.object({ subscriptionId: z.uuid() }).strict(),
-  'external.prompt': session.extend({ text: z.string().min(1).max(512_000) }),
+  'external.prompt': session.extend({
+    text: z.string().min(1).max(512_000),
+    configOverrides: z
+      .object({
+        modelId: z.string().min(1).max(256).optional(),
+        modeId: z.string().min(1).max(256).optional(),
+        thoughtLevel: z.string().min(1).max(256).optional(),
+      })
+      .strict()
+      .optional(),
+    handoff: handoffPayload.optional(),
+  }),
   'external.setConfig': session.extend({
     configId: z.string().min(1).max(128),
     category: externalConfigCategory,

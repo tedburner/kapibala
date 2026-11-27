@@ -800,4 +800,69 @@ describe('ExternalSessionService 会话编排、审批、空闲回收与 configD
     await new Promise((resolve) => setTimeout(resolve, 120));
     expect(closedCount).toBeGreaterThanOrEqual(1);
   });
+
+  it('支持跨代理接力上下文注入、下一轮发送时原子切换模型/推理强度，并逐轮固化 turnMeta', async () => {
+    const homeDir = makeTempDir('kpbl-ext-turnmeta-home-');
+    const workspaceRoot = makeTempDir('kpbl-ext-turnmeta-ws-');
+    const service = new ExternalSessionService({
+      homeDir,
+      isWorkspaceTrusted: () => true,
+      idleTimeoutMs: 60_000,
+    });
+    activeServices.push(service);
+
+    service.saveCustomHarness({
+      id: 'opencode-sim',
+      name: 'OpenCode',
+      command: process.execPath,
+      args: [fixtureScript, '--mode=opencode-model-sync'],
+      enabled: true,
+    });
+
+    // 第 1 轮：携带原会话历史上下文创建并发送（DeepSeek V4.1 Flash Free · Max）
+    const turn1 = await service.startSession({
+      workspaceRoot,
+      harnessId: 'opencode-sim',
+      prompt: '请总结上下文重点',
+      modelId: 'opencode/deepseek-v4.1-flash-free',
+      thoughtLevel: 'max',
+      handoff: {
+        fromTitle: '旧本地会话',
+        context: '<conversation_handoff>[User]: 关键代号 KAPI-777</conversation_handoff>',
+      },
+    });
+
+    expect(turn1.messages[0]?.blocks[0]?.text).toBe('请总结上下文重点');
+    expect(turn1.messages[0]?.blocks[1]?.skillName).toBe('承接 · 旧本地会话');
+    expect(turn1.messages[0]?.blocks[1]?.text).toBe('');
+    // fake-acp-agent 回显收到的完整 prompt，确认接力上下文已送达外部代理
+    expect(turn1.messages[1]?.blocks.some((b) => b.text.includes('KAPI-777'))).toBe(true);
+    expect(turn1.messages[1]?.turnMeta).toEqual({
+      agentName: 'OpenCode',
+      modelLabel: 'DeepSeek V4.1 Flash Free',
+      effortLabel: 'Max',
+    });
+
+    // 第 2 轮：在下一轮发送时切换到不支持推理变体的 opencode/big-pickle，验证旧轮 turnMeta 不变且新轮清空旧 effortLabel
+    const turn2 = await service.promptSession({
+      sessionId: turn1.session.id,
+      text: '第二轮用无推理模型回复',
+      expectedWorkspaceRoot: workspaceRoot,
+      configOverrides: {
+        modelId: 'opencode/big-pickle',
+      },
+    });
+
+    expect(turn2.session.modelLabel).toBe('opencode/Big Pickle');
+    expect(turn2.session.thoughtLevelLabel).toBeUndefined();
+    expect(turn2.messages[1]?.turnMeta).toEqual({
+      agentName: 'OpenCode',
+      modelLabel: 'DeepSeek V4.1 Flash Free',
+      effortLabel: 'Max',
+    });
+    expect(turn2.messages[3]?.turnMeta).toEqual({
+      agentName: 'OpenCode',
+      modelLabel: 'Big Pickle',
+    });
+  });
 });

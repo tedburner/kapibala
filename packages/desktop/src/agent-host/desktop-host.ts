@@ -567,6 +567,7 @@ export class DesktopHost {
               sessionId: opened.session.id,
               text: initialPrompt,
               expectedWorkspaceRoot: ws.root,
+              ...(p.handoff ? { handoff: p.handoff } : {}),
             });
           } catch (err) {
             await this.external.deleteSession(opened.session.id, ws.root).catch(() => {});
@@ -658,6 +659,8 @@ export class DesktopHost {
           sessionId: current.session.id,
           text: p.text,
           expectedWorkspaceRoot: ws.root,
+          ...(p.configOverrides ? { configOverrides: p.configOverrides } : {}),
+          ...(p.handoff ? { handoff: p.handoff } : {}),
         });
       }
       case 'external.setConfig': {
@@ -1308,6 +1311,8 @@ export class DesktopHost {
       input: string;
       /** 重试：托管层先回退上一轮再重跑，失败按普通运行错误回执。 */
       regenerate?: boolean;
+      /** 跨代理接力上下文。 */
+      handoff?: { readonly fromTitle: string; readonly context: string };
     },
     execute?: (handle: ManagedHostSession) => Promise<void>,
   ): RunReceipt {
@@ -1344,7 +1349,10 @@ export class DesktopHost {
     slot.running = (
       execute
         ? execute(slot.handle)
-        : slot.handle.run(p.input, undefined, { regenerate: p.regenerate })
+        : slot.handle.run(p.input, undefined, {
+            regenerate: p.regenerate,
+            ...(p.handoff ? { handoff: p.handoff } : {}),
+          })
     )
       .then(
         () => {

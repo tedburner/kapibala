@@ -283,10 +283,35 @@ test.describe
         page.getByText('Codex config: model=gpt-6-astra, effort=xhigh, sandbox=workspaceWrite'),
       ).toBeVisible({ timeout: 15_000 });
       await expect(
-        page.getByRole('button', { name: '外部会话模型：GPT-6-Astra', exact: true }),
+        page.getByRole('button', {
+          name: '当前会话代理：Codex · GPT-6-Astra · Extra High',
+          exact: true,
+        }),
       ).toBeVisible();
+      // 验证第 1 轮回答尾部常驻展示当轮代理、模型与推理强度
+      await expect(page.getByText('Codex · GPT-6-Astra · Extra High')).toBeVisible();
+
+      // 在历史会话中切换到另一模型与推理档位（GPT-6-Luna · High），验证仅在下一轮生效且第 1 轮尾部信息保持不变
+      await page
+        .getByRole('button', {
+          name: '当前会话代理：Codex · GPT-6-Astra · Extra High',
+          exact: true,
+        })
+        .click();
+      await page.getByRole('option', { name: 'GPT-6-Luna', exact: true }).click();
+      await page
+        .getByRole('region', { name: '推理与模式配置' })
+        .getByRole('button', { name: 'High', exact: true })
+        .click();
+      await page.keyboard.press('Escape');
+      await expect(page.getByText(/将在下一轮发送时生效/)).toBeVisible();
+
+      await page.getByRole('textbox', { name: '发送消息' }).fill('echo-config');
+      await page.getByRole('textbox', { name: '发送消息' }).press('Enter');
       await expect(
-        page.getByRole('button', { name: '外部会话推理档位：Extra High', exact: true }),
-      ).toBeVisible();
+        page.getByText('Codex config: model=gpt-6-luna, effort=high, sandbox=workspaceWrite'),
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText('Codex · GPT-6-Astra · Extra High')).toBeVisible();
+      await expect(page.getByText('Codex · GPT-6-Luna · High')).toBeVisible();
     });
   });
