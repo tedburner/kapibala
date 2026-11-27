@@ -27,6 +27,11 @@ async function stop(app: ElectronApplication) {
 async function firstWindow(app: ElectronApplication) {
   const page = await app.firstWindow();
   await page.emulateMedia({ reducedMotion: 'reduce' });
+  await app.evaluate(({ app, BrowserWindow }) => {
+    if (process.platform === 'darwin') app.focus({ steal: true });
+    BrowserWindow.getAllWindows()[0]?.focus();
+  });
+  await page.bringToFront();
   return page;
 }
 test('隔离默认空间的真实窗口、发送与清理', async () => {

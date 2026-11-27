@@ -27,6 +27,11 @@ async function stop(app: ElectronApplication) {
 async function firstWindow(app: ElectronApplication) {
   const page = await app.firstWindow();
   await page.emulateMedia({ reducedMotion: 'reduce' });
+  await app.evaluate(({ app, BrowserWindow }) => {
+    if (process.platform === 'darwin') app.focus({ steal: true });
+    BrowserWindow.getAllWindows()[0]?.focus();
+  });
+  await page.bringToFront();
   return page;
 }
 
@@ -187,8 +192,10 @@ test.describe
       await expect(page.getByText('外部代理', { exact: true })).toHaveCount(0);
       await page.getByRole('button', { name: '新建对话', exact: true }).click();
       const input = page.getByRole('textbox', { name: '发送消息' });
+      await expect(input).toBeFocused();
       await input.fill('NEED_APPROVAL');
       const picker = page.getByRole('button', { name: /新对话模型或代理/ });
+      await expect(picker).toBeEnabled();
       await picker.press('Enter');
       const search = page.getByRole('combobox', { name: '搜索代理或模型' });
       await expect(search).toBeFocused();
