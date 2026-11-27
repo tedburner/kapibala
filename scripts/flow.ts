@@ -162,25 +162,73 @@ export function restoreVersionBump(root: string, changes: VersionChange[]): stri
   return conflicts;
 }
 
-/** 发布说明骨架；占位符必须在发布前替换为真实内容（CI 与 GitHub Release 都取自该文件）。 */
-export function releaseNotesSkeleton(tag: string): string {
+/**
+ * 生成双层结构的发布说明骨架（上半部分用户视角亮点速览 + 接下来预告，下半部分按产品界面分组的详细变更）。
+ * 占位符受 `validateReleaseNotes` 门禁拦截，必须在打 tag 前替换为真实内容（CI 与 GitHub Release 正文均直接取自该文件）。
+ */
+export function releaseNotesSkeleton(tag: string, previousTag = '<上一版本标签>'): string {
   const version = tag.slice(1);
   return `# Kapibala ${tag}：<发布主题，发布前替换>
 
-本版交付 <发布前补全：一段话概述>，已于 <发布日期> 发布至 npm 与 [GitHub Release](https://github.com/tedburner/kapibala/releases/tag/${tag})。
+感谢使用 Kapibala 并反馈体验建议。本版于 <发布日期> 发布，带来 <发布前补全：一段话概述>。
+
+## <一句话串联本版 2-4 个最核心的用户体验变化> ✨
 
 - <!-- 交付要点：能力、边界、已知限制，逐条列出 -->
+- 🚀 **<亮点结论句，直说用户能做什么或感受到了什么变化>。** <1-2 句补充具体使用效果，不堆内部类名>。
 
-升级前请阅读 [${tag} 迁移说明](../migration/${tag}.md)。
-<!-- 若本版没有迁移说明，删除上一行；如有验收记录，可参照 v0.0.3 的结构补充链接 -->
+## 接下来
 
-需要 Node.js 20 或更高版本。按版本安装：
+- <下一版本已在 RELEASES.md 确认推进的 2-4 项重点预告>
+
+---
+
+## 详细变更
+
+<!-- 基于 git log ${previousTag}..HEAD 梳理全部用户可感知的功能、修复与性能改进，按产品模块分组，删除本版本无变更的空分组 -->
+
+### 🖥️ 桌面客户端与对话体验
+
+*<一句话概括本分组对用户体验的改进。>*
+
+* <具体功能、交互优化或缺陷修复条目>
+
+### 🤝 外部代理、MCP 与技能生态
+
+*<一句话概括本分组对代理连接、MCP 或技能管理的改进。>*
+
+* <具体功能或修复条目>
+
+### ⌨️ CLI 与本地宿主协议
+
+*<一句话概括本分组对终端命令、守护进程或 Wire 协议的改进。>*
+
+* <具体功能或修复条目>
+
+### 🛡️ 执行底座、沙箱与跨平台兼容
+
+*<一句话概括本分组对运行时、权限沙箱或跨平台稳定性的改进。>*
+
+* <具体功能或修复条目>
+
+---
+
+## 升级与安装说明
+
+<!-- 说明是否包含破坏性变更；若有迁移说明请保留下方链接，若无则删除 -->
+升级细节与边界说明见 [${tag} 迁移说明](../migration/${tag}.md) 与 [SDK 兼容性盘点](../sdk-compatibility.md)。
+
+- **命令行与 SDK（需 Node.js 20+）**：
 
 \`\`\`bash
 npx @kiturone/kapibala-cli@${version}
 npm install -g @kiturone/kapibala-cli@${version}
 npm install @kiturone/kapibala@${version}
 \`\`\`
+
+- **桌面客户端**：在下方 Release Assets 下载对应平台安装包并核对 \`SHA256SUMS.txt\`（未签名测试包首次打开方式见 [桌面发布说明](../desktop-release.md)）。
+
+**完整变更对比**：https://github.com/tedburner/kapibala/compare/${previousTag}...${tag}
 `;
 }
 
@@ -294,19 +342,15 @@ interface ReleaseOptions {
   scaffold: boolean;
 }
 
-function resolveReleaseTag(target: string | undefined, root: string): string {
-  const current = readWorkspaceVersion(root);
-  return `v${parseTargetVersion(target, current)}`;
-}
-
 async function release(root: string, options: ReleaseOptions): Promise<void> {
   if (options.scaffold) {
-    const tag = resolveReleaseTag(options.target, root);
+    const current = readWorkspaceVersion(root);
+    const tag = `v${parseTargetVersion(options.target, current)}`;
     const notesPath = path.join(root, 'docs/releases', `${tag}.md`);
     if (fs.existsSync(notesPath))
       throw new Error(`Release notes already exist: docs/releases/${tag}.md`);
     fs.mkdirSync(path.dirname(notesPath), { recursive: true });
-    fs.writeFileSync(notesPath, releaseNotesSkeleton(tag));
+    fs.writeFileSync(notesPath, releaseNotesSkeleton(tag, `v${current}`));
     console.log(`✅ 已生成发布说明骨架：docs/releases/${tag}.md`);
     console.log('请补全内容并手动提交，然后重新运行 pnpm release 完成发布。');
     return;

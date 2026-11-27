@@ -10,10 +10,12 @@ import {
   isGreaterVersion,
   parseTargetVersion,
   prepareVersionBump,
+  releaseNotesSkeleton,
   restoreVersionBump,
   sanitizeBranchName,
   sanitizeTopic,
 } from '../flow.js';
+import { validateReleaseNotes } from '../release.js';
 
 const temporaryRoots: string[] = [];
 afterEach(() => {
@@ -166,4 +168,14 @@ it('版本事务同步桌面版本但不扩大 npm 发布包集合', () => {
   expect(changes.find((item) => item.file === 'packages/desktop/package.json')?.updated).toContain(
     '0.1.0',
   );
+});
+
+describe('release notes scaffold', () => {
+  it('generates two-tier release notes with compare link and blocks until placeholders are filled', () => {
+    const skeleton = releaseNotesSkeleton('v0.1.5', 'v0.1.4');
+    expect(skeleton).toContain('## 接下来');
+    expect(skeleton).toContain('## 详细变更');
+    expect(skeleton).toContain('https://github.com/tedburner/kapibala/compare/v0.1.4...v0.1.5');
+    expect(() => validateReleaseNotes(skeleton)).toThrow(/占位/);
+  });
 });
