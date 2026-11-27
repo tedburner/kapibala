@@ -106,7 +106,10 @@ export class ViewClient {
   async start(
     scope: { workspaceId: string; sessionId: string },
     input: string,
-    options?: { regenerate?: boolean },
+    options?: {
+      regenerate?: boolean;
+      handoff?: { readonly fromTitle: string; readonly context: string };
+    },
   ): Promise<void> {
     try {
       await this.api.run.start({
@@ -114,6 +117,7 @@ export class ViewClient {
         operationId: crypto.randomUUID(),
         input,
         ...(options?.regenerate ? { regenerate: true } : {}),
+        ...(options?.handoff ? { handoff: options.handoff } : {}),
       });
     } catch (error) {
       this.halted = true;
@@ -140,6 +144,18 @@ export class ViewClient {
     const receipt = await this.api.run.status(scope);
     if (receipt)
       this.update({ ...this.facts, runs: { ...this.facts.runs, [receipt.sessionId]: receipt } });
+  }
+  /**
+   * 审批应答完成或因过期/会话关闭失败后就地移除残留请求：
+   * 正常路径与 `approval.closed` 幂等对齐；异常路径防止失效卡片锁死模态遮罩。
+   */
+  dismissApproval(approvalId: string): void {
+    this.approvalContexts.delete(approvalId);
+    if (!this.facts.approvals.some((item) => item.approvalId === approvalId)) return;
+    this.update({
+      ...this.facts,
+      approvals: this.facts.approvals.filter((item) => item.approvalId !== approvalId),
+    });
   }
   /** 全应用仅一份后台摘要，不随详细消息列表切换；旧初始回复不能覆盖较新通知。 */
   async connectRuntime(): Promise<void> {
@@ -264,6 +280,14 @@ export class ViewClient {
     if (event.type === 'watch.triggered') return;
     // 更新下载进度只服务设置页的独立订阅，不进入会话展示投影。
     if (event.type === 'update.downloadProgress') return;
+    // 外部代理事件由 App 独立订阅处理，不混入本地会话展示投影。
+    if (
+      event.type === 'external.listChanged' ||
+      event.type === 'external.snapshotChanged' ||
+      event.type === 'external.snapshotInvalidated' ||
+      event.type === 'external.attention'
+    )
+      return;
     const scope = this.scope;
     if (
       !scope ||

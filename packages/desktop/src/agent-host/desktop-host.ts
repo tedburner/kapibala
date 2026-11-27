@@ -25,6 +25,7 @@ import {
 // 启动任务文本与技能导入门面只在宿主内部约定里共享：投影与直发两处必须同一个常量。
 import {
   EXPLICIT_SKILL_KICKOFF,
+  ExternalSessionService,
   importSkills,
   scanImportableSkills,
 } from '@kiturone/kapibala-host/internal';
@@ -36,6 +37,7 @@ import {
   type Output,
   PARAMS,
   PresentationEventSchema,
+  RESULTS,
   type RunReceipt,
   encodedBytes,
 } from '../shared/contracts.js';
@@ -59,6 +61,7 @@ const DESKTOP_UNHANDLED_COMMANDS: ReadonlyMap<string, string> = new Map([
   ['model', '会话内模型切换依赖 CLI 宿主回调，桌面端请在设置面板管理模型。'],
   ['exit', '桌面端没有退出命令；请直接关闭窗口或会话标签。'],
   ['prompt', '提示词任务依赖运行收据管线适配，桌面端暂未开放；可改用该服务的 MCP 工具。'],
+  ['external', '桌面端请在新对话输入框选择外部代理，或在设置面板「外部代理」中管理配置。'],
 ]);
 
 type Scope = { workspaceId: string; sessionId: string };
@@ -103,6 +106,15 @@ export class DesktopHost {
   readonly workspaces: Workspaces;
   readonly settings: SettingsService;
   readonly resources: ResourceService;
+  readonly external: ExternalSessionService;
+  private readonly externalStreams = new Map<
+    string,
+    {
+      readonly sessionId: string;
+      readonly stream: LatestSnapshot<Output<'external.snapshot'>>;
+      readonly unsubscribe: () => void;
+    }
+  >();
   private readonly leases = new WorkspaceLeaseCoordinator();
   private readonly sessions = new Map<string, Slot>();
   private readonly operations = new Map<string, { digest: string; receipt: RunReceipt }>();
@@ -115,6 +127,7 @@ export class DesktopHost {
     home: string,
     private readonly notify: (event: Notification, lane?: Lane) => Promise<void>,
     private readonly assemble = createManagedSession,
+    externalHostEnv?: NodeJS.ProcessEnv,
   ) {
     this.runtimeStream = new LatestSnapshot(
       (subscriptionId, snapshot) =>
@@ -129,6 +142,37 @@ export class DesktopHost {
     this.workspaces = new Workspaces(home);
     this.settings = new SettingsService(this.workspaces);
     this.resources = new ResourceService(this.workspaces);
+    this.external = new ExternalSessionService({
+      homeDir: this.workspaces.home,
+      hostEnv: externalHostEnv,
+      onAttentionEvent: (evt) => {
+        if (this.dead) return;
+        const wsId = this.workspaces.findIdByRoot(evt.session.workspaceRoot);
+        if (!wsId) return;
+        void this.notify(
+          {
+            type: 'external.attention',
+            kind: evt.kind,
+            workspaceId: wsId,
+            sessionId: evt.session.id,
+            title: evt.session.title,
+            harnessName: evt.session.harnessName,
+          },
+          'control',
+        ).catch(() => {});
+      },
+    });
+    this.external.subscribeList((workspaceRoot) => {
+      if (this.dead) return;
+      const wsId = workspaceRoot ? this.workspaces.findIdByRoot(workspaceRoot) : undefined;
+      void this.notify(
+        {
+          type: 'external.listChanged',
+          ...(wsId ? { workspaceId: wsId } : {}),
+        },
+        'control',
+      ).catch(() => {});
+    });
     // 启动清扫：进程异常退出遗留的死锁会让归档/恢复/删除以 SESSION_LOCKED 永久失败。
     // 只清「持有者确认死亡」与超宽限期的损坏锁；存活的锁（含本进程与并行实例的）一律不动。
     void SessionLock.sweepStaleDead(path.join(home, '.kapibala', 'sessions')).catch(() => {});
@@ -442,6 +486,251 @@ export class DesktopHost {
         for (const event of buffered) this.publish(slot, view, event);
         return {};
       }
+      case 'external.harnesses': {
+        const p = PARAMS[method].parse(params);
+        if (p.workspaceId) this.workspaces.get(p.workspaceId);
+        return this.external.listHarnesses();
+      }
+      case 'external.saveHarness': {
+        const p = PARAMS[method].parse(params);
+        const harnesses = p.builtin
+          ? this.external.saveBuiltinOverride(p.id, {
+              ...(p.command !== undefined ? { command: p.command } : {}),
+              ...(p.args !== undefined ? { args: p.args } : {}),
+              ...(p.envFrom !== undefined ? { envFrom: p.envFrom } : {}),
+              ...(p.enabled !== undefined ? { enabled: p.enabled } : {}),
+            })
+          : this.external.saveCustomHarness({
+              id: p.id,
+              name: p.name ?? p.id,
+              command: p.command ?? '',
+              args: p.args ?? [],
+              ...(p.registryId ? { registryId: p.registryId } : {}),
+              ...(p.envFrom ? { envFrom: p.envFrom } : {}),
+              enabled: p.enabled ?? true,
+            });
+        return { harnesses };
+      }
+      case 'external.resetHarness': {
+        const p = PARAMS[method].parse(params);
+        return { harnesses: this.external.resetBuiltinOverride(p.id) };
+      }
+      case 'external.toggleHarness': {
+        const p = PARAMS[method].parse(params);
+        return { harnesses: this.external.toggleHarness(p.id, p.enabled) };
+      }
+      case 'external.deleteHarness': {
+        const p = PARAMS[method].parse(params);
+        return { harnesses: this.external.deleteCustomHarness(p.id) };
+      }
+      case 'external.testHarness': {
+        const p = PARAMS[method].parse(params);
+        const wsRoot = p.workspaceId ? this.workspaces.get(p.workspaceId, true).root : undefined;
+        if (p.draft) {
+          return await this.external.testHarness(
+            {
+              id: p.id ?? 'draft-probe',
+              name: p.draft.name,
+              transport: 'acp',
+              command: p.draft.command,
+              args: p.draft.args,
+              ...(p.draft.envFrom ? { envFrom: p.draft.envFrom } : {}),
+              enabled: true,
+            },
+            wsRoot,
+          );
+        }
+        if (!p.id) throw new Error('INVALID_REQUEST');
+        return await this.external.testHarness(p.id, wsRoot);
+      }
+      case 'external.list': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        return { items: this.external.listSessions(ws.root) };
+      }
+      case 'external.open': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const initialPrompt = p.prompt?.trim();
+        const opened = await this.external.openSession({
+          workspaceRoot: ws.root,
+          harnessId: p.harnessId,
+          ...(p.title ? { title: p.title } : {}),
+          ...(p.modelId ? { modelId: p.modelId } : {}),
+          ...(p.modeId ? { modeId: p.modeId } : {}),
+          ...(p.thoughtLevel ? { thoughtLevel: p.thoughtLevel } : {}),
+          ...(initialPrompt ? { requireIdleWorkspace: true } : {}),
+        });
+        if (initialPrompt) {
+          try {
+            return await this.external.dispatchPrompt({
+              sessionId: opened.session.id,
+              text: initialPrompt,
+              expectedWorkspaceRoot: ws.root,
+              ...(p.handoff ? { handoff: p.handoff } : {}),
+            });
+          } catch (err) {
+            await this.external.deleteSession(opened.session.id, ws.root).catch(() => {});
+            throw err;
+          }
+        }
+        return opened;
+      }
+      case 'external.snapshot': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const snap = this.external.getSnapshot(p.sessionId, ws.root);
+        if (this.workspaces.findIdByRoot(snap.session.workspaceRoot) !== ws.id) {
+          throw new Error('FORBIDDEN');
+        }
+        return snap;
+      }
+      case 'external.subscribe': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const snap = this.external.getSnapshot(p.sessionId, ws.root);
+        if (this.workspaces.findIdByRoot(snap.session.workspaceRoot) !== ws.id) {
+          throw new Error('FORBIDDEN');
+        }
+        const existing = this.externalStreams.get(p.subscriptionId);
+        if (existing) {
+          existing.unsubscribe();
+          existing.stream.close();
+          this.externalStreams.delete(p.subscriptionId);
+        }
+        const stream = new LatestSnapshot<Output<'external.snapshot'>>(
+          (subscriptionId, snapshot) =>
+            this.notify(
+              {
+                type: 'external.snapshotChanged',
+                subscriptionId,
+                sessionId: snap.session.id,
+                snapshot,
+              },
+              'data',
+            ),
+          (subscriptionId) => {
+            const staleSub = this.externalStreams.get(subscriptionId);
+            if (staleSub) {
+              staleSub.unsubscribe();
+              this.externalStreams.delete(subscriptionId);
+            }
+            if (!this.dead) {
+              void this.notify(
+                {
+                  type: 'external.snapshotInvalidated',
+                  subscriptionId,
+                  sessionId: snap.session.id,
+                },
+                'control',
+              ).catch(() => {});
+            }
+          },
+        );
+        stream.subscribe(p.subscriptionId);
+        const unsubscribe = this.external.subscribeSession(snap.session.id, (nextSnap) => {
+          stream.push(RESULTS['external.snapshot'].parse(nextSnap));
+        });
+        this.externalStreams.set(p.subscriptionId, {
+          sessionId: snap.session.id,
+          stream,
+          unsubscribe,
+        });
+        return snap;
+      }
+      case 'external.unsubscribe': {
+        const p = PARAMS[method].parse(params);
+        const sub = this.externalStreams.get(p.subscriptionId);
+        if (sub) {
+          sub.unsubscribe();
+          sub.stream.unsubscribe(p.subscriptionId);
+          this.externalStreams.delete(p.subscriptionId);
+        }
+        return {};
+      }
+      case 'external.prompt': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
+        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+          throw new Error('FORBIDDEN');
+        }
+        return await this.external.dispatchPrompt({
+          sessionId: current.session.id,
+          text: p.text,
+          expectedWorkspaceRoot: ws.root,
+          ...(p.configOverrides ? { configOverrides: p.configOverrides } : {}),
+          ...(p.handoff ? { handoff: p.handoff } : {}),
+        });
+      }
+      case 'external.setConfig': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
+        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+          throw new Error('FORBIDDEN');
+        }
+        return await this.external.setSessionConfig({
+          sessionId: current.session.id,
+          configId: p.configId,
+          category: p.category,
+          value: p.value,
+          expectedWorkspaceRoot: ws.root,
+        });
+      }
+      case 'external.approve': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
+        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+          throw new Error('FORBIDDEN');
+        }
+        await this.external.approveSession({
+          sessionId: current.session.id,
+          approvalId: p.approvalId,
+          ...(p.optionId ? { optionId: p.optionId } : {}),
+          ...(p.cancel !== undefined ? { cancel: p.cancel } : {}),
+          expectedWorkspaceRoot: ws.root,
+        });
+        return {};
+      }
+      case 'external.cancel': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
+        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+          throw new Error('FORBIDDEN');
+        }
+        await this.external.cancelSession(current.session.id, ws.root);
+        return {};
+      }
+      case 'external.close': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
+        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+          throw new Error('FORBIDDEN');
+        }
+        await this.external.closeSession(current.session.id, ws.root);
+        return {};
+      }
+      case 'external.delete': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const current = this.external.getSnapshot(p.sessionId, ws.root);
+        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+          throw new Error('FORBIDDEN');
+        }
+        for (const [subId, sub] of this.externalStreams) {
+          if (sub.sessionId === current.session.id) {
+            sub.unsubscribe();
+            sub.stream.close();
+            this.externalStreams.delete(subId);
+          }
+        }
+        const deleted = await this.external.deleteSession(current.session.id, ws.root);
+        return { deleted };
+      }
       default:
         throw new Error('FORBIDDEN');
     }
@@ -451,11 +740,17 @@ export class DesktopHost {
   async disconnect(): Promise<void> {
     this.dead = true;
     this.runtimeStream.close();
+    for (const sub of this.externalStreams.values()) {
+      sub.unsubscribe();
+      sub.stream.close();
+    }
+    this.externalStreams.clear();
     for (const pending of [...this.approvals.values()]) pending.finish('deny_once', 'aborted');
     const openings = await Promise.allSettled([...this.openings]);
-    const results = await Promise.allSettled(
-      [...this.sessions.values()].map((slot) => this.close(slot)),
-    );
+    const [results, externalRes] = await Promise.all([
+      Promise.allSettled([...this.sessions.values()].map((slot) => this.close(slot))),
+      Promise.allSettled([this.external.dispose()]),
+    ]);
     if (
       openings.some(
         (item) =>
@@ -464,7 +759,10 @@ export class DesktopHost {
       )
     )
       throw new Error('SESSION_CLEANUP_FAILED');
-    if (results.some((item) => item.status === 'rejected'))
+    if (
+      results.some((item) => item.status === 'rejected') ||
+      externalRes.some((item) => item.status === 'rejected')
+    )
       throw new Error('SESSION_CLEANUP_FAILED');
   }
   /** 只供测试和监督读取的数字事实，不暴露会话、Provider、原历史或密钥。 */
@@ -986,6 +1284,7 @@ export class DesktopHost {
         return match ? match.value : null;
       },
       dispatcher: this.commands,
+      external: this.external,
       runSkill: async (name, task) => {
         // 显式技能走与 run.start 相同的收据管线：忙碌反映、事件流、取消语义保持一致。
         // 必须 await：start 的同步门禁（忙碌/展示未就绪/限额）拒绝时要把失败
@@ -1012,6 +1311,8 @@ export class DesktopHost {
       input: string;
       /** 重试：托管层先回退上一轮再重跑，失败按普通运行错误回执。 */
       regenerate?: boolean;
+      /** 跨代理接力上下文。 */
+      handoff?: { readonly fromTitle: string; readonly context: string };
     },
     execute?: (handle: ManagedHostSession) => Promise<void>,
   ): RunReceipt {
@@ -1048,7 +1349,10 @@ export class DesktopHost {
     slot.running = (
       execute
         ? execute(slot.handle)
-        : slot.handle.run(p.input, undefined, { regenerate: p.regenerate })
+        : slot.handle.run(p.input, undefined, {
+            regenerate: p.regenerate,
+            ...(p.handoff ? { handoff: p.handoff } : {}),
+          })
     )
       .then(
         () => {

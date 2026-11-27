@@ -18,7 +18,7 @@
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { toolchainEnv } from './process-env.mjs';
+import { resolvePnpmCommand, toolchainEnv } from './process-env.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const steps = [
@@ -28,11 +28,10 @@ if (process.argv.includes('--desktop'))
   steps.push(['--filter', '@kiturone/kapibala-desktop', 'build']);
 
 for (const args of steps) {
-  const result = spawnSync('pnpm', args, {
+  const invocation = resolvePnpmCommand(args, process.env);
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: repository,
     stdio: 'inherit',
-    // Windows 上 npm 脚本必须以 shell 启动，否则 node 拒绝执行 .cmd
-    shell: process.platform === 'win32',
     env: toolchainEnv(process.env, repository),
   });
   if (result.error) throw result.error;

@@ -10,6 +10,7 @@ import type {
   ViewIdentity,
   ViewMessage,
   ViewTool,
+  ViewTurnMeta,
   ViewUsage,
 } from '../view-model/index.js';
 import { buildTodoState, displayMessageId, projectHistory } from './history-projection.js';
@@ -60,6 +61,8 @@ export class SessionPresentation {
   private nextBranchId: string | undefined;
   /** 逐消息消耗的实时来源；缺省不附加 usage，保持未装配该能力的宿主行为不变。 */
   private readonly getUsage?: () => ReadonlyMap<string, ViewUsage>;
+  /** 逐轮模型与推理快照来源；按 `interactionId` 归属还原每轮真实执行配置。 */
+  private readonly getTurnMeta?: () => ReadonlyMap<string, ViewTurnMeta>;
 
   constructor(
     private readonly store: PresentationStore,
@@ -70,6 +73,7 @@ export class SessionPresentation {
     private readonly artifacts?: ArtifactPolicy,
     options?: {
       readonly getUsage?: () => ReadonlyMap<string, ViewUsage>;
+      readonly getTurnMeta?: () => ReadonlyMap<string, ViewTurnMeta>;
       /** 历史刚被截断重建时置 true：首次同步整体替换视图，避免旧回答残留。 */
       readonly replaceHistory?: boolean;
       /** 历史截断伴随的新分支 ID；在 `history_replaced` 中原子推进视图身份。 */
@@ -79,6 +83,7 @@ export class SessionPresentation {
     this.identity = { ...store.snapshot().identity };
     this.scope = presentationScope(this.identity);
     this.getUsage = options?.getUsage;
+    this.getTurnMeta = options?.getTurnMeta;
     this.needsHistoryReplace = options?.replaceHistory === true;
     this.nextBranchId = options?.nextBranchId;
     for (const message of store.snapshot().messages) this.known.add(message.id);
@@ -314,6 +319,7 @@ export class SessionPresentation {
     const projected = projectHistory(history, projectedScope, this.redact, {
       ...(this.artifacts ? { artifacts: this.artifacts } : {}),
       ...(this.getUsage ? { usageByMessageId: this.getUsage() } : {}),
+      ...(this.getTurnMeta ? { turnMetaByInteraction: this.getTurnMeta() } : {}),
     });
     // 重试截断历史后，旧消息必须从视图里整体消失；替换成功后同步推进分支身份并将全部消息视为已下发，
     // 后续 message_stop 仍按增量追加。emit 失败（视图已换代）时保留标记，下次同步再试。
@@ -372,12 +378,13 @@ export class SessionPresentation {
         }
       }
     }
-    // 任务清单只认最近一次成功 todo_write；revision 不变时不重复下发，避免每帧抖动。
+    // 任务清单只认最近一次成功 todo_write（已全部完结的清单进入后续轮次自动收起）；
+    // revision 不变时不重复下发，避免每帧抖动。
     const todos = buildTodoState(history, this.redact);
     const revision = todos?.revision ?? 0;
     if (revision !== this.todosRevision) {
       this.todosRevision = revision;
-      this.emit({ type: 'todos_changed', todos });
+      this.emit(todos ? { type: 'todos_changed', todos } : { type: 'todos_changed' });
     }
   }
 

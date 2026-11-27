@@ -1,5 +1,6 @@
 import type { AgentSession, ModelRole, PrimaryModelRole } from '@kiturone/kapibala';
 import type {
+  ExternalSessionService,
   SkillImportResult,
   SkillImportScan,
   SkillImportSelection,
@@ -83,6 +84,8 @@ export interface CommandContext {
     items: SkillImportSelection[];
     overwrite?: boolean;
   }) => Promise<SkillImportResult>;
+  /** 外部代理工作台服务；CLI REPL 与桌面宿主共用同一编排实例。 */
+  external?: ExternalSessionService;
 }
 
 /** 命令处理器：args 已按定义切分（rawTail 命令为单元素）；抛错由 dispatcher 统一捕获输出。 */

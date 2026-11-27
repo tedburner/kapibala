@@ -40,5 +40,19 @@ export type {
   ViewTodoState,
   ViewTodoStatus,
   ViewTool,
+  ViewTurnMeta,
   ViewUsage,
 } from './types.js';
+export type {
+  ViewExternalApproval,
+  ViewExternalConfigCategory,
+  ViewExternalConfigChoice,
+  ViewExternalConfigOption,
+  ViewExternalHarness,
+  ViewExternalHarnessProbe,
+  ViewExternalSession,
+  ViewExternalSessionStatus,
+  ViewExternalSnapshot,
+  ViewExternalTemplate,
+  ViewExternalTransport,
+} from './external.js';

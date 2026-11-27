@@ -115,6 +115,58 @@ test.describe
       await expect(page.getByLabel('发送消息')).toHaveValue(/@src[\\/]demo\.ts $/);
     });
 
+    test('切换到非默认项目空间的新建对话首页时，@ 搜索命中当前项目文件且支持鼠标点选非首项', async () => {
+      const projectDir = path.join(home, 'aigc-fixture');
+      fs.mkdirSync(path.join(projectDir, 'sub'), { recursive: true });
+      execFileSync('git', ['init', '--quiet', projectDir]);
+      fs.writeFileSync(path.join(projectDir, 'update-all.ps1'), 'echo 1');
+      fs.writeFileSync(path.join(projectDir, 'sub/update.sh'), 'echo 2');
+
+      await app.evaluate(({ dialog }, selection) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selection] });
+      }, projectDir);
+      await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
+      await page.getByRole('menuitem', { name: '新建项目' }).click();
+      const creation = page.getByRole('dialog', { name: '创建项目', exact: true });
+      await creation.getByRole('textbox', { name: '项目名称', exact: true }).fill('aigc');
+      await creation.getByRole('button', { name: '选择文件夹', exact: true }).click();
+      await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+      await page
+        .getByRole('dialog', { name: '信任此文件夹吗？', exact: true })
+        .getByRole('button', { name: '信任文件夹并创建', exact: true })
+        .click();
+      await expect(page.getByRole('button', { name: '会话空间：aigc' })).toBeVisible();
+
+      // 回归守卫 1：非默认项目 aigc 的「新建对话」首页（opened === undefined）输入 @update 必须命中 aigc 内的文件。
+      await page.getByLabel('发送消息').fill('@update');
+      await expect(page.getByRole('button', { name: 'update-all.ps1', exact: true })).toBeVisible({
+        timeout: 5_000,
+      });
+      const secondOption = page.getByRole('button', { name: /sub[/\\]update\.sh/ });
+      await expect(secondOption).toBeVisible();
+
+      // 回归守卫 2：鼠标直接按下第 2 项，必须插入被点击项而非停留在 index=0 的首项。
+      await secondOption.dispatchEvent('mousedown');
+      await expect(page.getByLabel('发送消息')).toHaveValue(/@sub[\\/]update\.sh $/);
+
+      // 回归守卫 3：侧栏左下角不再展示常驻版本号。
+      await expect(page.locator('.kapibala-sidebar-version')).toHaveCount(0);
+
+      // 回归守卫 4：Windows 主进程生成有效的多分辨率 kapibala-brand-*.ico 供任务栏 setAppDetails 使用。
+      if (process.platform === 'win32') {
+        const icoFiles = fs
+          .readdirSync(userData)
+          .filter((name) => /^kapibala-brand-[a-f0-9]+\.ico$/.test(name));
+        expect(icoFiles).toHaveLength(1);
+        const icoPath = path.join(userData, icoFiles[0]!);
+        const validIco = await app.evaluate(
+          ({ nativeImage }, file) => !nativeImage.createFromPath(file).isEmpty(),
+          icoPath,
+        );
+        expect(validIco).toBe(true);
+      }
+    });
+
     test('/ 输入被命令系统拦截，不作为普通消息发给模型', async () => {
       // 无会话场景：斜杠命令被守卫拦截并明示原因；草稿不进入模型发送通道
       await page.getByLabel('发送消息').fill('/nosuchcmd');
@@ -164,16 +216,16 @@ test.describe
       await expect(page.getByLabel('发送消息')).toHaveValue('/skill demo-skill ');
     });
 
-    test('技能无任务直发：发送即执行', async () => {
-      await page.getByLabel('发送消息').fill('hi');
+    test('技能无任务直发：新对话与已打开会话均发送即执行', async () => {
+      // 1. 新对话草稿态直接发送 /skill demo-skill：自动创建会话并执行，不再报「需在已打开会话中使用」
+      await page.getByLabel('发送消息').fill('/skill demo-skill');
       await page.getByLabel('发送消息').press('Enter');
-      await expect(page.getByRole('article', { name: '你的消息' }).first()).toBeVisible({
-        timeout: 15_000,
-      });
+      await expect(page.getByText(/斜杠命令需要在已打开的会话中使用/)).toHaveCount(0);
+      await expect(page.getByText(/请输入合法技能名和非空任务/)).toHaveCount(0);
+      await expect(page.getByLabel('发送消息')).toHaveValue('', { timeout: 10_000 });
       await expect(page.getByLabel('发送消息')).toBeEnabled({ timeout: 15_000 });
-      // `/skill <名称>` 无任务 = 选了就跑：宿主合成启动任务走收据管线（沙箱无模型，
-      // 运行会快速失败——收据链路由单测覆盖）；此处断言分发走通了拦截而不是
-      // 命中 CLI 的「非空任务」校验（校验报错会在反馈卡可见）。
+
+      // 2. 已打开会话内再次无任务直发 /skill demo-skill 同样走通收据管线
       await page.getByLabel('发送消息').fill('/skill demo-skill');
       await page.getByLabel('发送消息').press('Enter');
       await expect(page.getByText(/请输入合法技能名和非空任务/)).toHaveCount(0);

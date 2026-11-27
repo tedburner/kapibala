@@ -27,6 +27,11 @@ async function stop(app: ElectronApplication) {
 async function firstWindow(app: ElectronApplication) {
   const page = await app.firstWindow();
   await page.emulateMedia({ reducedMotion: 'reduce' });
+  await app.evaluate(({ app, BrowserWindow }) => {
+    if (process.platform === 'darwin') app.focus({ steal: true });
+    BrowserWindow.getAllWindows()[0]?.focus();
+  });
+  await page.bringToFront();
   return page;
 }
 test('隔离默认空间的真实窗口、发送与清理', async () => {
@@ -135,9 +140,16 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(page.getByRole('textbox', { name: '发送消息' })).toBeEnabled();
     // 默认模型未配置密钥时，展示的回退模型必须真实用于首个请求。
     await page.getByRole('button', { name: /新对话模型/ }).click();
-    await expect(page.getByRole('menuitem', { name: '本地验收模型' })).toBeVisible();
-    await expect(page.getByRole('menuitem', { name: '未配置的验收模型' })).toHaveCount(0);
-    await page.getByRole('menuitem', { name: '本地验收模型' }).click();
+    const pickerSearch = page.getByRole('combobox', { name: '搜索代理或模型' });
+    await expect(pickerSearch).toBeFocused();
+    await page.getByRole('button', { name: 'Kapibala', exact: true }).click();
+    await expect(page.getByRole('option', { name: '本地验收模型' })).toBeVisible();
+    await pickerSearch.fill('unconfigured');
+    await expect(page.getByText('没有匹配的代理或模型')).toBeVisible();
+    await expect(page.getByRole('option', { name: '未配置的验收模型' })).toHaveCount(0);
+    await pickerSearch.fill('fixture');
+    await expect(page.getByRole('option', { name: '本地验收模型' })).toBeVisible();
+    await pickerSearch.press('Enter');
     // 选择即落盘为全局默认：重启后仍沿用该模型，而不是回落到初始默认值。
     await expect
       .poll(() =>
@@ -175,6 +187,8 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       // 新审批自动弹出队列，标题栏不再有常驻计数入口。
       const queue = page.getByRole('dialog', { name: '待处理审批', exact: true });
       await expect(queue).toBeVisible();
+      // 阻塞等人工确认时，底栏状态行必须诚实显示「等待审批确认」而非「正在写入/正在运行」。
+      await expect(page.getByText(/等待审批确认/)).toBeVisible();
       // 弹窗宽度基线 500px（设计 004 §6.3.4）；空队列已无从打开，宽度断言落在这里。
       await expect(queue).toHaveCSS('max-width', '500px');
       await queue.getByRole('button', { name: '批准一次', exact: true }).click();
@@ -233,10 +247,40 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(
       page.getByText('观察不会收集结果或唤醒模型；投递未知时不补成已收集。'),
     ).toBeVisible();
+    const setViewportWidth = async (targetWidth: number, height: number, bound: 'max' | 'min') => {
+      let desiredOuter = await app.evaluate(
+        ({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize()[0],
+      );
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const currentInner = await page.evaluate(() => innerWidth);
+        if (
+          currentInner === targetWidth ||
+          (bound === 'max' && currentInner <= targetWidth) ||
+          (bound === 'min' && currentInner >= targetWidth && attempt > 0)
+        ) {
+          break;
+        }
+        const rawDelta = targetWidth - currentInner;
+        const step =
+          attempt === 0 && rawDelta !== 0
+            ? rawDelta
+            : bound === 'max'
+              ? -Math.max(2, currentInner - targetWidth + 1)
+              : Math.max(2, targetWidth - currentInner + 1);
+        desiredOuter += step;
+        await app.evaluate(
+          ({ BrowserWindow }, { nextWidth, nextHeight }) => {
+            BrowserWindow.getAllWindows()[0].setSize(nextWidth, nextHeight);
+          },
+          { nextWidth: desiredOuter, nextHeight: height },
+        );
+        await page.waitForTimeout(40);
+      }
+    };
     await page.screenshot({ path: path.join(artifacts, 'details-1280.png') });
-    await app.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].setContentSize(1199, 800),
-    );
+    // Windows titleBarStyle:'hidden' 下 Electron setContentSize 会叠加标准边框余量导致视口偏宽，
+    // 按实测 innerWidth 闭环收敛到 <1200 / ≥1200 断点，确保跨平台与分数缩放一致覆盖模态切换。
+    await setViewportWidth(1199, 800, 'max');
     await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toHaveAttribute(
       'aria-modal',
       'true',
@@ -246,9 +290,7 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toBeHidden();
     await expect(page.getByRole('button', { name: '会话状态', exact: true })).toBeFocused();
     await expect(composer).toHaveValue('保留中文草稿');
-    await app.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].setContentSize(1200, 800),
-    );
+    if (wide) await setViewportWidth(1200, 800, 'min');
     await page.getByRole('button', { name: '会话状态', exact: true }).click();
     if (wide) {
       // 仅宽布局可断言「点击正文不关闭抽屉」；窄布局下背景在模态遮罩内不可点。
@@ -257,9 +299,7 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     }
     await page.screenshot({ path: path.join(artifacts, 'details-1200.png') });
     await page.getByRole('button', { name: '关闭详情', exact: true }).click();
-    await app.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].setContentSize(1280, 800),
-    );
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
     await send('cancel-stream');
     await expect(page.getByText('等待取消。', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '停止', exact: true }).click();
@@ -664,14 +704,12 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
       .toBe('const answer = 42;');
     expect(await page.evaluate(() => 'forbidden' in window)).toBe(false);
     await page.getByRole('button', { name: /当前会话模型/ }).click();
-    // 通过菜单键盘操作打开子菜单，避免鼠标悬停受窗口布局影响。
-    const roleTrigger = page.getByRole('menuitem', { name: /会话角色/ });
-    const fastRole = page.getByRole('menuitem', { name: '快速', exact: true });
-    await roleTrigger.focus();
-    await roleTrigger.press('ArrowRight');
+    const roleSection = page.getByRole('region', { name: '会话角色', exact: true });
+    const fastRole = roleSection.getByRole('button', { name: '快速', exact: true });
     await expect(fastRole).toBeVisible();
     await fastRole.click();
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: /当前会话模型/ })).toContainText('快速');
     await page.getByRole('button', { name: /会话模式/ }).click();
     await page.getByRole('menuitem', { name: /计划模式/ }).click();
     await expect(page.getByRole('button', { name: /会话模式/ })).toContainText('计划模式');

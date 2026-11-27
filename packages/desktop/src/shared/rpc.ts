@@ -25,6 +25,10 @@ export const CONTROL_METHODS = new Set<Method>([
   'approval.reply',
   'presentation.installed',
   'presentation.unsubscribe',
+  'external.cancel',
+  'external.close',
+  'external.approve',
+  'external.unsubscribe',
 ]);
 interface Pending {
   method: Method;
@@ -75,7 +79,13 @@ export class RpcEndpoint {
     const parsed = PARAMS[method].parse(params);
     const requestId = crypto.randomUUID();
     const timeoutMs =
-      method === 'app.downloadUpdate' ? LIMITS.downloadTimeout : LIMITS.requestTimeout;
+      method === 'app.downloadUpdate'
+        ? LIMITS.downloadTimeout
+        : method === 'external.open' ||
+            method === 'external.prompt' ||
+            method === 'external.setConfig'
+          ? LIMITS.externalOpenTimeout
+          : LIMITS.requestTimeout;
     return new Promise<Output<M>>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
@@ -179,6 +189,15 @@ export class RpcEndpoint {
       } catch (error) {
         reply = { kind: 'reply', requestId: request.requestId, ok: false, error: safeError(error) };
       }
+      const maxReplyBytes = (lane === 'data' ? LIMITS.frame : LIMITS.controlWindow) - 512;
+      if (new TextEncoder().encode(JSON.stringify(reply)).byteLength > maxReplyBytes) {
+        reply = {
+          kind: 'reply',
+          requestId: request.requestId,
+          ok: false,
+          error: safeError(new Error('SNAPSHOT_TOO_LARGE')),
+        };
+      }
       await this.peer.send(reply, lane);
     })()
       .catch(() => this.peer.close('OUTPUT_CONGESTED'))
@@ -232,6 +251,27 @@ const messages: Record<string, string> = {
   MCP_CONFIG_INVALID: 'MCP 配置文件格式有误，请检查并修复 mcp.json 后重试。',
   MCP_SERVER_NOT_FOUND: '未找到目标 MCP 服务器，请刷新配置列表后重试。',
   MCP_PROJECT_UNTRUSTED: '当前项目尚未确认信任，无法写入项目级 MCP 配置。',
+  EXTERNAL_INVALID_COMMAND: '外部代理命令或参数包含非法路径或控制字符，请使用裸命令名或绝对路径。',
+  EXTERNAL_COMMAND_NOT_FOUND: '未在系统 PATH 或常见安装目录中找到该外部代理可执行程序。',
+  EXTERNAL_UNSUPPORTED_SHIM:
+    'Windows 下不支持非标准脚本垫片，请填写原生 .exe 或标准 npm/pnpm 命令。',
+  EXTERNAL_NODE_NOT_FOUND: '外部代理脚本需要 Node.js 运行环境，但未找到 node 可执行文件。',
+  EXTERNAL_FRAME_LIMIT: '外部代理单行输出超过 8 MiB 安全帧上限，连接已断开。',
+  EXTERNAL_NON_JSON_FLOOD: '外部代理持续输出非协议文本，疑似误填了交互式终端命令而非协议模式。',
+  EXTERNAL_PROTOCOL_ERROR: '当前外部代理协议握手失败或会话处于只读归档状态，请新建外部会话。',
+  EXTERNAL_AUTH_REQUIRED: '外部代理尚未登录或缺少环境变量凭据，请先完成终端登录。',
+  EXTERNAL_TIMEOUT: '外部代理响应超时，已自动终止该轮操作。',
+  EXTERNAL_ABORTED: '外部代理操作已取消。',
+  EXTERNAL_CONFIG_BUSY: '外部代理配置正在修改，请稍后重试。',
+  EXTERNAL_CONFIG_CORRUPT: '外部代理配置文件损坏，已拒绝覆盖写入；请检查 ~/.kapibala/external/。',
+  EXTERNAL_CONFIG_INVALID: '外部代理配置校验未通过（禁止明文密钥、相对路径或与内置 ID 重名）。',
+  EXTERNAL_HARNESS_DISABLED: '所选外部代理当前已停用，请先在设置面板「外部代理」中启用。',
+  EXTERNAL_APPROVAL_EXPIRED: '该外部审批请求已处理或已超时过期。',
+  EXTERNAL_CAPACITY:
+    '外部代理并发进程数（4）或历史保留数（50）已达上限，请先关闭或删除已结束会话。',
+  EXTERNAL_WORKSPACE_BUSY: '当前工作区已有运行中的外部代理会话，请等待其完成或取消后再试。',
+  EXTERNAL_SESSION_BUSY: '该外部代理会话正在执行或等待审批，不能并发发送新消息。',
+  EXTERNAL_UNTRUSTED_WORKSPACE: '当前工作区尚未确认信任，拒绝运行外部代理。',
   FORBIDDEN: '请求来源或资源归属不合法。',
   INTERNAL_ERROR: '操作未完成，请检查配置和目录后重试。',
 };

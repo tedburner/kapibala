@@ -310,6 +310,124 @@ describe('session task list projection', () => {
     expect(state?.revision).toBe(1);
     expect(state?.items.map((item) => item.id)).toEqual(['1', '2']);
   });
+
+  it('clears a settled checklist once a subsequent user turn begins, while keeping unfinished checklists across turns', () => {
+    const settledThenNextTurn: CanonicalMessage[] = [
+      {
+        id: 'u1',
+        interactionId: 'run-1',
+        role: 'user',
+        content: [{ type: 'text', text: '升级依赖' }],
+      },
+      {
+        id: 'a1',
+        interactionId: 'run-1',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'todo_write',
+            input: {
+              items: [
+                { id: '1', title: '修改 pom', status: 'completed' },
+                { id: '2', title: '跳过旧项', status: 'cancelled' },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        id: 'r1',
+        interactionId: 'run-1',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 't1', content: 'ok' }],
+      },
+      {
+        id: 'a2',
+        interactionId: 'run-1',
+        role: 'assistant',
+        content: [{ type: 'text', text: '已完成升级。' }],
+      },
+    ];
+    // 所属轮次结束时仍保留已完成看板，便于用户核对结果。
+    expect(buildTodoState(settledThenNextTurn)?.items).toHaveLength(2);
+
+    // 进入后续新用户轮次后，上一轮已全部完结的看板自动收起。
+    const withNextTurn: CanonicalMessage[] = [
+      ...settledThenNextTurn,
+      {
+        id: 'u2',
+        interactionId: 'run-2',
+        role: 'user',
+        content: [{ type: 'text', text: '如何验证版本升级兼容性问题?' }],
+      },
+    ];
+    expect(buildTodoState(withNextTurn)).toBeUndefined();
+
+    // 新轮次调用失败的 todo_write 不应把旧已完成看板复活。
+    const withFailedNewTodo: CanonicalMessage[] = [
+      ...withNextTurn,
+      {
+        id: 'a3',
+        interactionId: 'run-2',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't2',
+            name: 'todo_write',
+            input: { items: [{ id: '1', title: '坏写入', status: 'pending' }] },
+          },
+        ],
+      },
+      {
+        id: 'r2',
+        interactionId: 'run-2',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 't2', content: 'err', isError: true }],
+      },
+    ];
+    expect(buildTodoState(withFailedNewTodo)).toBeUndefined();
+
+    // 新轮次成功写入新清单后重新出现，且 revision 单调递增。
+    const withSucceededNewTodo: CanonicalMessage[] = [
+      ...withFailedNewTodo,
+      {
+        id: 'a4',
+        interactionId: 'run-2',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't3',
+            name: 'todo_write',
+            input: { items: [{ id: '1', title: '运行兼容性测试', status: 'in_progress' }] },
+          },
+        ],
+      },
+      {
+        id: 'r3',
+        interactionId: 'run-2',
+        role: 'tool',
+        content: [{ type: 'tool_result', toolUseId: 't3', content: 'ok' }],
+      },
+    ];
+    expect(buildTodoState(withSucceededNewTodo)).toEqual({
+      items: [{ id: '1', title: '运行兼容性测试', status: 'in_progress' }],
+      revision: 2,
+    });
+
+    // 仍含未完结项的清单跨用户轮次保留（如用户回复「继续」）。
+    const withContinueTurn: CanonicalMessage[] = [
+      ...withSucceededNewTodo,
+      { id: 'u3', interactionId: 'run-3', role: 'user', content: [{ type: 'text', text: '继续' }] },
+    ];
+    expect(buildTodoState(withContinueTurn)).toEqual({
+      items: [{ id: '1', title: '运行兼容性测试', status: 'in_progress' }],
+      revision: 2,
+    });
+  });
 });
 
 describe('artifact projection', () => {

@@ -29,6 +29,15 @@ export class NativeNotices {
         this.dismiss(id);
       }
   }
+  /** 清理指定外部会话的驻留系统通知并释放同会话去重槽位，使下一轮仍可正常提醒。 */
+  dismissExternal(sessionId: string): void {
+    this.dismiss(`ext:${sessionId}`);
+    for (const item of [...this.seen]) {
+      if (item.startsWith(`ext:${sessionId}:`)) {
+        this.seen.delete(item);
+      }
+    }
+  }
   /** 新控制期或 Host 不可用时立即撤销旧回调；迟到点击不会重放任务或审批。 */
   reset(): void {
     this.epoch++;
@@ -98,6 +107,20 @@ export class NativeNotices {
           this.sessions.has(event.sessionId) &&
           (this.pending.get(event.approvalId)?.expiresAt ?? 0) > Date.now(),
       );
+    } else if (event.type === 'external.attention') {
+      const title =
+        event.kind === 'approval_requested'
+          ? `${event.harnessName} 等待审批`
+          : event.kind === 'turn_failed'
+            ? `${event.harnessName} 任务失败`
+            : `${event.harnessName} 任务已完成`;
+      this.publish(
+        `ext:${event.sessionId}`,
+        `ext:${event.sessionId}:${event.kind}`,
+        title,
+        '打开 Kapibala 查看外部代理进展。',
+        () => true,
+      );
     }
   }
   private publish(
@@ -107,10 +130,10 @@ export class NativeNotices {
     body: string,
     valid: () => boolean,
   ): void {
+    if (!this.background()) return;
     if (this.seen.has(identity)) return;
     this.seen.add(identity);
     if (this.seen.size > 1024) this.seen.delete(this.seen.values().next().value!);
-    if (!this.background()) return;
     const epoch = this.epoch;
     this.dismiss(key);
     this.visible.set(

@@ -272,4 +272,34 @@ describe('single writer ownership', () => {
     await expect(lock.release()).rejects.toThrow(/owner/i);
     expect(fs.existsSync(lockPath)).toBe(true);
   });
+
+  it('derives clean single-line title from multi-line user prompt without literal \\u000a escapes', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-title-'));
+    try {
+      const sessions = new SessionManager({
+        workspaceRoot: directory,
+        projectRootMode: 'exact',
+        homeDirectory: home,
+      });
+      const handle = await sessions.create();
+      await handle.store.append({
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'Bump com.google.guava:guava from 33.4.8-jre to 33.7.1-jre in /common-kit\n- #27',
+          },
+        ],
+      });
+      await handle.release();
+      const listed = await sessions.list();
+      expect(listed.items[0]?.title).toBe(
+        'Bump com.google.guava:guava from 33.4.8-jre to 33.7.1-jre in /common-kit',
+      );
+      expect(listed.items[0]?.title).not.toContain('\\u000a');
+      await sessions.close();
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

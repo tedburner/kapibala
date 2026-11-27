@@ -158,7 +158,17 @@ function directScriptDigest(
 }
 
 function interpreterArgs(environment: ShellEnvironment, command: string): string[] {
-  if (environment.kind === 'bash' || environment.kind === 'wsl') {
+  if (environment.kind === 'wsl') {
+    const base = path.basename(environment.executable).toLowerCase();
+    if (base === 'wsl' || base === 'wsl.exe') {
+      return ['--exec', 'bash', '--noprofile', '--norc', '-c', command];
+    }
+    // 显式指定旧版 System32\bash.exe 时，该启动器会把参数拼进外层 Linux shell 二次求值；
+    // 用单引号包裹内层 bash -c 载荷，防止 $var / $(...) / '$0' 在进入目标 bash 前被提前展开吞空。
+    const escaped = command.replaceAll("'", "'\\''");
+    return ['-c', `exec bash --noprofile --norc -c '${escaped}'`];
+  }
+  if (environment.kind === 'bash') {
     return ['--noprofile', '--norc', '-c', command];
   }
   const utf8 =

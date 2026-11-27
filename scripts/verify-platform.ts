@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkHostArtifact } from './check-host.js';
+import { resolvePnpmCommand, toolchainEnv } from './process-env.mjs';
 
 const repositoryRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const probePath = path.join(repositoryRoot, 'scripts/platform-probe.mjs');
@@ -190,14 +191,27 @@ function tsupBinary(packageDir: string): string {
 
 /** 平台门禁先按当前源码重建候选产物，避免用陈旧 dist 生成“通过”证据。 */
 export async function buildCandidate(): Promise<void> {
+  const env = toolchainEnv(process.env, repositoryRoot);
   const coreDir = path.join(repositoryRoot, 'packages/core');
   const mcpDir = path.join(repositoryRoot, 'packages/mcp');
   const cliDir = path.join(repositoryRoot, 'packages/cli');
-  await run(process.execPath, [tsupBinary(coreDir)], { cwd: coreDir });
-  await run(process.execPath, [tsupBinary(mcpDir)], { cwd: mcpDir });
+  await run(process.execPath, [tsupBinary(coreDir)], { cwd: coreDir, env });
+  await run(process.execPath, [tsupBinary(mcpDir)], { cwd: mcpDir, env });
   // 私有宿主层包先于 CLI 构建产出 dist，供桌面运行时与后续探针消费（CLI 自身经 paths 从源码内联）。
+  // 宿主包没有默认 tsup.config.ts：必须按包的构建脚本顺序逐个传 --config；根入口那条带 clean，
+  // 放最后会把其它子路径产物一并删掉（静默少文件，直到运行时才报模块缺失）。
   const hostDir = path.join(repositoryRoot, 'packages/host');
-  await run(process.execPath, [tsupBinary(hostDir)], { cwd: hostDir });
+  const hostTsup = tsupBinary(hostDir);
+  for (const config of [
+    'tsup.node.config.ts',
+    'tsup.host.config.ts',
+    'tsup.client.config.ts',
+    'tsup.transport.config.ts',
+    'tsup.protocol.config.ts',
+    'tsup.view-model.config.ts',
+  ]) {
+    await run(process.execPath, [hostTsup, '--config', config], { cwd: hostDir, env });
+  }
   const cliTsup = tsupBinary(cliDir);
   for (const config of [
     'tsup.config.ts',
@@ -207,7 +221,7 @@ export async function buildCandidate(): Promise<void> {
     'tsup.host.config.ts',
     'tsup.commands.config.ts',
   ]) {
-    await run(process.execPath, [cliTsup, '--config', config], { cwd: cliDir });
+    await run(process.execPath, [cliTsup, '--config', config], { cwd: cliDir, env });
   }
 }
 
@@ -318,22 +332,20 @@ async function packPackages(
   const version = readJson<{ version: string }>(
     path.join(directories[0].directory, 'package.json'),
   ).version;
-  const pnpm = spawnSync(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', ['--version'], {
+  const pnpmProbe = resolvePnpmCommand(['--version'], process.env);
+  const pnpm = spawnSync(pnpmProbe.command, pnpmProbe.args, {
     encoding: 'utf8',
-    shell: process.platform === 'win32',
   });
   const usePnpm = pnpm.status === 0;
   const packages: PackedPackage[] = [];
   for (const entry of directories) {
     const before = new Set(fs.readdirSync(packDir));
     if (usePnpm) {
-      await run(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', [
-        '-C',
-        entry.directory,
-        'pack',
-        '--pack-destination',
-        packDir,
-      ]);
+      const packInvocation = resolvePnpmCommand(
+        ['-C', entry.directory, 'pack', '--pack-destination', packDir],
+        process.env,
+      );
+      await run(packInvocation.command, packInvocation.args);
     } else {
       const stage = path.join(tempRoot, `stage-${entry.name.replace(/[^a-z0-9-]/gi, '-')}`);
       stageForNpmPack(entry.directory, stage, version);

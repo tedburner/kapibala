@@ -10,11 +10,13 @@ import {
   PulseIcon,
   ShieldCheckIcon,
   ShuffleIcon,
+  TerminalWindowIcon,
   TrashIcon,
 } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Output, ProfileDraft, Workspace } from '../shared/contracts.js';
 import type { Inspection } from '../shared/observations.js';
+import { ExternalSettingsPanel } from './external-settings-panel.js';
 import type { SessionTarget } from './session-actions.js';
 
 type Catalog = Output<'settings.read'>;
@@ -91,6 +93,12 @@ const SETTINGS_TABS = [
     label: '默认模型与路由',
     icon: ShuffleIcon,
     subtitle: '为新建会话指定默认模型和各角色模型。',
+  },
+  {
+    value: 'external',
+    label: '外部代理',
+    icon: TerminalWindowIcon,
+    subtitle: '连接本机 Claude Code、Codex、Antigravity、OpenCode 等外部 CLI 代理。',
   },
   {
     value: 'permission',
@@ -229,6 +237,8 @@ export function SettingsDialog({
   onRequestDelete,
   hostDown = false,
   inspection,
+  initialTab,
+  onInitialTabConsumed,
 }: {
   open: boolean;
   onOpenChange(open: boolean): void;
@@ -249,6 +259,9 @@ export function SettingsDialog({
   hostDown?: boolean;
   /** 当前会话的运行时观察；MCP 连接状态与 `/mcp` 同源，未打开会话时缺省。 */
   inspection?: Inspection;
+  /** 外部入口直达某个设置分类（如新建外部会话弹窗直达「外部代理」）；打开并切换后立即回调清除。 */
+  initialTab?: string;
+  onInitialTabConsumed?(): void;
 }) {
   const [info, setInfo] = useState<Output<'app.getInfo'>>();
   /** 更新检查只在用户点按钮时发生；结果只保留最近一次，不做轮询或缓存。 */
@@ -263,6 +276,11 @@ export function SettingsDialog({
   const [updateDownload, setUpdateDownload] = useState<Output<'app.downloadUpdate'>>();
   const [downloading, setDownloading] = useState(false);
   const [tab, setTab] = useState('models');
+  useEffect(() => {
+    if (!open || !initialTab) return;
+    setTab(initialTab);
+    onInitialTabConsumed?.();
+  }, [open, initialTab, onInitialTabConsumed]);
   const [resMcp, setResMcp] = useState<McpCatalog>();
   const [resSkills, setResSkills] = useState<SkillsCatalog>();
   const [resDraft, setResDraft] = useState<McpFormDraft>();
@@ -533,15 +551,22 @@ export function SettingsDialog({
   const [fieldErrors, setFieldErrors] = useState<CustomFieldErrors>({});
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('light');
   const initialized = useRef(false);
+  const retriedCatalogOnOpen = useRef(false);
   useEffect(() => {
     if (!open) {
       initialized.current = false;
+      retriedCatalogOnOpen.current = false;
       setKey('');
       setNotice('');
       setFieldErrors({});
       setModels(undefined);
       setFetchStatus('');
       setManualModel(false);
+    } else if (!catalog && !hostDown && !retriedCatalogOnOpen.current) {
+      retriedCatalogOnOpen.current = true;
+      void reload().catch((error) =>
+        report(error instanceof Error ? error.message : '读取模型配置失败，请重试。'),
+      );
     } else if (!initialized.current && catalog) {
       initialized.current = true;
       void window.kapibala.app
@@ -559,7 +584,7 @@ export function SettingsDialog({
         setProviderSel(model?.providerKey ?? 'custom');
       }
     }
-  }, [open, catalog, report]);
+  }, [open, catalog, hostDown, reload, report]);
   /** 归档页数据按空间聚合；一次读取失败整体报错，不展示半份分组。 */
   const [archive, setArchive] = useState<{
     loading: boolean;
@@ -685,7 +710,7 @@ export function SettingsDialog({
   }, [catalog, groupedModels, providerSel]);
   const providerMeta = (catalog?.providers ?? []).find((item) => item.key === providerSel);
   /** 自建端点分组（含用户命名的厂商与通用兜底桶）才放开端点、厂商名与协议编辑。 */
-  const customGroup = Boolean(providerMeta?.custom);
+  const customGroup = Boolean(providerMeta?.custom) || providerSel === 'custom';
   /** 探测状态属于「正在编辑的端点」，切换厂商或模型时一并清空，避免串到别的表单。 */
   function resetProbe() {
     probeToken.current += 1;
@@ -1099,7 +1124,9 @@ export function SettingsDialog({
                         );
                       })}
                       {visibleProviders.length === 0 && (
-                        <p className="kapibala-models-empty">没有匹配的提供商或模型</p>
+                        <p className="kapibala-models-empty">
+                          {catalog ? '没有匹配的提供商或模型' : '正在加载提供商与模型目录…'}
+                        </p>
                       )}
                     </div>
                     <div className="kapibala-models-detail">
@@ -1355,6 +1382,7 @@ export function SettingsDialog({
                                 onPick={(tokens) => change('maxOutputTokens', tokens)}
                               />
                               <Switch
+                                variant="neutral"
                                 label="支持思考输出"
                                 checked={draft.supportsThinking ?? false}
                                 disabled={busy}
@@ -1411,6 +1439,7 @@ export function SettingsDialog({
                                 onPick={(tokens) => change('maxOutputTokens', tokens)}
                               />
                               <Switch
+                                variant="neutral"
                                 label="支持思考输出"
                                 checked={draft.supportsThinking ?? false}
                                 disabled={busy}
@@ -1505,6 +1534,17 @@ export function SettingsDialog({
                       }
                     />
                   ))}
+                </Tabs.Panel>
+                <Tabs.Panel
+                  value="external"
+                  className="kapibala-settings-panel kapibala-external-settings"
+                >
+                  <ExternalSettingsPanel
+                    active={open && tab === 'external'}
+                    workspaceId={workspaceId}
+                    hostDown={hostDown}
+                    report={report}
+                  />
                 </Tabs.Panel>
                 <Tabs.Panel value="permission" className="kapibala-settings-panel space-y-4">
                   <section className="space-y-2">
@@ -1602,6 +1642,7 @@ export function SettingsDialog({
                             {editable && (
                               <div className="flex shrink-0 items-center gap-2">
                                 <Switch
+                                  variant="neutral"
                                   label={`启用 ${server.name}`}
                                   checked={server.enabled}
                                   disabled={resBusy}
@@ -1939,6 +1980,7 @@ export function SettingsDialog({
                             </p>
                           </div>
                           <Switch
+                            variant="neutral"
                             label="覆盖同名 MCP 服务器"
                             checked={mcpImportOverwrite}
                             disabled={mcpImportBusy}
@@ -2040,6 +2082,7 @@ export function SettingsDialog({
                                       )}
                                     </span>
                                     <Switch
+                                      variant="neutral"
                                       label={`选择导入 ${candidate.name}`}
                                       checked={mcpImportSelected.has(importKey(candidate))}
                                       disabled={mcpImportBusy}
@@ -2100,6 +2143,7 @@ export function SettingsDialog({
                         </p>
                       </div>
                       <Switch
+                        variant="neutral"
                         label="启用技能功能"
                         checked={resSkills?.enabled ?? true}
                         disabled={resBusy}
@@ -2136,6 +2180,7 @@ export function SettingsDialog({
                           )}
                         </div>
                         <Switch
+                          variant="neutral"
                           label={`启用 ${skill.name}`}
                           checked={!skill.disabled}
                           disabled={resBusy}
@@ -2280,6 +2325,7 @@ export function SettingsDialog({
                                       )}
                                     </span>
                                     <Switch
+                                      variant="neutral"
                                       label={`选择导入 ${candidate.name}`}
                                       checked={importSelected.has(importKey(candidate))}
                                       disabled={importBusy}

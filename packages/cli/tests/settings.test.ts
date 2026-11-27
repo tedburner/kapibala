@@ -969,4 +969,31 @@ describe('model availability', () => {
     );
     expect(() => loadSettings({ homeDir, includeProject: false })).toThrow(/disabled/);
   });
+
+  it('部分角色路由经 loadSettings 与 migrateBuiltinCatalog 后不生成值为 undefined 的自有键', () => {
+    const { homeDir } = createSettingsWorkspace();
+    fs.writeFileSync(
+      path.join(homeDir, '.kapibala', 'settings.json'),
+      JSON.stringify({
+        defaultModel: 'deepseek-flash',
+        modelRouting: {
+          planning: 'deepseek-v4-flash',
+          execution: 'deepseek-v4-pro',
+        },
+        profiles: [],
+      }),
+    );
+
+    const loaded = loadSettings({ homeDir, includeProject: false });
+    expect(loaded.settings.modelRouting).toEqual({
+      planning: 'deepseek-flash',
+      execution: 'deepseek-v4-pro',
+    });
+    expect(Object.keys(loaded.settings.modelRouting ?? {}).sort()).toEqual([
+      'execution',
+      'planning',
+    ]);
+    expect(Object.hasOwn(loaded.settings.modelRouting ?? {}, 'summary')).toBe(false);
+    expect(Object.hasOwn(loaded.settings.modelRouting ?? {}, 'fast')).toBe(false);
+  });
 });

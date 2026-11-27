@@ -1,6 +1,6 @@
 # CLI 使用指南（kpbl）
 
-`kpbl` 是 Kapibala 的交互式命令行入口。本文是完整使用参考；安装与最小上手见 [README](../README.md#交互式-cli)。
+`kpbl` 是 Kapibala 的交互式命令行入口。本文是完整使用参考；安装与最小上手见 [README](../README.md#2-命令行与守护进程)。
 
 ## 启动方式速览
 
@@ -127,8 +127,9 @@ pnpm build && node packages/cli/dist/bin.js
 | `/quote`、`/quote <id\|id#record>`、`/quote --search <query>`、`/quote --list [--remove n]` | 引用其它会话历史：菜单选择、`会话ID#记录ID` 精确引用、项目桶内检索、查看并删除本轮已挂载引用；草稿在下一条输入发送时冻结注入 | `/quote --search 并发调度` |
 | `/delegate <任务> [--role\|--model\|--name]` | 用户级派发 detached 委派会话（复用当前会话写租约），终态保留可续聊 | `/delegate 整理 docs/ 链接 --name 文档巡检` |
 | `/delegations [list\|show\|open\|cancel\|delete] <id>` | 委派会话面板：元数据跨进程可见，按 ID 或唯一前缀操作；delete 物理删除释放保留名额 | `/delegations open a1b2` |
+| `/external ...` | 管理外部代理（`harnesses`、`harness test\|add\|enable\|disable\|remove\|reset`）并操作独立外部会话（`list`、`start [--model <id>]`、`config`、`show\|prompt\|approve\|cancel\|close\|delete`） | `/external start codex 检查测试` |
 | `/watches [cancel <watchId>]` | 查看当前会话的外部条件监视（文件变化 / 端口就绪）或取消其中一条 | `/watches cancel w1` |
-| `/evidence [--json]` | 只读汇总当前会话证据（文件变更行数、跨会话引用、MCP 调用统计、委派会话状态） | `/evidence` |
+| `/evidence` | 只读汇总当前会话证据（文件变更行数、跨会话引用、MCP 调用统计、委派会话状态） | `/evidence` |
 | `/todos` | 查看当前活动分支最近一次成功写入的会话任务清单（完成度与四态分组） | `/todos` |
 | `/rename <title>` | 修改当前会话标题 | `/rename 上下文设计` |
 | `/context` | 查看保护范围、预算、剪裁与有效检查点 | `/context` |
@@ -165,4 +166,4 @@ pnpm build && node packages/cli/dist/bin.js
 
 在本仓库构建后，可使用 `kpbl daemon start` 启动本地宿主，`kpbl connect --workspace /absolute/project` 进入连接模式，`kpbl daemon stop` 等待清理并停止。非交互问答使用 `kpbl connect --workspace /absolute/project -p "解释项目结构"`；父进程托管使用 `kpbl serve --stdio`。
 
-默认 CLI 行为保持不变；能力范围与预算见 [本地宿主说明](local-host.md)，当前协议契约与迁移边界见 [本地宿主协议 2](local-protocol.md)、[v0.1.4 迁移说明](migration/v0.1.4.md) 及 [SDK 兼容性说明](sdk-compatibility.md)。
+默认 CLI 行为保持不变；能力范围与预算见 [本地宿主说明](local-host.md)，当前协议契约与迁移边界见 [本地宿主协议 2](local-protocol.md)、[v0.1.4 迁移说明](migration/v0.1.4.md)、[v0.1.5 迁移说明](migration/v0.1.5.md) 及 [SDK 兼容性说明](sdk-compatibility.md)。

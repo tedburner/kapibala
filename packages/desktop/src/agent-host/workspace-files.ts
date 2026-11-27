@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** 通用忽略目录：依赖、构建产物与版本库元数据一律不进补全清单。 */
+/** 通用忽略目录：依赖、虚拟环境、构建产物与版本库元数据一律不进补全清单。 */
 const IGNORED_DIRECTORIES = new Set([
   'node_modules',
   '.git',
@@ -11,6 +11,9 @@ const IGNORED_DIRECTORIES = new Set([
   'coverage',
   'test-results',
   'playwright-report',
+  'venv',
+  '__pycache__',
+  'target',
 ]);
 
 /**

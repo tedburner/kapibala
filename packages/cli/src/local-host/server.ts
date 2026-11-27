@@ -1,6 +1,7 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { SessionManager } from '@kiturone/kapibala';
+import { ExternalSessionService } from '@kiturone/kapibala-host/internal';
 import {
   DEFAULT_LIMITS,
   type JsonValue,
@@ -13,6 +14,13 @@ import type { LocalTransport } from '@kiturone/kapibala-host/transport';
 import { describeApproval } from './approval-description.js';
 import { RpcApprovalChannel } from './approval.js';
 import { LocalHostError } from './errors.js';
+import {
+  toExternalHarnessWire,
+  toExternalProbeWire,
+  toExternalSessionWire,
+  toExternalSnapshotWire,
+  toExternalTemplateWire,
+} from './external-wire.js';
 import { redactText, sanitizeDisplayText } from './redaction.js';
 import { SessionRegistry } from './registry.js';
 import { loadCredentialSecrets } from './resources.js';
@@ -23,6 +31,7 @@ import type { ResourceFactory } from './types.js';
 export interface LocalHostOptions extends ResourceFactory {
   token?: string;
   homeDir?: string;
+  external?: ExternalSessionService;
   onShutdown?(): void;
 }
 
@@ -34,14 +43,18 @@ function requireAbsolute(value: string): void {
 /** 双向服务入口；同一注册表服务多个连接，所有业务调用均先完成初始化。 */
 export class LocalHostServer {
   readonly registry: SessionRegistry;
+  readonly external: ExternalSessionService;
   private readonly peers = new Map<string, RpcPeer>();
   private readonly approvals = new Map<string, RpcApprovalChannel>();
+  /** 外部会话单控制者登记（sessionId -> clientId），防止非控制连接抢答审批或越权关闭。 */
+  private readonly externalControllers = new Map<string, string>();
   private stopping = false;
   private stopped = false;
   private stoppedNotified = false;
   private shutdownTask?: Promise<void>;
 
   constructor(private readonly options: LocalHostOptions) {
+    this.external = options.external ?? new ExternalSessionService({ homeDir: options.homeDir });
     this.registry = new SessionRegistry({
       create: options.create,
       approval: (entry) => {
@@ -85,8 +98,15 @@ export class LocalHostServer {
     }
     const clientId = randomUUID();
     let initialized = false;
+    const negotiatedCapabilities = new Set<string>();
     const subscriptions = new Map<string, () => void>();
+    const externalSubscriptions = new Map<string, () => void>();
     const pager = new SnapshotPager();
+    const requireExternalCapability = (): void => {
+      if (!negotiatedCapabilities.has('external-session')) {
+        throw new Error('PROTOCOL_MISMATCH');
+      }
+    };
 
     const timer = setTimeout(() => {
       void peer.close();
@@ -103,6 +123,7 @@ export class LocalHostServer {
         const protocol = negotiateProtocol(request.params);
         if (!protocol.ok) throw new Error('PROTOCOL_MISMATCH');
         initialized = true;
+        for (const cap of protocol.value.capabilities) negotiatedCapabilities.add(cap);
         clearTimeout(timer);
         return {
           ...protocol.value,
@@ -260,6 +281,181 @@ export class LocalHostServer {
           // ViewEvidence 全部由 JSON 原生值组成；readonly 只是编译期约束，不改变 wire 形状。
           return (await entry.resources.evidence()) as unknown as JsonValue;
         }
+        case 'external/harnesses': {
+          requireExternalCapability();
+          const { harnesses, templates } = this.external.listHarnesses();
+          return {
+            harnesses: harnesses.map(toExternalHarnessWire),
+            templates: templates.map(toExternalTemplateWire),
+          } as unknown as JsonValue;
+        }
+        case 'external/harnessSave': {
+          requireExternalCapability();
+          const p = request.params;
+          const harnesses = p.builtin
+            ? this.external.saveBuiltinOverride(p.id, {
+                ...(p.command !== undefined ? { command: p.command } : {}),
+                ...(p.args !== undefined ? { args: p.args } : {}),
+                ...(p.envFrom !== undefined ? { envFrom: p.envFrom } : {}),
+                ...(p.enabled !== undefined ? { enabled: p.enabled } : {}),
+              })
+            : this.external.saveCustomHarness({
+                id: p.id,
+                name: p.name ?? p.id,
+                command: p.command ?? '',
+                args: p.args ?? [],
+                ...(p.registryId ? { registryId: p.registryId } : {}),
+                ...(p.envFrom ? { envFrom: p.envFrom } : {}),
+                enabled: p.enabled ?? true,
+              });
+          return {
+            harnesses: harnesses.map(toExternalHarnessWire),
+          } as unknown as JsonValue;
+        }
+        case 'external/harnessReset': {
+          requireExternalCapability();
+          return {
+            harnesses: this.external
+              .resetBuiltinOverride(request.params.id)
+              .map(toExternalHarnessWire),
+          } as unknown as JsonValue;
+        }
+        case 'external/harnessToggle': {
+          requireExternalCapability();
+          return {
+            harnesses: this.external
+              .toggleHarness(request.params.id, request.params.enabled)
+              .map(toExternalHarnessWire),
+          } as unknown as JsonValue;
+        }
+        case 'external/harnessDelete': {
+          requireExternalCapability();
+          return {
+            harnesses: this.external
+              .deleteCustomHarness(request.params.id)
+              .map(toExternalHarnessWire),
+          } as unknown as JsonValue;
+        }
+        case 'external/harnessTest': {
+          requireExternalCapability();
+          if (request.params.workspaceRoot !== undefined) {
+            requireAbsolute(request.params.workspaceRoot);
+          }
+          const probe = await this.external.testHarness(
+            request.params.id,
+            request.params.workspaceRoot,
+          );
+          return toExternalProbeWire(probe) as unknown as JsonValue;
+        }
+        case 'external/list': {
+          requireExternalCapability();
+          requireAbsolute(request.params.workspaceRoot);
+          return {
+            items: this.external
+              .listSessions(request.params.workspaceRoot)
+              .map(toExternalSessionWire),
+          } as unknown as JsonValue;
+        }
+        case 'external/open': {
+          requireExternalCapability();
+          requireAbsolute(request.params.workspaceRoot);
+          const snap = await this.external.openSession(request.params);
+          this.externalControllers.set(snap.session.id, clientId);
+          return toExternalSnapshotWire(snap) as unknown as JsonValue;
+        }
+        case 'external/attach': {
+          requireExternalCapability();
+          const snap = this.external.getSnapshot(request.params.sessionId);
+          const resolvedId = snap.session.id;
+          if (!this.externalControllers.has(resolvedId)) {
+            this.externalControllers.set(resolvedId, clientId);
+          }
+          externalSubscriptions.get(resolvedId)?.();
+          externalSubscriptions.set(
+            resolvedId,
+            this.external.subscribeSession(resolvedId, (nextSnap) => {
+              peer.notifyExternal({
+                sessionId: resolvedId,
+                sequence: nextSnap.sequence,
+                snapshot: toExternalSnapshotWire(nextSnap),
+              });
+            }),
+          );
+          return toExternalSnapshotWire(snap) as unknown as JsonValue;
+        }
+        case 'external/detach': {
+          requireExternalCapability();
+          const resolvedId = this.external.resolveSessionId(request.params.sessionId);
+          externalSubscriptions.get(resolvedId)?.();
+          externalSubscriptions.delete(resolvedId);
+          if (this.externalControllers.get(resolvedId) === clientId) {
+            this.externalControllers.delete(resolvedId);
+            await this.external.cancelSession(resolvedId).catch(() => {});
+          }
+          return { detached: true };
+        }
+        case 'external/snapshot': {
+          requireExternalCapability();
+          return toExternalSnapshotWire(
+            this.external.getSnapshot(request.params.sessionId),
+          ) as unknown as JsonValue;
+        }
+        case 'external/prompt': {
+          requireExternalCapability();
+          const resolvedId = this.attachOrVerifyExternalController(
+            request.params.sessionId,
+            clientId,
+          );
+          const snap = await this.external.promptSession({
+            sessionId: resolvedId,
+            text: request.params.text,
+          });
+          return toExternalSnapshotWire(snap) as unknown as JsonValue;
+        }
+        case 'external/approve': {
+          requireExternalCapability();
+          const resolvedId = this.attachOrVerifyExternalController(
+            request.params.sessionId,
+            clientId,
+          );
+          await this.external.approveSession({
+            ...request.params,
+            sessionId: resolvedId,
+          });
+          return { resolved: true };
+        }
+        case 'external/cancel': {
+          requireExternalCapability();
+          const resolvedId = this.external.resolveSessionId(request.params.sessionId);
+          const owner = this.externalControllers.get(resolvedId);
+          if (owner !== undefined && owner !== clientId) {
+            throw new Error('CONTROL_REQUIRED');
+          }
+          await this.external.cancelSession(resolvedId);
+          return { cancellationRequested: true };
+        }
+        case 'external/close': {
+          requireExternalCapability();
+          const resolvedId = this.attachOrVerifyExternalController(
+            request.params.sessionId,
+            clientId,
+          );
+          await this.external.closeSession(resolvedId);
+          this.externalControllers.delete(resolvedId);
+          return { closed: true };
+        }
+        case 'external/delete': {
+          requireExternalCapability();
+          const resolvedId = this.attachOrVerifyExternalController(
+            request.params.sessionId,
+            clientId,
+          );
+          externalSubscriptions.get(resolvedId)?.();
+          externalSubscriptions.delete(resolvedId);
+          const deleted = await this.external.deleteSession(resolvedId);
+          this.externalControllers.delete(resolvedId);
+          return { deleted };
+        }
         case 'host/shutdown':
           await this.stopRegistry();
           return { stopped: true };
@@ -277,8 +473,20 @@ export class LocalHostServer {
         clearTimeout(timer);
         for (const unsubscribe of subscriptions.values()) unsubscribe();
         subscriptions.clear();
+        for (const unsubscribe of externalSubscriptions.values()) unsubscribe();
+        externalSubscriptions.clear();
+        const ownedExternalIds: string[] = [];
+        for (const [extId, ownerId] of this.externalControllers) {
+          if (ownerId === clientId) {
+            this.externalControllers.delete(extId);
+            ownedExternalIds.push(extId);
+          }
+        }
         this.peers.delete(clientId);
-        await this.registry.disconnect(clientId);
+        await Promise.all([
+          this.registry.disconnect(clientId),
+          ...ownedExternalIds.map((extId) => this.external.cancelSession(extId).catch(() => {})),
+        ]);
         // 响应可能因对端断开而未送达；清理成功后仍要通知宿主退出。
         if (this.stopping) {
           await this.shutdownTask?.catch(() => {});
@@ -291,6 +499,22 @@ export class LocalHostServer {
   }
 
   /**
+   * 校验当前连接是否持有外部会话控制权（无活跃控制者时自动授予当前连接），
+   * 杜绝非控制连接抢答审批或越权关闭他人正在运行的外部会话。
+   */
+  private attachOrVerifyExternalController(sessionIdOrPrefix: string, clientId: string): string {
+    const resolvedId = this.external.resolveSessionId(sessionIdOrPrefix);
+    const owner = this.externalControllers.get(resolvedId);
+    if (owner !== undefined && owner !== clientId) {
+      throw new Error('CONTROL_REQUIRED');
+    }
+    if (owner === undefined) {
+      this.externalControllers.set(resolvedId, clientId);
+    }
+    return resolvedId;
+  }
+
+  /**
    * 首次调用创建可复用的清理任务；失败后清除任务，允许 host/shutdown 重试。
    * 成功后保持 stopping，除 ping/shutdown 外的业务请求继续返回 SHUTTING_DOWN。
    */
@@ -298,7 +522,7 @@ export class LocalHostServer {
     this.stopping = true;
     this.shutdownTask ??= (async () => {
       for (const approval of this.approvals.values()) approval.dispose();
-      await this.registry.shutdown();
+      await Promise.all([this.registry.shutdown(), this.external.dispose()]);
       this.stopped = true;
     })().catch((error) => {
       this.shutdownTask = undefined;

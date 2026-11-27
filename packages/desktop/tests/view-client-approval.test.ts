@@ -60,3 +60,11 @@ it('重复请求同一审批以最新上下文为准', () => {
   emit({ type: 'approval.closed', approvalId: 'a', reason: 'timeout' });
   expect(client.snapshot().error).toContain('write_file');
 });
+
+it('dismissApproval 在应答报过期或会话失效时立即剔除陈旧卡片，防止模态框卡死', () => {
+  const { client, emit } = createClient();
+  emit(requested);
+  expect(client.snapshot().approvals).toHaveLength(1);
+  client.dismissApproval('a');
+  expect(client.snapshot().approvals).toHaveLength(0);
+});

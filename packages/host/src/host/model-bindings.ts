@@ -9,6 +9,7 @@ import {
   OpenAIResponsesProvider,
   type PrimaryModelRole,
   assembleCanonicalToolResults,
+  resolveContextWindow,
 } from '@kiturone/kapibala';
 import {
   type UserSettings,
@@ -50,8 +51,16 @@ export function createModelBinding(
   options: { allowMissingCredentials?: boolean; baseURLOverride?: string } = {},
 ): CliModelBinding {
   const resolved = resolveApiKeyDetailed(profile, settings);
-  const actual = {
+  // 大窗口自定义模型未显式声明 maxOutputTokens 时默认放宽至 16384，避免长回复或工具 JSON 在 4096 处被截断；
+  // 不回写磁盘配置，且小于 128K 的模型仍保持底层保守预留。
+  const defaultMaxOutput =
+    profile.maxOutputTokens === undefined &&
+    resolveContextWindow(profile.contextWindow).tokens >= 128_000
+      ? 16_384
+      : undefined;
+  const actual: ModelProfile = {
     ...profile,
+    ...(defaultMaxOutput !== undefined ? { maxOutputTokens: defaultMaxOutput } : {}),
     baseURL: (options.baseURLOverride ?? resolveBaseURL(profile)).replace(/\/+$/, ''),
   };
   if (!resolved) {

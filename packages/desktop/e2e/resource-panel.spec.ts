@@ -132,7 +132,9 @@ test.describe
       await page.getByRole('button', { name: '打开设置' }).click();
       await page.getByRole('tab', { name: '资源管理' }).click();
       await expect(page.getByText('demo-cmd')).toBeVisible();
-      await page.getByLabel('启用 demo', { exact: true }).click();
+      const toggle = page.getByRole('switch', { name: '启用 demo', exact: true });
+      await expect(toggle).toBeEnabled();
+      await toggle.click();
       // 点击与宿主写回是异步链路：轮询文件直到反映变更，避免固定延时竞态；
       // Windows runner 磁盘与 Host 往返更慢，放宽默认 5 秒轮询窗口。
       await expect

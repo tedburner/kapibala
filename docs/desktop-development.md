@@ -41,6 +41,8 @@ pnpm verify
 
 **启动环境分两层，别绕过。** 根 `pnpm build` / `build:desktop` / `dev:desktop` 实际是 `scripts/build.mjs` 与 `scripts/dev-desktop.mjs`：它们先用 `scripts/process-env.mjs` 的 `toolchainEnv()` 摘掉宿主注入的 `--require` / `--import` 与 `ELECTRON_RUN_AS_NODE`，再拉起下一层命令 —— 否则宿主的删除守卫会把打包器清 `out/` 当成批量删除拦下，报错指向无关的 `.js.map`，看起来像打包器坏了。启动 Electron 本身则走 `packages/desktop/scripts/launch-env.mjs` 的 `desktopLaunchEnv()` 白名单。
 
+开发和试包启动器在启动时读取各自 home 中保存的外部代理 `envFrom` 名单，并将对应的终端变量值交给 Agent Host。添加变量名或修改终端中的值后，重启桌面即可生效。
+
 ⚠️ 不要在 IDE 内嵌终端里跑 `pnpm dev:desktop`。那里的进程已处于系统沙箱内，Chromium 再初始化自己的进程级沙箱会被内核拒绝（`sandbox initialization failed` → GPU `exit_code=6` → 主进程 SIGTRAP），退出时来不及清 guard，下次打开就是「上次执行未确认完成清理」。用系统「终端」（Terminal.app）启动。该残留现在只落在 dev 专属 userData（见上），不再污染正式版；但 dev 自己下次启动仍会撞上，仍需人工核查。
 
 ### 1.1 本机测试打包（D1）

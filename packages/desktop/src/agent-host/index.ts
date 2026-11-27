@@ -1,9 +1,32 @@
+import { detectShell } from '@kiturone/kapibala';
 import { RpcEndpoint, safeError } from '../shared/rpc.js';
 import type { ControlIdentity } from '../shared/transport.js';
 import { DesktopHost } from './desktop-host.js';
 
 const parent = process.parentPort;
 if (!parent) throw new Error('Utility Host requires Electron parent port');
+const forwarded = process.env.KPBL_EXTERNAL_FORWARDED_ENV;
+// biome-ignore lint/performance/noDelete: process.env 赋值 undefined 会写入字面字符串。
+delete process.env.KPBL_EXTERNAL_FORWARDED_ENV;
+const externalHostEnv: NodeJS.ProcessEnv = { ...process.env };
+if (forwarded) {
+  try {
+    const entries: unknown = JSON.parse(forwarded);
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        if (Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string') {
+          Object.defineProperty(externalHostEnv, entry[0], {
+            value: entry[1],
+            enumerable: true,
+            configurable: true,
+          });
+        }
+      }
+    }
+  } catch {
+    // 损坏载荷忽略，代理探测仍会报告缺失的凭据。
+  }
+}
 let current:
   | { epoch: number; service: DesktopHost; rpc: RpcEndpoint; cleanup?: Promise<void> }
   | undefined;
@@ -46,8 +69,11 @@ parent.on('message', (event) => {
       controlEpoch: data.controlEpoch!,
     };
     try {
-      const service = new DesktopHost(data.homeDirectory, (notification, lane) =>
-        rpc.sendEvent(notification, lane),
+      const service = new DesktopHost(
+        data.homeDirectory,
+        (notification, lane) => rpc.sendEvent(notification, lane),
+        undefined,
+        externalHostEnv,
       );
       const rpc: RpcEndpoint = new RpcEndpoint(
         identity,
@@ -80,6 +106,16 @@ parent.on('message', (event) => {
       port.on('close', () => rpc.peer.close());
       port.start();
       parent.postMessage({ kind: 'host.connected', controlEpoch: identity.controlEpoch });
+      // 连接就绪后空闲预热一次默认解释器探针缓存，使首屏用户输完问题按 Enter 新建会话时零阻塞命中缓存。
+      const homeDir = data.homeDirectory;
+      setTimeout(() => {
+        if (!current || cleaned) return;
+        try {
+          detectShell({ cwd: homeDir });
+        } catch {
+          /* 无可用解释器时保持原降级语义，不阻断宿主空闲态。 */
+        }
+      }, 250).unref();
     } catch {
       port.close();
       parent.postMessage({ kind: 'host.attachFailed', controlEpoch: identity.controlEpoch });

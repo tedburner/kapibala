@@ -33,7 +33,7 @@ MCP 启动需先通过逐服务器配置摘要批准（`~/.kapibala/mcp-approval
 
 协议是 JSON-RPC 2.0，当前整数代际 `PROTOCOL_VERSION = 2` 独立于产品版本；方法、事件、结果 Schema 与错误分类的完整参考见 [本地宿主协议 2](local-protocol.md)。socket/pipe 使用私有凭证握手，token 不在 argv、日志或历史中。协议数据类型从 `@kiturone/kapibala-cli/protocol` 导入；Node 客户端和本地 socket 连接从 `@kiturone/kapibala-cli/client` 导入，导入本身不启动 CLI。
 
-初始化时客户端提交整数 `protocolVersion: 2` 并在 `capabilities` 中声明本次真正依赖的能力；当前服务端能力集合为 `sessions`、`approval`、`cancel`、`watch`、`evidence`。版本严格相等校验，旧 `{major, minMinor, maxMinor}` 报价在参数校验阶段即 `INVALID_PARAMS` 拒绝；任一声明能力不被支持返回 `PROTOCOL_MISMATCH`，不做静默降级。服务端返回的 `limits` 必须为全部正值整数，且关键预算不得放大客户端自身的硬上限。
+初始化时客户端提交整数 `protocolVersion: 2` 并在 `capabilities` 中声明本次真正依赖的能力；当前服务端能力集合为 `sessions`、`approval`、`cancel`、`watch`、`evidence`、`external-session`。版本严格相等校验，旧 `{major, minMinor, maxMinor}` 报价在参数校验阶段即 `INVALID_PARAMS` 拒绝；任一声明能力不被支持返回 `PROTOCOL_MISMATCH`，不做静默降级。服务端返回的 `limits` 必须为全部正值整数，且关键预算不得放大客户端自身的硬上限。
 
 单帧 1MiB，初始化 5 秒，最多 16 连接、每连接 64 个在途请求、8 个打开会话、4 个活动运行，每会话最多 128 个待审批。审批 120 秒到期。每连接快照总预算 8MiB；发送队列 4MiB。慢连接被断开，不能静默丢事件后继续应用。
 
@@ -46,4 +46,4 @@ MCP 启动需先通过逐服务器配置摘要批准（`~/.kapibala/mcp-approval
 
 daemon 运行目录默认是本机临时目录下的用户私有短路径，子进程 stderr 写入同目录的 0600 私有日志；`daemon status` 返回日志路径，并区分无实例、锁残留、元数据损坏、不可达与运行中。启动锁或元数据残留且无法完成实例握手时，启动会安全失败，不根据 PID 自动杀进程或删除 socket。需要检查目录和实际进程后手动处置陈旧文件；不要在活跃实例上删除运行目录。关闭清理失败不会报告干净停止。运行时或会话清理失败时保留存储锁；会话资源释放可重试，清理完成后才允许其它写者重新打开。运行迭代结束但 Core 仍忙时会报告失败并拒绝新运行，不以 settled 事件代表存储锁已释放。
 
-协议规范见 [本地宿主协议 2](local-protocol.md)，wire 升级边界见 [v0.1.4 迁移说明](migration/v0.1.4.md)，公开导出差异见 [SDK 兼容性说明](sdk-compatibility.md)，历史基线验收见 [v0.0.10 验收记录](verification/v0.0.10.md)。
+协议规范见 [本地宿主协议 2](local-protocol.md)，wire 升级边界见 [v0.1.4 迁移说明](migration/v0.1.4.md) 与 [v0.1.5 迁移说明](migration/v0.1.5.md)，公开导出差异见 [SDK 兼容性说明](sdk-compatibility.md)，历史基线验收见 [v0.0.10 验收记录](verification/v0.0.10.md)。

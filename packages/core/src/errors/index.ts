@@ -376,13 +376,16 @@ export class TransportError extends KapibalaError {
   }
 }
 
-/** 工具执行失败；默认码 `TOOL_ERROR`，安全拒绝可传入 `PERMISSION_DENIED` 以便上层区分。 */
+/**
+ * 工具执行失败；默认码 `TOOL_ERROR`，安全拒绝可传入 `PERMISSION_DENIED` 以便上层区分。
+ * 默认将受控诊断文本回填给模型以支持自纠错；沙箱等宿主机物理路径边界在抛出前单独覆盖 `safeMessage`。
+ */
 export class ToolError extends KapibalaError {
   constructor(message: string, code = 'TOOL_ERROR') {
     super(message, {
       code,
       retryPolicy: 'never',
-      safeMessage: 'Tool execution failed',
+      safeMessage: message,
     });
     this.name = 'ToolError';
   }

@@ -8,6 +8,7 @@ import { delegateCommand } from './delegate.js';
 import { delegationsCommand } from './delegations.js';
 import { CommandDispatcher, type CommandHandler } from './dispatcher.js';
 import { evidenceCommand } from './evidence.js';
+import { externalCommand } from './external.js';
 import { forkCommand } from './fork.js';
 import { helpCommand } from './help.js';
 import { historyCommand, newCommand, renameCommand, resumeCommand } from './history.js';
@@ -67,6 +68,7 @@ export function createDefaultCommandDispatcher(): CommandDispatcher {
     evidence: evidenceCommand,
     todos: todosCommand,
     watches: watchesCommand,
+    external: externalCommand,
     exit: async (_args, context) => {
       await context.onExit();
     },

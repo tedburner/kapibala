@@ -9,6 +9,7 @@
  * 边界：这里只处理"能预加载代码"的选项与运行模式开关，**不整体删除** `NODE_OPTIONS` ——
  * `--max-old-space-size` 这类纯参数与注入无关，抹掉会连累 CI 的大堆构建与调试体验。
  */
+import fs from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -91,4 +92,52 @@ export function toolchainEnv(base = process.env, repository = process.cwd(), ext
   return Object.fromEntries(
     Object.entries(env).filter(([, value]) => typeof value === 'string' && value !== ''),
   );
+}
+
+/**
+ * 解析跨平台 `pnpm` 子进程调用参数，彻底规避 `shell: true` 在 Node 24+ 触发的 `DEP0190` 告警与参数拼接注入风险。
+ *
+ * 前置约束与回退策略：
+ * - 若当前由 `pnpm` 拉起且 `npm_execpath` 指向真实存在的 pnpm JS 入口，直接用 `process.execPath` 执行该脚本；
+ * - 若 `npm_execpath` 指向原生可执行程序（如 `pnpm/setup@v3` 安装的独立 `pnpm.exe` 或 POSIX `pnpm` 二进制），直接以 `shell: false` 调用该二进制；
+ * - Windows 裸 `node` 入口优先在 `PNPM_HOME` 与 `PATH` 中探测独立 `pnpm.exe`，未命中时再回退到 `ComSpec /d /s /c pnpm.cmd ...`；
+ * - POSIX 直接调用 `pnpm` 可执行文件。
+ *
+ * @param {readonly string[]} args 传给 pnpm 的子命令与参数列表。
+ * @param {NodeJS.ProcessEnv} [env] 环境变量来源（默认 `process.env`）。
+ * @param {NodeJS.Platform} [platform] 目标平台（默认 `process.platform`）。
+ * @returns {{ command: string; args: string[] }}
+ */
+export function resolvePnpmCommand(args, env = process.env, platform = process.platform) {
+  const execPath = env?.npm_execpath;
+  if (
+    typeof execPath === 'string' &&
+    path.basename(execPath).toLowerCase().includes('pnpm') &&
+    fs.existsSync(execPath)
+  ) {
+    if (/\.[cm]?js$/i.test(execPath)) {
+      return { command: process.execPath, args: [execPath, ...args] };
+    }
+    if (!/\.(?:cmd|bat|ps1)$/i.test(execPath)) {
+      return { command: execPath, args: [...args] };
+    }
+  }
+  if (platform === 'win32') {
+    const rawPath = env?.PATH ?? env?.Path ?? '';
+    const searchDirs = [
+      env?.PNPM_HOME,
+      ...rawPath.split(';').map((entry) => entry.trim().replace(/^"(.*)"$/, '$1')),
+    ].filter(Boolean);
+    for (const dir of searchDirs) {
+      const candidateExe = path.join(dir, 'pnpm.exe');
+      if (fs.existsSync(candidateExe)) {
+        return { command: candidateExe, args: [...args] };
+      }
+    }
+    return {
+      command: env?.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', 'pnpm.cmd', ...args],
+    };
+  }
+  return { command: 'pnpm', args: [...args] };
 }

@@ -125,6 +125,141 @@ export interface EvidenceWire {
   delegations: EvidenceWireDelegation[];
 }
 
+/** 外部代理探测结论的本地 wire 形状（可空事实统一用 `null` 表达）。 */
+export interface ExternalProbeWire {
+  available: boolean;
+  status:
+    | 'ready'
+    | 'auth_unverified'
+    | 'needs_login'
+    | 'not_installed'
+    | 'invalid_shim'
+    | 'handshake_failed';
+  agentName: string | null;
+  version: string | null;
+  loadSupported: boolean;
+  reason: string | null;
+  loginHint: string | null;
+  installHint: string | null;
+}
+
+/** 外部代理配置条目的 wire 形状（不含任何环境变量值）。 */
+export interface ExternalHarnessWireItem {
+  id: string;
+  name: string;
+  transport: 'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc';
+  command: string;
+  args: string[];
+  envFrom: string[];
+  builtin: boolean;
+  registryId: string | null;
+  hasOverride: boolean;
+  enabled: boolean;
+  probe: ExternalProbeWire | null;
+}
+
+/** 官方 ACP Registry 静态模板的 wire 形状。 */
+export interface ExternalTemplateWireItem {
+  registryId: string;
+  name: string;
+  description: string;
+  command: string;
+  args: string[];
+  envFrom: string[];
+  installHint: string;
+  loginHint: string | null;
+  website: string | null;
+}
+
+/** 外部代理会话列表项的 wire 形状。 */
+export interface ExternalSessionWireItem {
+  id: string;
+  harnessId: string;
+  harnessName: string;
+  transport: 'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc';
+  workspaceRoot: string;
+  title: string;
+  status: 'starting' | 'idle' | 'running' | 'waiting_approval' | 'cancelling' | 'ended' | 'failed';
+  resumable: boolean;
+  canContinue: boolean;
+  hasArchive: boolean;
+  pendingApprovalCount: number;
+  modelLabel: string | null;
+  modeLabel: string | null;
+  createdAt: number;
+  updatedAt: number;
+  lastError: string | null;
+}
+
+/** 外部代理人工审批卡片的 wire 形状。 */
+export interface ExternalApprovalWireItem {
+  approvalId: string;
+  sessionId: string;
+  toolCallId: string;
+  toolTitle: string;
+  target: string | null;
+  warning: string | null;
+  options: { optionId: string; label: string; kind: string }[];
+  expiresAt: number;
+}
+
+/** 外部会话消息块的 wire 形状。 */
+export interface ExternalBlockWire {
+  id: string;
+  kind: 'text' | 'thinking' | 'tool';
+  text: string;
+  state: 'streaming' | 'completed' | 'interrupted';
+  revision: number;
+  tool: {
+    callId: string;
+    name: string;
+    displayName: string;
+    invocation: string;
+    verb: string | null;
+    chip: string | null;
+    mono: boolean;
+    input: string;
+    status: 'running' | 'succeeded' | 'failed' | 'interrupted';
+    result: string | null;
+  } | null;
+}
+
+/** 外部会话单条消息的 wire 形状。 */
+export interface ExternalMessageWire {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  state: 'streaming' | 'completed' | 'interrupted';
+  persisted: boolean;
+  blocks: ExternalBlockWire[];
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null;
+}
+
+/** 外部代理完整展示快照的 wire 形状。 */
+export interface ExternalSnapshotWire {
+  session: ExternalSessionWireItem;
+  sequence: number;
+  truncatedArchive: boolean;
+  messages: ExternalMessageWire[];
+  approvals: ExternalApprovalWireItem[];
+  plan: {
+    items: {
+      id: string;
+      title: string;
+      status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+    }[];
+    updatedAt: number | null;
+    revision: number;
+  } | null;
+  notices: { id: string; level: 'info' | 'warning' | 'error'; text: string }[];
+}
+
+/** `external/event` 通知载荷（仅向声明 `'external-session'` 且已 `external/attach` 的连接下发）。 */
+export interface ExternalWireEvent {
+  sessionId: string;
+  sequence: number;
+  snapshot: ExternalSnapshotWire;
+}
+
 /** 请求参数目录；连接角色、会话权限和实际执行参数仍须由服务端复核。 */
 export interface RequestParams {
   initialize: ProtocolOffer;
@@ -147,6 +282,36 @@ export interface RequestParams {
   'watch/cancel': SessionControl & { watchId: string };
   /** 会话看板只读聚合；与 watch/list 同门禁，必须先 attach 才能读取该会话证据。 */
   'evidence/read': { sessionId: string };
+  'external/harnesses': Record<string, never>;
+  'external/harnessSave': {
+    id: string;
+    builtin: boolean;
+    name?: string;
+    command?: string;
+    args?: string[];
+    envFrom?: string[];
+    registryId?: string;
+    enabled?: boolean;
+  };
+  'external/harnessReset': { id: string };
+  'external/harnessToggle': { id: string; enabled: boolean };
+  'external/harnessDelete': { id: string };
+  'external/harnessTest': { id: string; workspaceRoot?: string };
+  'external/list': { workspaceRoot: string };
+  'external/open': { workspaceRoot: string; harnessId: string; title?: string };
+  'external/attach': { sessionId: string };
+  'external/detach': { sessionId: string };
+  'external/snapshot': { sessionId: string };
+  'external/prompt': { sessionId: string; text: string };
+  'external/approve': {
+    sessionId: string;
+    approvalId: string;
+    optionId?: string;
+    cancel?: boolean;
+  };
+  'external/cancel': { sessionId: string };
+  'external/close': { sessionId: string };
+  'external/delete': { sessionId: string };
   'host/shutdown': Record<string, never>;
 }
 
@@ -206,12 +371,18 @@ export type WireEvent = {
   };
 }[keyof EventPayloads];
 
-/** 事件 notification 只有一种方法入口，payload 仍按事件类型逐项校验。 */
-export interface WireNotification {
-  jsonrpc: '2.0';
-  method: 'session/event';
-  params: WireEvent;
-}
+/** 事件 notification 包含本地会话流与外部代理会话流两类受控入口，payload 仍按 Schema 白名单校验。 */
+export type WireNotification =
+  | {
+      jsonrpc: '2.0';
+      method: 'session/event';
+      params: WireEvent;
+    }
+  | {
+      jsonrpc: '2.0';
+      method: 'external/event';
+      params: ExternalWireEvent;
+    };
 
 /** 分帧器和客户端只消费已经过边界校验的消息。 */
 export type WireMessage = WireRequest | WireResponse | WireNotification;

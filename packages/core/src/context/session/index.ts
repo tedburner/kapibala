@@ -248,12 +248,17 @@ export class AgentSession {
     this.userInstructionsPath = config.userInstructionsPath;
     // 事件日志先于技能运行时创建：SkillRuntime 的资源读取审计回调在构造期注入，
     // 依赖已包装的 eventLogger（自动附带 conversationId）。
-    const sinks = config.eventLogger ? undefined : createDefaultLogSinks(config.loggingDirectory);
+    // 未显式注入 eventLogger 且未指定 loggingDirectory 时使用内存静默 Sink，防止 SDK/单元测试污染宿主机 ~/.kapibala。
+    const sinks =
+      config.eventLogger || !config.loggingDirectory
+        ? undefined
+        : createDefaultLogSinks(config.loggingDirectory);
+    const noopSink = { async write(): Promise<void> {} };
     const eventLogger =
       config.eventLogger ??
       new StructuredLogger({
-        operationSink: sinks!.operationSink,
-        auditSink: sinks!.auditSink,
+        operationSink: sinks?.operationSink ?? noopSink,
+        auditSink: sinks?.auditSink ?? noopSink,
         debug: config.logger !== undefined,
         onDiagnostic: config.onDiagnostic ?? config.logger,
       });
@@ -276,7 +281,7 @@ export class AgentSession {
     this.router = new SimpleModelRouter(config.defaultProfile, config.defaultProvider);
     this.store = config.store;
     this.customSystemPrompt = config.systemPrompt;
-    this.maxSteps = config.maxSteps ?? 20;
+    this.maxSteps = config.maxSteps ?? 60;
     this.logger = config.logger;
     validatePermissionRules(config.permissionRules ?? []);
     this.mode = config.mode ?? 'Approval';

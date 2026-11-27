@@ -9,7 +9,7 @@
 1. 服务端接受连接后分配 `clientId`；客户端**第一条**请求必须是 `initialize`，5 秒内未完成握手即关闭连接。重复 `initialize` 直接 `UNAUTHORIZED`。
 2. 服务端配置了 token 时，`initialize.params.token` 必须等长且时序安全比较通过；token 不进 argv、日志、历史或错误响应，凭证文件模式为 POSIX 0600、运行目录 0700。
 3. 版本协商：整数 `protocolVersion` 必须严格等于 2，不接受区间协商，也不承诺字段级降级。v0.1.3 及更早的 `{major, minMinor, maxMinor}` 报价已废弃，初始化参数白名单直接判定 `INVALID_PARAMS`（不再有“放行到协商层”的兼容分支）。
-4. 能力协商：`capabilities` 声明本次真正依赖的能力，当前集合为 `sessions`、`approval`、`cancel`、`watch`、`evidence`。任一项不被支持都返回 `PROTOCOL_MISMATCH`，不做静默降级；未知能力拼写一律拒绝而不是忽略；客户端未声明使用的能力，服务端不推送对应事件。
+4. 能力协商：`capabilities` 声明本次真正依赖的能力，当前集合为 `sessions`、`approval`、`cancel`、`watch`、`evidence`、`external-session`。任一项不被支持都返回 `PROTOCOL_MISMATCH`，不做静默降级；未知能力拼写一律拒绝而不是忽略；客户端未声明使用的能力，服务端不推送对应事件。
 5. 服务端返回 `limits`（全部正值整数）。客户端校验任何字段都不得大于自身硬上限，随后调用 `LocalTransport.setLimits()` 在握手后同步收紧帧大小与发送队列；现存缓冲超限时传输关闭并抛错。缺少 `setLimits` 能力的自定义传输在连接期失败，不静默使用默认值。
 
 `DEFAULT_LIMITS`（服务端下发即采用值）：
@@ -51,7 +51,23 @@
 | `watch/list` | `sessionId`（需先 attach） | `{ items: WatchWireItem[] }` |
 | `watch/cancel` | `SessionControl` + `watchId` | `{ cancelled: true }` |
 | `evidence/read` | `sessionId`（需先 attach；能力 `evidence`） | `ViewEvidence`：`{ summary, changes, references, mcp, delegations }` |
+| `external/harnesses` | `{}`（能力 `external-session`） | `{ harnesses: ExternalHarnessWireItem[], templates: ExternalTemplateWireItem[] }` |
+| `external/harnessSave` | 内置覆写或自定义定义（`id`、`builtin`、可选 `name`/`command`（内置允许空串清空覆写）/`args`/`envFrom`/`registryId`/`enabled`） | `{ harnesses: ExternalHarnessWireItem[] }` |
+| `external/harnessReset` | `{ id }` | `{ harnesses: ExternalHarnessWireItem[] }` |
+| `external/harnessToggle` | `{ id, enabled }` | `{ harnesses: ExternalHarnessWireItem[] }` |
+| `external/harnessDelete` | `{ id }` | `{ harnesses: ExternalHarnessWireItem[] }` |
+| `external/harnessTest` | `{ id, workspaceRoot? }` | `ExternalProbeWire`（`available`、`status`、`loadSupported`、可选版本与提示） |
+| `external/list` | `{ workspaceRoot }`（绝对路径且须已信任） | `{ items: ExternalSessionWireItem[] }` |
+| `external/open` | `{ workspaceRoot, harnessId, title? }`（工作区须已信任，自动绑定当前连接为控制者） | `ExternalSnapshotWire` |
+| `external/attach` / `external/detach` | `{ sessionId }`（无活跃控制者时 `attach` 自动接管控制权；控制者 `detach` 自动取消在途轮次） | `ExternalSnapshotWire` / `{ detached: true }` |
+| `external/snapshot` | `{ sessionId }` | `ExternalSnapshotWire` |
+| `external/prompt` | `{ sessionId, text }`（须为当前控制连接，否则 `CONTROL_REQUIRED`） | `ExternalSnapshotWire` |
+| `external/approve` | `{ sessionId, approvalId, optionId?, cancel? }`（须为当前控制连接） | `{ resolved: true }` |
+| `external/cancel` / `external/close` | `{ sessionId }`（须为当前控制连接） | `{ cancellationRequested: true }` / `{ closed: true }` |
+| `external/delete` | `{ sessionId }`（须为当前控制连接；运行中自动先关闭再删除归档） | `{ deleted: boolean }` |
 | `host/shutdown` | `{}` | `{ stopped: true }` |
+
+`ExternalProbeWire.status` 的 `auth_unverified` 表示已检测到外部代理，凭据状态要等其模型调用才能确认，`available` 此时为 `false`。其他宿主持有外部会话期间，允许读取归档，继续、关闭与删除请求返回 `SESSION_BUSY`。
 
 `WatchWireItem = { watchId, kind: 'file_change' \| 'port_ready', target, state: 'armed' \| 'fired' \| 'timeout' \| 'cancelled' \| 'orphaned', armedAt, deadlineAt, closedAt: number \| null, detail: string \| null }`。`process_exit` 自 v0.1.4 起整体摘除，不再出现在 wire 上；历史落盘的遗留记录由读取侧按残缺数据跳过并输出诊断。`watch/list` 与 `session/snapshot` 同门禁：未 attach 返回 `CONTROL_REQUIRED`；默认 `createResourceFactory`（`kpbl serve`）经 `createManagedSessionResources` 在会话单写者锁（`SessionLock`）内完整布置监视触发源，若自定义 `ResourceFactory` 未注入监视门面，则 `watch/list` 返回空列表、`watch/cancel` 返回 `INVALID_REQUEST`。
 
@@ -76,6 +92,8 @@
 | `run_settled` | `{ outcome: 'completed' \| 'failed' \| 'cancelled' }` |
 | `approval_closed` | `{ approvalId }` |
 | `diagnostic` | `{ code, message }` |
+
+声明 `external-session` 能力的连接另可通过 `external/event` 通知接收已 `external/attach` 外部会话的实时快照流（`ExternalWireEvent = { sessionId, sequence, snapshot }`），其中 `transport` 枚举支持 `'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc'`。未声明 `external-session` 的客户端不会收到任何 `external/event` 帧，调用 `external/*` 方法返回 `PROTOCOL_MISMATCH`。
 
 ## 4. 快照与游标
 

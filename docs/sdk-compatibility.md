@@ -92,6 +92,20 @@ wire 1 的 `{major, minMinor, maxMinor}`，新端报价从候选构建的 `PROTO
 | Core 新增 `SkillLifecyclePhase` / `SkillLifecycleEvent` / `SKILL_LIFECYCLE_LIMIT`；`SkillRegistry` 增加 `lifecycle` / `roots` 只读访问器；`AgentSession.getSkills()` 返回值附加 `enabled` / `roots` / `lifecycle` | 纯新增导出与只读字段，既有字段语义不变 | 无迁移动作；生命周期事件只用于诊断，不参与优先级或权限判定 |
 | ViewModel 新增 `ViewUsage` 与可选 `ViewMessage.usage`、`history_replaced`（含可选 `branchId`）展示变更；Core 新增 `AgentSession.getMessageUsages()`、`rewindLastTurn()`、`restoreBranch()`、`validatePrimaryBinding()`、`syncExternalHistory()`；`ManagedSessionOptions` 新增可选 `isHostIdle` / `onAutoResume` | 纯可选字段与新增方法；不投影 usage 的宿主行为不变，重试只在宿主显式调用 `rewindLastTurn()` 时发生 | 需要回答级 token 时把 `getMessageUsages()` 按消息 ID 投影；重试后必须按 `history_replaced` 整体替换消息列表并同步 `branchId` |
 
+## v0.1.5 增量（开发中）
+
+本版聚焦宿主层「外部代理（External Harness）」独立会话域（通用 `acp`、`claude-cli`、`codex-app-server` 与 `pi-rpc` 四套传输驱动及 13 项按本机安装状态自动启停的内置预设），**`@kiturone/kapibala`（Core）与 `@kiturone/kapibala-mcp` 公共导出快照零破坏性变更**，本地宿主协议**保持整数 `PROTOCOL_VERSION = 2` 不变**，仅通过能力集合增量扩展 `'external-session'`，对既有 v0.1.4 客户端非破坏兼容。详见 [v0.1.5 迁移说明](migration/v0.1.5.md)。
+
+`ExternalProbeWire` 与 `ViewExternalHarnessProbe` 的状态包含 `auth_unverified`，供客户端展示外部代理认证尚未核验的情形。
+
+| 变化 | 影响 | 迁移方式 |
+|---|---|---|
+| `SERVER_CAPABILITIES` 新增 `'external-session'`，`PROTOCOL_VERSION` 保持 `2` | 不声明 `'external-session'` 的 v0.1.4 客户端照常握手并使用全部本地会话能力；调用 `external/*` 方法需在握手中显式声明 `'external-session'` | 需要消费外部代理 RPC 的客户端在 `ProtocolOffer.capabilities` 中加入 `'external-session'` |
+| `protocol` 子路径新增 `EXTERNAL_EVENT_SCHEMA`、`ExternalWireEvent`、`ExternalSnapshotWire`、`ExternalHarnessWireItem`、`ExternalProbeWire`、`ExternalTemplateWireItem`、`ExternalSessionWireItem`、`ExternalApprovalWireItem`、`ExternalMessageWire`、`ExternalBlockWire`、`validateExternalEvent`，并扩展 `REQUEST_SCHEMAS` / `RESULT_SCHEMAS` / `WireNotification` | 纯新增导出与联合分支；`LocalClient` 自动过滤非 `session/event` 通知，既有会话订阅不受影响 | 订阅外部代理通知请使用新增的 `LocalClient.subscribeExternal(listener)` |
+| `view-model` 子路径新增 `ViewExternalHarness`、`ViewExternalHarnessProbe`、`ViewExternalTemplate`、`ViewExternalSession`、`ViewExternalSessionStatus`、`ViewExternalTransport`、`ViewExternalApproval`、`ViewExternalSnapshot`、`ViewExternalConfigCategory`、`ViewExternalConfigChoice`、`ViewExternalConfigOption`、`ViewTurnMeta`，`ViewMessage` 增加可选 `turnMeta` | 纯新增浏览器安全 DTO 与可选展示字段（0 Node 依赖） | 无迁移动作；外部会话的消息流与计划直接复用既有 `ViewMessage` 与 `ViewTodoState` |
+| `host` 子路径 `ManagedHostSession.run(input, signal?, options?)` 的 `options` 增加可选 `handoff?: { fromTitle, context }` | 纯新增可选运行参数；不传时与既有行为完全一致 | 无迁移动作；供桌面跨代理切换时通过 `runPreparedTask` 注入受脱敏保护的上下文接力块 |
+| `@kiturone/kapibala-cli` 新增声明模块 `commands/external.d.ts`（`/external` 命令组）与 `local-host/external-wire.d.ts` | 纯新增内部命令与 wire 转换模块 | 无迁移动作 |
+
 ## 1. 盘点口径
 
 - 覆盖范围：Core 根入口、MCP 根入口，以及 CLI 的 `protocol`、`client`、`view-model` 及 `host` 四个子路径。当前候选清单以 `scripts/fixtures/public-api/current.json` 为准，新增 `/host` 也列入声明扫描。

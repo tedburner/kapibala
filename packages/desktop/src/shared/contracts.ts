@@ -17,6 +17,8 @@ export const LIMITS = Object.freeze({
   /** 单个代码/参数/结果文本的最大展示字符数（UTF-16 单元）；只约束渲染，不截断落盘数据。 */
   displayBudget: 64 * 1024,
   requestTimeout: 30_000,
+  /** 外部代理首次会话握手总预算（覆盖冷启动自解压与 authenticate）。 */
+  externalOpenTimeout: 65_000,
   /** 安装包流式下载的 RPC 总预算（空闲断连另由主进程 60s 看门狗逐块拦截，不得被常规 30s RPC 超时截断）。 */
   downloadTimeout: 30 * 60_000,
   approvalTimeout: 120_000,
@@ -171,6 +173,20 @@ const usage = z
     totalTokens: z.number().nonnegative(),
   })
   .strict();
+const turnMeta = z
+  .object({
+    agentName: text.optional(),
+    modelLabel: text.optional(),
+    effortLabel: text.optional(),
+    modeLabel: text.optional(),
+  })
+  .strict();
+const handoffPayload = z
+  .object({
+    fromTitle: z.string().max(200),
+    context: z.string().min(1).max(64_000),
+  })
+  .strict();
 const message = z
   .object({
     id: text,
@@ -179,6 +195,7 @@ const message = z
     persisted: z.boolean(),
     blocks: z.array(block),
     usage: usage.optional(),
+    turnMeta: turnMeta.optional(),
   })
   .strict();
 const identity = z
@@ -671,6 +688,143 @@ const updateDownloadResult = z.discriminatedUnion('status', [
   z.object({ status: z.literal('failed'), reason: text, detail: text.optional() }).strict(),
 ]);
 
+const externalTransport = z.enum(['acp', 'claude-cli', 'codex-app-server', 'pi-rpc']);
+const externalSessionStatus = z.enum([
+  'starting',
+  'idle',
+  'running',
+  'waiting_approval',
+  'cancelling',
+  'ended',
+  'failed',
+]);
+const externalConfigCategory = z.enum(['model', 'mode', 'thought_level']);
+const externalConfigChoice = z
+  .object({
+    value: z.string().min(1).max(256),
+    name: text,
+    description: text.optional(),
+    group: text.optional(),
+    supportedThoughtLevels: z.array(z.string().min(1).max(64)).max(32).optional(),
+    defaultThoughtLevel: z.string().min(1).max(64).optional(),
+  })
+  .strict();
+const externalConfigOption = z
+  .object({
+    id: z.string().min(1).max(128),
+    name: text,
+    category: externalConfigCategory,
+    currentValue: z.string().min(1).max(256).optional(),
+    options: z.array(externalConfigChoice).max(200),
+  })
+  .strict();
+const externalProbe = z
+  .object({
+    available: z.boolean(),
+    status: z.enum([
+      'ready',
+      'auth_unverified',
+      'needs_login',
+      'not_installed',
+      'invalid_shim',
+      'handshake_failed',
+    ]),
+    agentName: text.optional(),
+    version: text.optional(),
+    loadSupported: z.boolean(),
+    reason: text.optional(),
+    loginHint: text.optional(),
+    installHint: text.optional(),
+    configOptions: z.array(externalConfigOption).max(16).optional(),
+  })
+  .strict();
+const externalHarness = z
+  .object({
+    id,
+    name: text,
+    transport: externalTransport,
+    command: text,
+    args: z.array(text).max(128),
+    envFrom: z.array(id).max(64),
+    builtin: z.boolean(),
+    registryId: id.optional(),
+    hasOverride: z.boolean(),
+    enabled: z.boolean(),
+    probe: externalProbe.optional(),
+    cachedConfigOptions: z.array(externalConfigOption).max(16).optional(),
+    cachedConfigUpdatedAt: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+const externalTemplate = z
+  .object({
+    registryId: id,
+    name: text,
+    description: text,
+    command: text,
+    args: z.array(text).max(128),
+    envFrom: z.array(id).max(64).optional(),
+    installHint: text,
+    loginHint: text.optional(),
+    website: text.optional(),
+  })
+  .strict();
+const externalSession = z
+  .object({
+    id,
+    harnessId: id,
+    harnessName: text,
+    transport: externalTransport,
+    workspaceRoot: text,
+    title: text,
+    status: externalSessionStatus,
+    resumable: z.boolean(),
+    canContinue: z.boolean(),
+    hasArchive: z.boolean(),
+    pendingApprovalCount: z.number().int().nonnegative(),
+    modelLabel: text.optional(),
+    modeLabel: text.optional(),
+    thoughtLevelLabel: text.optional(),
+    createdAt: z.number().int().nonnegative(),
+    updatedAt: z.number().int().nonnegative(),
+    lastError: text.optional(),
+  })
+  .strict();
+const externalApproval = z
+  .object({
+    approvalId: id,
+    sessionId: id,
+    toolCallId: id,
+    toolTitle: text,
+    target: text.optional(),
+    warning: text.optional(),
+    options: z
+      .array(z.object({ optionId: id, label: text, kind: text }).strict())
+      .min(1)
+      .max(32),
+    expiresAt: z.number().int().nonnegative(),
+  })
+  .strict();
+const externalSnapshot = z
+  .object({
+    session: externalSession,
+    sequence: z.number().int().nonnegative(),
+    truncatedArchive: z.boolean().optional(),
+    messages: z.array(message),
+    operation: z
+      .object({
+        id,
+        phase: z.enum(['idle', 'running', 'cancelling', 'settling']),
+        result: result.optional(),
+      })
+      .strict()
+      .optional(),
+    approvals: z.array(externalApproval),
+    plan: todos.optional(),
+    notices: z.array(notice),
+    configOptions: z.array(externalConfigOption).max(16).optional(),
+  })
+  .strict();
+
 /** 每个业务入口独立校验；不能通过通用 channel 调用未登记方法。 */
 export const PARAMS = {
   'app.getInfo': empty,
@@ -890,6 +1044,8 @@ export const PARAMS = {
     input: z.string().min(1).max(512_000),
     /** 重试：宿主先截断上一轮再按同一输入重跑；缺省为普通发送。 */
     regenerate: z.boolean().optional(),
+    /** 跨代理接力上下文：以受控 `promptSource` 注入请求，不在用户气泡平铺历史文本。 */
+    handoff: handoffPayload.optional(),
   }),
   'run.cancel': session.extend({ runId: id }),
   'run.status': session,
@@ -915,6 +1071,78 @@ export const PARAMS = {
   }),
   /** 沙箱内文件路径枚举（相对路径清单），供 composer `@` 文件补全；有界返回。 */
   'workspace.listFiles': z.object({ workspaceId: id }).strict(),
+  'external.harnesses': z.object({ workspaceId: id.optional() }).strict(),
+  'external.saveHarness': z
+    .object({
+      id,
+      builtin: z.boolean(),
+      name: z.string().min(1).max(128).optional(),
+      command: z.string().max(4096).optional(),
+      args: z.array(z.string().max(4096)).max(128).optional(),
+      envFrom: z.array(id).max(64).optional(),
+      registryId: id.optional(),
+      enabled: z.boolean().optional(),
+    })
+    .strict(),
+  'external.resetHarness': z.object({ id }).strict(),
+  'external.toggleHarness': z.object({ id, enabled: z.boolean() }).strict(),
+  'external.deleteHarness': z.object({ id }).strict(),
+  'external.testHarness': z
+    .object({
+      id: id.optional(),
+      workspaceId: id.optional(),
+      draft: z
+        .object({
+          name: z.string().min(1).max(128),
+          command: z.string().min(1).max(4096),
+          args: z.array(z.string().max(4096)).max(128),
+          envFrom: z.array(id).max(64).optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+  'external.list': z.object({ workspaceId: id }).strict(),
+  'external.open': z
+    .object({
+      workspaceId: id,
+      harnessId: id,
+      title: z.string().max(200).optional(),
+      prompt: z.string().max(512_000).optional(),
+      modelId: z.string().min(1).max(256).optional(),
+      modeId: z.string().min(1).max(256).optional(),
+      thoughtLevel: z.string().min(1).max(256).optional(),
+      handoff: handoffPayload.optional(),
+    })
+    .strict(),
+  'external.snapshot': session,
+  'external.subscribe': session.extend({ subscriptionId: z.uuid() }),
+  'external.unsubscribe': z.object({ subscriptionId: z.uuid() }).strict(),
+  'external.prompt': session.extend({
+    text: z.string().min(1).max(512_000),
+    configOverrides: z
+      .object({
+        modelId: z.string().min(1).max(256).optional(),
+        modeId: z.string().min(1).max(256).optional(),
+        thoughtLevel: z.string().min(1).max(256).optional(),
+      })
+      .strict()
+      .optional(),
+    handoff: handoffPayload.optional(),
+  }),
+  'external.setConfig': session.extend({
+    configId: z.string().min(1).max(128),
+    category: externalConfigCategory,
+    value: z.string().min(1).max(256),
+  }),
+  'external.approve': session.extend({
+    approvalId: id,
+    optionId: id.optional(),
+    cancel: z.boolean().optional(),
+  }),
+  'external.cancel': session,
+  'external.close': session,
+  'external.delete': session,
   'presentation.subscribe': session.extend({ subscriptionId: z.uuid() }),
   'presentation.unsubscribe': session.extend({ subscriptionId: z.uuid() }),
   'presentation.resync': session.extend({ subscriptionId: z.uuid() }),
@@ -1058,6 +1286,28 @@ export const RESULTS = {
       truncated: z.boolean(),
     })
     .strict(),
+  'external.harnesses': z
+    .object({
+      harnesses: z.array(externalHarness).max(200),
+      templates: z.array(externalTemplate).max(200),
+    })
+    .strict(),
+  'external.saveHarness': z.object({ harnesses: z.array(externalHarness).max(200) }).strict(),
+  'external.resetHarness': z.object({ harnesses: z.array(externalHarness).max(200) }).strict(),
+  'external.toggleHarness': z.object({ harnesses: z.array(externalHarness).max(200) }).strict(),
+  'external.deleteHarness': z.object({ harnesses: z.array(externalHarness).max(200) }).strict(),
+  'external.testHarness': externalProbe,
+  'external.list': z.object({ items: z.array(externalSession).max(100) }).strict(),
+  'external.open': externalSnapshot,
+  'external.snapshot': externalSnapshot,
+  'external.subscribe': externalSnapshot,
+  'external.unsubscribe': empty,
+  'external.prompt': externalSnapshot,
+  'external.setConfig': externalSnapshot,
+  'external.approve': empty,
+  'external.cancel': empty,
+  'external.close': empty,
+  'external.delete': z.object({ deleted: z.boolean() }).strict(),
   'presentation.subscribe': empty,
   'presentation.unsubscribe': empty,
   'presentation.resync': empty,
@@ -1166,6 +1416,37 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
       downloaded: z.number().int().nonnegative(),
       /** 未知总大小时为 0，页面不得据此计算百分比。 */
       total: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('external.listChanged'),
+      workspaceId: id.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('external.snapshotChanged'),
+      subscriptionId: id,
+      sessionId: id,
+      snapshot: externalSnapshot,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('external.snapshotInvalidated'),
+      subscriptionId: id,
+      sessionId: id,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('external.attention'),
+      kind: z.enum(['approval_requested', 'turn_completed', 'turn_failed']),
+      workspaceId: id,
+      sessionId: id,
+      title: text,
+      harnessName: text,
     })
     .strict(),
   z.object({ type: z.literal('host.unavailable'), error }).strict(),
@@ -1339,6 +1620,27 @@ export type DesktopAPI = {
     resync(params: Params<'presentation.resync'>): Promise<void>;
     installed(params: Params<'presentation.installed'>): Promise<void>;
   };
+  external: {
+    harnesses(workspaceId?: string): Promise<Output<'external.harnesses'>>;
+    saveHarness(params: Params<'external.saveHarness'>): Promise<Output<'external.saveHarness'>>;
+    resetHarness(id: string): Promise<Output<'external.resetHarness'>>;
+    toggleHarness(
+      params: Params<'external.toggleHarness'>,
+    ): Promise<Output<'external.toggleHarness'>>;
+    deleteHarness(id: string): Promise<Output<'external.deleteHarness'>>;
+    testHarness(params: Params<'external.testHarness'>): Promise<Output<'external.testHarness'>>;
+    list(workspaceId: string): Promise<Output<'external.list'>>;
+    open(params: Params<'external.open'>): Promise<Output<'external.open'>>;
+    snapshot(params: Params<'external.snapshot'>): Promise<Output<'external.snapshot'>>;
+    subscribe(params: Params<'external.subscribe'>): Promise<Output<'external.subscribe'>>;
+    unsubscribe(subscriptionId: string): Promise<void>;
+    prompt(params: Params<'external.prompt'>): Promise<Output<'external.prompt'>>;
+    setConfig(params: Params<'external.setConfig'>): Promise<Output<'external.setConfig'>>;
+    approve(params: Params<'external.approve'>): Promise<void>;
+    cancel(params: Params<'external.cancel'>): Promise<void>;
+    close(params: Params<'external.close'>): Promise<void>;
+    delete(params: Params<'external.delete'>): Promise<Output<'external.delete'>>;
+  };
   onEvent(listener: (event: Notification) => void | Promise<void>): () => void;
 };
 /** UTF-8 编码预算用于中文和 emoji，不按 JavaScript 字符长度计数。 */
@@ -1354,6 +1656,7 @@ export function notificationLane(type: Notification['type']): 'data' | 'control'
     'presentation.event',
     'session.runtimeChanged',
     'session.inspectionChanged',
+    'external.snapshotChanged',
   ].includes(type)
     ? 'data'
     : 'control';

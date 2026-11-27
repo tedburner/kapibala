@@ -9,7 +9,12 @@ const RUNTIME_ERROR_TEXTS: readonly { readonly match: string; readonly text: str
   {
     // core runtime loop：工具结果 retryPolicy 为 after_user_action 时终止本轮并抛出。
     match: 'Tool execution requires user action before continuing',
-    text: '已暂停执行：有一个工具操作需要你确认后才能继续。请在审批面板中允许或拒绝该请求；若审批已超时被自动拒绝，重新发起任务即可。',
+    text: '已暂停执行：有一个工具操作被拒绝或需要你确认后才能继续。可直接点击下方「继续执行」让模型改用其它方案推进。',
+  },
+  {
+    // core runtime loop：单轮自动执行达到 maxSteps 上限时终止本轮。
+    match: 'Reached max steps limit',
+    text: '已达到单轮自动执行步数上限，当前任务尚未全部收尾。点击下方「继续执行」或发送「继续」即可接着完成剩余步骤。',
   },
 ];
 

@@ -405,7 +405,10 @@ export class ToolExecutor {
       } catch {
         /* Execution has not begun. */
       }
-      return failure('Invalid tool execution target', 'INVALID_TARGET');
+      return failure(
+        'Invalid tool execution target: required parameter is missing or malformed (pass parameters at top level per tool schema, do not nest under "arguments")',
+        'INVALID_TARGET',
+      );
     }
     let executionIdentity: ToolExecutionIdentity | undefined;
     try {

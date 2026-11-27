@@ -52,10 +52,12 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   // 引用草稿随 REPL 生命周期存活；/quote 挂载，下一条输入发送时注入并清空。
   const quoteDraft = new QuoteDraft();
   context.references = quoteDraft;
-  context.question = (prompt) => input.question(prompt);
-  context.readSecret = (prompt) => input.readSecret(prompt);
-  context.confirm = (prompt) => input.confirm(prompt);
-  context.select = (config) => input.select(config);
+  if (input.interactive) {
+    context.question = (prompt) => input.question(prompt);
+    context.readSecret = (prompt) => input.readSecret(prompt);
+    context.confirm = (prompt) => input.confirm(prompt);
+    context.select = (config) => input.select(config);
+  }
   options.approvalChannel?.bind((request, signal) => input.approve(request, signal));
   const statusRenderer = createEventRenderer({
     debug,
@@ -64,6 +66,21 @@ export async function startREPL(options: REPLOptions): Promise<void> {
   });
   context.renderEvent = (event) => statusRenderer.render(event);
   const busy = () => options.controller?.isBusy() ?? session().isBusy();
+  const activeExternalSessions = () => {
+    if (!context.external) return [];
+    try {
+      return context.external
+        .listSessions(context.projectRoot)
+        .filter(
+          (item) =>
+            item.status === 'starting' ||
+            item.status === 'running' ||
+            item.status === 'waiting_approval',
+        );
+    } catch {
+      return [];
+    }
+  };
   const prompt = () =>
     input.prompt(
       `kpbl (${session().getModelRole()} | ${session().getActiveProfile().id} | ${session().getMode()} | ${session().conversationId.slice(0, 8)}) ❯ `,
@@ -73,6 +90,7 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     input.cancel();
     options.controller?.abort();
     fallbackAbort?.abort();
+    void context.external?.dispose().catch(() => {});
     input.close();
   };
   const runTask = async (
@@ -136,6 +154,14 @@ export async function startREPL(options: REPLOptions): Promise<void> {
       options.controller?.abort();
       fallbackAbort?.abort();
       console.log('\n已请求中止，正在等待工具、摘要与存储清理。');
+      return;
+    }
+    const runningExternals = activeExternalSessions();
+    if (runningExternals.length > 0 && context.external) {
+      for (const ext of runningExternals) {
+        void context.external.cancelSession(ext.id, context.projectRoot).catch(() => {});
+      }
+      console.log('\n已请求中止外部代理当前轮次。');
       return;
     }
     if (input.getLine().trim()) {
@@ -209,6 +235,7 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     if (input.interactive) {
       options.controller?.abort();
       fallbackAbort?.abort();
+      void context.external?.dispose().catch(() => {});
     }
     await Promise.allSettled([...operations]);
     statusRenderer.finish();

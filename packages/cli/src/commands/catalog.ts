@@ -1,5 +1,6 @@
 import { PRIMARY_MODEL_ROLES, ROUTABLE_MODEL_ROLES } from '@kiturone/kapibala-host/internal';
 import { isInteractiveTerminal } from '../input-coordinator.js';
+import { validateExternalCommandArgs } from './external.js';
 import { parseMcpConfigArgs, parseMcpImportArgs } from './mcp.js';
 import { parseSkillImportArgs, parseSkillTask } from './skills.js';
 
@@ -515,6 +516,24 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     group: 'diagnostic',
     mutates: () => false,
     validate: one,
+  },
+  {
+    name: 'external',
+    interactionLevel: 'none',
+    rawTail: true,
+    usage:
+      '/external [list | harnesses | harness <test|add|enable|disable|remove|reset> ... | start [--model <id>] <harnessId> <任务> | config <sessionId> [model|mode|thought <值>] | show|prompt|approve|cancel|close|delete ...]',
+    description: '管理外部代理（ACP / Claude / Codex / Pi）并运行独立外部任务会话',
+    group: 'session',
+    mutates: (args) => {
+      const parts = (args[0] ?? '').trim().split(/\s+/);
+      const first = parts[0]?.toLowerCase() ?? '';
+      const second = parts[1]?.toLowerCase() ?? '';
+      if (first === 'harness' && second === 'test') return false;
+      if (first === 'config') return false;
+      return !['', 'list', 'harnesses', 'show', 'approve', 'cancel'].includes(first);
+    },
+    validate: validateExternalCommandArgs,
   },
   {
     name: 'exit',

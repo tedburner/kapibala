@@ -42,6 +42,12 @@ import { HostSupervisor } from './supervisor.js';
 import { checkForDesktopUpdate } from './update-check.js';
 import { downloadUpdate, isTrustedReleaseUrl } from './update-download.js';
 import { normalizeMainFrameUrl, normalizeUrl } from './url.js';
+import { ensureWindowsBrandIco, resolveWindowsAppId } from './win-icon.js';
+import {
+  WINDOW_SURFACES,
+  resolveWindowChromeOptions,
+  titleBarOverlayOptions,
+} from './window-chrome.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 app.setName('Kapibala');
@@ -68,6 +74,11 @@ if (requestedUserData && !path.isAbsolute(requestedUserData))
   throw new Error('USER_DATA_PATH_REQUIRED');
 // 同时支持正式构建的标准 Chromium 数据目录参数，安装验收不需要启用专用测试覆盖。
 if (isolated || requestedUserData) app.setPath('userData', isolated?.userData ?? requestedUserData);
+const windowsAppId = resolveWindowsAppId({
+  isPackaged: app.isPackaged,
+  isTestIsolation: Boolean(isolated),
+});
+if (process.platform === 'win32') app.setAppUserModelId(windowsAppId);
 const homeDirectory = isolated?.home ?? os.homedir();
 const rendererFile = path.resolve(directory, '../renderer/index.html');
 const developmentURL = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
@@ -125,9 +136,18 @@ let cachedUpdateCheck:
     }
   | undefined;
 const registry = new Map<string, Workspace>();
-const surfaces = { light: '#FFFFFF', dark: '#181818' } as const;
+const surfaces = WINDOW_SURFACES;
 const displayMode = () =>
   nativeTheme.shouldUseDarkColors ? ('dark' as const) : ('light' as const);
+
+function syncWindowTheme(target: BrowserWindow | undefined): void {
+  if (!target || target.isDestroyed()) return;
+  const mode = displayMode();
+  target.setBackgroundColor(surfaces[mode]);
+  if (process.platform === 'win32') {
+    target.setTitleBarOverlay(titleBarOverlayOptions(mode));
+  }
+}
 
 function unavailable(): void {
   notices.reset();
@@ -358,6 +378,7 @@ async function handle(
       const { theme } = PARAMS[method].parse(params);
       preferences.theme(theme);
       nativeTheme.themeSource = theme;
+      syncWindowTheme(window);
       return {};
     }
   }
@@ -427,6 +448,17 @@ async function handle(
   if (method === 'session.create' || method === 'session.open')
     notices.open((result as { sessionId: string }).sessionId);
   if (method === 'session.close') notices.close((params as { sessionId: string }).sessionId);
+  if (
+    method === 'external.subscribe' ||
+    method === 'external.prompt' ||
+    method === 'external.setConfig' ||
+    method === 'external.approve' ||
+    method === 'external.cancel' ||
+    method === 'external.close' ||
+    method === 'external.delete'
+  ) {
+    notices.dismissExternal((params as { sessionId: string }).sessionId);
+  }
   return result;
 }
 async function connect(): Promise<void> {
@@ -467,9 +499,15 @@ async function connect(): Promise<void> {
   renderer = rpc;
   if (supervisor && !blocked)
     try {
-      backend = await supervisor.attach(epoch, (notification) => {
+      backend = await supervisor.attach(epoch, async (notification) => {
         notices.observe(notification);
-        return rpc.sendEvent(notification, notificationLane(notification.type));
+        if (renderer !== rpc) return;
+        try {
+          await rpc.sendEvent(notification, notificationLane(notification.type));
+        } catch {
+          // 渲染层通道断开或接收拥塞只关闭当前页面连接，不得冒泡给 supervisor 误触发 Host INVALID_PAYLOAD 熔断。
+          rpc.peer.close('OUTPUT_CONGESTED');
+        }
       });
     } catch {
       // attach 失败（握手超时、Host 退出）不能吞掉连接投递：不发 kpbl:connected，renderer 的
@@ -507,29 +545,46 @@ async function connect(): Promise<void> {
 function createWindow(): void {
   const state = preferences.read();
   nativeTheme.themeSource = state.theme;
+  const windowsIconFile =
+    process.platform === 'win32'
+      ? ensureWindowsBrandIco(brandIconFile, app.getPath('userData'), (file) =>
+          nativeImage.createFromPath(file),
+        )
+      : undefined;
+  const mode = displayMode();
+  const chrome = resolveWindowChromeOptions(process.platform, mode);
   const win = new BrowserWindow({
     title: 'Kapibala',
-    icon: brandIconFile,
+    icon: windowsIconFile ?? brandIconFile,
     width: state.width,
     height: state.height,
     minWidth: 800,
     minHeight: 600,
     show: false,
-    backgroundColor: surfaces[displayMode()],
-    // macOS 使用沉浸式标题栏，红绿灯位置按 46px 标题栏垂直居中；其它平台保留原生边框。
-    ...(process.platform === 'darwin'
-      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 15 } }
-      : {}),
+    backgroundColor: surfaces[mode],
+    ...chrome.browserWindow,
     webPreferences: {
       preload: path.join(directory, '../preload/index.cjs'),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
       webSecurity: true,
-      additionalArguments: [`--kpbl-mode=${displayMode()}`],
+      additionalArguments: [`--kpbl-mode=${mode}`],
     },
   });
+  if (chrome.hideMenuBar) win.setMenuBarVisibility(false);
   window = win;
+  if (process.platform === 'win32' && windowsIconFile) {
+    // 显式为 HWND 写入独立 AppUserModelID 与多分辨率 .ico RelaunchIconResource，
+    // 否则 Windows 10/11 任务栏在开发态会沿用 electron.exe 内嵌的黑色原子图标。
+    win.setAppDetails({
+      appId: windowsAppId,
+      appIconPath: windowsIconFile,
+      appIconIndex: 0,
+      relaunchDisplayName: 'Kapibala',
+    });
+    win.setIcon(windowsIconFile);
+  }
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   // 复制使用标准剪贴板写接口；只放行当前主页面，拒绝读取与所有其它浏览器权限。
@@ -736,7 +791,7 @@ else {
       return readImageDataUrl(target);
     });
     nativeTheme.on('updated', () => {
-      window?.setBackgroundColor(surfaces[displayMode()]);
+      syncWindowTheme(window);
       if (renderer)
         void renderer
           .sendEvent({ type: 'theme.changed', mode: displayMode() }, 'control')

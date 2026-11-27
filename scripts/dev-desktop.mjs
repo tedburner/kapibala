@@ -21,10 +21,20 @@ const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const child = spawn(
   process.execPath,
   [path.join(repository, 'packages/desktop/scripts/dev.mjs'), ...process.argv.slice(2)],
-  { cwd: repository, stdio: 'inherit', env: toolchainEnv(process.env, repository) },
+  {
+    cwd: repository,
+    stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
+    env: toolchainEnv(process.env, repository),
+  },
 );
+// Windows 下 child.kill('SIGINT') 会调用 TerminateProcess 直接硬杀 dev.mjs，
+// 导致 dev.lock 与 dev 专用 host-guard.json 无法执行优雅清理；优先经 IPC 通知子进程自收尾。
 for (const signal of ['SIGINT', 'SIGTERM'])
   process.on(signal, () => {
-    child.kill(signal);
+    if (child.connected) {
+      child.send({ kind: 'kpbl:dev-parent-stop' }, () => {});
+    } else if (process.platform !== 'win32') {
+      child.kill(signal);
+    }
   });
-child.once('exit', (code) => process.exit(code ?? 1));
+child.once('exit', (code) => process.exit(code ?? 0));

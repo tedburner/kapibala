@@ -21,7 +21,7 @@
 
 ## 发布新版本
 
-1. 在 `main` 上准备并提交 `docs/releases/vX.Y.Z.md`，同步迁移与验收说明。可先运行 `pnpm release --scaffold` 生成骨架；发布前必须补全占位内容。三段版本均允许多位非负整数且不允许前导零；默认只递增补丁段，例如 `v0.0.9 → v0.0.10 → v0.0.11`。次版本/主版本通过显式参数选择，例如桌面客户端发布时执行 `pnpm release 0.1.0`；不会因补丁达到 9 自动进入该版本。
+1. 在 `main` 上准备并提交 `docs/releases/vX.Y.Z.md`，同步迁移与验收说明。可先运行 `pnpm release --scaffold` 生成双层结构的发布说明骨架（上半部分写 5 到 8 条面向用户效果的亮点速览与下一版预告，下半部分 `## 详细变更` 基于 `git log v<上一版>..HEAD` 按产品模块分组列出全部功能、修复与性能改进，末尾附 GitHub `compare` 链接）；发布前必须补全全部占位内容。三段版本均允许多位非负整数且不允许前导零；默认只递增补丁段，例如 `v0.0.9 → v0.0.10 → v0.0.11`。次版本/主版本通过显式参数选择，例如桌面客户端发布时执行 `pnpm release 0.1.0`；不会因补丁达到 9 自动进入该版本。
 2. 确保工作区干净且本地 `main` 不落后远端，运行 `pnpm release [version]`。脚本同步根、Core、MCP、CLI、host、desktop 六份 `package.json` 和 `CLI_VERSION`（七处版本真源），运行 `pnpm verify`，经交互确认后创建 `:bookmark: 发布 vX.Y.Z` 提交及附注标签。可先用 `pnpm release --dry-run` 查看计划；非交互调用必须显式传入 `--yes`。
 3. 手动推送分两步：先 `git push origin main` 并在 Actions 确认该提交的 `Verify main` 工作流通过（纯文档提交受 `paths-ignore` 跳过，升版提交因修改 `package.json` 与 `CLI_VERSION` 会正常触发）；严格口径下还要补齐同一 SHA 的人工专项和正式 release 长跑、审核清单后手动更新 `KPBL_RELEASE_EVIDENCE`（个人自用版默认跳过这一步，见[发布证据说明](../release-evidence.md)）；最后显式推送标签 `refs/tags/vX.Y.Z`（因版本开发分支固定命名为 `vX.Y.Z`，直接 `git push origin vX.Y.Z` 会因分支与标签同名报 `src refspec matches more than one`）。标签指向同一提交，提前在 `main` 上暴露门禁失败，避免为过门禁而移动已推送的标签。发布源提交必须先包含在远端 `main`；性能基线必须在最终升版前提交，不能提交自引用 SHA 的验收清单。下例说明推送顺序，不替代其中的验收和审核步骤：
 

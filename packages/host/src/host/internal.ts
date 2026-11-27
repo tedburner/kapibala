@@ -197,3 +197,127 @@ export type {
   SkillImportSourceView,
   SkillImportStatus,
 } from './resource/skill-import.js';
+export {
+  ExternalHarnessError,
+  SAFE_NATIVE_SESSION_ID_PATTERN,
+  isReservedObjectPropertyName,
+  isValidNativeSessionId,
+} from './external/types.js';
+export type {
+  ExternalApprovalDecision,
+  ExternalApprovalOption,
+  ExternalDriverOpenResult,
+  ExternalDriverSessionHandle,
+  ExternalErrorCode,
+  ExternalEvent,
+  ExternalHarnessDefinition,
+  ExternalHarnessDriver,
+  ExternalInspectResult,
+  ExternalInspectStatus,
+  ExternalTransportKind,
+  ExternalTurnResult,
+} from './external/types.js';
+export {
+  ENV_VAR_NAME_PATTERN,
+  FORBIDDEN_EXTERNAL_ENV_KEYS,
+  buildExternalLaunchEnv,
+  resolveForwardedEnvSecrets,
+} from './external/env.js';
+export type {
+  BuildExternalLaunchEnvOptions,
+  ExternalLaunchEnvResult,
+} from './external/env.js';
+export {
+  ExternalProcessSupervisor,
+  getStandardCliFallbackDirs,
+  resolveExternalCommand,
+} from './external/process.js';
+export type {
+  ExternalCommandUnwrapKind,
+  ExternalProcessCloseResult,
+  ResolveExternalCommandOptions,
+  ResolvedExternalCommand,
+  SpawnExternalProcessOptions,
+} from './external/process.js';
+export {
+  DEFAULT_EXTERNAL_MAX_FRAME_BYTES,
+  NdjsonChannel,
+} from './external/ndjson-channel.js';
+export type {
+  IncomingRpcRequestHandler,
+  JsonRpcRequestId,
+  NdjsonChannelOptions,
+  NdjsonRequestOptions,
+} from './external/ndjson-channel.js';
+export { AcpStdioDriver } from './external/drivers/acp/acp-driver.js';
+export type { AcpStdioDriverOptions } from './external/drivers/acp/acp-driver.js';
+export { ClaudeCliDriver } from './external/drivers/claude-cli.js';
+export type { ClaudeCliDriverOptions } from './external/drivers/claude-cli.js';
+export { CodexAppServerDriver } from './external/drivers/codex-app-server.js';
+export type { CodexAppServerDriverOptions } from './external/drivers/codex-app-server.js';
+export {
+  PiRpcDriver,
+  buildPiLaunchArgs,
+  ensurePiApprovalGuardExtension,
+} from './external/drivers/pi-rpc.js';
+export type { PiRpcDriverOptions } from './external/drivers/pi-rpc.js';
+export {
+  isAcpAuthRequiredError,
+  resolveAcpFlavor,
+} from './external/drivers/acp/flavors.js';
+export type { AcpHarnessFlavor } from './external/drivers/acp/flavors.js';
+export { ExternalTranscriptProjector } from './external/drivers/acp/projector.js';
+export {
+  extractAcpChunkText,
+  normalizeAcpConfigSummary,
+  normalizeAcpInitializeResult,
+  normalizeAcpPermissionRequest,
+  normalizeAcpPlanUpdate,
+  normalizeAcpToolUpdate,
+  normalizeAcpUsage,
+} from './external/drivers/acp/tolerance.js';
+export type { NormalizedAcpInitialize } from './external/drivers/acp/tolerance.js';
+export {
+  ACP_REGISTRY_TEMPLATES,
+  BUILTIN_EXTERNAL_HARNESSES,
+  findBuiltinExternalHarness,
+} from './external/presets.js';
+export type { AcpRegistryTemplate } from './external/presets.js';
+export {
+  EXTERNAL_HARNESSES_FILE_NAME,
+  EXTERNAL_STATE_DIR_NAME,
+  computeHarnessConfigDigest,
+  getExternalHarnessesConfigPath,
+  getExternalStateDirPath,
+  listResolvedExternalHarnesses,
+  mutateExternalHarnessesConfig,
+  readExternalHarnessesConfig,
+  removeCustomExternalHarness,
+  resetBuiltinHarnessOverride,
+  saveBuiltinHarnessOverride,
+  toggleExternalHarness,
+  upsertCustomExternalHarness,
+} from './external/config.js';
+export type {
+  BuiltinHarnessOverride,
+  CustomExternalHarnessInput,
+  ExternalHarnessesConfigFile,
+  ResolvedExternalHarnessEntry,
+} from './external/config.js';
+export {
+  EXTERNAL_SESSIONS_FILE_NAME,
+  EXTERNAL_SNAPSHOTS_DIR_NAME,
+  ExternalSessionRegistry,
+  MAX_EXTERNAL_ARCHIVE_BYTES,
+  MAX_EXTERNAL_ARCHIVE_MESSAGES,
+  MAX_RETAINED_EXTERNAL_SESSIONS,
+} from './external/registry.js';
+export type {
+  ExternalSessionArchive,
+  ExternalSessionRecord,
+} from './external/registry.js';
+export {
+  ExternalSessionService,
+  MAX_ACTIVE_EXTERNAL_PROCESSES,
+} from './external/service.js';
+export type { ExternalSessionServiceOptions } from './external/service.js';

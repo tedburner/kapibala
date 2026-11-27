@@ -52,6 +52,11 @@ const initialize = object({ protocolVersion: integer, clientName: id, capabiliti
   'token',
 ]);
 
+const optionalCommand = { type: 'string', maxLength: 4_096 } as const;
+const argItem = { type: 'string', maxLength: 16_384 } as const;
+const argArray = { type: 'array', items: argItem, maxItems: 128 } as const;
+const envFromArray = { type: 'array', items: id, maxItems: 64 } as const;
+
 /** 初始化和方法参数 Schema 为协议单一白名单；额外参数不作隐式忽略。 */
 export const REQUEST_SCHEMAS = {
   initialize,
@@ -83,6 +88,37 @@ export const REQUEST_SCHEMAS = {
   'watch/list': object({ sessionId: id }),
   'watch/cancel': object({ ...control, watchId: id }),
   'evidence/read': object({ sessionId: id }),
+  'external/harnesses': empty,
+  'external/harnessSave': object(
+    {
+      id,
+      builtin: boolean,
+      name: id,
+      command: optionalCommand,
+      args: argArray,
+      envFrom: envFromArray,
+      registryId: id,
+      enabled: boolean,
+    },
+    ['name', 'command', 'args', 'envFrom', 'registryId', 'enabled'],
+  ),
+  'external/harnessReset': object({ id }),
+  'external/harnessToggle': object({ id, enabled: boolean }),
+  'external/harnessDelete': object({ id }),
+  'external/harnessTest': object({ id, workspaceRoot: string }, ['workspaceRoot']),
+  'external/list': object({ workspaceRoot: string }),
+  'external/open': object({ workspaceRoot: string, harnessId: id, title: id }, ['title']),
+  'external/attach': object({ sessionId: id }),
+  'external/detach': object({ sessionId: id }),
+  'external/snapshot': object({ sessionId: id }),
+  'external/prompt': object({ sessionId: id, text: string }),
+  'external/approve': object({ sessionId: id, approvalId: id, optionId: id, cancel: boolean }, [
+    'optionId',
+    'cancel',
+  ]),
+  'external/cancel': object({ sessionId: id }),
+  'external/close': object({ sessionId: id }),
+  'external/delete': object({ sessionId: id }),
   'host/shutdown': empty,
 } as const satisfies Record<string, WireSchema>;
 

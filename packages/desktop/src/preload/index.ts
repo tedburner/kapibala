@@ -184,6 +184,25 @@ const api: DesktopAPI = {
     resync: (params) => done('presentation.resync', params),
     installed: (params) => done('presentation.installed', params),
   },
+  external: {
+    harnesses: (workspaceId) => call('external.harnesses', workspaceId ? { workspaceId } : {}),
+    saveHarness: (params) => call('external.saveHarness', params),
+    resetHarness: (id) => call('external.resetHarness', { id }),
+    toggleHarness: (params) => call('external.toggleHarness', params),
+    deleteHarness: (id) => call('external.deleteHarness', { id }),
+    testHarness: (params) => call('external.testHarness', params),
+    list: (workspaceId) => call('external.list', { workspaceId }),
+    open: (params) => call('external.open', params),
+    snapshot: (params) => call('external.snapshot', params),
+    subscribe: (params) => call('external.subscribe', params),
+    unsubscribe: (subscriptionId) => done('external.unsubscribe', { subscriptionId }),
+    prompt: (params) => call('external.prompt', params),
+    setConfig: (params) => call('external.setConfig', params),
+    approve: (params) => done('external.approve', params),
+    cancel: (params) => done('external.cancel', params),
+    close: (params) => done('external.close', params),
+    delete: (params) => call('external.delete', params),
+  },
   onEvent(listener) {
     if (listeners.size >= 16) throw new Error('Subscriber limit');
     listeners.add(listener);

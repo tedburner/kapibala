@@ -21,6 +21,13 @@ const frameSchema = z.discriminatedUnion('kind', [
       body: z.unknown(),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal('close'),
+      hostInstanceId: z.string(),
+      controlEpoch: z.number().int(),
+    })
+    .strict(),
 ]);
 /** 每一跳各自持有的控制身份，旧连接消息不释放当前额度或改变状态。 */
 export interface ControlIdentity {
@@ -108,6 +115,10 @@ export class BoundedPeer {
         frame.controlEpoch !== this.identity.controlEpoch
       )
         return;
+      if (frame.kind === 'close') {
+        this.close('PEER_CLOSED', false);
+        return;
+      }
       const state = this.lanes[frame.lane];
       if (frame.kind === 'ack') {
         if (frame.sequence < state.acked || frame.sequence > state.sent)
@@ -163,8 +174,12 @@ export class BoundedPeer {
     return this.lanes[lane].bytes;
   }
 
-  /** 幂等结束全部待发承诺；调用方在此回调中撤销审批并等待实际工具清理。 */
-  close(reason = 'CONTROL_CLOSED'): void {
+  /**
+   * 幂等结束全部待发承诺，并向对端发送同代次 `close` 控制帧：
+   * Chromium 沙箱预加载中的 Web `MessagePort` 不触发原生 `close` 事件，若主进程单向关闭 `MessagePortMain`
+   * 而不发显式关闭帧，渲染层审批弹窗与在途请求会盲等 30 秒超时；`notifyPeer = false` 防止收到对端关闭帧时回环互发。
+   */
+  close(reason = 'CONTROL_CLOSED', notifyPeer = true): void {
     if (this.closed) return;
     this.closed = true;
     for (const state of Object.values(this.lanes)) {
@@ -174,6 +189,18 @@ export class BoundedPeer {
       }
       state.pending.clear();
       state.bytes = 0;
+    }
+    if (notifyPeer) {
+      try {
+        this.post(
+          JSON.stringify({
+            ...this.identity,
+            kind: 'close',
+          }),
+        );
+      } catch {
+        /* 底层端口已销毁时忽略关闭帧投递异常，继续触发本地清理回调。 */
+      }
     }
     this.onClose(reason);
   }

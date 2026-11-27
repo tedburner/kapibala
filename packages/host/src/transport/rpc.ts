@@ -1,6 +1,7 @@
 import { toWireErrorCode } from '../protocol/index.js';
 import {
   DEFAULT_LIMITS,
+  type ExternalWireEvent,
   type JsonValue,
   type ProtocolLimits,
   type RequestParams,
@@ -19,6 +20,7 @@ export interface RpcPeerOptions {
   prefix: 'c' | 's';
   request?(request: WireRequest): Promise<JsonValue>;
   event?(event: WireEvent): void;
+  externalEvent?(event: ExternalWireEvent): void;
   closed?(): Promise<void>;
   responded?(request: WireRequest): void;
 }
@@ -78,7 +80,11 @@ export class RpcPeer {
           ? this.limits.approvalTimeoutMs
           : method === 'initialize'
             ? this.limits.initializationTimeoutMs
-            : 30_000,
+            : method === 'external/prompt'
+              ? 610_000
+              : method === 'external/open'
+                ? 65_000
+                : 30_000,
       );
       this.pending.set(id, {
         request,
@@ -122,12 +128,24 @@ export class RpcPeer {
       .catch(() => this.close());
   }
 
+  /** 向声明 `'external-session'` 并已 attach 的连接推送外部会话快照增量通知。 */
+  notifyExternal(event: ExternalWireEvent): void {
+    if (this.stopped) return;
+    void this.transport
+      .send({ jsonrpc: '2.0', method: 'external/event', params: event })
+      .catch(() => this.close());
+  }
+
   private async read(): Promise<void> {
     try {
       for await (const message of this.transport.messages) {
         if ('method' in message) {
           if (message.method === 'session/event') {
             this.options.event?.(message.params);
+            continue;
+          }
+          if (message.method === 'external/event') {
+            this.options.externalEvent?.(message.params);
             continue;
           }
           if (this.incoming.has(message.id)) {
