@@ -71,6 +71,41 @@ async function runToolCallHooks(toolName, toolCallId, input) {
   return undefined;
 }
 
+const PI_MODELS = [
+  {
+    provider: 'anthropic',
+    id: 'claude-sonnet-4-6',
+    name: 'Claude Sonnet 4.6',
+    reasoning: true,
+    thinkingLevelMap: {
+      off: 'none',
+      minimal: null,
+      low: 'low',
+      medium: 'medium',
+      high: 'high',
+      xhigh: null,
+      max: 'max',
+    },
+  },
+  {
+    provider: 'magpie',
+    id: 'deepseek/deepseek-flash',
+    name: 'DeepSeek-V4.1-Flash · DeepSeek',
+    reasoning: true,
+    thinkingLevelMap: {
+      off: 'none',
+      minimal: null,
+      low: 'low',
+      medium: null,
+      high: 'high',
+      xhigh: null,
+      max: 'max',
+    },
+  },
+];
+let currentPiModel = PI_MODELS[0];
+let currentThinkingLevel = 'medium';
+
 const rl = readline.createInterface({
   input: process.stdin,
   crlfDelay: Number.POSITIVE_INFINITY,
@@ -105,12 +140,8 @@ rl.on('line', async (line) => {
         sessionId,
         model: unauthenticated
           ? { provider: 'unknown', id: 'unknown', name: 'unknown' }
-          : {
-              provider: 'anthropic',
-              id: 'claude-sonnet-4-6',
-              name: 'Claude Sonnet 4.6',
-            },
-        thinkingLevel: 'medium',
+          : currentPiModel,
+        thinkingLevel: currentThinkingLevel,
         isStreaming: false,
       },
     });
@@ -124,10 +155,42 @@ rl.on('line', async (line) => {
       command: 'get_available_models',
       success: true,
       data: {
-        models: unauthenticated
-          ? []
-          : [{ provider: 'anthropic', id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' }],
+        models: unauthenticated ? [] : PI_MODELS,
       },
+    });
+    return;
+  }
+
+  if (frame.type === 'set_model') {
+    const found = PI_MODELS.find((m) => m.provider === frame.provider && m.id === frame.modelId);
+    if (!found) {
+      send({
+        id: frame.id,
+        type: 'response',
+        command: 'set_model',
+        success: false,
+        error: `Unknown Pi model ${String(frame.provider)}/${String(frame.modelId)}`,
+      });
+      return;
+    }
+    currentPiModel = found;
+    send({
+      id: frame.id,
+      type: 'response',
+      command: 'set_model',
+      success: true,
+      data: found,
+    });
+    return;
+  }
+
+  if (frame.type === 'set_thinking_level') {
+    currentThinkingLevel = frame.level ?? currentThinkingLevel;
+    send({
+      id: frame.id,
+      type: 'response',
+      command: 'set_thinking_level',
+      success: true,
     });
     return;
   }
@@ -259,9 +322,13 @@ rl.on('line', async (line) => {
       assistantMessageEvent: { type: 'thinking_delta', delta: 'Pi thinking...' },
     });
     const prefix = resumedId ? `[pi-resumed:${resumedId}] ` : '';
+    const replyBody =
+      text === 'ECHO_CONFIG'
+        ? `Pi config: model=${currentPiModel.provider}/${currentPiModel.id}, thinking=${currentThinkingLevel}`
+        : `${prefix}Pi reply: ${text}`;
     send({
       type: 'message_update',
-      assistantMessageEvent: { type: 'text_delta', delta: `${prefix}Pi reply: ${text}` },
+      assistantMessageEvent: { type: 'text_delta', delta: replyBody },
     });
     send({
       type: 'message_end',

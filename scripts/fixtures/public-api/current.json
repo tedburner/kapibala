@@ -1094,7 +1094,7 @@
           "name": "ViewExternalConfigChoice",
           "kind": "interface",
           "declarations": [
-            "export interface ViewExternalConfigChoice {\n    readonly value: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly group?: string;\n}"
+            "export interface ViewExternalConfigChoice {\n    readonly value: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly group?: string;\n    /** 该模型候选支持的推理档位值子集（未提供时沿用顶层 `thought_level` 配置项全集）。 */\n    readonly supportedThoughtLevels?: readonly string[];\n    /** 切换到该模型候选时的推荐默认推理档位值。 */\n    readonly defaultThoughtLevel?: string;\n}"
           ]
         },
         {
@@ -1108,7 +1108,7 @@
           "name": "ViewExternalHarness",
           "kind": "interface",
           "declarations": [
-            "export interface ViewExternalHarness {\n    readonly id: string;\n    readonly name: string;\n    readonly transport: ViewExternalTransport;\n    readonly command: string;\n    readonly args: readonly string[];\n    readonly envFrom: readonly string[];\n    readonly builtin: boolean;\n    readonly registryId?: string;\n    /** 内置代理若存在用户增量路径/参数覆写则为 `true`，用于控制「恢复默认」按钮显隐。 */\n    readonly hasOverride: boolean;\n    readonly enabled: boolean;\n    /** 若刚在设置页执行过连接检测，附带最新探测结论。 */\n    readonly probe?: ViewExternalHarnessProbe;\n    /** 本地按配置指纹缓存的可用模型/模式/推理档位清单，供新对话选择器零冷启展示。 */\n    readonly cachedConfigOptions?: readonly ViewExternalConfigOption[];\n}"
+            "export interface ViewExternalHarness {\n    readonly id: string;\n    readonly name: string;\n    readonly transport: ViewExternalTransport;\n    readonly command: string;\n    readonly args: readonly string[];\n    readonly envFrom: readonly string[];\n    readonly builtin: boolean;\n    readonly registryId?: string;\n    /** 内置代理若存在用户增量路径/参数覆写则为 `true`，用于控制「恢复默认」按钮显隐。 */\n    readonly hasOverride: boolean;\n    readonly enabled: boolean;\n    /** 若刚在设置页执行过连接检测，附带最新探测结论。 */\n    readonly probe?: ViewExternalHarnessProbe;\n    /** 本地按配置指纹缓存的可用模型/模式/推理档位清单，供新对话选择器零冷启展示。 */\n    readonly cachedConfigOptions?: readonly ViewExternalConfigOption[];\n    /** 本地模型/模式/推理档位缓存的最近刷新毫秒时间戳（未缓存时缺省）。 */\n    readonly cachedConfigUpdatedAt?: number;\n}"
           ]
         },
         {

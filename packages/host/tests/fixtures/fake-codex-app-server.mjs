@@ -12,6 +12,62 @@ const pendingServerReqs = new Map();
 let slowTimer = null;
 let activeTurnId = null;
 let threadCounter = 0;
+let activeModel = 'gpt-5.2-codex';
+let activeEffort = 'low';
+let activeSandboxType = 'workspaceWrite';
+
+const AVAILABLE_MODELS = [
+  {
+    id: 'gpt-5.2-codex',
+    model: 'gpt-5.2-codex',
+    displayName: 'gpt-5.2-codex',
+    description: 'Default Codex model',
+    hidden: false,
+    isDefault: true,
+    defaultReasoningEffort: 'low',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'low', description: 'Fast' },
+      { reasoningEffort: 'medium', description: 'Balanced' },
+      { reasoningEffort: 'high', description: 'Deep' },
+      { reasoningEffort: 'xhigh', description: 'Extra deep' },
+      { reasoningEffort: 'max', description: 'Max' },
+      { reasoningEffort: 'ultra', description: 'Ultra' },
+    ],
+  },
+  {
+    id: 'gpt-6-astra',
+    model: 'gpt-6-astra',
+    displayName: 'GPT-6-Astra',
+    description: 'GPT-6 Astra coding model',
+    hidden: false,
+    isDefault: false,
+    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'low', description: 'Fast' },
+      { reasoningEffort: 'medium', description: 'Balanced' },
+      { reasoningEffort: 'high', description: 'Deep' },
+      { reasoningEffort: 'xhigh', description: 'Extra deep' },
+      { reasoningEffort: 'max', description: 'Max' },
+      { reasoningEffort: 'ultra', description: 'Ultra' },
+    ],
+  },
+  {
+    id: 'gpt-6-luna',
+    model: 'gpt-6-luna',
+    displayName: 'GPT-6-Luna',
+    description: 'GPT-6 Luna compact model',
+    hidden: false,
+    isDefault: false,
+    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'low', description: 'Fast' },
+      { reasoningEffort: 'medium', description: 'Balanced' },
+      { reasoningEffort: 'high', description: 'Deep' },
+      { reasoningEffort: 'xhigh', description: 'Extra deep' },
+      { reasoningEffort: 'max', description: 'Max' },
+    ],
+  },
+];
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -67,16 +123,52 @@ rl.on('line', (line) => {
     return;
   }
 
-  if (frame.method === 'thread/start') {
-    threadCounter += 1;
-    const threadId = `codex-thread-${process.pid}-${threadCounter}`;
+  if (frame.method === 'model/list') {
     send({
       id: frame.id,
       result: {
-        thread: { id: threadId, model: 'gpt-5.2-codex' },
-        model: 'gpt-5.2-codex',
-        approvalPolicy: 'on-request',
-        sandbox: { type: 'workspaceWrite' },
+        data: AVAILABLE_MODELS,
+        nextCursor: null,
+      },
+    });
+    return;
+  }
+
+  if (frame.method === 'config/read') {
+    send({
+      id: frame.id,
+      result: {
+        config: {
+          model: 'gpt-5.2-codex',
+          model_reasoning_effort: 'low',
+          approval_policy: 'on-request',
+          sandbox_mode: 'workspace-write',
+        },
+      },
+    });
+    return;
+  }
+
+  if (frame.method === 'thread/start') {
+    threadCounter += 1;
+    const threadId = `codex-thread-${process.pid}-${threadCounter}`;
+    if (typeof frame.params?.model === 'string' && frame.params.model.trim()) {
+      activeModel = frame.params.model.trim();
+    }
+    if (typeof frame.params?.config?.model_reasoning_effort === 'string') {
+      activeEffort = frame.params.config.model_reasoning_effort;
+    }
+    if (typeof frame.params?.sandbox === 'string') {
+      activeSandboxType = frame.params.sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite';
+    }
+    send({
+      id: frame.id,
+      result: {
+        thread: { id: threadId, model: activeModel },
+        model: activeModel,
+        reasoningEffort: activeEffort,
+        approvalPolicy: frame.params?.approvalPolicy ?? 'on-request',
+        sandbox: { type: activeSandboxType },
       },
     });
     send({
@@ -91,10 +183,11 @@ rl.on('line', (line) => {
     send({
       id: frame.id,
       result: {
-        thread: { id: threadId, model: 'gpt-5.2-codex' },
-        model: 'gpt-5.2-codex',
+        thread: { id: threadId, model: activeModel },
+        model: activeModel,
+        reasoningEffort: activeEffort,
         approvalPolicy: 'on-request',
-        sandbox: { type: 'workspaceWrite' },
+        sandbox: { type: activeSandboxType },
       },
     });
     return;
@@ -122,6 +215,15 @@ rl.on('line', (line) => {
 
   if (frame.method === 'turn/start') {
     const threadId = frame.params?.threadId ?? 'thread-1';
+    if (typeof frame.params?.model === 'string' && frame.params.model.trim()) {
+      activeModel = frame.params.model.trim();
+    }
+    if (typeof frame.params?.effort === 'string' && frame.params.effort.trim()) {
+      activeEffort = frame.params.effort.trim();
+    }
+    if (typeof frame.params?.sandboxPolicy?.type === 'string') {
+      activeSandboxType = frame.params.sandboxPolicy.type;
+    }
     const inputItems = Array.isArray(frame.params?.input) ? frame.params.input : [];
     const text = inputItems.map((i) => i.text ?? '').join('\n');
     const turnId = `turn-${Date.now()}`;
@@ -280,7 +382,9 @@ rl.on('line', (line) => {
       method: 'item/reasoning/summaryTextDelta',
       params: { threadId, turnId, itemId: 'rsn-1', delta: 'Thinking in Codex...' },
     });
-    const fullReply = `Codex [${threadId}] reply: ${text}`;
+    const fullReply = text.includes('echo-config')
+      ? `Codex config: model=${activeModel}, effort=${activeEffort}, sandbox=${activeSandboxType}`
+      : `Codex [${threadId}] reply: ${text}`;
     send({
       method: 'item/agentMessage/delta',
       params: { threadId, turnId, itemId: 'msg-1', delta: fullReply.slice(0, 10) },
@@ -307,6 +411,14 @@ rl.on('line', (line) => {
     send({
       method: 'turn/completed',
       params: { threadId, turn: { id: turnId, status: 'completed' } },
+    });
+    return;
+  }
+
+  if (frame.id !== undefined) {
+    send({
+      id: frame.id,
+      error: { code: -32601, message: `Method not found: ${String(frame.method)}` },
     });
   }
 });

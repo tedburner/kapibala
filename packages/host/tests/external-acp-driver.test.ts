@@ -581,23 +581,45 @@ describe('AcpStdioDriver 真实子进程契约测试', () => {
     );
     await opened.handle.close();
 
-    // 新建会话显式指定 modelId 时优先覆盖 OpenCode model.json 默认值，且 inspect 返回完整 configOptions
+    // 新建会话显式指定 modelId 时优先覆盖 OpenCode model.json 默认值，且 inspect 即使首模无 effort 也能探出逐模型 effort 档位与异步落位重试
     const probed = await driver.inspect(
-      makeFakeHarness('opencode-model-sync', { flavor: 'opencode' }),
+      makeFakeHarness('opencode-model-sync', {
+        flavor: 'opencode',
+        args: [fixtureScript, '--mode=opencode-model-sync', '--stale-first-set'],
+      }),
       cwd,
     );
     expect(probed.available).toBe(true);
+    const probedModelOpt = probed.configOptions?.find((opt) => opt.category === 'model');
+    expect(probedModelOpt?.options.map((o) => o.value)).toContain('opencode/seaglass-alpha-free');
     expect(
-      probed.configOptions?.find((opt) => opt.category === 'model')?.options.map((o) => o.value),
-    ).toContain('opencode/seaglass-alpha-free');
+      probedModelOpt?.options.find((o) => o.value === 'opencode/big-pickle')
+        ?.supportedThoughtLevels,
+    ).toEqual([]);
+    expect(
+      probedModelOpt?.options.find((o) => o.value === 'opencode/deepseek-v4.1-flash-free')
+        ?.supportedThoughtLevels,
+    ).toEqual(['default', 'high', 'max']);
+    expect(
+      probed.configOptions
+        ?.find((opt) => opt.category === 'thought_level')
+        ?.options.map((o) => o.value),
+    ).toEqual(['default', 'high', 'max']);
 
     const explicitOpen = await driver.open({
-      def: makeFakeHarness('opencode-model-sync', { flavor: 'opencode' }),
+      def: makeFakeHarness('opencode-model-sync', {
+        flavor: 'opencode',
+        args: [fixtureScript, '--mode=opencode-model-sync', '--stale-first-set'],
+      }),
       workspaceRoot: cwd,
-      initialConfig: [{ category: 'model', value: 'opencode/seaglass-alpha-free' }],
+      initialConfig: [
+        { category: 'model', value: 'opencode/seaglass-alpha-free' },
+        { category: 'thought_level', value: 'max' },
+      ],
       onEvent: () => {},
     });
     expect(explicitOpen.modelLabel).toBe('opencode/Seaglass Alpha Free');
+    expect(explicitOpen.thoughtLevelLabel).toBe('Max');
     expect(explicitOpen.configOptions?.find((opt) => opt.category === 'model')?.currentValue).toBe(
       'opencode/seaglass-alpha-free',
     );

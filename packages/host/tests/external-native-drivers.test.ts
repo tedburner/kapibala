@@ -699,4 +699,182 @@ describe('ClaudeCliDriver, CodexAppServerDriver & Multi-Workspace Concurrency (M
       true,
     );
   });
+
+  it('Codex / Claude Code / Pi 三大原生直连驱动均暴露可选模型与推理强度目录，并支持建会话预设与空闲态热切换', async () => {
+    const homeDir = makeTempDir('kpbl-m3-cfg-home-');
+    const wsCodex = makeTempDir('kpbl-m3-cfg-codex-');
+    const wsClaude = makeTempDir('kpbl-m3-cfg-claude-');
+    const wsPi = makeTempDir('kpbl-m3-cfg-pi-');
+    const settings = createUserSettingsSkeleton();
+    for (const ws of [wsCodex, wsClaude, wsPi]) {
+      trustProject(settings, ws, { homeDir });
+    }
+
+    saveBuiltinHarnessOverride(
+      'codex',
+      { command: process.execPath, args: [fakeCodexScript], enabled: true },
+      { homeDir },
+    );
+    saveBuiltinHarnessOverride(
+      'claude-code',
+      { command: process.execPath, args: [fakeClaudeScript], enabled: true },
+      { homeDir },
+    );
+    saveBuiltinHarnessOverride(
+      'pi',
+      { command: process.execPath, args: [fakePiScript], enabled: true },
+      { homeDir },
+    );
+
+    const service = new ExternalSessionService({ homeDir, hostEnv: {} });
+    services.push(service);
+
+    // 1. 探测阶段（testHarness）均返回结构化 configOptions 并落盘到 cachedConfigOptions
+    const [codexProbe, claudeProbe, piProbe] = await Promise.all([
+      service.testHarness('codex', wsCodex),
+      service.testHarness('claude-code', wsClaude),
+      service.testHarness('pi', wsPi),
+    ]);
+
+    const codexModelOpt = codexProbe.configOptions?.find((o) => o.category === 'model');
+    expect(codexModelOpt?.options.map((c) => c.value)).toEqual([
+      'gpt-5.2-codex',
+      'gpt-6-astra',
+      'gpt-6-luna',
+    ]);
+    const codexLuna = codexModelOpt?.options.find((c) => c.value === 'gpt-6-luna');
+    expect(codexLuna?.supportedThoughtLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(
+      codexProbe.configOptions
+        ?.find((o) => o.category === 'thought_level')
+        ?.options.map((c) => c.name),
+    ).toContain('Extra High');
+
+    const claudeModelOpt = claudeProbe.configOptions?.find((o) => o.category === 'model');
+    expect(claudeModelOpt?.options.some((c) => c.value === 'fable')).toBe(true);
+    expect(claudeProbe.configOptions?.some((o) => o.category === 'thought_level')).toBe(true);
+    expect(claudeProbe.configOptions?.some((o) => o.category === 'mode')).toBe(true);
+
+    const piModelOpt = piProbe.configOptions?.find((o) => o.category === 'model');
+    expect(piModelOpt?.options.map((c) => c.value)).toEqual([
+      'anthropic/claude-sonnet-4-6',
+      'magpie/deepseek/deepseek-flash',
+    ]);
+    const piFlash = piModelOpt?.options.find((c) => c.value === 'magpie/deepseek/deepseek-flash');
+    expect(piFlash?.supportedThoughtLevels).toEqual(['off', 'low', 'high', 'max']);
+
+    // 2. Codex 建会话预设模型与推理强度，并在空闲态动态切换模型与推理档位
+    const codexSnap0 = await service.openSession({
+      workspaceRoot: wsCodex,
+      harnessId: 'codex',
+      modelId: 'gpt-6-astra',
+      thoughtLevel: 'high',
+    });
+    expect(codexSnap0.session.modelLabel).toBe('GPT-6-Astra');
+    expect(codexSnap0.session.thoughtLevelLabel).toBe('High');
+
+    const codexSnap1 = await service.promptSession({
+      sessionId: codexSnap0.session.id,
+      text: 'echo-config',
+    });
+    expect(
+      codexSnap1.messages
+        .at(-1)
+        ?.blocks.map((b) => b.text)
+        .join(''),
+    ).toContain('model=gpt-6-astra, effort=high');
+
+    const codexUpdated = await service.setSessionConfig({
+      sessionId: codexSnap0.session.id,
+      configId: 'thought_level',
+      category: 'thought_level',
+      value: 'xhigh',
+      expectedWorkspaceRoot: wsCodex,
+    });
+    expect(codexUpdated.session.thoughtLevelLabel).toBe('Extra High');
+    const codexSnap2 = await service.promptSession({
+      sessionId: codexSnap0.session.id,
+      text: 'echo-config',
+    });
+    expect(
+      codexSnap2.messages
+        .at(-1)
+        ?.blocks.map((b) => b.text)
+        .join(''),
+    ).toContain('model=gpt-6-astra, effort=xhigh');
+
+    // 3. Claude Code 建会话预设模型/推理/模式，并在空闲态热切换 set_model 与 set_permission_mode
+    const claudeSnap0 = await service.openSession({
+      workspaceRoot: wsClaude,
+      harnessId: 'claude-code',
+      modelId: 'fable',
+      thoughtLevel: 'high',
+      modeId: 'plan',
+    });
+    const claudeSnap1 = await service.promptSession({
+      sessionId: claudeSnap0.session.id,
+      text: 'echo-config',
+    });
+    expect(
+      claudeSnap1.messages
+        .at(-1)
+        ?.blocks.map((b) => b.text)
+        .join(''),
+    ).toContain('model=fable, effort=high, mode=plan');
+
+    await service.setSessionConfig({
+      sessionId: claudeSnap0.session.id,
+      configId: 'mode',
+      category: 'mode',
+      value: 'acceptEdits',
+      expectedWorkspaceRoot: wsClaude,
+    });
+    const claudeSnap2 = await service.promptSession({
+      sessionId: claudeSnap0.session.id,
+      text: 'echo-config',
+    });
+    expect(
+      claudeSnap2.messages
+        .at(-1)
+        ?.blocks.map((b) => b.text)
+        .join(''),
+    ).toContain('mode=acceptEdits');
+
+    // 4. Pi RPC 建会话预设模型与推理档位，并在空闲态热切换
+    const piSnap0 = await service.openSession({
+      workspaceRoot: wsPi,
+      harnessId: 'pi',
+      modelId: 'magpie/deepseek/deepseek-flash',
+      thoughtLevel: 'high',
+    });
+    expect(piSnap0.session.thoughtLevelLabel).toBe('High');
+    const piSnap1 = await service.promptSession({
+      sessionId: piSnap0.session.id,
+      text: 'ECHO_CONFIG',
+    });
+    expect(
+      piSnap1.messages
+        .at(-1)
+        ?.blocks.map((b) => b.text)
+        .join(''),
+    ).toContain('model=magpie/deepseek/deepseek-flash, thinking=high');
+
+    await service.setSessionConfig({
+      sessionId: piSnap0.session.id,
+      configId: 'thought_level',
+      category: 'thought_level',
+      value: 'max',
+      expectedWorkspaceRoot: wsPi,
+    });
+    const piSnap2 = await service.promptSession({
+      sessionId: piSnap0.session.id,
+      text: 'ECHO_CONFIG',
+    });
+    expect(
+      piSnap2.messages
+        .at(-1)
+        ?.blocks.map((b) => b.text)
+        .join(''),
+    ).toContain('thinking=max');
+  });
 });

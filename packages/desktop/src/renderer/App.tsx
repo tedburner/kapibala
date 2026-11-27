@@ -72,7 +72,7 @@ type Catalog = Output<'settings.read'>;
 /** 输入框依赖代理的稳定标识、显示名称与本地缓存的可选模型目录，命令配置始终由宿主解析。 */
 type HarnessEntry = Pick<
   Output<'external.harnesses'>['harnesses'][number],
-  'id' | 'name' | 'transport' | 'cachedConfigOptions'
+  'id' | 'name' | 'transport' | 'cachedConfigOptions' | 'cachedConfigUpdatedAt'
 >;
 type HarnessChoice = SelectedHarnessChoice;
 const api: DesktopAPI = window.kapibala;
@@ -349,11 +349,12 @@ export function App() {
         workspaceId: targetWorkspaceId,
         choices: harnesses
           .filter((item) => item.enabled)
-          .map(({ id, name, transport, cachedConfigOptions }) => ({
+          .map(({ id, name, transport, cachedConfigOptions, cachedConfigUpdatedAt }) => ({
             id,
             name,
             transport,
             ...(cachedConfigOptions ? { cachedConfigOptions } : {}),
+            ...(cachedConfigUpdatedAt !== undefined ? { cachedConfigUpdatedAt } : {}),
           })),
       });
     } catch {
@@ -372,11 +373,12 @@ export function App() {
             workspaceId: trustedWorkspaceId,
             choices: harnesses
               .filter((item) => item.enabled)
-              .map(({ id, name, transport, cachedConfigOptions }) => ({
+              .map(({ id, name, transport, cachedConfigOptions, cachedConfigUpdatedAt }) => ({
                 id,
                 name,
                 transport,
                 ...(cachedConfigOptions ? { cachedConfigOptions } : {}),
+                ...(cachedConfigUpdatedAt !== undefined ? { cachedConfigUpdatedAt } : {}),
               })),
           });
       })
@@ -389,17 +391,17 @@ export function App() {
     };
   }, [trustedWorkspaceId, ui.settingsOpen]);
   const refreshHarnessModels = useCallback(
-    async (harnessId: string) => {
+    async (harnessId: string, options?: { readonly silent?: boolean }) => {
       if (!trustedWorkspaceId) return;
       setRefreshingHarnessId(harnessId);
-      setError('');
+      if (!options?.silent) setError('');
       try {
         const probe = await api.external.testHarness({
           id: harnessId,
           workspaceId: trustedWorkspaceId,
         });
         await reloadHarnessCatalog(trustedWorkspaceId);
-        if (!probe.available) {
+        if (!probe.available && !options?.silent) {
           report(
             probe.reason ||
               (probe.loginHint
@@ -408,7 +410,7 @@ export function App() {
           );
         }
       } catch (reason) {
-        report(failure(reason));
+        if (!options?.silent) report(failure(reason));
       } finally {
         setRefreshingHarnessId((currentId) => (currentId === harnessId ? undefined : currentId));
       }
@@ -1195,6 +1197,8 @@ export function App() {
       const targetSpace = workspace;
       const targetHarnessId = composerHarness.id;
       const targetModelId = composerHarness.modelId;
+      const targetThoughtLevel = composerHarness.thoughtLevel;
+      const targetModeId = composerHarness.modeId;
       const navSnapshotBefore = externalNavGen.current;
       await act(async () => {
         // 宿主原子承接首轮：先验工作区并发，启动失败时保留草稿，接受后再订阅消息流。
@@ -1203,6 +1207,8 @@ export function App() {
           harnessId: targetHarnessId,
           prompt: input,
           ...(targetModelId ? { modelId: targetModelId } : {}),
+          ...(targetThoughtLevel ? { thoughtLevel: targetThoughtLevel } : {}),
+          ...(targetModeId ? { modeId: targetModeId } : {}),
         });
         rememberPrompt(input);
         rememberPrompt(input, `ext:${targetSpace.id}:${snapshot.session.id}`);
@@ -1947,7 +1953,7 @@ export function App() {
                 refreshingHarnessId={refreshingHarnessId}
                 onModel={chooseModel}
                 onHarness={setPendingHarness}
-                onRefreshHarnessModels={(id) => void refreshHarnessModels(id)}
+                onRefreshHarnessModels={(id, opts) => void refreshHarnessModels(id, opts)}
                 onSettings={() => ui.settings(true)}
                 onExternalSettings={() => {
                   setSettingsInitialTab('external');

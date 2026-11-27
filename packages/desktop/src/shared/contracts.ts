@@ -690,6 +690,8 @@ const externalConfigChoice = z
     name: text,
     description: text.optional(),
     group: text.optional(),
+    supportedThoughtLevels: z.array(z.string().min(1).max(64)).max(32).optional(),
+    defaultThoughtLevel: z.string().min(1).max(64).optional(),
   })
   .strict();
 const externalConfigOption = z
@@ -735,6 +737,7 @@ const externalHarness = z
     enabled: z.boolean(),
     probe: externalProbe.optional(),
     cachedConfigOptions: z.array(externalConfigOption).max(16).optional(),
+    cachedConfigUpdatedAt: z.number().int().nonnegative().optional(),
   })
   .strict();
 const externalTemplate = z

@@ -1,5 +1,6 @@
 import { Button, InlineCopyText, Input, InputArea, Switch } from '@cloudflare/kumo';
 import {
+  ArrowsClockwiseIcon,
   CheckCircleIcon,
   PlugsConnectedIcon,
   PlusIcon,
@@ -128,6 +129,52 @@ function transportBadgeText(transport: HarnessItem['transport']): string {
   return '原生 App-Server';
 }
 
+function formatCacheUpdatedAt(updatedAt: number): string {
+  const date = new Date(updatedAt);
+  const now = new Date();
+  const pad = (num: number) => String(num).padStart(2, '0');
+  const hhmm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    return hhmm;
+  }
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hhmm}`;
+}
+
+function describeHarnessCache(item: HarnessItem): {
+  readonly cached: boolean;
+  readonly modelCount: number;
+  readonly summary: string;
+} {
+  const options = item.cachedConfigOptions;
+  if (!options || options.length === 0) {
+    return {
+      cached: false,
+      modelCount: 0,
+      summary: '模型缓存：尚未缓存，首次选用或点击右侧「拉取缓存」后写入本地',
+    };
+  }
+  const modelCount = options.find((opt) => opt.category === 'model')?.options.length ?? 0;
+  const thoughtCount = options.find((opt) => opt.category === 'thought_level')?.options.length ?? 0;
+  const modeCount = options.find((opt) => opt.category === 'mode')?.options.length ?? 0;
+  const parts: string[] = [
+    modelCount > 0 ? `已缓存 ${modelCount} 个模型` : '已缓存运行参数',
+    ...(thoughtCount > 0 ? [`推理 ${thoughtCount} 档`] : []),
+    ...(modeCount > 0 ? [`模式 ${modeCount} 项`] : []),
+    ...(item.cachedConfigUpdatedAt !== undefined
+      ? [`更新于 ${formatCacheUpdatedAt(item.cachedConfigUpdatedAt)}`]
+      : []),
+  ];
+  return {
+    cached: true,
+    modelCount,
+    summary: `模型缓存：${parts.join(' · ')}`,
+  };
+}
+
 function probeBadge(probe?: ProbeResult): { label: string; className: string } {
   if (!probe) {
     return { label: '未检测', className: 'border border-kumo-hairline text-kumo-faint' };
@@ -178,6 +225,8 @@ export function ExternalSettingsPanel({
   const [templates, setTemplates] = useState<readonly TemplateItem[]>([]);
   const [probes, setProbes] = useState<Record<string, ProbeResult>>({});
   const [testingId, setTestingId] = useState<string>();
+  const [refreshingCacheId, setRefreshingCacheId] = useState<string>();
+  const [refreshingAllCaches, setRefreshingAllCaches] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [panelError, setPanelError] = useState('');
@@ -196,33 +245,33 @@ export function ExternalSettingsPanel({
     };
   }, []);
 
-  const loadHarnesses = useCallback(() => {
-    if (hostDown) return;
-    void window.kapibala.external
-      .harnesses(workspaceId)
-      .then((result) => {
-        if (!mountedRef.current) return;
-        setHarnesses(result.harnesses);
-        setTemplates(result.templates);
-      })
-      .catch((error: unknown) => {
-        if (!mountedRef.current) return;
-        const message = error instanceof Error ? error.message : '读取外部代理列表失败。';
-        setPanelError(message);
-        report(message);
-      });
+  const fetchHarnesses = useCallback(async (): Promise<readonly HarnessItem[] | undefined> => {
+    if (hostDown) return undefined;
+    try {
+      const result = await window.kapibala.external.harnesses(workspaceId);
+      if (!mountedRef.current) return undefined;
+      setHarnesses(result.harnesses);
+      setTemplates(result.templates);
+      return result.harnesses;
+    } catch (error: unknown) {
+      if (!mountedRef.current) return undefined;
+      const message = error instanceof Error ? error.message : '读取外部代理列表失败。';
+      setPanelError(message);
+      report(message);
+      return undefined;
+    }
   }, [hostDown, workspaceId, report]);
 
   useEffect(() => {
     if (!active) return;
-    loadHarnesses();
-  }, [active, loadHarnesses]);
+    void fetchHarnesses();
+  }, [active, fetchHarnesses]);
 
   const builtinHarnesses = harnesses.filter((item) => item.builtin);
   const customHarnesses = harnesses.filter((item) => !item.builtin);
 
   async function runProbe(item: HarnessItem): Promise<void> {
-    if (testingId || hostDown) return;
+    if (testingId || refreshingCacheId || refreshingAllCaches || hostDown) return;
     setTestingId(item.id);
     setPanelError('');
     try {
@@ -233,12 +282,88 @@ export function ExternalSettingsPanel({
       );
       if (!mountedRef.current) return;
       setProbes((prev) => ({ ...prev, [item.id]: result }));
+      await fetchHarnesses();
     } catch (error) {
       if (!mountedRef.current) return;
       const message = error instanceof Error ? error.message : '检测连接失败。';
       setPanelError(message);
     } finally {
       if (mountedRef.current) setTestingId(undefined);
+    }
+  }
+
+  async function refreshCache(item: HarnessItem): Promise<void> {
+    if (testingId || refreshingCacheId || refreshingAllCaches || hostDown) return;
+    setRefreshingCacheId(item.id);
+    setPanelError('');
+    setNotice('');
+    try {
+      const result = await withExternalWatchdog(
+        window.kapibala.external.testHarness({ id: item.id, workspaceId }),
+        `刷新 ${item.name} 模型缓存超时，请检查本机命令是否响应。`,
+        25_000,
+      );
+      if (!mountedRef.current) return;
+      setProbes((prev) => ({ ...prev, [item.id]: result }));
+      const latest = await fetchHarnesses();
+      if (!mountedRef.current) return;
+      if (!result.available) {
+        setPanelError(
+          result.reason ||
+            (result.loginHint
+              ? `${item.name} 需要先完成登录：${result.loginHint}`
+              : `未能拉取 ${item.name} 的模型缓存。`),
+        );
+        return;
+      }
+      const refreshedItem = latest?.find((entry) => entry.id === item.id);
+      const info = refreshedItem ? describeHarnessCache(refreshedItem) : undefined;
+      setNotice(
+        info && info.modelCount > 0
+          ? `已刷新 ${item.name} 本地缓存（共 ${info.modelCount} 个模型）。`
+          : `已刷新 ${item.name} 本地配置缓存。`,
+      );
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setPanelError(error instanceof Error ? error.message : '刷新模型缓存失败。');
+    } finally {
+      if (mountedRef.current) setRefreshingCacheId(undefined);
+    }
+  }
+
+  async function refreshAllEnabledCaches(): Promise<void> {
+    if (testingId || refreshingCacheId || refreshingAllCaches || hostDown) return;
+    const enabledItems = harnesses.filter((item) => item.enabled);
+    if (enabledItems.length === 0) return;
+    setRefreshingAllCaches(true);
+    setPanelError('');
+    setNotice('');
+    let succeeded = 0;
+    try {
+      for (const item of enabledItems) {
+        if (!mountedRef.current) return;
+        setRefreshingCacheId(item.id);
+        try {
+          const result = await withExternalWatchdog(
+            window.kapibala.external.testHarness({ id: item.id, workspaceId }),
+            `刷新 ${item.name} 模型缓存超时。`,
+            25_000,
+          );
+          if (!mountedRef.current) return;
+          setProbes((prev) => ({ ...prev, [item.id]: result }));
+          if (result.available) succeeded += 1;
+        } catch {
+          // 单个外部 CLI 失败不中断其余已启用代理的批量缓存刷新
+        }
+      }
+      await fetchHarnesses();
+      if (!mountedRef.current) return;
+      setNotice(`已同步 ${succeeded}/${enabledItems.length} 个已启用外部代理的本地缓存。`);
+    } finally {
+      if (mountedRef.current) {
+        setRefreshingCacheId(undefined);
+        setRefreshingAllCaches(false);
+      }
     }
   }
 
@@ -537,16 +662,37 @@ export function ExternalSettingsPanel({
 
       {/* 区域一：内置外部代理列表 */}
       <section className="space-y-3" aria-label="内置外部代理">
-        <div className="space-y-1">
-          <h3 className="text-sm font-semibold text-kumo-default">内置外部代理</h3>
-          <p className="text-xs text-kumo-subtle">
-            直接复用本机已安装的 CLI 工具及其自有登录态，不在 Kapibala 内重复填写订阅密钥。
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-1">
+            <h3 className="text-sm font-semibold text-kumo-default">内置外部代理</h3>
+            <p className="text-xs text-kumo-subtle">
+              直接复用本机已安装的 CLI
+              工具及其自有登录态；模型、推理档位与运行模式缓存在本地，无需每次重复拉取。
+            </p>
+          </div>
+          <Button
+            className="kapibala-action shrink-0"
+            variant="secondary"
+            size="sm"
+            disabled={
+              hostDown ||
+              busy ||
+              Boolean(testingId) ||
+              Boolean(refreshingCacheId) ||
+              refreshingAllCaches ||
+              !harnesses.some((item) => item.enabled)
+            }
+            onClick={() => void refreshAllEnabledCaches()}
+          >
+            <ArrowsClockwiseIcon size={14} />
+            {refreshingAllCaches ? '同步缓存中…' : '刷新已启用缓存'}
+          </Button>
         </div>
         <div className="divide-y divide-kumo-hairline overflow-hidden rounded-xl border border-kumo-line bg-kumo-base">
           {builtinHarnesses.map((item) => {
             const probe = probes[item.id] ?? item.probe;
             const badge = probeBadge(probe);
+            const cacheInfo = describeHarnessCache(item);
             const editing = overrideDraft?.id === item.id;
             const commandPreview = [item.command, ...item.args].join(' ');
             return (
@@ -587,6 +733,7 @@ export function ExternalSettingsPanel({
                       {commandPreview}
                       {item.envFrom.length > 0 ? ` · 透传变量：${item.envFrom.join(', ')}` : ''}
                     </p>
+                    <p className="text-xs text-kumo-subtle">{cacheInfo.summary}</p>
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-2">
                     <Button
@@ -594,11 +741,36 @@ export function ExternalSettingsPanel({
                       variant="secondary"
                       size="sm"
                       aria-label={`检测 ${item.name} 连接`}
-                      disabled={hostDown || testingId === item.id}
+                      disabled={
+                        hostDown ||
+                        testingId === item.id ||
+                        refreshingCacheId === item.id ||
+                        refreshingAllCaches
+                      }
                       onClick={() => void runProbe(item)}
                     >
                       <PlugsConnectedIcon size={14} />
                       {testingId === item.id ? '检测中…' : '检测连接'}
+                    </Button>
+                    <Button
+                      className="kapibala-action"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`刷新 ${item.name} 模型缓存`}
+                      disabled={
+                        hostDown ||
+                        testingId === item.id ||
+                        refreshingCacheId === item.id ||
+                        refreshingAllCaches
+                      }
+                      onClick={() => void refreshCache(item)}
+                    >
+                      <ArrowsClockwiseIcon size={14} />
+                      {refreshingCacheId === item.id
+                        ? '刷新中…'
+                        : cacheInfo.cached
+                          ? '刷新缓存'
+                          : '拉取缓存'}
                     </Button>
                     <Button
                       className="kapibala-action"
@@ -1020,6 +1192,7 @@ export function ExternalSettingsPanel({
             {customHarnesses.map((item) => {
               const probe = probes[item.id] ?? item.probe;
               const badge = probeBadge(probe);
+              const cacheInfo = describeHarnessCache(item);
               const commandPreview = [item.command, ...item.args].join(' ');
               const confirmingDelete = confirmDeleteId === item.id;
               return (
@@ -1055,6 +1228,7 @@ export function ExternalSettingsPanel({
                         {commandPreview}
                         {item.envFrom.length > 0 ? ` · 透传变量：${item.envFrom.join(', ')}` : ''}
                       </p>
+                      <p className="text-xs text-kumo-subtle">{cacheInfo.summary}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
                       <Button
@@ -1062,10 +1236,35 @@ export function ExternalSettingsPanel({
                         variant="secondary"
                         size="sm"
                         aria-label={`检测 ${item.name} 连接`}
-                        disabled={hostDown || testingId === item.id}
+                        disabled={
+                          hostDown ||
+                          testingId === item.id ||
+                          refreshingCacheId === item.id ||
+                          refreshingAllCaches
+                        }
                         onClick={() => void runProbe(item)}
                       >
                         {testingId === item.id ? '检测中…' : '检测连接'}
+                      </Button>
+                      <Button
+                        className="kapibala-action"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`刷新 ${item.name} 模型缓存`}
+                        disabled={
+                          hostDown ||
+                          testingId === item.id ||
+                          refreshingCacheId === item.id ||
+                          refreshingAllCaches
+                        }
+                        onClick={() => void refreshCache(item)}
+                      >
+                        <ArrowsClockwiseIcon size={14} />
+                        {refreshingCacheId === item.id
+                          ? '刷新中…'
+                          : cacheInfo.cached
+                            ? '刷新缓存'
+                            : '拉取缓存'}
                       </Button>
                       <Button
                         className="kapibala-action"

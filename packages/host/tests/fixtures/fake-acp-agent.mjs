@@ -43,6 +43,8 @@ if (mode === 'tui-flood') {
   let currentModel = mode === 'opencode-model-sync' ? 'opencode/big-pickle' : 'deepseek-chat';
   let currentEffort = 'default';
   let currentMode = 'build';
+  const simulateStaleFirstSet = process.argv.includes('--stale-first-set');
+  let pendingModelCommit = null;
 
   const buildModelSyncConfigOptions = () => [
     {
@@ -276,6 +278,26 @@ if (mode === 'tui-flood') {
     if (msg.method === 'session/set_config_option') {
       if (mode === 'opencode-model-sync') {
         if (msg.params?.configId === 'model' && typeof msg.params?.value === 'string') {
+          if (
+            simulateStaleFirstSet &&
+            pendingModelCommit !== msg.params.value &&
+            currentModel !== msg.params.value
+          ) {
+            // 模拟 OpenCode 2.4.2 内部异步事件总线尚未落位时首次回包仍带旧 currentValue 的竞态
+            pendingModelCommit = msg.params.value;
+            setTimeout(() => {
+              if (pendingModelCommit === msg.params.value) {
+                currentModel = msg.params.value;
+              }
+            }, 15);
+            send({
+              jsonrpc: '2.0',
+              id: msg.id,
+              result: { configOptions: buildModelSyncConfigOptions() },
+            });
+            return;
+          }
+          pendingModelCommit = null;
           currentModel = msg.params.value;
         } else if (msg.params?.configId === 'effort' && typeof msg.params?.value === 'string') {
           currentEffort = msg.params.value;
@@ -294,6 +316,11 @@ if (mode === 'tui-flood') {
         id: msg.id,
         error: { code: -32601, message: 'Method not found' },
       });
+      return;
+    }
+
+    if (msg.method === 'session/delete') {
+      send({ jsonrpc: '2.0', id: msg.id, result: {} });
       return;
     }
 

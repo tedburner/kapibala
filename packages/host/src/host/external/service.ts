@@ -21,6 +21,7 @@ import { normalizeProjectRoot } from '../resource/mcp-approval.js';
 import { isProjectTrusted, loadSettings } from '../settings.js';
 import {
   deleteHarnessConfigCache,
+  mergeHarnessConfigCache,
   readHarnessConfigCache,
   saveHarnessConfigCache,
 } from './config-cache.js';
@@ -231,7 +232,9 @@ export class ExternalSessionService {
         hasOverride,
         enabled: definition.enabled,
         ...(probe ? { probe } : {}),
-        ...(cachedConfigOptions ? { cachedConfigOptions } : {}),
+        ...(cachedConfigOptions
+          ? { cachedConfigOptions, cachedConfigUpdatedAt: cachedEntry!.updatedAt }
+          : {}),
       };
     });
     return {
@@ -667,7 +670,7 @@ export class ExternalSessionService {
       );
       if (updated.configOptions && updated.configOptions.length > 0) {
         activeSlot.configOptions = updated.configOptions;
-        saveHarnessConfigCache(
+        mergeHarnessConfigCache(
           this.homeDir,
           activeSlot.record.harnessId,
           activeSlot.record.configDigest,
@@ -701,6 +704,9 @@ export class ExternalSessionService {
       readonly workspaceRoot: string;
       readonly harnessId: string;
       readonly prompt: string;
+      readonly modelId?: string;
+      readonly modeId?: string;
+      readonly thoughtLevel?: string;
     },
     signal?: AbortSignal,
   ): Promise<ViewExternalSnapshot> {
@@ -714,6 +720,9 @@ export class ExternalSessionService {
         title: input.prompt,
         customTitle: false,
         requireIdleWorkspace: true,
+        ...(input.modelId ? { modelId: input.modelId } : {}),
+        ...(input.modeId ? { modeId: input.modeId } : {}),
+        ...(input.thoughtLevel ? { thoughtLevel: input.thoughtLevel } : {}),
       },
       signal,
     );
@@ -1266,7 +1275,7 @@ export class ExternalSessionService {
       }
       if (opened.configOptions && opened.configOptions.length > 0) {
         slot.configOptions = opened.configOptions;
-        saveHarnessConfigCache(
+        mergeHarnessConfigCache(
           this.homeDir,
           params.def.id,
           params.record.configDigest,
@@ -1366,7 +1375,7 @@ export class ExternalSessionService {
       case 'config_updated': {
         if (event.configOptions && event.configOptions.length > 0) {
           slot.configOptions = event.configOptions;
-          saveHarnessConfigCache(
+          mergeHarnessConfigCache(
             this.homeDir,
             slot.record.harnessId,
             slot.record.configDigest,

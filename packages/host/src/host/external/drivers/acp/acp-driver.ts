@@ -3,12 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import type {
   ViewExternalConfigCategory,
+  ViewExternalConfigChoice,
   ViewExternalConfigOption,
   ViewTool,
 } from '../../../../view-model/index.js';
 import { buildExternalLaunchEnv } from '../../env.js';
 import { NdjsonChannel } from '../../ndjson-channel.js';
 import { ExternalProcessSupervisor, resolveExternalCommand } from '../../process.js';
+import { formatThoughtLevelLabel, orderThoughtLevels } from '../../thought-levels.js';
 import {
   type ExternalApprovalDecision,
   type ExternalConfigSelection,
@@ -82,6 +84,201 @@ function pickAuthMethodId(
     if (hit) return hit.id;
   }
   return undefined;
+}
+
+function waitAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new ExternalHarnessError('EXTERNAL_ABORTED', '操作已取消'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    timer.unref?.();
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new ExternalHarnessError('EXTERNAL_ABORTED', '操作已取消'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * 调用 ACP `session/set_config_option`，并兼容部分代理（如 OpenCode 2.4.2）内部异步事件总线尚未落位导致首次回包仍带旧 `currentValue` 的竞态：
+ * 若回包携带 `configOptions` 且对应配置项 `currentValue` 仍未切至目标值，等待 35ms 后补发一次确认落位，确保联动的 `effort` 等衍生选项完整返回。
+ */
+async function setAcpConfigOptionWithSettle(
+  channel: NdjsonChannel,
+  params: {
+    readonly sessionId: string;
+    readonly configId: string;
+    readonly value: string;
+  },
+  options: { readonly timeoutMs: number; readonly signal?: AbortSignal },
+): Promise<unknown> {
+  const firstRaw = await channel.request('session/set_config_option', params, options);
+  const firstOpts = normalizeAcpConfigOptions(firstRaw);
+  const matched = firstOpts.find((item) => item.id === params.configId);
+  if (matched?.currentValue && matched.currentValue !== params.value) {
+    await waitAbortable(35, options.signal);
+    return await channel.request('session/set_config_option', params, options);
+  }
+  return firstRaw;
+}
+
+/** 探测阶段采集每个模型候选各自支持的推理强度（如 OpenCode 仅部分推理模型暴露 `effort` 变体）。 */
+async function enrichAcpModelThoughtLevels(params: {
+  readonly channel: NdjsonChannel;
+  readonly sessionId: string;
+  readonly baseOptions: readonly ViewExternalConfigOption[];
+  readonly preferredOverrides?: readonly {
+    readonly category: 'model' | 'thought_level';
+    readonly value: string;
+  }[];
+  readonly budgetMs: number;
+  readonly signal?: AbortSignal;
+}): Promise<ViewExternalConfigOption[]> {
+  const { channel, sessionId, baseOptions, preferredOverrides, budgetMs, signal } = params;
+  const modelOpt = baseOptions.find((opt) => opt.category === 'model');
+  if (
+    !modelOpt ||
+    modelOpt.id === LEGACY_ACP_MODEL_CONFIG_ID ||
+    modelOpt.options.length === 0 ||
+    modelOpt.options.length > 40 ||
+    budgetMs < 400
+  ) {
+    return [...baseOptions];
+  }
+
+  const deadline = Date.now() + Math.min(budgetMs, 4_500);
+  const perModel = new Map<
+    string,
+    { readonly levels: readonly string[]; readonly defaultLevel?: string }
+  >();
+  const discoveredChoices = new Map<string, ViewExternalConfigChoice>();
+  let discoveredThoughtId =
+    baseOptions.find((opt) => opt.category === 'thought_level')?.id ?? 'effort';
+  let discoveredThoughtName =
+    baseOptions.find((opt) => opt.category === 'thought_level')?.name ?? '推理强度';
+
+  const recordThoughtOption = (
+    modelValue: string,
+    thoughtOpt: ViewExternalConfigOption | undefined,
+  ): void => {
+    if (!thoughtOpt || thoughtOpt.options.length === 0) {
+      perModel.set(modelValue, { levels: [] });
+      return;
+    }
+    discoveredThoughtId = thoughtOpt.id;
+    discoveredThoughtName = thoughtOpt.name;
+    const vals: string[] = [];
+    for (const c of thoughtOpt.options) {
+      vals.push(c.value);
+      if (!discoveredChoices.has(c.value)) {
+        discoveredChoices.set(c.value, {
+          value: c.value,
+          name: formatThoughtLevelLabel(c.value),
+          ...(c.description ? { description: c.description } : {}),
+        });
+      }
+    }
+    const orderedVals = orderThoughtLevels(vals);
+    const defaultLevel =
+      thoughtOpt.currentValue && orderedVals.includes(thoughtOpt.currentValue)
+        ? thoughtOpt.currentValue
+        : orderedVals[0];
+    perModel.set(modelValue, {
+      levels: orderedVals,
+      ...(defaultLevel ? { defaultLevel } : {}),
+    });
+  };
+
+  if (modelOpt.currentValue) {
+    recordThoughtOption(
+      modelOpt.currentValue,
+      baseOptions.find((opt) => opt.category === 'thought_level'),
+    );
+  }
+
+  for (const choice of modelOpt.options) {
+    if (perModel.has(choice.value)) continue;
+    const leftMs = deadline - Date.now();
+    if (leftMs < 150 || signal?.aborted) break;
+    try {
+      const stepRaw = await setAcpConfigOptionWithSettle(
+        channel,
+        { sessionId, configId: modelOpt.id, value: choice.value },
+        { timeoutMs: Math.min(1_500, leftMs), signal },
+      );
+      const stepOpts = normalizeAcpConfigOptions(stepRaw);
+      const stepModel = stepOpts.find((opt) => opt.category === 'model');
+      if (stepModel?.currentValue && stepModel.currentValue !== choice.value) {
+        continue;
+      }
+      recordThoughtOption(
+        choice.value,
+        stepOpts.find((opt) => opt.category === 'thought_level'),
+      );
+    } catch {
+      /* 单个模型探测超时或不支持切换时跳过，保留已探明结果 */
+      break;
+    }
+  }
+
+  const preferredModel = preferredOverrides?.find((o) => o.category === 'model')?.value;
+  const preferredThought = preferredOverrides?.find((o) => o.category === 'thought_level')?.value;
+  const effectiveCurrentModel =
+    preferredModel && modelOpt.options.some((c) => c.value === preferredModel)
+      ? preferredModel
+      : modelOpt.currentValue;
+
+  const enrichedModelChoices: ViewExternalConfigChoice[] = modelOpt.options.map((choice) => {
+    const meta = perModel.get(choice.value);
+    if (!meta) return choice;
+    return {
+      ...choice,
+      supportedThoughtLevels: meta.levels,
+      ...(meta.defaultLevel ? { defaultThoughtLevel: meta.defaultLevel } : {}),
+    };
+  });
+
+  const enrichedModelOpt: ViewExternalConfigOption = {
+    ...modelOpt,
+    ...(effectiveCurrentModel ? { currentValue: effectiveCurrentModel } : {}),
+    options: enrichedModelChoices,
+  };
+
+  const out: ViewExternalConfigOption[] = [enrichedModelOpt];
+
+  if (discoveredChoices.size > 0) {
+    const orderedThoughtChoices = orderThoughtLevels(discoveredChoices.keys()).map(
+      (v) => discoveredChoices.get(v)!,
+    );
+    const activeModelMeta = effectiveCurrentModel ? perModel.get(effectiveCurrentModel) : undefined;
+    const effectiveCurrentThought =
+      preferredThought && orderedThoughtChoices.some((c) => c.value === preferredThought)
+        ? preferredThought
+        : (activeModelMeta?.defaultLevel ?? orderedThoughtChoices[0]?.value);
+    out.push({
+      id: discoveredThoughtId,
+      name: discoveredThoughtName,
+      category: 'thought_level',
+      ...(effectiveCurrentThought ? { currentValue: effectiveCurrentThought } : {}),
+      options: orderedThoughtChoices,
+    });
+  } else {
+    const existingThought = baseOptions.find((opt) => opt.category === 'thought_level');
+    if (existingThought) out.push(existingThought);
+  }
+
+  for (const other of baseOptions) {
+    if (other.category !== 'model' && other.category !== 'thought_level') {
+      out.push(other);
+    }
+  }
+  return out;
 }
 
 /**
@@ -306,7 +503,34 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
         };
       }
 
-      const configOptions = probeNewRes ? normalizeAcpConfigOptions(probeNewRes) : [];
+      const baseConfigOptions = probeNewRes ? normalizeAcpConfigOptions(probeNewRes) : [];
+      const probeSessionId =
+        typeof asRecord(probeNewRes)?.sessionId === 'string'
+          ? String(asRecord(probeNewRes)!.sessionId).trim()
+          : '';
+      const preferredOverrides = flavor.resolveInitialConfigOverrides?.({
+        workspaceRoot: cwd,
+        homeDir: this.options.homeDir ?? os.homedir(),
+        env: launchEnv.env,
+        platform: this.options.platform ?? process.platform,
+      });
+      const configOptions =
+        probeSessionId && baseConfigOptions.length > 0
+          ? await enrichAcpModelThoughtLevels({
+              channel,
+              sessionId: probeSessionId,
+              baseOptions: baseConfigOptions,
+              preferredOverrides,
+              budgetMs: remainingBudgetMs() - 300,
+              signal,
+            })
+          : baseConfigOptions;
+
+      if (probeSessionId && init.canDeleteSession) {
+        await channel
+          .request('session/delete', { sessionId: probeSessionId }, { timeoutMs: 800, signal })
+          .catch(() => {});
+      }
 
       return {
         available: true,
@@ -830,8 +1054,8 @@ export class AcpStdioDriver implements ExternalHarnessDriver {
             { timeoutMs: reqTimeout, signal: reqSignal },
           );
         } else {
-          updatedRaw = await channel.request(
-            'session/set_config_option',
+          updatedRaw = await setAcpConfigOptionWithSettle(
+            channel,
             { sessionId: boundSessionId, configId: opt.id, value: trimmedVal },
             { timeoutMs: reqTimeout, signal: reqSignal },
           );

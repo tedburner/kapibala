@@ -18,6 +18,16 @@ const resumedSessionId =
   resumeIdx >= 0 && typeof args[resumeIdx + 1] === 'string' ? args[resumeIdx + 1] : undefined;
 const sessionId = resumedSessionId ?? `claude-sess-${process.pid}`;
 
+function readFlag(flag) {
+  const idx = args.indexOf(flag);
+  return idx >= 0 && typeof args[idx + 1] === 'string' ? args[idx + 1] : undefined;
+}
+
+let currentModel = readFlag('--model') ?? 'claude-sonnet-4-6';
+const currentEffort = readFlag('--effort') ?? 'medium';
+let currentMode = readFlag('--permission-mode') ?? 'default';
+let currentMaxThinkingTokens = null;
+
 function emit(obj) {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 }
@@ -49,9 +59,69 @@ rl.on('line', (line) => {
             agents: [],
             output_style: 'default',
             available_output_styles: ['default'],
-            models: [{ value: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6' }],
+            current_permission_mode: currentMode,
+            models: [
+              {
+                value: 'default',
+                resolvedModel: 'claude-sonnet-4-6',
+                displayName: 'Default (recommended)',
+                supportsEffort: true,
+                supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+              },
+              {
+                value: 'claude-sonnet-4-6',
+                resolvedModel: 'claude-sonnet-4-6',
+                displayName: 'Claude Sonnet 4.6',
+                supportsEffort: true,
+                supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+              },
+              {
+                value: 'fable',
+                resolvedModel: 'claude-fable-5-2',
+                displayName: 'Fable',
+                description: 'Fable 5.2',
+                supportsEffort: true,
+                supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+              },
+            ],
             account: {},
           },
+        },
+      });
+      return;
+    }
+    if (subtype === 'set_model') {
+      currentModel = msg.request?.model ?? currentModel;
+      emit({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: msg.request_id,
+          response: { model: currentModel },
+        },
+      });
+      return;
+    }
+    if (subtype === 'set_permission_mode') {
+      currentMode = msg.request?.mode ?? currentMode;
+      emit({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: msg.request_id,
+          response: { mode: currentMode },
+        },
+      });
+      return;
+    }
+    if (subtype === 'set_max_thinking_tokens') {
+      currentMaxThinkingTokens = msg.request?.max_thinking_tokens ?? null;
+      emit({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: msg.request_id,
+          response: {},
         },
       });
       return;
@@ -93,8 +163,8 @@ rl.on('line', (line) => {
       type: 'system',
       subtype: 'init',
       session_id: sessionId,
-      model: 'claude-sonnet-4-6',
-      permissionMode: 'default',
+      model: currentModel,
+      permissionMode: currentMode,
     });
 
     if (text.includes('crash')) {
@@ -355,9 +425,11 @@ rl.on('line', (line) => {
         delta: { type: 'thinking_delta', thinking: 'Analyzing request...' },
       },
     });
-    const replyText = resumedSessionId
-      ? `[resumed:${resumedSessionId}] Claude reply: ${text}`
-      : `Claude reply: ${text}`;
+    const replyText = text.includes('echo-config')
+      ? `Claude config: model=${currentModel}, effort=${currentEffort}, mode=${currentMode}, maxThinking=${currentMaxThinkingTokens ?? 'unset'}`
+      : resumedSessionId
+        ? `[resumed:${resumedSessionId}] Claude reply: ${text}`
+        : `Claude reply: ${text}`;
     emit({
       type: 'stream_event',
       event: {

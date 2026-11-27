@@ -2,7 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ViewTool, ViewUsage } from '../../../view-model/index.js';
+import type {
+  ViewExternalConfigChoice,
+  ViewExternalConfigOption,
+  ViewTool,
+  ViewUsage,
+} from '../../../view-model/index.js';
 import { redactCommonSecrets, sanitizeDisplayText } from '../../redaction.js';
 import { sanitizeUntrustedOutput } from '../../ui/text-safety.js';
 import {
@@ -17,7 +22,13 @@ import { buildExternalLaunchEnv } from '../env.js';
 import { NdjsonChannel } from '../ndjson-channel.js';
 import { ExternalProcessSupervisor, resolveExternalCommand } from '../process.js';
 import {
+  buildThoughtLevelConfigOption,
+  formatThoughtLevelLabel,
+  orderThoughtLevels,
+} from '../thought-levels.js';
+import {
   type ExternalApprovalDecision,
+  type ExternalConfigSelection,
   type ExternalDriverOpenResult,
   type ExternalDriverSessionHandle,
   type ExternalEvent,
@@ -25,6 +36,7 @@ import {
   type ExternalHarnessDriver,
   ExternalHarnessError,
   type ExternalInspectResult,
+  type ExternalSetConfigResult,
   type ExternalTurnResult,
   isValidNativeSessionId,
 } from '../types.js';
@@ -369,6 +381,164 @@ function parsePiUsage(raw: unknown): ViewUsage | undefined {
   return { promptTokens, completionTokens, totalTokens };
 }
 
+interface PiModelCatalogItem {
+  readonly value: string;
+  readonly provider: string;
+  readonly modelId: string;
+  readonly name: string;
+  readonly group?: string;
+  readonly supportedThoughtLevels: readonly string[];
+}
+
+function parsePiModelEntry(raw: unknown): PiModelCatalogItem | undefined {
+  const m = asRecord(raw);
+  if (!m) return undefined;
+  const provider =
+    typeof m.provider === 'string' && m.provider.trim() && m.provider.trim() !== 'unknown'
+      ? m.provider.trim()
+      : '';
+  const modelId =
+    typeof m.id === 'string' && m.id.trim() && m.id.trim() !== 'unknown' ? m.id.trim() : '';
+  if (!modelId) return undefined;
+  const value = provider ? `${provider}/${modelId}` : modelId;
+  const rawName =
+    typeof m.name === 'string' && m.name.trim() && m.name.trim() !== 'unknown'
+      ? m.name.trim()
+      : value;
+  const name = sanitizeDisplayText(rawName, 80) ?? value;
+  const group = provider ? sanitizeDisplayText(provider, 48) : undefined;
+  const mapObj = asRecord(m.thinkingLevelMap);
+  let supportedThoughtLevels: string[];
+  if (mapObj) {
+    const activeKeys: string[] = [];
+    for (const [key, mapped] of Object.entries(mapObj)) {
+      if (mapped !== null && mapped !== undefined && mapped !== false) {
+        activeKeys.push(key);
+      }
+    }
+    supportedThoughtLevels = orderThoughtLevels(activeKeys);
+  } else if (m.reasoning === false) {
+    supportedThoughtLevels = ['off'];
+  } else {
+    supportedThoughtLevels = ['off', 'low', 'medium', 'high', 'max'];
+  }
+  return {
+    value,
+    provider,
+    modelId,
+    name,
+    ...(group ? { group } : {}),
+    supportedThoughtLevels,
+  };
+}
+
+function parsePiCatalog(
+  stateDataRaw: unknown,
+  modelsDataRaw: unknown,
+): {
+  readonly models: readonly PiModelCatalogItem[];
+  readonly currentModelValue?: string;
+  readonly currentThinkingLevel?: string;
+} {
+  const stateData = asRecord(stateDataRaw);
+  const modelsData = asRecord(modelsDataRaw);
+  const list = Array.isArray(modelsData?.models) ? modelsData.models : [];
+  const models: PiModelCatalogItem[] = [];
+  const seen = new Set<string>();
+
+  for (const rawEntry of list) {
+    const parsed = parsePiModelEntry(rawEntry);
+    if (parsed && !seen.has(parsed.value)) {
+      seen.add(parsed.value);
+      models.push(parsed);
+    }
+  }
+
+  const stateModel = parsePiModelEntry(stateData?.model);
+  if (stateModel && !seen.has(stateModel.value)) {
+    seen.add(stateModel.value);
+    models.unshift(stateModel);
+  }
+
+  const currentThinkingLevel =
+    typeof stateData?.thinkingLevel === 'string' && stateData.thinkingLevel.trim()
+      ? stateData.thinkingLevel.trim()
+      : undefined;
+
+  return {
+    models,
+    ...(stateModel ? { currentModelValue: stateModel.value } : {}),
+    ...(currentThinkingLevel ? { currentThinkingLevel } : {}),
+  };
+}
+
+function resolvePiModelTarget(
+  rawValue: string,
+  catalog: readonly PiModelCatalogItem[],
+): { readonly provider: string; readonly modelId: string; readonly meta?: PiModelCatalogItem } {
+  const trimmed = rawValue.trim();
+  const exact =
+    catalog.find((m) => m.value === trimmed) ?? catalog.find((m) => m.modelId === trimmed);
+  if (exact) {
+    return { provider: exact.provider, modelId: exact.modelId, meta: exact };
+  }
+  const slashIdx = trimmed.indexOf('/');
+  if (slashIdx > 0 && slashIdx < trimmed.length - 1) {
+    return {
+      provider: trimmed.slice(0, slashIdx),
+      modelId: trimmed.slice(slashIdx + 1),
+    };
+  }
+  return { provider: '', modelId: trimmed };
+}
+
+function buildPiConfigOptions(params: {
+  readonly models: readonly PiModelCatalogItem[];
+  readonly currentModelValue?: string;
+  readonly currentThinkingLevel?: string;
+  readonly unionThoughtLevels: boolean;
+}): ViewExternalConfigOption[] {
+  const options: ViewExternalConfigOption[] = [];
+  if (params.models.length > 0) {
+    const choices: ViewExternalConfigChoice[] = params.models.map((m) => ({
+      value: m.value,
+      name: m.name,
+      ...(m.group ? { group: m.group } : {}),
+      ...(m.supportedThoughtLevels.length > 0
+        ? { supportedThoughtLevels: m.supportedThoughtLevels }
+        : {}),
+    }));
+    const resolvedCurrent =
+      params.currentModelValue && params.models.some((m) => m.value === params.currentModelValue)
+        ? params.currentModelValue
+        : params.models[0]?.value;
+    options.push({
+      id: 'model',
+      name: '模型',
+      category: 'model',
+      ...(resolvedCurrent ? { currentValue: resolvedCurrent } : {}),
+      options: choices,
+    });
+  }
+
+  const activeMeta = params.currentModelValue
+    ? params.models.find((m) => m.value === params.currentModelValue)
+    : params.models[0];
+  const thoughtPool = params.unionThoughtLevels
+    ? params.models.flatMap((m) => m.supportedThoughtLevels)
+    : (activeMeta?.supportedThoughtLevels ??
+      params.models.flatMap((m) => m.supportedThoughtLevels));
+  const thoughtOpt = buildThoughtLevelConfigOption(
+    thoughtPool.length > 0 ? thoughtPool : ['off', 'low', 'medium', 'high', 'max'],
+    params.currentThinkingLevel,
+    'thought_level',
+  );
+  if (thoughtOpt) {
+    options.push(thoughtOpt);
+  }
+  return options;
+}
+
 interface ActivePiTurn {
   emittedAnyText: boolean;
   cancelled: boolean;
@@ -591,19 +761,16 @@ export class PiRpcDriver implements ExternalHarnessDriver {
       }
 
       const stateData = asRecord(stateResp.data);
-      const model = asRecord(stateData?.model);
-      let hasModel =
-        typeof model?.id === 'string' &&
-        model.id.length > 0 &&
-        model.id !== 'unknown' &&
-        model.provider !== 'unknown';
-      if (!hasModel) {
+      let modelsData: Record<string, unknown> | undefined;
+      try {
         const modelsResp = await callProbe('probe_models', 'get_available_models');
-        const modelsData = asRecord(modelsResp.data);
-        if (Array.isArray(modelsData?.models) && modelsData.models.length > 0) {
-          hasModel = true;
-        }
+        modelsData = asRecord(modelsResp.data);
+      } catch {
+        /* 模型目录查询失败时回退基于 get_state 判定 */
       }
+
+      const catalog = parsePiCatalog(stateData, modelsData);
+      const hasModel = catalog.models.length > 0;
 
       if (!hasModel) {
         return {
@@ -618,12 +785,20 @@ export class PiRpcDriver implements ExternalHarnessDriver {
         };
       }
 
+      const configOptions = buildPiConfigOptions({
+        models: catalog.models,
+        currentModelValue: catalog.currentModelValue,
+        currentThinkingLevel: catalog.currentThinkingLevel,
+        unionThoughtLevels: true,
+      });
+
       return {
         available: true,
         agentName: 'Pi Coding Agent',
         ...(version ? { version } : {}),
         loadSupported: true,
         status: 'ready',
+        ...(configOptions.length > 0 ? { configOptions } : {}),
       };
     } catch (err) {
       if (err instanceof ExternalHarnessError) {
@@ -679,6 +854,7 @@ export class PiRpcDriver implements ExternalHarnessDriver {
     def: ExternalHarnessDefinition;
     workspaceRoot: string;
     nativeSessionId?: string;
+    initialConfig?: readonly ExternalConfigSelection[];
     onEvent: (event: ExternalEvent) => void;
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult> {
@@ -711,8 +887,12 @@ export class PiRpcDriver implements ExternalHarnessDriver {
     let closingByClient = false;
     let activeTurn: ActivePiTurn | undefined;
     let currentSessionId = input.nativeSessionId?.trim();
+    let catalogModels: readonly PiModelCatalogItem[] = [];
+    let currentModelValue: string | undefined;
+    let currentThinkingLevel: string | undefined;
     let currentModelLabel: string | undefined;
-    let currentModeLabel: string | undefined;
+    let currentThoughtLabel: string | undefined;
+    let currentConfigOptions: ViewExternalConfigOption[] = [];
     let nextCmdSeq = 1;
 
     const pendingCommands = new Map<string, PendingPiRpcCommand>();
@@ -1263,28 +1443,108 @@ export class PiRpcDriver implements ExternalHarnessDriver {
       const stateData = await sendCommand({ type: 'get_state' }, handshakeTimeoutMs, input.signal);
       channel.markHandshakeCompleted();
 
+      let modelsData: Record<string, unknown> | undefined;
+      try {
+        modelsData = await sendCommand(
+          { type: 'get_available_models' },
+          Math.min(handshakeTimeoutMs, 6_000),
+          input.signal,
+        );
+      } catch {
+        /* 模型列表查询失败时不阻断建连 */
+      }
+
       const rawSid = typeof stateData?.sessionId === 'string' ? stateData.sessionId.trim() : '';
       if (isValidNativeSessionId(rawSid)) {
         currentSessionId = rawSid;
       }
 
-      const modelObj = asRecord(stateData?.model);
-      if (modelObj) {
-        const providerStr = typeof modelObj.provider === 'string' ? modelObj.provider : '';
-        const modelIdStr =
-          typeof modelObj.id === 'string'
-            ? modelObj.id
-            : typeof modelObj.name === 'string'
-              ? modelObj.name
-              : '';
-        const label = [providerStr, modelIdStr].filter(Boolean).join('/');
-        if (label) {
-          currentModelLabel = sanitizeDisplayText(label, 64);
+      const catalog = parsePiCatalog(stateData, modelsData);
+      catalogModels = catalog.models;
+      currentModelValue = catalog.currentModelValue;
+      currentThinkingLevel = catalog.currentThinkingLevel;
+
+      if (!input.nativeSessionId && input.initialConfig?.length) {
+        const explicitModel = input.initialConfig.find((c) => c.category === 'model')?.value.trim();
+        const explicitThought = input.initialConfig
+          .find((c) => c.category === 'thought_level')
+          ?.value.trim();
+
+        if (explicitModel) {
+          const target = resolvePiModelTarget(explicitModel, catalogModels);
+          if (!target.provider || !target.modelId) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CONFIG_INVALID',
+              `Pi 模型标识 '${explicitModel}' 格式非法（需为 provider/modelId）`,
+            );
+          }
+          await sendCommand(
+            { type: 'set_model', provider: target.provider, modelId: target.modelId },
+            handshakeTimeoutMs,
+            input.signal,
+          );
+          currentModelValue = target.meta?.value ?? `${target.provider}/${target.modelId}`;
+          if (
+            target.meta &&
+            target.meta.supportedThoughtLevels.length > 0 &&
+            !explicitThought &&
+            currentThinkingLevel &&
+            !target.meta.supportedThoughtLevels.includes(currentThinkingLevel)
+          ) {
+            const fallbackLvl =
+              target.meta.supportedThoughtLevels.find((l) => l !== 'off') ??
+              target.meta.supportedThoughtLevels[0];
+            if (fallbackLvl) {
+              await sendCommand(
+                { type: 'set_thinking_level', level: fallbackLvl },
+                handshakeTimeoutMs,
+                input.signal,
+              );
+              currentThinkingLevel = fallbackLvl;
+            }
+          }
+        }
+
+        if (explicitThought) {
+          const activeMeta = currentModelValue
+            ? catalogModels.find((m) => m.value === currentModelValue)
+            : undefined;
+          if (
+            activeMeta &&
+            activeMeta.supportedThoughtLevels.length > 0 &&
+            !activeMeta.supportedThoughtLevels.includes(explicitThought)
+          ) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CONFIG_INVALID',
+              `Pi 模型 '${activeMeta.name}' 不支持推理强度 '${explicitThought}'`,
+            );
+          }
+          await sendCommand(
+            { type: 'set_thinking_level', level: explicitThought },
+            handshakeTimeoutMs,
+            input.signal,
+          );
+          currentThinkingLevel = explicitThought;
         }
       }
-      if (typeof stateData?.thinkingLevel === 'string' && stateData.thinkingLevel !== 'off') {
-        currentModeLabel = sanitizeDisplayText(`thinking:${stateData.thinkingLevel}`, 48);
+
+      const activeMeta = currentModelValue
+        ? catalogModels.find((m) => m.value === currentModelValue)
+        : undefined;
+      if (activeMeta) {
+        currentModelLabel = activeMeta.name;
+      } else if (currentModelValue) {
+        currentModelLabel = sanitizeDisplayText(currentModelValue, 64);
       }
+      if (currentThinkingLevel) {
+        currentThoughtLabel = formatThoughtLevelLabel(currentThinkingLevel);
+      }
+      currentConfigOptions = buildPiConfigOptions({
+        models: catalogModels,
+        currentModelValue,
+        currentThinkingLevel,
+        unionThoughtLevels: false,
+      });
     } catch (err) {
       closingByClient = true;
       settleAllApprovalsCancelled();
@@ -1396,6 +1656,88 @@ export class PiRpcDriver implements ExternalHarnessDriver {
             });
         });
       },
+      async setConfigOption(change, reqSignal): Promise<ExternalSetConfigResult> {
+        if (activeTurn) {
+          throw new ExternalHarnessError(
+            'EXTERNAL_SESSION_BUSY',
+            '当前 Pi 会话已有在途轮次，请等待完成后再切换配置',
+          );
+        }
+        const trimmedVal = change.value.trim();
+        if (!trimmedVal) {
+          throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', '配置项取值不能为空');
+        }
+        const rpcTimeout = Math.min(handshakeTimeoutMs, 10_000);
+
+        if (change.category === 'model') {
+          const target = resolvePiModelTarget(trimmedVal, catalogModels);
+          if (!target.provider || !target.modelId) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CONFIG_INVALID',
+              `Pi 模型标识 '${trimmedVal}' 格式非法（需为 provider/modelId）`,
+            );
+          }
+          await sendCommand(
+            { type: 'set_model', provider: target.provider, modelId: target.modelId },
+            rpcTimeout,
+            reqSignal,
+          );
+          currentModelValue = target.meta?.value ?? `${target.provider}/${target.modelId}`;
+          currentModelLabel = target.meta?.name ?? sanitizeDisplayText(currentModelValue, 64);
+          if (
+            target.meta &&
+            target.meta.supportedThoughtLevels.length > 0 &&
+            currentThinkingLevel &&
+            !target.meta.supportedThoughtLevels.includes(currentThinkingLevel)
+          ) {
+            const nextLvl =
+              target.meta.supportedThoughtLevels.find((l) => l !== 'off') ??
+              target.meta.supportedThoughtLevels[0];
+            if (nextLvl) {
+              await sendCommand(
+                { type: 'set_thinking_level', level: nextLvl },
+                rpcTimeout,
+                reqSignal,
+              );
+              currentThinkingLevel = nextLvl;
+              currentThoughtLabel = formatThoughtLevelLabel(nextLvl);
+            }
+          }
+        } else if (change.category === 'thought_level') {
+          const thoughtOpt = currentConfigOptions.find((o) => o.category === 'thought_level');
+          if (thoughtOpt && !thoughtOpt.options.some((c) => c.value === trimmedVal)) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CONFIG_INVALID',
+              `当前 Pi 模型不支持推理强度 '${trimmedVal}'`,
+            );
+          }
+          await sendCommand(
+            { type: 'set_thinking_level', level: trimmedVal },
+            rpcTimeout,
+            reqSignal,
+          );
+          currentThinkingLevel = trimmedVal;
+          currentThoughtLabel = formatThoughtLevelLabel(trimmedVal);
+        } else {
+          throw new ExternalHarnessError(
+            'EXTERNAL_CONFIG_INVALID',
+            'Pi 当前不支持切换运行模式配置项',
+          );
+        }
+
+        currentConfigOptions = buildPiConfigOptions({
+          models: catalogModels,
+          currentModelValue,
+          currentThinkingLevel,
+          unionThoughtLevels: false,
+        });
+
+        return {
+          ...(currentModelLabel ? { modelLabel: currentModelLabel } : {}),
+          ...(currentThoughtLabel ? { thoughtLevelLabel: currentThoughtLabel } : {}),
+          ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
+        };
+      },
       async cancel(): Promise<void> {
         if (!activeTurn || activeTurn.cancelled) return;
         activeTurn.cancelled = true;
@@ -1436,7 +1778,8 @@ export class PiRpcDriver implements ExternalHarnessDriver {
       ...(currentSessionId ? { nativeSessionId: currentSessionId } : {}),
       resumable: Boolean(currentSessionId),
       ...(currentModelLabel ? { modelLabel: currentModelLabel } : {}),
-      ...(currentModeLabel ? { modeLabel: currentModeLabel } : {}),
+      ...(currentThoughtLabel ? { thoughtLevelLabel: currentThoughtLabel } : {}),
+      ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
     };
   }
 }

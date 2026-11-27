@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { ViewTodoItem, ViewTool, ViewUsage } from '../../../view-model/index.js';
+import type {
+  ViewExternalConfigChoice,
+  ViewExternalConfigOption,
+  ViewTodoItem,
+  ViewTool,
+  ViewUsage,
+} from '../../../view-model/index.js';
 import { redactCommonSecrets, sanitizeDisplayText } from '../../redaction.js';
 import { sanitizeUntrustedOutput } from '../../ui/text-safety.js';
 import {
@@ -11,7 +17,13 @@ import { buildExternalLaunchEnv } from '../env.js';
 import { NdjsonChannel } from '../ndjson-channel.js';
 import { ExternalProcessSupervisor, resolveExternalCommand } from '../process.js';
 import {
+  buildThoughtLevelConfigOption,
+  formatThoughtLevelLabel,
+  orderThoughtLevels,
+} from '../thought-levels.js';
+import {
   type ExternalApprovalDecision,
+  type ExternalConfigSelection,
   type ExternalDriverOpenResult,
   type ExternalDriverSessionHandle,
   type ExternalEvent,
@@ -19,6 +31,7 @@ import {
   type ExternalHarnessDriver,
   ExternalHarnessError,
   type ExternalInspectResult,
+  type ExternalSetConfigResult,
   type ExternalTurnResult,
   isValidNativeSessionId,
 } from '../types.js';
@@ -270,6 +283,216 @@ function parseCodexTokenUsage(params: unknown): ViewUsage | undefined {
   };
 }
 
+interface CodexModelCatalogItem {
+  readonly value: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly isDefault: boolean;
+  readonly defaultThoughtLevel?: string;
+  readonly supportedThoughtLevels: readonly string[];
+}
+
+interface CodexQueriedCatalog {
+  readonly models: readonly CodexModelCatalogItem[];
+  readonly configuredModel?: string;
+  readonly configuredEffort?: string;
+  readonly configuredSandbox?: 'workspace-write' | 'read-only';
+}
+
+const CODEX_SANDBOX_MODE_CHOICES: readonly ViewExternalConfigChoice[] = [
+  {
+    value: 'workspace-write',
+    name: '标准读写 (Standard)',
+    description: '允许在工作区沙箱内读写并按需审批',
+  },
+  {
+    value: 'read-only',
+    name: '只读规划 (Read-only)',
+    description: '仅读取分析代码，禁止写入文件',
+  },
+];
+
+function normalizeCodexSandboxMode(raw: unknown): 'workspace-write' | 'read-only' {
+  if (raw === 'read-only' || raw === 'readOnly') return 'read-only';
+  return 'workspace-write';
+}
+
+async function queryCodexCatalog(
+  channel: NdjsonChannel,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<CodexQueriedCatalog> {
+  const reqTimeout = Math.max(500, Math.min(4_000, timeoutMs));
+  const [modelsSettled, configSettled] = await Promise.allSettled([
+    channel.request(
+      'model/list',
+      { limit: 100 },
+      { omitJsonRpcVersion: true, timeoutMs: reqTimeout, signal },
+    ),
+    channel.request('config/read', {}, { omitJsonRpcVersion: true, timeoutMs: reqTimeout, signal }),
+  ]);
+
+  const models: CodexModelCatalogItem[] = [];
+  if (modelsSettled.status === 'fulfilled') {
+    const resObj = asRecord(modelsSettled.value);
+    const rawList = Array.isArray(resObj?.data)
+      ? resObj.data
+      : Array.isArray(resObj?.models)
+        ? resObj.models
+        : [];
+    const parsedAll: Array<CodexModelCatalogItem & { hidden: boolean }> = [];
+    for (const rawEntry of rawList) {
+      const entry = asRecord(rawEntry);
+      if (!entry) continue;
+      const rawId =
+        typeof entry.model === 'string' && entry.model.trim()
+          ? entry.model.trim()
+          : typeof entry.id === 'string' && entry.id.trim()
+            ? entry.id.trim()
+            : '';
+      if (!rawId) continue;
+      const name =
+        sanitizeDisplayText(
+          typeof entry.displayName === 'string' && entry.displayName.trim()
+            ? entry.displayName.trim()
+            : rawId,
+          80,
+        ) ?? rawId;
+      const description =
+        typeof entry.description === 'string' && entry.description.trim()
+          ? sanitizeDisplayText(entry.description.trim(), 160)
+          : undefined;
+      const rawEfforts = Array.isArray(entry.supportedReasoningEfforts)
+        ? entry.supportedReasoningEfforts
+        : [];
+      const efforts: string[] = [];
+      for (const eff of rawEfforts) {
+        if (typeof eff === 'string' && eff.trim()) {
+          efforts.push(eff.trim());
+          continue;
+        }
+        const effObj = asRecord(eff);
+        if (typeof effObj?.reasoningEffort === 'string' && effObj.reasoningEffort.trim()) {
+          efforts.push(effObj.reasoningEffort.trim());
+        }
+      }
+      const supportedThoughtLevels = orderThoughtLevels(efforts);
+      const defaultThoughtLevel =
+        typeof entry.defaultReasoningEffort === 'string' && entry.defaultReasoningEffort.trim()
+          ? entry.defaultReasoningEffort.trim()
+          : supportedThoughtLevels[0];
+      parsedAll.push({
+        value: rawId,
+        name,
+        ...(description ? { description } : {}),
+        isDefault: entry.isDefault === true,
+        ...(defaultThoughtLevel ? { defaultThoughtLevel } : {}),
+        supportedThoughtLevels,
+        hidden: entry.hidden === true,
+      });
+    }
+    const visible = parsedAll.filter((m) => !m.hidden);
+    const chosen = visible.length > 0 ? visible : parsedAll;
+    const seen = new Set<string>();
+    for (const item of chosen) {
+      if (seen.has(item.value)) continue;
+      seen.add(item.value);
+      models.push({
+        value: item.value,
+        name: item.name,
+        ...(item.description ? { description: item.description } : {}),
+        isDefault: item.isDefault,
+        ...(item.defaultThoughtLevel ? { defaultThoughtLevel: item.defaultThoughtLevel } : {}),
+        supportedThoughtLevels: item.supportedThoughtLevels,
+      });
+    }
+  }
+
+  let configuredModel: string | undefined;
+  let configuredEffort: string | undefined;
+  let configuredSandbox: 'workspace-write' | 'read-only' | undefined;
+  if (configSettled.status === 'fulfilled') {
+    const cfgRoot = asRecord(configSettled.value);
+    const cfg = asRecord(cfgRoot?.config) ?? cfgRoot;
+    if (typeof cfg?.model === 'string' && cfg.model.trim()) {
+      configuredModel = cfg.model.trim();
+    }
+    if (typeof cfg?.model_reasoning_effort === 'string' && cfg.model_reasoning_effort.trim()) {
+      configuredEffort = cfg.model_reasoning_effort.trim();
+    }
+    if (typeof cfg?.sandbox_mode === 'string') {
+      configuredSandbox = normalizeCodexSandboxMode(cfg.sandbox_mode);
+    }
+  }
+
+  return {
+    models,
+    ...(configuredModel ? { configuredModel } : {}),
+    ...(configuredEffort ? { configuredEffort } : {}),
+    ...(configuredSandbox ? { configuredSandbox } : {}),
+  };
+}
+
+function buildCodexConfigOptions(params: {
+  readonly models: readonly CodexModelCatalogItem[];
+  readonly currentModel?: string;
+  readonly currentEffort?: string;
+  readonly currentSandbox: 'workspace-write' | 'read-only';
+  /** `true` 时顶层 `thought_level` 聚合所有模型支持的档位全集（供新对话选择器按模型前端联动过滤）。 */
+  readonly unionThoughtLevels: boolean;
+}): ViewExternalConfigOption[] {
+  const options: ViewExternalConfigOption[] = [];
+  if (params.models.length > 0) {
+    const modelChoices: ViewExternalConfigChoice[] = params.models.map((m) => ({
+      value: m.value,
+      name: m.name,
+      ...(m.description ? { description: m.description } : {}),
+      ...(m.supportedThoughtLevels.length > 0
+        ? { supportedThoughtLevels: m.supportedThoughtLevels }
+        : {}),
+      ...(m.defaultThoughtLevel ? { defaultThoughtLevel: m.defaultThoughtLevel } : {}),
+    }));
+    const resolvedModel =
+      params.currentModel && params.models.some((m) => m.value === params.currentModel)
+        ? params.currentModel
+        : (params.models.find((m) => m.isDefault)?.value ?? params.models[0]?.value);
+    options.push({
+      id: 'model',
+      name: '模型',
+      category: 'model',
+      ...(resolvedModel ? { currentValue: resolvedModel } : {}),
+      options: modelChoices,
+    });
+  }
+
+  const activeModelMeta = params.currentModel
+    ? params.models.find((m) => m.value === params.currentModel)
+    : (params.models.find((m) => m.isDefault) ?? params.models[0]);
+  const rawThoughtPool = params.unionThoughtLevels
+    ? params.models.flatMap((m) => m.supportedThoughtLevels)
+    : (activeModelMeta?.supportedThoughtLevels ??
+      params.models.flatMap((m) => m.supportedThoughtLevels));
+  const fallbackPool =
+    rawThoughtPool.length > 0 ? rawThoughtPool : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const thoughtOpt = buildThoughtLevelConfigOption(
+    fallbackPool,
+    params.currentEffort ?? activeModelMeta?.defaultThoughtLevel,
+    'thought_level',
+  );
+  if (thoughtOpt) {
+    options.push(thoughtOpt);
+  }
+
+  options.push({
+    id: 'mode',
+    name: '运行模式',
+    category: 'mode',
+    currentValue: params.currentSandbox,
+    options: CODEX_SANDBOX_MODE_CHOICES,
+  });
+  return options;
+}
+
 /**
  * Codex 原生 `app-server` 传输驱动（JSON-RPC lite over NDJSON stdio，零外部 SDK 依赖）。
  *
@@ -406,12 +629,29 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
         }
       }
 
+      const catalog = await queryCodexCatalog(channel, Math.max(1_000, timeoutMs), signal);
+      const defaultModel =
+        catalog.configuredModel ??
+        catalog.models.find((m) => m.isDefault)?.value ??
+        catalog.models[0]?.value;
+      const defaultModelMeta = defaultModel
+        ? catalog.models.find((m) => m.value === defaultModel)
+        : undefined;
+      const configOptions = buildCodexConfigOptions({
+        models: catalog.models,
+        currentModel: defaultModel,
+        currentEffort: catalog.configuredEffort ?? defaultModelMeta?.defaultThoughtLevel,
+        currentSandbox: catalog.configuredSandbox ?? 'workspace-write',
+        unionThoughtLevels: true,
+      });
+
       return {
         available: true,
         agentName: 'Codex',
         ...(version ? { version } : {}),
         loadSupported: true,
         status: 'ready',
+        ...(configOptions.length > 0 ? { configOptions } : {}),
       };
     } catch (err) {
       if (err instanceof ExternalHarnessError) {
@@ -468,6 +708,7 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
     def: ExternalHarnessDefinition;
     workspaceRoot: string;
     nativeSessionId?: string;
+    initialConfig?: readonly ExternalConfigSelection[];
     onEvent: (event: ExternalEvent) => void;
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult> {
@@ -994,6 +1235,15 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
     const handshakeTimeoutMs = this.options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     let modelLabel: string | undefined;
     let modeLabel: string | undefined;
+    let thoughtLevelLabel: string | undefined;
+    let catalogModels: readonly CodexModelCatalogItem[] = [];
+    let currentModelId: string | undefined;
+    let currentEffort: string | undefined;
+    let currentSandbox: 'workspace-write' | 'read-only' = 'workspace-write';
+    let turnOverrideModel: string | undefined;
+    let turnOverrideEffort: string | undefined;
+    let turnOverrideSandbox: 'workspace-write' | 'read-only' | undefined;
+    let currentConfigOptions: ViewExternalConfigOption[] = [];
 
     try {
       await channel.request(
@@ -1012,10 +1262,61 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       channel.markHandshakeCompleted();
       channel.notify('initialized', {}, { omitJsonRpcVersion: true });
 
+      const catalog = await queryCodexCatalog(channel, handshakeTimeoutMs, input.signal);
+      catalogModels = catalog.models;
+
+      const explicitModel = !sanitizedResumeId
+        ? input.initialConfig?.find((c) => c.category === 'model')?.value.trim()
+        : undefined;
+      const explicitEffort = !sanitizedResumeId
+        ? input.initialConfig?.find((c) => c.category === 'thought_level')?.value.trim()
+        : undefined;
+      const explicitMode = !sanitizedResumeId
+        ? input.initialConfig?.find((c) => c.category === 'mode')?.value.trim()
+        : undefined;
+
+      if (
+        explicitModel &&
+        catalogModels.length > 0 &&
+        !catalogModels.some((m) => m.value === explicitModel)
+      ) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_CONFIG_INVALID',
+          `Codex 当前无可用模型 '${explicitModel}'，请刷新模型列表后重试`,
+        );
+      }
+      if (
+        explicitMode &&
+        !CODEX_SANDBOX_MODE_CHOICES.some((choice) => choice.value === explicitMode)
+      ) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_CONFIG_INVALID',
+          `Codex 不支持运行模式 '${explicitMode}'`,
+        );
+      }
+      const targetModelForValidation = explicitModel
+        ? catalogModels.find((m) => m.value === explicitModel)
+        : undefined;
+      if (
+        explicitEffort &&
+        targetModelForValidation &&
+        targetModelForValidation.supportedThoughtLevels.length > 0 &&
+        !targetModelForValidation.supportedThoughtLevels.includes(explicitEffort)
+      ) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_CONFIG_INVALID',
+          `模型 '${targetModelForValidation.name}' 不支持推理强度 '${explicitEffort}'`,
+        );
+      }
+
+      currentSandbox = explicitMode ? normalizeCodexSandboxMode(explicitMode) : 'workspace-write';
+
       const threadParams: Record<string, unknown> = {
         cwd: input.workspaceRoot,
         approvalPolicy: 'on-request',
-        sandbox: 'workspace-write',
+        sandbox: currentSandbox,
+        ...(explicitModel ? { model: explicitModel } : {}),
+        ...(explicitEffort ? { config: { model_reasoning_effort: explicitEffort } } : {}),
         ...(sanitizedResumeId ? { threadId: sanitizedResumeId } : {}),
       };
       const openedRaw = await channel.request(
@@ -1040,18 +1341,46 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       }
       threadId = resolvedThreadId;
 
-      if (typeof opened.model === 'string' && opened.model.trim()) {
-        modelLabel = sanitizeDisplayText(opened.model.trim(), 64);
-      } else if (typeof threadObj?.model === 'string' && threadObj.model.trim()) {
-        modelLabel = sanitizeDisplayText(threadObj.model.trim(), 64);
+      const rawOpenedModel =
+        typeof opened.model === 'string' && opened.model.trim()
+          ? opened.model.trim()
+          : typeof threadObj?.model === 'string' && threadObj.model.trim()
+            ? threadObj.model.trim()
+            : (explicitModel ?? catalog.configuredModel);
+      currentModelId = rawOpenedModel;
+      const matchedModelMeta = currentModelId
+        ? catalogModels.find((m) => m.value === currentModelId)
+        : undefined;
+      if (matchedModelMeta) {
+        modelLabel = matchedModelMeta.name;
+      } else if (currentModelId) {
+        modelLabel = sanitizeDisplayText(currentModelId, 64);
+      }
+
+      const rawOpenedEffort =
+        typeof opened.reasoningEffort === 'string' && opened.reasoningEffort.trim()
+          ? opened.reasoningEffort.trim()
+          : (explicitEffort ?? catalog.configuredEffort ?? matchedModelMeta?.defaultThoughtLevel);
+      if (rawOpenedEffort) {
+        currentEffort = rawOpenedEffort;
+        thoughtLevelLabel = formatThoughtLevelLabel(rawOpenedEffort);
       }
 
       const sandboxObj = asRecord(opened.sandbox);
       if (typeof sandboxObj?.type === 'string') {
+        currentSandbox = normalizeCodexSandboxMode(sandboxObj.type);
         modeLabel = sanitizeDisplayText(sandboxObj.type, 48);
       } else if (typeof opened.approvalPolicy === 'string') {
         modeLabel = sanitizeDisplayText(opened.approvalPolicy, 48);
       }
+
+      currentConfigOptions = buildCodexConfigOptions({
+        models: catalogModels,
+        currentModel: currentModelId,
+        currentEffort,
+        currentSandbox,
+        unionThoughtLevels: false,
+      });
     } catch (err) {
       closingByClient = true;
       channel.close();
@@ -1152,6 +1481,16 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
               {
                 threadId: activeThreadId,
                 input: [{ type: 'text', text }],
+                ...(turnOverrideModel ? { model: turnOverrideModel } : {}),
+                ...(turnOverrideEffort ? { effort: turnOverrideEffort } : {}),
+                ...(turnOverrideSandbox
+                  ? {
+                      sandboxPolicy:
+                        turnOverrideSandbox === 'read-only'
+                          ? { type: 'readOnly' }
+                          : { type: 'workspaceWrite' },
+                    }
+                  : {}),
               },
               { omitJsonRpcVersion: true, timeoutMs: handshakeTimeoutMs },
             )
@@ -1196,6 +1535,79 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
               }
             });
         });
+      },
+      async setConfigOption(change): Promise<ExternalSetConfigResult> {
+        if (activeTurn) {
+          throw new ExternalHarnessError(
+            'EXTERNAL_SESSION_BUSY',
+            '当前 Codex 会话已有在途轮次，请等待完成后再切换配置',
+          );
+        }
+        const trimmedVal = change.value.trim();
+        if (!trimmedVal) {
+          throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', '配置项取值不能为空');
+        }
+
+        if (change.category === 'model') {
+          if (catalogModels.length > 0 && !catalogModels.some((m) => m.value === trimmedVal)) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CONFIG_INVALID',
+              `Codex 当前无可用模型 '${trimmedVal}'，请刷新模型列表后重试`,
+            );
+          }
+          currentModelId = trimmedVal;
+          turnOverrideModel = trimmedVal;
+          const meta = catalogModels.find((m) => m.value === trimmedVal);
+          modelLabel = meta?.name ?? sanitizeDisplayText(trimmedVal, 64);
+          if (
+            meta &&
+            meta.supportedThoughtLevels.length > 0 &&
+            (!currentEffort || !meta.supportedThoughtLevels.includes(currentEffort))
+          ) {
+            const nextEffort = meta.defaultThoughtLevel ?? meta.supportedThoughtLevels[0];
+            if (nextEffort) {
+              currentEffort = nextEffort;
+              turnOverrideEffort = nextEffort;
+              thoughtLevelLabel = formatThoughtLevelLabel(nextEffort);
+            }
+          }
+        } else if (change.category === 'thought_level') {
+          const thoughtOpt = currentConfigOptions.find((o) => o.category === 'thought_level');
+          if (thoughtOpt && !thoughtOpt.options.some((c) => c.value === trimmedVal)) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CONFIG_INVALID',
+              `当前 Codex 模型不支持推理强度 '${trimmedVal}'`,
+            );
+          }
+          currentEffort = trimmedVal;
+          turnOverrideEffort = trimmedVal;
+          thoughtLevelLabel = formatThoughtLevelLabel(trimmedVal);
+        } else if (change.category === 'mode') {
+          if (!CODEX_SANDBOX_MODE_CHOICES.some((c) => c.value === trimmedVal)) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CONFIG_INVALID',
+              `Codex 不支持运行模式 '${trimmedVal}'`,
+            );
+          }
+          currentSandbox = normalizeCodexSandboxMode(trimmedVal);
+          turnOverrideSandbox = currentSandbox;
+          modeLabel = currentSandbox === 'read-only' ? 'readOnly' : 'workspaceWrite';
+        }
+
+        currentConfigOptions = buildCodexConfigOptions({
+          models: catalogModels,
+          currentModel: currentModelId,
+          currentEffort,
+          currentSandbox,
+          unionThoughtLevels: false,
+        });
+
+        return {
+          ...(modelLabel ? { modelLabel } : {}),
+          ...(modeLabel ? { modeLabel } : {}),
+          ...(thoughtLevelLabel ? { thoughtLevelLabel } : {}),
+          ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
+        };
       },
       async cancel(): Promise<void> {
         if (!activeTurn || activeTurn.cancelled) return;
@@ -1250,6 +1662,8 @@ export class CodexAppServerDriver implements ExternalHarnessDriver {
       resumable: true,
       ...(modelLabel ? { modelLabel } : {}),
       ...(modeLabel ? { modeLabel } : {}),
+      ...(thoughtLevelLabel ? { thoughtLevelLabel } : {}),
+      ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
     };
   }
 }

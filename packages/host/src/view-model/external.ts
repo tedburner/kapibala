@@ -19,6 +19,10 @@ export interface ViewExternalConfigChoice {
   readonly name: string;
   readonly description?: string;
   readonly group?: string;
+  /** 该模型候选支持的推理档位值子集（未提供时沿用顶层 `thought_level` 配置项全集）。 */
+  readonly supportedThoughtLevels?: readonly string[];
+  /** 切换到该模型候选时的推荐默认推理档位值。 */
+  readonly defaultThoughtLevel?: string;
 }
 
 /** 外部代理可切换的配置项语义类别。 */
@@ -70,6 +74,8 @@ export interface ViewExternalHarness {
   readonly probe?: ViewExternalHarnessProbe;
   /** 本地按配置指纹缓存的可用模型/模式/推理档位清单，供新对话选择器零冷启展示。 */
   readonly cachedConfigOptions?: readonly ViewExternalConfigOption[];
+  /** 本地模型/模式/推理档位缓存的最近刷新毫秒时间戳（未缓存时缺省）。 */
+  readonly cachedConfigUpdatedAt?: number;
 }
 
 /** 官方 ACP Registry 静态模板的纯展示投影。 */

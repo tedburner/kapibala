@@ -8,6 +8,7 @@ import { desktopExternalLaunchEnv, desktopLaunchEnv } from '../scripts/launch-en
 
 const entry = path.resolve('.');
 const fakeAcpScript = path.resolve('../host/tests/fixtures/fake-acp-agent.mjs');
+const fakeCodexScript = path.resolve('../host/tests/fixtures/fake-codex-app-server.mjs');
 
 function environment(home: string, userData: string): Record<string, string> {
   return desktopLaunchEnv(process.env, {
@@ -111,7 +112,7 @@ test.describe
         animations: 'disabled',
       });
 
-      // 3. 保存自定义代理并核验磁盘 JSON
+      // 3. 保存自定义代理并核验磁盘 JSON 与设置页模型缓存手动刷新
       await page.getByRole('button', { name: '保存代理' }).click();
       await expect(page.getByText('已保存自定义 ACP 代理「本地验收 ACP」。')).toBeVisible();
 
@@ -119,6 +120,12 @@ test.describe
         custom?: Record<string, { name: string; command: string; args: string[] }>;
       };
       expect(saved.custom?.['e2e-acp']?.name).toBe('本地验收 ACP');
+
+      await page.getByRole('button', { name: '刷新 本地验收 ACP 模型缓存' }).click();
+      await expect(page.getByText(/已刷新 本地验收 ACP 本地缓存/)).toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(page.getByText(/模型缓存：已缓存 \d+ 个模型/)).toBeVisible();
     });
 
     test('输入框选择外部代理并发送首轮，侧栏保留会话，审批与只读归档可用', async () => {
@@ -131,7 +138,11 @@ test.describe
           version: 1,
           overrides: {
             'claude-code': { enabled: false },
-            codex: { enabled: false },
+            codex: {
+              command: process.execPath,
+              args: [fakeCodexScript],
+              enabled: true,
+            },
             pi: { enabled: false },
             antigravity: { enabled: false },
             opencode: { enabled: false },
@@ -238,5 +249,44 @@ test.describe
       await expect(page.getByRole('button', { name: '新对话代理：本地验收 ACP' })).toBeVisible();
       await expect(input).toBeEnabled();
       await expect(input).toHaveValue('');
+
+      // 验证 T3 Code 式三栏选择器：切到 Codex 自动拉取模型列表、按模型联动推理档位并直发入会话
+      await page.getByRole('button', { name: '新对话代理：本地验收 ACP' }).click();
+      await page
+        .getByRole('region', { name: '按代理浏览' })
+        .getByRole('button', { name: 'Codex', exact: true })
+        .click();
+      await expect(page.getByRole('option', { name: 'GPT-6-Astra', exact: true })).toBeVisible({
+        timeout: 15_000,
+      });
+      const configRegion = page.getByRole('region', { name: '推理与模式配置' });
+      await expect(configRegion).toBeVisible();
+
+      // GPT-6-Luna 不支持 Ultra，点击后右栏自动收敛候选档位；切回 GPT-6-Astra 恢复 Ultra 并点选 Extra High
+      await page.getByRole('option', { name: 'GPT-6-Luna', exact: true }).click();
+      await expect(configRegion.getByRole('button', { name: 'Ultra', exact: true })).toHaveCount(0);
+      await page.getByRole('option', { name: 'GPT-6-Astra', exact: true }).click();
+      await expect(configRegion.getByRole('button', { name: 'Ultra', exact: true })).toBeVisible();
+      await configRegion.getByRole('button', { name: 'Extra High', exact: true }).click();
+      await page.keyboard.press('Escape');
+
+      await expect(
+        page.getByRole('button', {
+          name: '新对话代理：Codex · GPT-6-Astra · Extra High',
+          exact: true,
+        }),
+      ).toBeVisible();
+
+      await input.fill('echo-config');
+      await input.press('Enter');
+      await expect(
+        page.getByText('Codex config: model=gpt-6-astra, effort=xhigh, sandbox=workspaceWrite'),
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.getByRole('button', { name: '外部会话模型：GPT-6-Astra', exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole('button', { name: '外部会话推理档位：Extra High', exact: true }),
+      ).toBeVisible();
     });
   });

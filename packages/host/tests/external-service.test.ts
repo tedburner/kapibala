@@ -629,9 +629,37 @@ describe('ExternalSessionService 会话编排、审批、空闲回收与 configD
     expect(probe.configOptions?.find((opt) => opt.category === 'model')?.options).toHaveLength(3);
 
     const listed = service.listHarnesses().harnesses.find((item) => item.id === 'sync-acp');
+    expect(typeof listed?.cachedConfigUpdatedAt).toBe('number');
     expect(
       listed?.cachedConfigOptions?.find((opt) => opt.category === 'model')?.options,
     ).toHaveLength(3);
+    expect(
+      listed?.cachedConfigOptions
+        ?.find((opt) => opt.category === 'thought_level')
+        ?.options.map((o) => o.value),
+    ).toEqual(['default', 'high', 'max']);
+
+    // 启动无推理档位的 big-pickle 会话后，全局缓存不得丢失已探明的逐模型 supportedThoughtLevels 与 thought_level 目录
+    const bigPickleOpened = await service.openSession({
+      workspaceRoot,
+      harnessId: 'sync-acp',
+      modelId: 'opencode/big-pickle',
+    });
+    await service.closeSession(bigPickleOpened.session.id, workspaceRoot);
+    const listedAfterBigPickle = service
+      .listHarnesses()
+      .harnesses.find((item) => item.id === 'sync-acp');
+    expect(
+      listedAfterBigPickle?.cachedConfigOptions
+        ?.find((opt) => opt.category === 'thought_level')
+        ?.options.map((o) => o.value),
+    ).toEqual(['default', 'high', 'max']);
+    expect(
+      listedAfterBigPickle?.cachedConfigOptions
+        ?.find((opt) => opt.category === 'model')
+        ?.options.find((o) => o.value === 'opencode/deepseek-v4.1-flash-free')
+        ?.supportedThoughtLevels,
+    ).toEqual(['default', 'high', 'max']);
 
     // 新建会话显式指定 modelId
     const opened = await service.openSession({

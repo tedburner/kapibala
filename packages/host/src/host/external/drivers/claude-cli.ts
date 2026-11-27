@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { ViewTodoItem, ViewTool, ViewUsage } from '../../../view-model/index.js';
+import type {
+  ViewExternalConfigChoice,
+  ViewExternalConfigOption,
+  ViewTodoItem,
+  ViewTool,
+  ViewUsage,
+} from '../../../view-model/index.js';
 import { redactCommonSecrets, sanitizeDisplayText } from '../../redaction.js';
 import { sanitizeUntrustedOutput } from '../../ui/text-safety.js';
 import {
@@ -13,7 +19,13 @@ import { buildExternalLaunchEnv } from '../env.js';
 import { NdjsonChannel } from '../ndjson-channel.js';
 import { ExternalProcessSupervisor, resolveExternalCommand } from '../process.js';
 import {
+  buildThoughtLevelConfigOption,
+  formatThoughtLevelLabel,
+  orderThoughtLevels,
+} from '../thought-levels.js';
+import {
   type ExternalApprovalDecision,
+  type ExternalConfigSelection,
   type ExternalDriverOpenResult,
   type ExternalDriverSessionHandle,
   type ExternalEvent,
@@ -21,6 +33,7 @@ import {
   type ExternalHarnessDriver,
   ExternalHarnessError,
   type ExternalInspectResult,
+  type ExternalSetConfigResult,
   type ExternalTurnResult,
   isValidNativeSessionId,
 } from '../types.js';
@@ -63,7 +76,15 @@ function parseVersionToken(text: string): string | undefined {
   return match?.[1];
 }
 
-function buildClaudeLaunchArgs(baseArgs: readonly string[], nativeSessionId?: string): string[] {
+function buildClaudeLaunchArgs(
+  baseArgs: readonly string[],
+  nativeSessionId?: string,
+  overrides?: {
+    readonly model?: string;
+    readonly effort?: string;
+    readonly permissionMode?: string;
+  },
+): string[] {
   const sepIdx = baseArgs.indexOf('--');
   const head = sepIdx >= 0 ? [...baseArgs.slice(0, sepIdx)] : [...baseArgs];
   const tail = sepIdx >= 0 ? baseArgs.slice(sepIdx) : [];
@@ -91,7 +112,209 @@ function buildClaudeLaunchArgs(baseArgs: readonly string[], nativeSessionId?: st
   if (nativeSessionId && isValidNativeSessionId(nativeSessionId) && !head.includes('--resume')) {
     head.push('--resume', nativeSessionId.trim());
   }
+  if (!nativeSessionId) {
+    if (overrides?.model && !head.includes('--model')) {
+      head.push('--model', overrides.model);
+    }
+    if (overrides?.effort && !head.includes('--effort')) {
+      head.push('--effort', overrides.effort);
+    }
+    if (overrides?.permissionMode && !head.includes('--permission-mode')) {
+      head.push('--permission-mode', overrides.permissionMode);
+    }
+  }
   return [...head, ...tail];
+}
+
+interface ClaudeModelCatalogItem {
+  readonly value: string;
+  readonly resolvedModel?: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly supportedThoughtLevels: readonly string[];
+}
+
+const CLAUDE_PERMISSION_MODE_CHOICES: readonly ViewExternalConfigChoice[] = [
+  {
+    value: 'default',
+    name: '标准审批 (Default)',
+    description: '修改文件或执行命令前请求确认',
+  },
+  {
+    value: 'acceptEdits',
+    name: '自动接受编辑 (Accept Edits)',
+    description: '自动放行文件编辑，终端命令仍需确认',
+  },
+  {
+    value: 'plan',
+    name: '只读规划 (Plan)',
+    description: '仅分析代码与输出计划，不修改文件',
+  },
+];
+
+const CLAUDE_EFFORT_MAX_THINKING_TOKENS: Readonly<Record<string, number>> = {
+  off: 0,
+  minimal: 2_048,
+  low: 4_096,
+  medium: 10_000,
+  high: 16_000,
+  xhigh: 31_999,
+  max: 63_999,
+};
+
+function parseClaudeInitCatalog(initBodyRaw: unknown): {
+  readonly models: readonly ClaudeModelCatalogItem[];
+  readonly defaultResolvedModel?: string;
+  readonly currentPermissionMode?: string;
+} {
+  const body = asRecord(initBodyRaw);
+  const rawModels = Array.isArray(body?.models) ? body.models : [];
+  let defaultResolvedModel: string | undefined;
+  const parsed: ClaudeModelCatalogItem[] = [];
+
+  for (const entryRaw of rawModels) {
+    const entry = asRecord(entryRaw);
+    if (!entry) continue;
+    const value = typeof entry.value === 'string' ? entry.value.trim() : '';
+    if (!value) continue;
+    const resolvedModel =
+      typeof entry.resolvedModel === 'string' && entry.resolvedModel.trim()
+        ? entry.resolvedModel.trim()
+        : undefined;
+    if (value === 'default') {
+      defaultResolvedModel = resolvedModel;
+      continue;
+    }
+    const rawDisplay =
+      typeof entry.displayName === 'string' && entry.displayName.trim()
+        ? entry.displayName.trim()
+        : value;
+    const isAlias = value === 'opus' || value === 'sonnet' || value === 'haiku';
+    const aliasTitle = isAlias ? value.charAt(0).toUpperCase() + value.slice(1) : '';
+    const formattedName =
+      isAlias && resolvedModel && rawDisplay === resolvedModel
+        ? `${aliasTitle} (${rawDisplay})`
+        : rawDisplay;
+    const name = sanitizeDisplayText(formattedName, 80) ?? value;
+    const description =
+      typeof entry.description === 'string' && entry.description.trim()
+        ? sanitizeDisplayText(entry.description.trim(), 160)
+        : undefined;
+    const rawEfforts = Array.isArray(entry.supportedEffortLevels)
+      ? entry.supportedEffortLevels.filter((e): e is string => typeof e === 'string')
+      : entry.supportsEffort === false
+        ? []
+        : ['low', 'medium', 'high', 'max'];
+    parsed.push({
+      value,
+      ...(resolvedModel ? { resolvedModel } : {}),
+      name,
+      ...(description ? { description } : {}),
+      supportedThoughtLevels: orderThoughtLevels(rawEfforts),
+    });
+  }
+
+  const seen = new Set<string>();
+  const deduped = parsed.filter((item) => {
+    if (seen.has(item.value)) return false;
+    seen.add(item.value);
+    return true;
+  });
+
+  const currentPermissionMode =
+    typeof body?.current_permission_mode === 'string' && body.current_permission_mode.trim()
+      ? body.current_permission_mode.trim()
+      : undefined;
+
+  return {
+    models: deduped,
+    ...(defaultResolvedModel ? { defaultResolvedModel } : {}),
+    ...(currentPermissionMode ? { currentPermissionMode } : {}),
+  };
+}
+
+function buildClaudeConfigOptions(params: {
+  readonly models?: readonly ClaudeModelCatalogItem[];
+  readonly currentModel?: string;
+  readonly currentEffort?: string;
+  readonly currentMode?: string;
+  readonly unionThoughtLevels: boolean;
+}): ViewExternalConfigOption[] {
+  const fallbackModels: readonly ClaudeModelCatalogItem[] =
+    params.models && params.models.length > 0
+      ? params.models
+      : [
+          {
+            value: 'sonnet',
+            name: 'Sonnet',
+            supportedThoughtLevels: ['low', 'medium', 'high', 'max'],
+          },
+          {
+            value: 'opus',
+            name: 'Opus',
+            supportedThoughtLevels: ['low', 'medium', 'high', 'max'],
+          },
+          {
+            value: 'haiku',
+            name: 'Haiku',
+            supportedThoughtLevels: ['low', 'medium', 'high'],
+          },
+        ];
+
+  const matchedModel = params.currentModel
+    ? (fallbackModels.find((m) => m.value === params.currentModel) ??
+      fallbackModels.find((m) => m.resolvedModel === params.currentModel))
+    : undefined;
+
+  const modelChoices: ViewExternalConfigChoice[] = fallbackModels.map((m) => ({
+    value: m.value,
+    name: m.name,
+    ...(m.description ? { description: m.description } : {}),
+    ...(m.supportedThoughtLevels.length > 0
+      ? { supportedThoughtLevels: m.supportedThoughtLevels }
+      : {}),
+  }));
+
+  const options: ViewExternalConfigOption[] = [
+    {
+      id: 'model',
+      name: '模型',
+      category: 'model',
+      ...(matchedModel
+        ? { currentValue: matchedModel.value }
+        : params.currentModel
+          ? { currentValue: params.currentModel }
+          : {}),
+      options: modelChoices,
+    },
+  ];
+
+  const thoughtPool = params.unionThoughtLevels
+    ? fallbackModels.flatMap((m) => m.supportedThoughtLevels)
+    : (matchedModel?.supportedThoughtLevels ??
+      fallbackModels.flatMap((m) => m.supportedThoughtLevels));
+  const thoughtOpt = buildThoughtLevelConfigOption(
+    thoughtPool.length > 0 ? thoughtPool : ['low', 'medium', 'high', 'max'],
+    params.currentEffort ?? 'medium',
+    'thought_level',
+  );
+  if (thoughtOpt) {
+    options.push(thoughtOpt);
+  }
+
+  const resolvedMode =
+    params.currentMode && CLAUDE_PERMISSION_MODE_CHOICES.some((c) => c.value === params.currentMode)
+      ? params.currentMode
+      : 'default';
+  options.push({
+    id: 'mode',
+    name: '运行模式',
+    category: 'mode',
+    currentValue: resolvedMode,
+    options: CLAUDE_PERMISSION_MODE_CHOICES,
+  });
+
+  return options;
 }
 
 function sanitizeClaudeApprovalTarget(raw: string): string | undefined {
@@ -370,7 +593,71 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
         // 旧版或包装器可能未实现结构化认证探测。
       }
       if (loggedIn === true && auth.code === 0) {
-        return { ...identity, available: true, status: 'ready' };
+        let configOptions = buildClaudeConfigOptions({ unionThoughtLevels: true });
+        const initBudgetMs = Math.min(5_000, Math.max(800, deadline - Date.now()));
+        let initProc: ExternalProcessSupervisor | undefined;
+        let initChannel: NdjsonChannel | undefined;
+        try {
+          const streamArgs = buildClaudeLaunchArgs(resolvedCmd.args);
+          initProc = ExternalProcessSupervisor.spawn({
+            executable: resolvedCmd.executable,
+            args: streamArgs,
+            cwd,
+            env: launchEnv.env,
+          });
+          const probeReqId = `probe_init_${randomUUID().slice(0, 8)}`;
+          const initBody = await new Promise<unknown>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              reject(new Error('Claude initialize catalog probe timeout'));
+            }, initBudgetMs);
+            timer.unref?.();
+            const onAbort = (): void => {
+              clearTimeout(timer);
+              reject(new ExternalHarnessError('EXTERNAL_ABORTED', '探测已取消'));
+            };
+            signal?.addEventListener('abort', onAbort, { once: true });
+            initChannel = new NdjsonChannel(initProc!.stdout, initProc!.stdin, {
+              onMessage: (payload) => {
+                if (payload.type !== 'control_response') return;
+                const resp = asRecord(payload.response);
+                if (resp?.request_id !== probeReqId) return;
+                clearTimeout(timer);
+                signal?.removeEventListener('abort', onAbort);
+                if (resp.subtype === 'error') {
+                  reject(new Error(typeof resp.error === 'string' ? resp.error : 'init error'));
+                } else {
+                  resolve(resp.response);
+                }
+              },
+            });
+            initChannel.send({
+              type: 'control_request',
+              request_id: probeReqId,
+              request: { subtype: 'initialize' },
+            });
+          });
+          const catalog = parseClaudeInitCatalog(initBody);
+          configOptions = buildClaudeConfigOptions({
+            models: catalog.models,
+            currentModel: catalog.defaultResolvedModel,
+            currentMode: catalog.currentPermissionMode,
+            unionThoughtLevels: true,
+          });
+        } catch (probeErr) {
+          if (probeErr instanceof ExternalHarnessError && probeErr.code === 'EXTERNAL_ABORTED') {
+            throw probeErr;
+          }
+          /* 控制通道模型枚举为增强步骤，超时或旧版不支持时保留标准兜底选项 */
+        } finally {
+          initChannel?.close();
+          await initProc?.close();
+        }
+        return {
+          ...identity,
+          available: true,
+          status: 'ready',
+          ...(configOptions.length > 0 ? { configOptions } : {}),
+        };
       }
       if (loggedIn === false) {
         return {
@@ -405,6 +692,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
     def: ExternalHarnessDefinition;
     workspaceRoot: string;
     nativeSessionId?: string;
+    initialConfig?: readonly ExternalConfigSelection[];
     onEvent: (event: ExternalEvent) => void;
     signal?: AbortSignal;
   }): Promise<ExternalDriverOpenResult> {
@@ -415,6 +703,31 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', 'Claude Code 恢复会话 ID 格式非法');
     }
     const sanitizedResumeId = input.nativeSessionId?.trim();
+    const explicitModel = !sanitizedResumeId
+      ? input.initialConfig?.find((c) => c.category === 'model')?.value.trim()
+      : undefined;
+    const explicitEffort = !sanitizedResumeId
+      ? input.initialConfig?.find((c) => c.category === 'thought_level')?.value.trim()
+      : undefined;
+    const explicitMode = !sanitizedResumeId
+      ? input.initialConfig?.find((c) => c.category === 'mode')?.value.trim()
+      : undefined;
+
+    if (
+      explicitMode &&
+      !CLAUDE_PERMISSION_MODE_CHOICES.some((choice) => choice.value === explicitMode)
+    ) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_CONFIG_INVALID',
+        `Claude Code 不支持权限模式 '${explicitMode}'`,
+      );
+    }
+    if (explicitEffort && !Object.hasOwn(CLAUDE_EFFORT_MAX_THINKING_TOKENS, explicitEffort)) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_CONFIG_INVALID',
+        `Claude Code 不支持推理强度 '${explicitEffort}'`,
+      );
+    }
 
     const resolvedCmd = resolveExternalCommand({
       command: input.def.command,
@@ -432,7 +745,11 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       platform: this.options.platform,
     });
 
-    const cliArgs = buildClaudeLaunchArgs(resolvedCmd.args, sanitizedResumeId);
+    const cliArgs = buildClaudeLaunchArgs(resolvedCmd.args, sanitizedResumeId, {
+      ...(explicitModel ? { model: explicitModel } : {}),
+      ...(explicitEffort ? { effort: explicitEffort } : {}),
+      ...(explicitMode ? { permissionMode: explicitMode } : {}),
+    });
     const proc = ExternalProcessSupervisor.spawn({
       executable: resolvedCmd.executable,
       args: cliArgs,
@@ -441,9 +758,31 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
     });
 
     let currentSessionId = sanitizedResumeId;
-    let currentModelLabel: string | undefined;
-    let currentModeLabel: string | undefined;
+    let catalogModels: readonly ClaudeModelCatalogItem[] = [];
+    let currentModelValue = explicitModel;
+    let currentEffortValue = explicitEffort ?? 'medium';
+    let currentModeValue = explicitMode ?? 'default';
+    let currentModelLabel = explicitModel ? sanitizeDisplayText(explicitModel, 64) : undefined;
+    let currentModeLabel = explicitMode ? sanitizeDisplayText(explicitMode, 48) : undefined;
+    let currentThoughtLabel = explicitEffort ? formatThoughtLevelLabel(explicitEffort) : undefined;
+    let currentConfigOptions: ViewExternalConfigOption[] = [];
     let closingByClient = false;
+
+    const pendingControlRequests = new Map<
+      string,
+      {
+        readonly resolve: (respBody: Record<string, unknown> | undefined) => void;
+        readonly reject: (err: Error) => void;
+        readonly cleanup: () => void;
+      }
+    >();
+    const rejectAllControlRequests = (err: Error): void => {
+      for (const [id, pending] of pendingControlRequests) {
+        pendingControlRequests.delete(id);
+        pending.cleanup();
+        pending.reject(err);
+      }
+    };
 
     const toolsByCallId = new Map<string, { view: ViewTool; startedAt: number }>();
     const pendingApprovalResolvers = new Map<
@@ -519,7 +858,49 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
                 ),
               );
             } else {
+              const catalog = parseClaudeInitCatalog(resp?.response);
+              catalogModels = catalog.models;
+              if (!currentModelValue && catalog.defaultResolvedModel) {
+                currentModelValue = catalog.defaultResolvedModel;
+              }
+              if (!explicitMode && catalog.currentPermissionMode) {
+                currentModeValue = catalog.currentPermissionMode;
+              }
+              const matchedMeta = currentModelValue
+                ? (catalogModels.find((m) => m.value === currentModelValue) ??
+                  catalogModels.find((m) => m.resolvedModel === currentModelValue))
+                : undefined;
+              if (matchedMeta) {
+                currentModelLabel = matchedMeta.name;
+              }
+              currentModeLabel = sanitizeDisplayText(currentModeValue, 48);
+              currentThoughtLabel = formatThoughtLevelLabel(currentEffortValue);
+              currentConfigOptions = buildClaudeConfigOptions({
+                models: catalogModels,
+                currentModel: currentModelValue,
+                currentEffort: currentEffortValue,
+                currentMode: currentModeValue,
+                unionThoughtLevels: false,
+              });
               settleHandshakeOk();
+            }
+            return;
+          }
+          if (reqId && pendingControlRequests.has(reqId)) {
+            const pending = pendingControlRequests.get(reqId)!;
+            pendingControlRequests.delete(reqId);
+            pending.cleanup();
+            if (resp?.subtype === 'error') {
+              const errMsg =
+                typeof resp.error === 'string' ? resp.error : 'Claude Code 控制请求返回失败';
+              pending.reject(
+                new ExternalHarnessError(
+                  'EXTERNAL_CONFIG_INVALID',
+                  redactCommonSecrets(sanitizeUntrustedOutput(errMsg)),
+                ),
+              );
+            } else {
+              pending.resolve(asRecord(resp?.response));
             }
           }
           return;
@@ -534,22 +915,40 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
               typeof payload.session_id === 'string' && isValidNativeSessionId(payload.session_id)
                 ? payload.session_id.trim()
                 : undefined;
-            const model =
-              typeof payload.model === 'string'
-                ? sanitizeDisplayText(payload.model, 64)
+            const rawModel =
+              typeof payload.model === 'string' && payload.model.trim()
+                ? payload.model.trim()
                 : undefined;
             const mode =
               typeof payload.permissionMode === 'string'
                 ? sanitizeDisplayText(payload.permissionMode, 48)
                 : undefined;
             if (sid) currentSessionId = sid;
-            if (model) currentModelLabel = model;
-            if (mode) currentModeLabel = mode;
+            if (rawModel) {
+              currentModelValue = rawModel;
+              const matched =
+                catalogModels.find((m) => m.value === rawModel) ??
+                catalogModels.find((m) => m.resolvedModel === rawModel);
+              currentModelLabel = matched?.name ?? sanitizeDisplayText(rawModel, 64);
+            }
+            if (mode) {
+              currentModeValue = mode;
+              currentModeLabel = mode;
+            }
+            currentConfigOptions = buildClaudeConfigOptions({
+              models: catalogModels,
+              currentModel: currentModelValue,
+              currentEffort: currentEffortValue,
+              currentMode: currentModeValue,
+              unionThoughtLevels: false,
+            });
             input.onEvent({
               type: 'config_updated',
               ...(sid ? { nativeSessionId: sid, resumable: true } : {}),
-              ...(model ? { modelLabel: model } : {}),
-              ...(mode ? { modeLabel: mode } : {}),
+              ...(currentModelLabel ? { modelLabel: currentModelLabel } : {}),
+              ...(currentModeLabel ? { modeLabel: currentModeLabel } : {}),
+              ...(currentThoughtLabel ? { thoughtLevelLabel: currentThoughtLabel } : {}),
+              ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
             });
             return;
           }
@@ -937,6 +1336,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       },
       onFatalError: (err) => {
         settleHandshakeErr(err);
+        rejectAllControlRequests(err);
         settleAllApprovalsCancelled(true);
         if (activeTurn) {
           const turn = activeTurn;
@@ -958,6 +1358,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       );
       await channel.drainAndClose(closeErr);
       settleHandshakeErr(closeErr);
+      rejectAllControlRequests(closeErr);
       settleAllApprovalsCancelled(true);
       if (activeTurn) {
         const turn = activeTurn;
@@ -1029,6 +1430,53 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
     }
 
     const turnWatchdogMs = this.options.turnWatchdogMs ?? DEFAULT_TURN_WATCHDOG_MS;
+
+    const sendControlRequest = (
+      requestPayload: Record<string, unknown>,
+      timeoutMs: number,
+      reqSignal?: AbortSignal,
+    ): Promise<Record<string, unknown> | undefined> => {
+      const reqId = `ctrl_${randomUUID().slice(0, 8)}`;
+      return new Promise((resolve, reject) => {
+        if (reqSignal?.aborted) {
+          reject(new ExternalHarnessError('EXTERNAL_ABORTED', '配置切换请求已取消'));
+          return;
+        }
+        const timer = setTimeout(() => {
+          pendingControlRequests.delete(reqId);
+          cleanup();
+          reject(
+            new ExternalHarnessError(
+              'EXTERNAL_TIMEOUT',
+              `等待 Claude Code 控制响应超时（${timeoutMs}ms）`,
+            ),
+          );
+        }, timeoutMs);
+        timer.unref?.();
+        const onAbort = (): void => {
+          pendingControlRequests.delete(reqId);
+          cleanup();
+          reject(new ExternalHarnessError('EXTERNAL_ABORTED', '配置切换请求已取消'));
+        };
+        const cleanup = (): void => {
+          clearTimeout(timer);
+          reqSignal?.removeEventListener('abort', onAbort);
+        };
+        reqSignal?.addEventListener('abort', onAbort, { once: true });
+        pendingControlRequests.set(reqId, { resolve, reject, cleanup });
+        try {
+          channel.send({
+            type: 'control_request',
+            request_id: reqId,
+            request: requestPayload,
+          });
+        } catch (err) {
+          pendingControlRequests.delete(reqId);
+          cleanup();
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+    };
 
     const handle: ExternalDriverSessionHandle = {
       get pid() {
@@ -1119,6 +1567,80 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
           }
         });
       },
+      async setConfigOption(change, reqSignal): Promise<ExternalSetConfigResult> {
+        if (activeTurn) {
+          throw new ExternalHarnessError(
+            'EXTERNAL_SESSION_BUSY',
+            '当前 Claude Code 会话已有在途轮次，请等待完成后再切换配置',
+          );
+        }
+        const trimmedVal = change.value.trim();
+        if (!trimmedVal) {
+          throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', '配置项取值不能为空');
+        }
+        const ctrlTimeout = Math.min(handshakeTimeoutMs, 10_000);
+
+        if (change.category === 'model') {
+          const resp = await sendControlRequest(
+            { subtype: 'set_model', model: trimmedVal },
+            ctrlTimeout,
+            reqSignal,
+          );
+          const returnedModel =
+            typeof resp?.model === 'string' && resp.model.trim() ? resp.model.trim() : trimmedVal;
+          currentModelValue = trimmedVal;
+          const matched =
+            catalogModels.find((m) => m.value === trimmedVal) ??
+            catalogModels.find((m) => m.resolvedModel === returnedModel);
+          currentModelLabel = matched?.name ?? sanitizeDisplayText(returnedModel, 64);
+        } else if (change.category === 'mode') {
+          if (!CLAUDE_PERMISSION_MODE_CHOICES.some((c) => c.value === trimmedVal)) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CONFIG_INVALID',
+              `Claude Code 不支持权限模式 '${trimmedVal}'`,
+            );
+          }
+          await sendControlRequest(
+            { subtype: 'set_permission_mode', mode: trimmedVal },
+            ctrlTimeout,
+            reqSignal,
+          );
+          currentModeValue = trimmedVal;
+          currentModeLabel = sanitizeDisplayText(trimmedVal, 48);
+        } else if (change.category === 'thought_level') {
+          if (!Object.hasOwn(CLAUDE_EFFORT_MAX_THINKING_TOKENS, trimmedVal)) {
+            throw new ExternalHarnessError(
+              'EXTERNAL_CONFIG_INVALID',
+              `Claude Code 不支持推理强度 '${trimmedVal}'`,
+            );
+          }
+          await sendControlRequest(
+            {
+              subtype: 'set_max_thinking_tokens',
+              max_thinking_tokens: CLAUDE_EFFORT_MAX_THINKING_TOKENS[trimmedVal],
+            },
+            ctrlTimeout,
+            reqSignal,
+          );
+          currentEffortValue = trimmedVal;
+          currentThoughtLabel = formatThoughtLevelLabel(trimmedVal);
+        }
+
+        currentConfigOptions = buildClaudeConfigOptions({
+          models: catalogModels,
+          currentModel: currentModelValue,
+          currentEffort: currentEffortValue,
+          currentMode: currentModeValue,
+          unionThoughtLevels: false,
+        });
+
+        return {
+          ...(currentModelLabel ? { modelLabel: currentModelLabel } : {}),
+          ...(currentModeLabel ? { modeLabel: currentModeLabel } : {}),
+          ...(currentThoughtLabel ? { thoughtLevelLabel: currentThoughtLabel } : {}),
+          ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
+        };
+      },
       async cancel(): Promise<void> {
         if (!activeTurn || activeTurn.cancelled) return;
         activeTurn.cancelled = true;
@@ -1151,6 +1673,7 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       },
       async close(): Promise<void> {
         closingByClient = true;
+        rejectAllControlRequests(new ExternalHarnessError('EXTERNAL_ABORTED', '会话已关闭'));
         settleAllApprovalsCancelled(true);
         if (activeTurn) {
           const turn = activeTurn;
@@ -1170,6 +1693,8 @@ export class ClaudeCliDriver implements ExternalHarnessDriver {
       resumable: true,
       ...(currentModelLabel ? { modelLabel: currentModelLabel } : {}),
       ...(currentModeLabel ? { modeLabel: currentModeLabel } : {}),
+      ...(currentThoughtLabel ? { thoughtLevelLabel: currentThoughtLabel } : {}),
+      ...(currentConfigOptions.length > 0 ? { configOptions: currentConfigOptions } : {}),
     };
   }
 }

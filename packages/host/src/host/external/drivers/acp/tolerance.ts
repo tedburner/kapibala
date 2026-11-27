@@ -25,6 +25,8 @@ export interface NormalizedAcpInitialize {
   readonly authMethods: readonly { readonly id: string; readonly name: string }[];
   /** 优先 `'session/load'`（标准 ACP v1），次选 `'session/resume'`（兼容 DSH `sessionCapabilities.resume`）。 */
   readonly loadMethod?: 'session/load' | 'session/resume';
+  /** 对端是否声明支持 `session/delete`（供非破坏性探测结束后立即回收临时会话记录）。 */
+  readonly canDeleteSession?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -66,12 +68,14 @@ export function normalizeAcpInitializeResult(raw: unknown): NormalizedAcpInitial
   } else if (sessionCaps?.resume && typeof sessionCaps.resume === 'object') {
     loadMethod = 'session/resume';
   }
+  const canDeleteSession = Boolean(sessionCaps?.delete && typeof sessionCaps.delete === 'object');
 
   return {
     ...(agentName ? { agentName } : {}),
     ...(version ? { version } : {}),
     authMethods,
     ...(loadMethod ? { loadMethod } : {}),
+    ...(canDeleteSession ? { canDeleteSession: true } : {}),
   };
 }
 

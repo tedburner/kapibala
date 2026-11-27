@@ -31,7 +31,7 @@ const TRANSPORT_LABELS: Record<ViewExternalSession['transport'], string> = {
 };
 
 const EXTERNAL_USAGE =
-  '/external [list | harnesses | harness test [id] | harness add <id> <cmd> [args...] | harness enable|disable|remove|reset <id> | start [--model <id>] <harnessId> <任务> | config <sessionId> [model|mode|thought <值>] | show <sessionId> | prompt <sessionId> <文本> | approve <sessionId> [approvalId] <选项序号|ID|cancel> | cancel|close|delete <sessionId>]';
+  '/external [list | harnesses | harness test [id] | harness add <id> <cmd> [args...] | harness enable|disable|remove|reset <id> | start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务> | config <sessionId> [model|mode|thought <值>] | show <sessionId> | prompt <sessionId> <文本> | approve <sessionId> [approvalId] <选项序号|ID|cancel> | cancel|close|delete <sessionId>]';
 
 function scanQuotedTokens(raw: string): { tokens: string[]; unclosedQuote: boolean } {
   const tokens: string[] = [];
@@ -117,14 +117,19 @@ export function validateExternalCommandArgs(args: string[]): string | undefined 
       return '用法: /external harness <test|add|enable|disable|remove|reset> ...';
     }
     case 'start': {
-      if (tokens[1] === '--model') {
-        return tokens.length >= 5 && tokens[2]?.trim() && tokens[3]?.trim()
-          ? undefined
-          : '用法: /external start [--model <modelId>] <harnessId> <任务文本>';
+      let idx = 1;
+      while (
+        idx < tokens.length &&
+        (tokens[idx] === '--model' || tokens[idx] === '--thought' || tokens[idx] === '--mode')
+      ) {
+        if (!tokens[idx + 1]?.trim()) {
+          return '用法: /external start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务文本>';
+        }
+        idx += 2;
       }
-      return tokens.length >= 3 && tokens[1]?.trim()
+      return tokens.length >= idx + 2 && tokens[idx]?.trim()
         ? undefined
-        : '用法: /external start [--model <modelId>] <harnessId> <任务文本>';
+        : '用法: /external start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务文本>';
     }
     case 'config': {
       if (tokens.length === 2 && tokens[1]?.trim()) return undefined;
@@ -575,12 +580,35 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
     if (!(await ensureCliWorkspaceTrusted(workspaceRoot, ctx, output))) {
       return;
     }
-    const hasExplicitModel = tokens[1] === '--model';
-    const { head, tail } = splitFirstNTokens(raw, hasExplicitModel ? 4 : 2);
-    const modelId = hasExplicitModel ? head[2] : undefined;
-    const harnessId = hasExplicitModel ? head[3] : head[1];
-    if (!harnessId || !tail || (hasExplicitModel && !modelId)) {
-      output.error('用法: /external start [--model <modelId>] <harnessId> <任务文本>');
+    let flagTokens = 0;
+    let modelId: string | undefined;
+    let thoughtLevel: string | undefined;
+    let modeId: string | undefined;
+    let idx = 1;
+    while (
+      idx < tokens.length &&
+      (tokens[idx] === '--model' || tokens[idx] === '--thought' || tokens[idx] === '--mode')
+    ) {
+      const flag = tokens[idx]!;
+      const val = tokens[idx + 1]?.trim();
+      if (!val) {
+        output.error(
+          '用法: /external start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务文本>',
+        );
+        return;
+      }
+      if (flag === '--model') modelId = val;
+      else if (flag === '--thought') thoughtLevel = val;
+      else if (flag === '--mode') modeId = val;
+      flagTokens += 2;
+      idx += 2;
+    }
+    const { head, tail } = splitFirstNTokens(raw, 2 + flagTokens);
+    const harnessId = head[1 + flagTokens];
+    if (!harnessId || !tail) {
+      output.error(
+        '用法: /external start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务文本>',
+      );
       return;
     }
     const opened = await service.openSession({
@@ -590,6 +618,8 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
       customTitle: false,
       requireIdleWorkspace: true,
       ...(modelId ? { modelId } : {}),
+      ...(thoughtLevel ? { thoughtLevel } : {}),
+      ...(modeId ? { modeId } : {}),
     });
     output.log(
       `已创建外部会话 [${opened.session.id}] (${opened.session.harnessName})，正在执行首轮任务…`,
