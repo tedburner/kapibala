@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkHostArtifact } from './check-host.js';
-import { toolchainEnv } from './process-env.mjs';
+import { resolvePnpmCommand, toolchainEnv } from './process-env.mjs';
 
 const repositoryRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const probePath = path.join(repositoryRoot, 'scripts/platform-probe.mjs');
@@ -332,22 +332,20 @@ async function packPackages(
   const version = readJson<{ version: string }>(
     path.join(directories[0].directory, 'package.json'),
   ).version;
-  const pnpm = spawnSync(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', ['--version'], {
+  const pnpmProbe = resolvePnpmCommand(['--version'], process.env);
+  const pnpm = spawnSync(pnpmProbe.command, pnpmProbe.args, {
     encoding: 'utf8',
-    shell: process.platform === 'win32',
   });
   const usePnpm = pnpm.status === 0;
   const packages: PackedPackage[] = [];
   for (const entry of directories) {
     const before = new Set(fs.readdirSync(packDir));
     if (usePnpm) {
-      await run(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', [
-        '-C',
-        entry.directory,
-        'pack',
-        '--pack-destination',
-        packDir,
-      ]);
+      const packInvocation = resolvePnpmCommand(
+        ['-C', entry.directory, 'pack', '--pack-destination', packDir],
+        process.env,
+      );
+      await run(packInvocation.command, packInvocation.args);
     } else {
       const stage = path.join(tempRoot, `stage-${entry.name.replace(/[^a-z0-9-]/gi, '-')}`);
       stageForNpmPack(entry.directory, stage, version);

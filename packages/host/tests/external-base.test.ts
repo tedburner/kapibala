@@ -285,7 +285,7 @@ describe('resolveExternalCommand', () => {
     const localBin = path.join(home, '.local', 'bin');
     fs.mkdirSync(localBin, { recursive: true });
     const target = path.join(localBin, process.platform === 'win32' ? 'claude.exe' : 'claude');
-    fs.writeFileSync(target, 'MZ-claude');
+    fs.writeFileSync(target, 'MZ-claude', { mode: 0o755 });
 
     const resolved = resolveExternalCommand({
       command: 'claude',
@@ -298,51 +298,54 @@ describe('resolveExternalCommand', () => {
     expect(resolved.usedFallbackDir).toBe(true);
   });
 
-  it('支持官方 Pi Windows 安装器目录回退（~/.pi/agent/bin）与同目录 Node 启动器垫片解包，同时继续拦截 .. 越界脚本', () => {
-    const home = makeTempDir('kpbl-ext-pi-win-');
-    const piBin = path.join(home, '.pi', 'agent', 'bin');
-    const nodeDir = path.join(home, 'nodejs');
-    fs.mkdirSync(piBin, { recursive: true });
-    fs.mkdirSync(nodeDir, { recursive: true });
-    const fakeNodeExe = path.join(nodeDir, 'node.exe');
-    fs.writeFileSync(fakeNodeExe, 'MZ-node-binary');
-    const launcherJs = path.join(piBin, 'pi-launcher.js');
-    fs.writeFileSync(launcherJs, 'console.log("pi launcher");\n');
-    const piCmd = path.join(piBin, 'pi.cmd');
-    fs.writeFileSync(
-      piCmd,
-      '@echo off\r\nset "node=node"\r\n"%node%" "%~dp0pi-launcher.js" %*\r\n',
-      'utf8',
-    );
+  windowsIt(
+    '支持官方 Pi Windows 安装器目录回退（~/.pi/agent/bin）与同目录 Node 启动器垫片解包，同时继续拦截 .. 越界脚本',
+    () => {
+      const home = makeTempDir('kpbl-ext-pi-win-');
+      const piBin = path.join(home, '.pi', 'agent', 'bin');
+      const nodeDir = path.join(home, 'nodejs');
+      fs.mkdirSync(piBin, { recursive: true });
+      fs.mkdirSync(nodeDir, { recursive: true });
+      const fakeNodeExe = path.join(nodeDir, 'node.exe');
+      fs.writeFileSync(fakeNodeExe, 'MZ-node-binary');
+      const launcherJs = path.join(piBin, 'pi-launcher.js');
+      fs.writeFileSync(launcherJs, 'console.log("pi launcher");\n');
+      const piCmd = path.join(piBin, 'pi.cmd');
+      fs.writeFileSync(
+        piCmd,
+        '@echo off\r\nset "node=node"\r\n"%node%" "%~dp0pi-launcher.js" %*\r\n',
+        'utf8',
+      );
 
-    const resolved = resolveExternalCommand({
-      command: 'pi',
-      args: ['--mode', 'rpc'],
-      platform: 'win32',
-      envPath: nodeDir,
-      homeDir: home,
-    });
-    expect(resolved.unwrapKind).toBe('cmd-node-script');
-    expect(resolved.executable).toBe(fs.realpathSync.native(fakeNodeExe));
-    expect(resolved.args).toEqual([fs.realpathSync.native(launcherJs), '--mode', 'rpc']);
-    expect(resolved.usedFallbackDir).toBe(true);
-
-    // 尝试通过 %~dp0..\ 越出垫片目录指向父目录脚本时仍须被拦截
-    fs.writeFileSync(path.join(home, '.pi', 'agent', 'escape.js'), 'console.log(1);\n');
-    fs.writeFileSync(
-      path.join(piBin, 'escape.cmd'),
-      '@echo off\r\n"%node%" "%~dp0..\\escape.js" %*\r\n',
-    );
-    expect(() =>
-      resolveExternalCommand({
-        command: 'escape',
-        args: [],
+      const resolved = resolveExternalCommand({
+        command: 'pi',
+        args: ['--mode', 'rpc'],
         platform: 'win32',
-        envPath: `${piBin};${nodeDir}`,
+        envPath: nodeDir,
         homeDir: home,
-      }),
-    ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_UNSUPPORTED_SHIM' }));
-  });
+      });
+      expect(resolved.unwrapKind).toBe('cmd-node-script');
+      expect(resolved.executable).toBe(fs.realpathSync.native(fakeNodeExe));
+      expect(resolved.args).toEqual([fs.realpathSync.native(launcherJs), '--mode', 'rpc']);
+      expect(resolved.usedFallbackDir).toBe(true);
+
+      // 尝试通过 %~dp0..\ 越出垫片目录指向父目录脚本时仍须被拦截
+      fs.writeFileSync(path.join(home, '.pi', 'agent', 'escape.js'), 'console.log(1);\n');
+      fs.writeFileSync(
+        path.join(piBin, 'escape.cmd'),
+        '@echo off\r\n"%node%" "%~dp0..\\escape.js" %*\r\n',
+      );
+      expect(() =>
+        resolveExternalCommand({
+          command: 'escape',
+          args: [],
+          platform: 'win32',
+          envPath: `${piBin};${nodeDir}`,
+          homeDir: home,
+        }),
+      ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_UNSUPPORTED_SHIM' }));
+    },
+  );
 });
 
 describe('NdjsonChannel', () => {
@@ -539,39 +542,41 @@ describe('ExternalProcessSupervisor', () => {
   it('拦截非 PE 占位 .exe（如跳过 postinstall 的文本脚本）、扩展受保护环境变量黑名单、恢复背压流并回收 EOF 后残留孙进程', async () => {
     const root = makeTempDir('kpbl-ext-red-');
 
-    // 1. H1: Windows 非 PE 文本占位 .exe 与指向它的 .cmd 均拒绝为 EXTERNAL_UNSUPPORTED_SHIM，自动发现返回 undefined
-    const npmBin = path.join(root, 'npm');
-    const pkgBin = path.join(npmBin, 'node_modules', '@opencode', 'cli', 'bin');
-    fs.mkdirSync(pkgBin, { recursive: true });
-    const fakePlaceholderExe = path.join(pkgBin, 'opencode.exe');
-    fs.writeFileSync(
-      fakePlaceholderExe,
-      'echo "Error: @opencode/cli postinstall script was not run."\n',
-      'utf8',
-    );
-    const shimCmd = path.join(npmBin, 'opencode.cmd');
-    fs.writeFileSync(
-      shimCmd,
-      '@ECHO off\r\n"%dp0%\\node_modules\\@opencode\\cli\\bin\\opencode.exe" %*\r\n',
-      'utf8',
-    );
-    expect(() =>
-      resolveExternalCommand({
-        command: 'opencode',
-        args: ['acp'],
-        platform: 'win32',
-        envPath: npmBin,
-        homeDir: root,
-      }),
-    ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_UNSUPPORTED_SHIM' }));
-    expect(
-      tryResolveInstalledExternalExecutable({
-        command: 'opencode',
-        platform: 'win32',
-        homeDir: root,
-        hostEnv: { PATH: npmBin },
-      }),
-    ).toBeUndefined();
+    // 1. H1: Windows 非 PE 文本占位 .exe 与指向它的 .cmd 均拒绝为 EXTERNAL_UNSUPPORTED_SHIM，自动发现返回 undefined（依赖 Windows 盘符绝对路径与 fs.realpathSync.native 语义）
+    if (process.platform === 'win32') {
+      const npmBin = path.join(root, 'npm');
+      const pkgBin = path.join(npmBin, 'node_modules', '@opencode', 'cli', 'bin');
+      fs.mkdirSync(pkgBin, { recursive: true });
+      const fakePlaceholderExe = path.join(pkgBin, 'opencode.exe');
+      fs.writeFileSync(
+        fakePlaceholderExe,
+        'echo "Error: @opencode/cli postinstall script was not run."\n',
+        'utf8',
+      );
+      const shimCmd = path.join(npmBin, 'opencode.cmd');
+      fs.writeFileSync(
+        shimCmd,
+        '@ECHO off\r\n"%dp0%\\node_modules\\@opencode\\cli\\bin\\opencode.exe" %*\r\n',
+        'utf8',
+      );
+      expect(() =>
+        resolveExternalCommand({
+          command: 'opencode',
+          args: ['acp'],
+          platform: 'win32',
+          envPath: npmBin,
+          homeDir: root,
+        }),
+      ).toThrowError(expect.objectContaining({ code: 'EXTERNAL_UNSUPPORTED_SHIM' }));
+      expect(
+        tryResolveInstalledExternalExecutable({
+          command: 'opencode',
+          platform: 'win32',
+          homeDir: root,
+          hostEnv: { PATH: npmBin },
+        }),
+      ).toBeUndefined();
+    }
 
     // 2. M8: POSIX 无后缀 Node shebang 脚本自动走 node 解包，并保留软链词法目录进 extraPathDirs（仅在 POSIX 路径语义宿主执行）
     if (process.platform !== 'win32') {

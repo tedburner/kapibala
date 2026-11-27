@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 import { resolvePnpmCommand, sanitizeNodeOptions, toolchainEnv } from '../process-env.mjs';
@@ -51,13 +52,42 @@ it('工具链环境只摘钩子，其余变量与额外注入原样保留', () =
 it('跨平台解析 pnpm 调用且不依赖 shell:true（Node 24 --throw-deprecation 零 DEP0190 告警）', () => {
   const winFallback = resolvePnpmCommand(
     ['--version'],
-    { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+    { ComSpec: 'C:\\Windows\\System32\\cmd.exe', PATH: '' },
     'win32',
   );
   expect(winFallback).toEqual({
     command: 'C:\\Windows\\System32\\cmd.exe',
     args: ['/d', '/s', '/c', 'pnpm.cmd', '--version'],
   });
+
+  // GitHub Actions pnpm/setup@v3 (pnpm 10+/12+) 仅安装独立原生 pnpm.exe（无 pnpm.cjs 与 pnpm.cmd）
+  const setupPnpmDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-setup-pnpm-'));
+  try {
+    const standaloneExe = path.join(setupPnpmDir, 'pnpm.exe');
+    fs.writeFileSync(standaloneExe, 'MZ-pnpm-exe');
+    expect(
+      resolvePnpmCommand(
+        ['dev', '--no-start'],
+        { npm_execpath: standaloneExe, PATH: setupPnpmDir },
+        'win32',
+      ),
+    ).toEqual({
+      command: standaloneExe,
+      args: ['dev', '--no-start'],
+    });
+    expect(
+      resolvePnpmCommand(
+        ['verify'],
+        { PNPM_HOME: setupPnpmDir, PATH: 'C:\\Windows\\System32' },
+        'win32',
+      ),
+    ).toEqual({
+      command: standaloneExe,
+      args: ['verify'],
+    });
+  } finally {
+    fs.rmSync(setupPnpmDir, { recursive: true, force: true });
+  }
 
   const posixFallback = resolvePnpmCommand(['build'], {}, 'linux');
   expect(posixFallback).toEqual({

@@ -98,8 +98,9 @@ export function toolchainEnv(base = process.env, repository = process.cwd(), ext
  * 解析跨平台 `pnpm` 子进程调用参数，彻底规避 `shell: true` 在 Node 24+ 触发的 `DEP0190` 告警与参数拼接注入风险。
  *
  * 前置约束与回退策略：
- * - 若当前由 `pnpm` 拉起且 `npm_execpath` 指向真实存在的 pnpm JS 入口，直接用 `process.execPath` 执行该脚本，省去 `.cmd` 包装层开销；
- * - Windows 裸 `node` 入口回退到 `ComSpec /d /s /c pnpm.cmd ...`，以 `shell: false` 传递参数数组；
+ * - 若当前由 `pnpm` 拉起且 `npm_execpath` 指向真实存在的 pnpm JS 入口，直接用 `process.execPath` 执行该脚本；
+ * - 若 `npm_execpath` 指向原生可执行程序（如 `pnpm/setup@v3` 安装的独立 `pnpm.exe` 或 POSIX `pnpm` 二进制），直接以 `shell: false` 调用该二进制；
+ * - Windows 裸 `node` 入口优先在 `PNPM_HOME` 与 `PATH` 中探测独立 `pnpm.exe`，未命中时再回退到 `ComSpec /d /s /c pnpm.cmd ...`；
  * - POSIX 直接调用 `pnpm` 可执行文件。
  *
  * @param {readonly string[]} args 传给 pnpm 的子命令与参数列表。
@@ -111,13 +112,28 @@ export function resolvePnpmCommand(args, env = process.env, platform = process.p
   const execPath = env?.npm_execpath;
   if (
     typeof execPath === 'string' &&
-    /\.[cm]?js$/i.test(execPath) &&
     path.basename(execPath).toLowerCase().includes('pnpm') &&
     fs.existsSync(execPath)
   ) {
-    return { command: process.execPath, args: [execPath, ...args] };
+    if (/\.[cm]?js$/i.test(execPath)) {
+      return { command: process.execPath, args: [execPath, ...args] };
+    }
+    if (!/\.(?:cmd|bat|ps1)$/i.test(execPath)) {
+      return { command: execPath, args: [...args] };
+    }
   }
   if (platform === 'win32') {
+    const rawPath = env?.PATH ?? env?.Path ?? '';
+    const searchDirs = [
+      env?.PNPM_HOME,
+      ...rawPath.split(';').map((entry) => entry.trim().replace(/^"(.*)"$/, '$1')),
+    ].filter(Boolean);
+    for (const dir of searchDirs) {
+      const candidateExe = path.join(dir, 'pnpm.exe');
+      if (fs.existsSync(candidateExe)) {
+        return { command: candidateExe, args: [...args] };
+      }
+    }
     return {
       command: env?.ComSpec || 'cmd.exe',
       args: ['/d', '/s', '/c', 'pnpm.cmd', ...args],
