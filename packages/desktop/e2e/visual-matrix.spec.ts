@@ -81,7 +81,11 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
       expect(menuBarVisible).toBe(false);
     }
     const inlineRail = page.locator('aside.kpbl-nav-rail').first();
-    await expect(inlineRail.locator('.kpbl-rail-wordmark')).toHaveText('Kapibala');
+    if (process.platform === 'darwin') {
+      await expect(inlineRail.locator('.kpbl-rail-brand')).toHaveCount(0);
+    } else {
+      await expect(inlineRail.locator('.kpbl-rail-wordmark')).toHaveText('Kapibala');
+    }
     const cmdTrigger = inlineRail.getByRole('button', { name: '搜索或运行命令', exact: true });
     await expect(cmdTrigger).toBeVisible();
     await expect(inlineRail.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();

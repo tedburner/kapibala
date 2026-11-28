@@ -987,6 +987,8 @@ describe('Stage 2 Shell & Launchpad SSR 可访问名契约与 450 行体积防�
     );
 
     expect(railHtml).toContain('<aside aria-label="空间与会话"');
+    expect(railHtml).not.toContain('kpbl-rail-brand');
+    expect(railHtml).toContain('kpbl-drag');
     expect(railHtml).toContain('aria-label="新建对话"');
     expect(railHtml).toContain('aria-label="展开或收起侧栏"');
     expect(railHtml).toContain('aria-label="搜索或运行命令"');
@@ -995,6 +997,25 @@ describe('Stage 2 Shell & Launchpad SSR 可访问名契约与 450 行体积防�
     expect(railHtml).toContain('↳ 补齐沙箱单测');
     expect(railHtml).toContain('⎇ wt/auth');
     expect(railHtml).not.toContain('暂无临时对话');
+
+    const winRailHtml = renderToStaticMarkup(
+      createElement(surfaces.NavigationRail, {
+        platform: 'win32',
+        inboxItems: [],
+        spaces,
+        hierarchies,
+        onNewConversation: () => {},
+        onToggleRail: () => {},
+        onOpenCommandPalette: () => {},
+        onOpenSettings: () => {},
+        onToggleWorkspace: () => {},
+        onSelectWorkspace: () => {},
+        onSelectInboxSession: () => {},
+        onSelectTreeSession: () => {},
+      }),
+    );
+    expect(winRailHtml).toContain('kpbl-rail-brand');
+    expect(winRailHtml).toContain('Kapibala');
 
     const collapsedRailHtml = renderToStaticMarkup(
       createElement(surfaces.NavigationRail, {

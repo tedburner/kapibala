@@ -3,6 +3,18 @@
  * 采用显式命名重导出清单（禁用 `export *`），供 `surfaces/*` 业务面统一消费。
  */
 export {
+  AgentActivityGlyph,
+  type AgentActivityGlyphProps,
+} from './activity-glyph.js';
+export {
+  AGENT_ACTIVITY_KINDS,
+  AGENT_ACTIVITY_LABELS,
+  type AgentActivityKind,
+  STATIC_ACTIVITY_FRAME_SEC,
+  computeActivityGlyphFrame,
+  resolveToolActivityKind,
+} from './activity-glyph-frames.js';
+export {
   Badge,
   type BadgeProps,
   type BadgeTone,

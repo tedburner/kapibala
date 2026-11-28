@@ -14,4 +14,8 @@ export {
   TurnItem,
   type TurnItemProps,
 } from './TurnItem.js';
-export { VirtualTurnList, type VirtualTurnListProps } from './VirtualTurnList.js';
+export {
+  resolveThreadActivityKind,
+  VirtualTurnList,
+  type VirtualTurnListProps,
+} from './VirtualTurnList.js';

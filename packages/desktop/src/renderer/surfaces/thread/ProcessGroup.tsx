@@ -5,7 +5,14 @@ import type {
   UnifiedWorkbenchTarget,
 } from '../../adapters/index.js';
 import { useI18n } from '../../i18n.js';
-import { Button, Icon, IconButton, MiddleTruncate, StatusDot } from '../../ui/index.js';
+import {
+  AgentActivityGlyph,
+  Button,
+  Icon,
+  IconButton,
+  MiddleTruncate,
+  resolveToolActivityKind,
+} from '../../ui/index.js';
 
 /** 格式化工具或批量过程耗时（毫秒 / 秒 / 分秒分段，保持等宽数字可读性）。 */
 export function formatProcessDuration(durationMs: number | undefined): string | undefined {
@@ -20,10 +27,22 @@ export function formatProcessDuration(durationMs: number | undefined): string | 
   return secs === 0 ? `${mins}m` : `${mins}m ${secs}s`;
 }
 
-function ToolStatusGlyph({ status }: { readonly status: UnifiedToolItem['status'] }) {
+function ToolStatusGlyph({
+  status,
+  toolName,
+}: {
+  readonly status: UnifiedToolItem['status'];
+  readonly toolName?: string;
+}) {
   const { t } = useI18n();
   if (status === 'running') {
-    return <StatusDot status="running" label={t('process.running')} />;
+    return (
+      <AgentActivityGlyph
+        kind={resolveToolActivityKind(toolName)}
+        size={14}
+        label={t('process.running')}
+      />
+    );
   }
   if (status === 'failed') {
     return (
@@ -82,7 +101,7 @@ function ToolExecutionRow({
           onClick={triggerPrimary}
           title={`${tool.verb} ${tool.targetLabel}`}
         >
-          <ToolStatusGlyph status={tool.status} />
+          <ToolStatusGlyph status={tool.status} toolName={tool.name} />
           <span className="kpbl-tool-verb">{tool.verb}</span>
           <MiddleTruncate
             text={tool.targetLabel}
@@ -195,7 +214,7 @@ function ThinkingStepItem({
         onClick={toggle}
       >
         {isStreaming ? (
-          <StatusDot status="running" label={t('process.thinkingStreaming')} />
+          <AgentActivityGlyph kind="thinking" size={14} decorative />
         ) : (
           <Icon name="brain" size={14} />
         )}
@@ -239,6 +258,13 @@ function ToolGroupStepItem({
   }
 
   const summaryPrefix = step.status === 'succeeded' ? '✓ ' : step.status === 'failed' ? '✗ ' : '';
+  let activeToolName: string | undefined;
+  for (let i = step.tools.length - 1; i >= 0; i -= 1) {
+    if (step.tools[i]?.status === 'running') {
+      activeToolName = step.tools[i]?.name;
+      break;
+    }
+  }
 
   return (
     <div className="min-w-0">
@@ -248,7 +274,7 @@ function ToolGroupStepItem({
         className="kpbl-process-header"
         onClick={() => setUserExpanded(!expanded)}
       >
-        <ToolStatusGlyph status={step.status} />
+        <ToolStatusGlyph status={step.status} toolName={activeToolName} />
         <span className="min-w-0 flex-1 truncate">
           {summaryPrefix}
           {step.summaryText}

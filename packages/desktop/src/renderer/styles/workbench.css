@@ -530,6 +530,12 @@
     color: var(--kpbl-ink-subtle);
   }
 
+  .kpbl-activity-glyph {
+    flex: 0 0 auto;
+    display: inline-block;
+    vertical-align: middle;
+  }
+
   .kpbl-status-dot {
     width: 7px;
     height: 7px;

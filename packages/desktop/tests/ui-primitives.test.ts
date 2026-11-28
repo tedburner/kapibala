@@ -16,6 +16,14 @@ const uiDir = path.resolve(currentDir, '../src/renderer/ui');
  * 渲染层严格类型校验由 `tsconfig.renderer.json` 完整覆盖。
  */
 interface LoadedUiPrimitives {
+  readonly AgentActivityGlyph: FunctionComponent<Record<string, unknown>>;
+  readonly AGENT_ACTIVITY_KINDS: readonly string[];
+  readonly resolveToolActivityKind: (toolName: string | undefined) => string;
+  readonly computeActivityGlyphFrame: (
+    kind: string,
+    size: number,
+    tSec: number,
+  ) => Record<string, unknown>;
   readonly Button: FunctionComponent<Record<string, unknown>>;
   readonly IconButton: FunctionComponent<Record<string, unknown>>;
   readonly TextField: FunctionComponent<Record<string, unknown>>;
@@ -329,6 +337,60 @@ describe('Zero-Kumo 原生基础控件 SSR 语义与无障碍契约', () => {
     expect(brandHtml).toContain('var(--kpbl-ink-strong)');
   });
 
+  it('AgentActivityGlyph 覆盖 8 类语义墨线动效，零硬编码色值且遵循无障碍状态词与小尺寸点阵自适应', () => {
+    expect(ui.AGENT_ACTIVITY_KINDS).toEqual([
+      'thinking',
+      'reading',
+      'searching',
+      'writing',
+      'checking',
+      'sending',
+      'on_hold',
+      'waiting',
+    ]);
+    expect(ui.resolveToolActivityKind('read_file')).toBe('reading');
+    expect(ui.resolveToolActivityKind('grep')).toBe('searching');
+    expect(ui.resolveToolActivityKind('edit_file')).toBe('writing');
+    expect(ui.resolveToolActivityKind('run_command')).toBe('checking');
+    expect(ui.resolveToolActivityKind('spawn_agent')).toBe('sending');
+    expect(ui.resolveToolActivityKind('Bash')).toBe('checking');
+    expect(ui.resolveToolActivityKind('custom_unknown_tool')).toBe('waiting');
+
+    for (const kind of ui.AGENT_ACTIVITY_KINDS) {
+      const html = renderToStaticMarkup(createElement(ui.AgentActivityGlyph, { kind, size: 16 }));
+      expect(html).toContain(`data-activity="${kind}"`);
+      expect(html).toContain('var(--kpbl-pulse)');
+      expect(html).toContain('class="kpbl-sr-only"');
+      expect(/#(?:[0-9a-fA-F]{3}){1,2}\b|\b(?:rgb|hsl|oklch)a?\(/.test(html)).toBe(false);
+    }
+
+    const visibleLabelHtml = renderToStaticMarkup(
+      createElement(ui.AgentActivityGlyph, {
+        kind: 'on_hold',
+        size: 16,
+        showLabel: true,
+        label: '等待人工审批确认…',
+      }),
+    );
+    expect(visibleLabelHtml).toContain('等待人工审批确认…');
+    expect(visibleLabelHtml).not.toContain('kpbl-sr-only');
+
+    const decorativeHtml = renderToStaticMarkup(
+      createElement(ui.AgentActivityGlyph, { kind: 'thinking', size: 14, decorative: true }),
+    );
+    expect(decorativeHtml.startsWith('<svg')).toBe(true);
+    expect(decorativeHtml).toContain('aria-hidden="true"');
+
+    const smallSearch = ui.computeActivityGlyphFrame('searching', 16, 1.65) as {
+      searching: { dots: readonly unknown[] };
+    };
+    const largeSearch = ui.computeActivityGlyphFrame('searching', 36, 1.65) as {
+      searching: { dots: readonly unknown[] };
+    };
+    expect(smallSearch.searching.dots).toHaveLength(9);
+    expect(largeSearch.searching.dots).toHaveLength(16);
+  });
+
   it('MiddleTruncate 保留路径首段与末尾文件名，安全处理 Emoji 与多字节码点并附带完整 title', () => {
     const shortPart = ui.truncateMiddle('src/App.tsx', 32);
     expect(shortPart.truncated).toBe(false);
@@ -441,6 +503,9 @@ describe('UI 2.0 静态行数防线、零硬编码色值与双主题令牌完整
       .filter((name) => /\.(ts|tsx)$/.test(name))
       .sort();
     expect(entries).toEqual([
+      'activity-glyph-clock.ts',
+      'activity-glyph-frames.ts',
+      'activity-glyph.tsx',
       'badges.tsx',
       'button.tsx',
       'dialog.tsx',

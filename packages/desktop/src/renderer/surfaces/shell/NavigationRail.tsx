@@ -150,13 +150,15 @@ export function NavigationRail({
       className="kpbl-nav-rail"
     >
       <div
-        data-macos-inset={isMac && !drawerMode ? 'true' : undefined}
-        className="kpbl-rail-topbar"
+        data-macos-inset={isMac ? 'true' : undefined}
+        className={drawerMode ? 'kpbl-rail-topbar' : 'kpbl-rail-topbar kpbl-drag'}
       >
-        <span className="kpbl-rail-brand">
-          <BrandMark size={20} decorative={true} />
-          <span className="kpbl-rail-wordmark">Kapibala</span>
-        </span>
+        {isMac ? null : (
+          <span className="kpbl-rail-brand">
+            <BrandMark size={20} decorative={true} />
+            <span className="kpbl-rail-wordmark">Kapibala</span>
+          </span>
+        )}
         <span className="kpbl-rail-actions">
           <IconButton
             size="sm"

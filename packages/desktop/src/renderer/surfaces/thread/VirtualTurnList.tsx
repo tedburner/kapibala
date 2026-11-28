@@ -7,10 +7,55 @@ import type {
   UnifiedWorkbenchTarget,
 } from '../../adapters/index.js';
 import { useI18n } from '../../i18n.js';
-import { Button, Icon, StatusDot } from '../../ui/index.js';
+import {
+  AgentActivityGlyph,
+  type AgentActivityKind,
+  Button,
+  Icon,
+  resolveToolActivityKind,
+} from '../../ui/index.js';
 import { TurnItem } from './TurnItem.js';
 
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+/**
+ * 根据会话运行阶段、重试退避与最近活跃轮次步骤推导底部等待条的语义微动效类型；
+ * 按「待审批/退避 → 启动/取消 → 活跃工具 → 流式思考 → 流式正文 → 默认思考」优先级裁决。
+ */
+export function resolveThreadActivityKind(
+  phase: UnifiedThreadViewModel['phase'],
+  turns: readonly UnifiedTurn[],
+  hasRetry = false,
+): AgentActivityKind {
+  if (phase === 'waiting_approval' || hasRetry) return 'on_hold';
+  if (phase === 'starting' || phase === 'cancelling') return 'waiting';
+  const lastTurn = turns.at(-1);
+  if (lastTurn) {
+    for (let i = lastTurn.streamItems.length - 1; i >= 0; i -= 1) {
+      const item = lastTurn.streamItems[i];
+      if (!item) continue;
+      if (item.kind === 'process' && item.step.kind === 'tool_group') {
+        for (let j = item.step.tools.length - 1; j >= 0; j -= 1) {
+          const tool = item.step.tools[j];
+          if (tool?.status === 'running') {
+            return resolveToolActivityKind(tool.name);
+          }
+        }
+      }
+      if (
+        item.kind === 'process' &&
+        item.step.kind === 'thinking' &&
+        item.step.state === 'streaming'
+      ) {
+        return 'thinking';
+      }
+      if (item.kind === 'prose' && item.block.state === 'streaming') {
+        return 'writing';
+      }
+    }
+  }
+  return 'thinking';
+}
 
 /**
  * `VirtualTurnList` 入参契约（017 §6.3）：
@@ -21,6 +66,7 @@ export interface VirtualTurnListProps {
   readonly sessionKey: string;
   readonly turns: readonly UnifiedTurn[];
   readonly phase: UnifiedThreadViewModel['phase'];
+  readonly hasRetry?: boolean;
   readonly harnessKind?: 'native' | 'external';
   readonly harnessLabel?: string;
   readonly workspaceRoot?: string;
@@ -44,6 +90,7 @@ export function VirtualTurnList({
   sessionKey,
   turns,
   phase,
+  hasRetry = false,
   harnessKind = 'native',
   harnessLabel,
   workspaceRoot,
@@ -216,8 +263,9 @@ export function VirtualTurnList({
 
           {isStreamingPhase ? (
             <output aria-live="polite" className="inline-flex items-center gap-2 py-2 text-xs">
-              <StatusDot
-                status={phase === 'waiting_approval' ? 'waiting_approval' : 'running'}
+              <AgentActivityGlyph
+                kind={resolveThreadActivityKind(phase, turns, hasRetry)}
+                size={16}
                 showLabel
                 label={
                   phase === 'waiting_approval'

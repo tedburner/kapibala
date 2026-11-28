@@ -154,6 +154,7 @@ export function SessionStage({
         sessionKey={thread.sessionKey}
         turns={thread.turns}
         phase={thread.phase}
+        hasRetry={Boolean(thread.retryStatus)}
         harnessKind={thread.harness.kind}
         harnessLabel={thread.harness.label}
         workspaceRoot={workspaceRoot}

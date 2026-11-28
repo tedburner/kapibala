@@ -81,9 +81,10 @@
     padding: 0 var(--kpbl-space-2) 0 var(--kpbl-space-3);
   }
 
-  /* macOS hiddenInset 红绿灯安全让位；Windows/Linux 无额外左偏移（017 §6.1）。 */
+  /* macOS hiddenInset 红绿灯安全让位：隐藏左栏品牌字标并将操作钮靠右，留出原生拖拽呼吸区；Win/Linux 保留品牌标识。 */
   .kpbl-rail-topbar[data-macos-inset="true"] {
-    padding-left: 76px;
+    justify-content: flex-end;
+    padding-left: 84px;
   }
 
   .kpbl-nav-rail[data-collapsed="true"] .kpbl-rail-topbar {

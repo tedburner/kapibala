@@ -434,6 +434,61 @@ describe('surfaces/thread 单一会话流 SSR 无障碍地标与契约测试', (
     expect(stageHtml).toContain('aria-label="对话内容"');
     expect(stageHtml).toContain('↓');
     expect(stageHtml).toContain('返回底部');
+
+    const runningToolStep: UnifiedProcessStep = {
+      id: 'grp-run',
+      kind: 'tool_group',
+      status: 'running',
+      summaryText: '正在执行 2 步操作',
+      totalCount: 2,
+      failedCount: 0,
+      tools: [
+        {
+          callId: 'c-read',
+          name: 'read_file',
+          displayName: '读取文件',
+          verb: '读取',
+          targetLabel: 'packages/core/src/agent.ts',
+          mono: true,
+          status: 'succeeded',
+          primaryTarget: { kind: 'inspector', callId: 'c-read' },
+        },
+        {
+          callId: 'c-cmd',
+          name: 'run_command',
+          displayName: '运行命令',
+          verb: '运行',
+          targetLabel: 'pnpm verify:desktop',
+          mono: true,
+          status: 'running',
+          primaryTarget: { kind: 'inspector', callId: 'c-cmd' },
+        },
+      ],
+    };
+    const runningGroupHtml = renderToStaticMarkup(
+      createElement(threadMod.ProcessGroup, { step: runningToolStep }),
+    );
+    expect(runningGroupHtml).toContain('data-activity="checking"');
+
+    const streamingThinkingStep: UnifiedProcessStep = {
+      id: 'think-run',
+      kind: 'thinking',
+      text: '分析边界条件',
+      state: 'streaming',
+      expanded: false,
+    };
+    const thinkingHtml = renderToStaticMarkup(
+      createElement(threadMod.ProcessGroup, { step: streamingThinkingStep }),
+    );
+    expect(thinkingHtml).toContain('data-activity="thinking"');
+    expect(thinkingHtml).toContain('思考中…');
+
+    const approvalThread = { ...buildSampleThread(), phase: 'waiting_approval' as const };
+    const approvalStageHtml = renderToStaticMarkup(
+      createElement(threadMod.SessionStage, { thread: approvalThread }),
+    );
+    expect(approvalStageHtml).toContain('data-activity="on_hold"');
+    expect(approvalStageHtml).toContain('等待人工审批确认…');
   });
 });
 
