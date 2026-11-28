@@ -40,7 +40,7 @@
 | `ping` | `{}` | `{ alive: true, serverInstanceId }` |
 | `session/list` | `workspaceRoot`（绝对路径）、可选 `cursor`、`limit`（1–50，默认 20） | `{ items: { conversationId, title, delegation?: WireSessionDelegation }[], cursor: string \| null }`（`delegation` 仅在声明任一 v0.1.6 能力时下发） |
 | `session/create` | `workspaceRoot`（绝对路径）、可选 `worktree?: WireWorktreeOption`（启用时需能力 `worktree`） | `{ sessionId, conversationId, worktree?: WireWorktreeSummary }`（`worktree` 仅在协商含 `worktree` 能力时下发） |
-| `session/open` | `workspaceRoot`、`conversationId` | `{ sessionId, conversationId, worktree?: WireWorktreeSummary }`（`worktree` 仅在协商含 `worktree` 能力时下发） |
+| `session/open` | `workspaceRoot`、`conversationId` | `{ sessionId, conversationId, worktree?: WireWorktreeSummary }`（`worktree` 仅在协商含 `worktree` 能力时下发；绑定工作树目录已缺失时携带 `missing: true` 进入只读历史态） |
 | `session/attach` | `sessionId`、`mode: 'control' \| 'observe'`、可选 `serverInstanceId` | 完整快照（`WireSnapshot`，客户端重组为 `ClientSnapshot`） |
 | `session/snapshot` | `sessionId`、可选 `cursor` | 无 `cursor`：完整快照；带 `cursor`：`{ chunk, cursor }` 原始续块 |
 | `session/detach` | `sessionId` | `{ detached: true }` |
@@ -166,7 +166,7 @@
 | `SESSION_CLEANUP_FAILED` | 会话仍在清理，可重试关闭；不代表任务已停止 |
 | `INVALID_PARAMS` / `INVALID_REQUEST` / `METHOD_NOT_FOUND` / `PARSE_ERROR` / `INTERNAL_ERROR` | JSON-RPC 层错误，`INTERNAL_ERROR` 只用于未知内部异常 |
 
-响应错误只暴露分类，不回显原始输入、凭证或堆栈。Core 的稳定 code 按固定映射收敛（如 `SESSION_LOCKED` → `SESSION_BUSY`、`CONFIG_INVALID` → `INVALID_PARAMS`），历史遗留的 message 前缀仅作为保守兜底，主路径不得依赖。
+响应错误只暴露分类，不回显原始输入、凭证或堆栈。Core 的稳定 code 按固定映射收敛（如 `SESSION_LOCKED` → `SESSION_BUSY`、`CONFIG_INVALID` → `INVALID_PARAMS`、`WORKTREE_MISSING` → `INVALID_REQUEST`），历史遗留的 message 前缀仅作为保守兜底，主路径不得依赖。
 
 ## 9. 生命周期与文件状态
 

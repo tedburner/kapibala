@@ -8,7 +8,11 @@
  */
 
 import { isSamePath } from '@kiturone/kapibala';
-import { isProjectTrusted, loadSettings } from '@kiturone/kapibala-host/internal';
+import {
+  isProjectTrusted,
+  loadSettings,
+  redactCommonSecrets,
+} from '@kiturone/kapibala-host/internal';
 import { resolveCommandOutput } from '../command-output.js';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
 
@@ -243,9 +247,9 @@ export const worktreesCommand: CommandHandler = async (args, ctx) => {
     );
     for (const file of diff.files) {
       const statText = file.binary ? 'binary' : `+${file.additions} -${file.deletions}`;
-      output.log(`• [${file.status}] ${file.path} (${statText})`);
+      output.log(`• [${file.status}] ${redactCommonSecrets(file.path)} (${statText})`);
       if (file.patch) {
-        output.log(file.patch.trimEnd());
+        output.log(redactCommonSecrets(file.patch).trimEnd());
       }
     }
     return;

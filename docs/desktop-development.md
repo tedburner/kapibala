@@ -1,6 +1,6 @@
-# v0.1.0 桌面开发指南
+# 桌面开发指南
 
-> 状态：阶段 A 共享层与阶段 B 桌面最小闭环已实现并通过本地自动验收。功能和架构决策以 [004 设计](design/004-v0.1.0-desktop-harness.md)为准；本文记录已落地入口及后续顺序；阶段 C 的会话体验及本地门禁已落地，创建项目与双层信任弹窗已接入；D1 已提供本机测试打包与安装副本验证入口，阶段 E 完成界面统一、断连修复与候选发布工程；视觉层的当前档位见 [006 视觉精修](design/006-desktop-visual-refinement.md)。跨平台安装、签名和正式发布仍待完成。详见[阶段 C 验收](verification/v0.1.0-stage-c.md)、[D1 验收](verification/v0.1.0-stage-d1.md)与[阶段 E 验收](verification/v0.1.0-stage-e.md)。
+> 状态：桌面端四进程安全隔离沿用 [004 设计](design/004-v0.1.0-desktop-harness.md) 基线；渲染层与右侧五标签工作台自 `v0.1.6` 起已全量重构为 UI 2.0「墨工坊 Ink Atelier」（彻底卸载 `@cloudflare/kumo`），视觉、原语、双语常规偏好与状态分层以 [017 UI 2.0 规范](design/017-ui-v2-workbench.md) 与 [018 v0.1.6 版本设计](design/018-v0.1.6-version-design.md) 为准。本文记录开发/打包入口、目录与依赖边界及核心契约。
 
 从共享宿主抽取开始，再接入 Electron。每一步都保持现有 CLI、Core SDK、MCP 和本地协议可独立使用；不要先复制 CLI 装配，再长期维护两套执行逻辑。
 
@@ -57,7 +57,7 @@ pnpm pack:desktop --dir        # 仅应用目录，不作为系统安装器验�
 
 打包使用锁定的 electron-builder 26.18.0 和已安装的 Electron 45.0.0，不另下载 Node 或调用系统 kpbl。`pnpm deploy --legacy --prod --prefer-offline --frozen-lockfile --ignore-scripts` 生成独立生产树：缓存优先、缺失联网补齐，解析钉死在共享 lockfile 防版本漂移（`--offline` 在元数据缓存不全的干净机器上必然解析失败，v0.1.1 起弃用），不关闭供应链检查。只清理确实指向本次源桌面包的 legacy 辅助自链接，将同版本内部 `workspace:` 改成精确版本；改写清单用临时文件加 rename，避免硬链接污染源码。所有其它外部链接、缺失依赖或遗留工作区协议均阻断。
 
-Renderer 和 Preload 构建按实际模块生成许可附件，上游预打包代码同时解析来源版本，通过精确版本的许可补充文件匹配；无法确认则保留 UNKNOWN/缺失，不借用当前安装版本。补充文件保留 npm tarball 地址与完整性值，Kumo 升级后须重新生成并审核，版本不匹配阻断构建。附件合并到生产依赖许可清单，并附 Electron 的 LICENSE 与 Chromium notices；附件保留原文与缺失标记，`licenseReviewPending=true` 始终表示仍需人工审阅，不能据自动生成宣称许可审核完成。测试包工具只继承必要环境，不继承模型、签名、发布凭证或 NODE_OPTIONS。
+Renderer 和 Preload 构建按实际模块生成许可附件，上游预打包代码同时解析来源版本，通过精确版本的许可补充文件匹配；无法确认则保留 UNKNOWN/缺失，不借用当前安装版本。补充文件保留 npm tarball 地址与完整性值，渲染层依赖升级后须重新生成并审核，版本不匹配阻断构建。附件合并到生产依赖许可清单，并附 Electron 的 LICENSE 与 Chromium notices；附件保留原文与缺失标记，`licenseReviewPending=true` 始终表示仍需人工审阅，不能据自动生成宣称许可审核完成。测试包工具只继承必要环境，不继承模型、签名、发布凭证或 NODE_OPTIONS。
 
 产品名、文件名和 About 均标明测试构建。`test-build.json` 记录完整源码 SHA、dirty、平台/架构、版本、验证状态、容器后端和逐文件 SHA256。版本沿用工作区版本，不提前升版。macOS 仅 ad hoc 签名，无 Developer ID、公证或 Gatekeeper 验收；`--native-dmg` 先由 builder 生成应用，再由系统封装 DMG，清单明确记录 `containerBackend=hdiutil`，不是默认 builder DMG 后端通过的证据。
 
@@ -121,43 +121,40 @@ try {
 
 ```text
 packages/desktop/
-  src/main/          窗口、原生入口、发送者验证、Host 监督和 guard
-  src/preload/       命名 API、订阅封装与内部传输，单文件 CJS
-  src/agent-host/    会话、配置、审批、脱敏、展示传输
-  src/shared/        DTO、运行时 schema、固定预算，无 Node/Electron 导入
-  src/renderer/      React 页面、纯 ViewModel 与公开 DTO
-  src/renderer/ui/   工作台自建可访问交互组件与领域组合
-  src/renderer/stores/  presentation 展示状态与 ui 易失视图状态
-  src/renderer/theme-kapibala.css  桌面语义主题 token 与组件样式桥接
-  src/renderer/index.css           样式入口与导入顺序
-  tests/            契约、状态、配置和生命周期单测
-  e2e/              确定性 Provider、真实窗口和故障夹具
+  src/main/                窗口、原生入口、菜单/托盘、发送者验证、Host 监督与 guard
+  src/preload/             命名 API、订阅封装与内部传输，单文件 CJS
+  src/agent-host/          会话、配置、审批、脱敏、保活终端（惰性 `node-pty`）、工作树与检查点宿主
+  src/shared/              DTO、运行时 schema、双语词典 `i18n/`、固定预算，无 Node/Electron 导入
+  src/renderer/            UI 2.0 渲染层（单文件严格 `≤ 450` 行）
+  src/renderer/ui/         零外部组件库原生原语（`<dialog>`、`popover="auto"`、`icon.tsx`、`AgentActivityGlyph`）
+  src/renderer/surfaces/   七大业务面：`shell` / `launchpad` / `thread` / `composer` / `workbench` / `settings` / `dialogs`
+  src/renderer/stores/     Zustand 四域切片：`shell` / `workspace` / `session` / `settings`
+  src/renderer/adapters/   `unified-thread.ts` 归一投影（本地 Core 与外部代理共用唯一会话模型）
+  src/renderer/styles/     级联样式：`index.css` / `tokens.css` / `base.css` / `prose.css` / `shiki.css` / `shell.css` / `thread-composer.css` / `workbench.css` / `workbench-tabs.css` / `settings.css`
+  tests/                   契约、状态、原语、配置与生命周期单测
+  e2e/                     确定性 Provider、真实 Electron 窗口、工作台与故障夹具
 ```
-
-阶段 B 的实际模块为 `main/{index,supervisor,guard,preferences}.ts`、`agent-host/{index,desktop-host,workspaces,settings-service}.ts`、`shared/{contracts,rpc,transport,snapshots}.ts`，以及 Renderer 的 `App.tsx`、`settings-dialog.tsx`、`view-client.ts`、`ui-state.ts`。后续按领域增长再拆分，不为目录骨架复制状态。阶段 C 新增 `main/native-notices.ts`、`agent-host/latest-snapshot.ts`、`shared/observations.ts` 与 `renderer/{workspace-sidebar,message-list,message-markdown,details-drawer}.tsx` 与 `renderer/history-list-client.ts`，共享只读投影位于 CLI `host/inspection.ts`。
 
 Main、Preload、Renderer、Agent Host 是四个构建入口。Preload 的有限 Electron require 不等于完整 Node；schema 依赖打包进单文件，不在运行时加载任意 npm 模块。类型检查分别使用各自 tsconfig，Renderer 不注入 Node 类型。
 
-Renderer 的样式入口按 [004 第 6.1 节](design/004-v0.1.0-desktop-harness.md#61-确定的技术栈)固定顺序：`@source` 扫描 Kumo 与 Streamdown 产物，Kumo 与 KaTeX 样式先于 Tailwind 导入，主题文件覆盖语义变量，根元素 `isolation: isolate`，主题通过 `data-mode` 切换；页面 CSP 的 `font-src 'self' data:` 仅放行 Vite 内联的 KaTeX 公式字体，网络层继续拦截远端字体与脚本。这个顺序和 Kumo 版本一起构成 UI 启动契约，不能按个人习惯调整。
+Renderer 的样式入口按 [017 §3](design/017-ui-v2-workbench.md#3-样式级联架构与三层设计令牌css-layer--tokens) 固定 CSS `@layer` 顺序：`tokens.css` 与 `shiki.css` 是唯一允许原始色值字面量的文件，全部组件消费 `--kpbl-*` 语义令牌，根元素 `isolation: isolate`，主题通过 `data-mode` 切换；页面 CSP 的 `font-src 'self' data:` 仅放行 Vite 内联的 KaTeX 公式字体，网络层继续拦截远端字体与脚本。
 
 | 调用方 | 可以依赖 | 不允许的捷径 |
 |---|---|---|
-| Renderer | `@kiturone/kapibala-host/view-model`、shared、命名桌面 API、Kumo、Phosphor、Zustand、`@tanstack/react-virtual`、`streamdown`（含 `@streamdown/{code,mermaid,math,cjk}`）、`katex`、`remark-gfm` | `/host`、Core、MCP、fs、Electron、`dist/*` 深路径、直连 `@base-ui/react` |
+| Renderer | `@kiturone/kapibala-host/view-model`、shared、命名桌面 API、`src/renderer/ui/` 原生原语、`@phosphor-icons/react`（仅经 `ui/icon.tsx`）、Zustand、`@tanstack/react-virtual`、`streamdown`（含 `@streamdown/{code,mermaid,math,cjk}`）、`katex`、`remark-gfm`、`@xterm/*`（仅 `TerminalTab` 按需动态加载） | `@cloudflare/kumo`、`/host`、Core、MCP、fs、Electron、`dist/*` 深路径、`surfaces/**` 直连 `@phosphor-icons/react` |
 | Preload | 内联 shared、有限 Electron IPC API | CLI、Core、文件系统、向页面暴露端口或任意 channel |
 | Main | Electron、shared、原生生命周期代码 | 执行工具循环、加载配置明文密钥、解析原始历史 |
-| Agent Host | `@kiturone/kapibala-host/{host,view-model,internal}`、`@kiturone/kapibala-cli/commands`（唯一 CLI 例外）、shared、受管装配 | CLI bin/index 启动入口、`/host` 兼容 barrel、菜单、REPL、终端渲染器 |
+| Agent Host | `@kiturone/kapibala-host/{host,view-model,internal}`、`@kiturone/kapibala-cli/commands`（唯一 CLI 例外）、shared、惰性 `node-pty` | CLI bin/index 启动入口、`/host` 兼容 barrel、菜单、REPL、终端渲染器 |
 
-UI 依赖按角色唯一，阶段 B 的基础断言集中在 `scripts/check-desktop.ts`；阶段 C 已补充应用动效约束、真实按钮状态对比度与减少动效断言：
+UI 依赖与架构红线集中在 `scripts/check-desktop.ts` 强制拦截：
 
 | 角色 | 允许 | 禁止 |
 |---|---|---|
-| 组件与交互原语 | Kumo 及其导出的 primitives、语义化原生交互控件（配齐可访问名与焦点样式，不强制绑定单一组件库） | 未经评估混装 Radix、shadcn/ui、MUI、Ant Design、Chakra 等第二套组件库，或缺失无障碍语义的裸 `div` 交互 |
-| 图标 | `@phosphor-icons/react` | lucide、heroicons、font-awesome、手写图标路径（品牌 logo 除外） |
-| 动画 | Kumo 内置过渡，含 Sidebar 布局过渡；自写时使用同主版本 Motion 且仅动画 transform/opacity | 直装 framer-motion、react-spring、GSAP、Anime.js；应用源码新增 `transition: all` 或叠加同属性动画 |
-| 布局与拖拽 | Kumo Sidebar、CSS Grid/Flex | 首版引入 react-resizable-panels 或 dnd-kit（无对应需求） |
-| 状态 | Zustand 5（仅易失 UI 状态）、现有 ViewModel | 在 Zustand 复制消息、运行、审批或持久偏好，使用 `persist` |
-| Markdown 与高亮 | `streamdown`（含 `@streamdown/{code,mermaid,math,cjk}`）、`remark-gfm`、`katex`；超预算回退 `PlainCodeBlock` | 自写 Markdown 解析、Prism、highlight.js、第二套 Markdown/高亮库并存 |
-| 色值与形状 | `theme-kapibala.css` 中的 Kumo token，主操作底色与文字强调色分开 | 应用组件内十六进制色值、原始调色板类、`dark:` 变体、自定义圆角档位；依赖与高亮生成样式不按此源码规则误报 |
+| 组件与交互原语 | `src/renderer/ui/` 原生语义原语（`<dialog>`、`popover="auto"`、原生表单控件，配齐 `aria-*` 与键盘焦点） | `@cloudflare/kumo`、Radix、shadcn/ui、Headless UI、MUI、Ant Design 等第三方预设组件库，或缺失无障碍语义的裸 `div` 交互 |
+| 图标与微动效 | `ui/icon.tsx` 唯一收口 `@phosphor-icons/react`；`BrandMark` 与 8 态 `AgentActivityGlyph`（共享单时钟，空闲 0 CPU） | `surfaces/**` 直接导入 `@phosphor-icons/react`；直装 lucide / framer-motion / GSAP；源码或 CSS 出现 `transition-all`、`@keyframes`、`animate-*` |
+| 状态 | Zustand 5（四域易失 UI 状态，会话关闭/归档/删除时清理工作台与终端快照）、共享 ViewModel | 在 Zustand 持久化业务真源，或使用 `localStorage` / `sessionStorage` |
+| Markdown 与高亮 | `streamdown`（含 `@streamdown/{code,mermaid,math,cjk}`）、`remark-gfm`、`katex`；超预算回退 `PlainCodeBlock` | `dangerouslySetInnerHTML`、自写 Markdown 解析、第二套高亮库并存 |
+| 色值与文件体积 | `styles/tokens.css` 与 `styles/shiki.css` 定义 `--kpbl-*` 语义令牌；渲染层任意 `.ts`/`.tsx` 单文件 `≤ 450` 行 | 业务源码或组件 CSS 硬编码 `#hex` / `rgb()` / `hsl()` / `oklch()`、`!important`（`prefers-reduced-motion` 总闸除外） |
 
 边界检查同时检查源码导入和实际 bundle 的依赖闭包，覆盖别名、动态导入和转导出。新增 `/host` 的声明与 JS 一起构建，并通过三包隔离安装验证；桌面安装包额外验证资源内的 utility Host 和 CJS Preload 可加载，不能依赖开发机 workspace 软链。
 
@@ -219,25 +216,15 @@ shared 先定义业务请求/响应、业务错误和通知的运行时 schema�
 
 `workspace.openDefault` 不接受路径，由 Host 按显式 homeDirectory 创建约定目录，返回与项目空间相同的登记信息和信任状态。默认目录的创建、重定向拒绝、共享文件边界及会话归属规则以 [004 第 2.1 节](design/004-v0.1.0-desktop-harness.md#21-空间与会话归属)为准；执行前同样登记 guard。默认空间在首次创建时把信任写入全局记录（与 CLI 共用 trustedProjects），因此登记为已信任而无需再次确认；这是同一份全局信任语义，不是绕过检查。不要把当前项目失效变成默认空间中的一次自动发送。
 
-### 4.4 UI 落地约束
+### 4.4 UI 落地约束（UI 2.0 墨工坊）
 
-布局、尺寸和主题 token 统一取 [004 第 6.3 节](design/004-v0.1.0-desktop-harness.md#63-对话式-ui-与交互)，不另维护一份 UI 方案。阶段 B 先做白底两栏对话、空间入口与紧凑工具状态；阶段 C 补完整分组、按需详情抽屉、状态观察，以及主题对比度与减少动效完整验收。右侧抽屉初始关闭，长内容在抽屉内滚动，不通过扩大主页面解决。
+布局、设计令牌、原生原语与 E2E 可访问名契约统一以 [017 UI 2.0 工作台架构规范](design/017-ui-v2-workbench.md) 与 [018 v0.1.6 版本设计](design/018-v0.1.6-version-design.md) 为准，不再沿用旧版 `006` 的单抽屉、全屏审批模态框或 `@cloudflare/kumo` 样式桥接：
 
-界面层级与留白节奏的增量约定见 [006 桌面视觉精修](design/006-desktop-visual-refinement.md)：它在不改 004 章节编号与布局骨架的前提下细化 token 档位、轮聚合、执行组、composer 单卡和设置左导航。两者冲突时以 004 的结构决策为准，006 只解释执行细节。
-
-常规设置表单、模态弹窗与下拉菜单可按需复用现有 Kumo 组件或 primitives（保留焦点约束、Escape/外部点击关闭、portal 层级与滚动锁定）；会话流、工具行、富输入区、右侧预览/Diff 等工作台界面不强制套用 Kumo 样式包装，样式或结构受限时直接在 `renderer/ui/` 用无头原语或语义化原生控件（配齐 `aria-*` 与键盘焦点）实现。主题色值只走 `theme-kapibala.css` 语义变量，不在组件内硬编码色值。
-
-“添加项目”先打开“创建项目”表单：项目名称（1–80 字符，不含控制字符）、只读设备“此电脑”、原生源文件夹选择区、取消与创建按钮。名称仅作为客户端显示别名，不改目录名；目录物理根仍是唯一身份，同根最近项目复用稳定入口。选择目录不写最近项目、不读取项目配置、不创建会话。点击创建时刷新信任状态；未信任目录再打开“信任此文件夹吗？”对话框，展示最终物理根与权限说明。取消信任返回原表单，保留名称与目录；明确同意后才由 Host 校验 token、登记信任并保存项目入口。已被 CLI 撤销的信任不得凭旧 UI 状态恢复。打开最近项目或重载时恢复别名，不自动请求模型。双层弹窗的焦点、Escape 与滚动仍由 Kumo LayerDialog 管理。
-
-工具选择只保存当前 workspaceId、sessionId 和 callId；会话切换关闭旧详情，迟到通知仍按完整身份处理。草稿和滚动位置按会话暂存于 Renderer 内存，关闭详情不销毁会话。审批提示不依赖抽屉打开，模态设置与覆盖抽屉提供焦点约束、Escape 关闭和焦点返回，这些行为来自 Kumo 原语，不在页面里重写。
-
-详情并排时使用 Dialog 的 `modal={false}`、`disablePointerDismissal={true}`，点击或 Tab 到输入框不关闭；覆盖时使用 `modal={true}`、`disablePointerDismissal={false}`，允许遮罩点击关闭。两者均保留 Escape、关闭按钮和焦点返回；跨断点只更新界面策略，保持会话、详情身份与草稿。审批的会话级选项显示为“本会话允许相同调用”，只在 `sessionAllowed=true` 时提供；Host 再次校验，不能把它实现成永久授权。
-
-会话行的行菜单对每一行都可用：有运行句柄时提供“关闭运行时”，运行中则提供“停止并关闭”；另外提供“重命名”“置顶/取消置顶”“归档”与“删除”。归档只追加 `archive_state` 控制记录（可恢复，归档项在设置 → 会话归档里找回）；删除是物理删除正文与 sidecar 缓存，必须先经过一次不可撤销确认。重命名与置顶都只追加控制记录（`title` / `pin_state`），不改正文、不搬动文件，也不打断在途任务：句柄在本进程时直接经已打开的 Store 追加，未打开时由 `SessionManager` 取锁写入后立即释放，因此不会留下写锁让后续归档或删除变成 `SESSION_LOCKED`。置顶只影响 `list` 的排序（置顶项整体前置、组内仍按活动时间），不改 `lastActivityAt`，也不改变“继续最近会话”的选择；取消置顶后回到原有位置。运行中的会话禁止归档与删除，仅持有空闲句柄时 Host 先关闭句柄再执行，避免同进程写锁让操作以 `SESSION_LOCKED` 失败。关闭等待完整清理，失败保留占用并提供重试。达到 8 个句柄时显示已用数量和空闲会话列表，由用户明确选择关闭，不自动驱逐；关闭句柄保留历史，重新打开仍走装配检查。
-
-primary 按钮沿用 Kumo 固定白字，按参考截图采用黑色底色；深色主题用灰白文字与焦点表达强调。危险按钮采用 `secondary-destructive`；所有 Kumo 按钮复用主题文件中的 `kapibala-action` 类，以 focus token 补统一的 2px outline 和 2px offset，不依赖库内部选择器或另写交互。测试实际普通、悬停、焦点和按下状态的对比度，不能只算原始 token。应用自写动画限于 transform/opacity，Kumo Sidebar 内置尺寸过渡按明确例外保留；减少动效时将其 `animationDuration` 设为 0。静态检查只限制应用源码新增实现，不因依赖内置渐变、布局过渡或高亮生成色值误报。
-
-`preferences.read/update` 由 Main 处理，主题只保存 `light/dark/system`，缺省 `light`；Main 同步 nativeTheme 和窗口初始背景，Renderer 在首帧前写入 `data-mode`。最近空间重新登记，不复用旧 workspaceId。全部七类弹窗采用 440/500/600px 三档宽度，长内容限高 560px 并内部滚动；在 800px 最窄、600px 最低及组合窗口下检查可用性。模型设置保存后，下次 run 刷新当前绑定的配置和凭证，保留该运行时会话选中的模型与角色，不被新全局默认覆盖。文案按 004 第 6.3.4 节的术语与句式写，按钮动词开头，错误写原因和下一步。
+- **双态舞台与工作台**：对话居中 `760px` 阅读轴；打开变更、预览、文件、终端或详情时并排推开可拖拽五标签 `WorkbenchStage`（窄屏自动转为覆盖层）。工作台标签栈与终端回放缓冲按 `sessionKey` 隔离记忆，会话关闭、归档或删除时同步清理。
+- **内联审批与壳内设置**：工具审批、子代理冒泡审批与重试退避统一收敛进底部 `ComposerDock` 内联处理（`region[name="待处理审批"]`，焦点外支持 `Y / S / N`）；设置与外部代理中心以壳内一级视图 `SettingsStage`（8 分组，首栏「常规」集中管理配色模式、中英双语、字体/字号、快捷键与确认开关）呈现，原生 `<ModalDialog>` 仅用于破坏性确认、目录信任、`⌘K` 命令面板与单层新建/编辑子表单。
+- **添加项目与目录信任**：「创建项目」表单中名称仅作显示别名，目录物理根经 `fs.realpathSync.native` 规范化作为唯一身份；未信任目录先经「信任此文件夹吗？」二次确认后才登记，已被 CLI 撤销的信任不得凭旧 UI 状态恢复。
+- **会话行与句柄上限**：行菜单提供重命名、置顶/取消置顶、归档、关闭与删除（归档追加 `archive_state`，删除需不可撤销确认）。运行中会话禁止归档/删除；达到 8 个打开句柄上限时由用户显式关闭空闲会话，不自动驱逐。
+- **按钮对比度与无障碍**：主按钮与开关开启态统一采用 `--kpbl-control-solid` 碳素墨色（零蓝色控件），水豚琥珀 `--kpbl-pulse` 严格限于运行焦点、待审批与品牌标识（`≤ 5%`）；焦点环采用 `2px` `--kpbl-line-strong`；`prefers-reduced-motion: reduce` 下所有过渡归零、`AgentActivityGlyph` 停止时钟并渲染静态帧。
 
 
 ### 4.5 阶段 C 的实际行为
@@ -252,7 +239,7 @@ TanStack Virtual 渲染可见消息；向上阅读停止跟随，返回底部恢
 
 通知只在窗口后台时显示通用完成/待审批说明，不包含空间路径、工具参数或会话正文。点击仅唤回窗口；关闭句柄、审批过期或控制期更换后旧回调失效，不发送审批决定或重放任务。macOS 通过 Dock 恢复；Windows/Linux 尝试创建托盘；Windows 创建成功后关窗隐藏，失败时确认退出。Linux 不能仅凭 Tray 对象确认系统展示了入口，因此关窗始终先确认清理退出。退出必须等待 Host 清理，失败保留 guard 和应用入口。
 
-About 读取实际应用/运行时版本、平台与通知/托盘支持状态，复制诊断不包含配置、凭证、原始错误栈或进程输出。主题保存 light/dark/system，真实窗口检查 Kumo 主按钮正常/悬停/键盘焦点/按下状态；主按钮边界使用语义 focus token。减少动效时覆盖库默认动画/过渡时长为 0，静态门禁只检查应用源码，不将依赖实现误判为应用新增动画。
+About 读取实际应用/运行时版本、平台与通知/托盘支持状态，复制诊断不包含配置、凭证、原始错误栈或进程输出。主题保存 light/dark/system，真实窗口检查主按钮正常/悬停/键盘焦点/按下状态；主按钮边界使用语义 focus token。减少动效时覆盖默认动画/过渡时长为 0，静态门禁只检查应用源码，不将依赖实现误判为应用新增动画。
 
 ## 5. 生命周期实现顺序
 

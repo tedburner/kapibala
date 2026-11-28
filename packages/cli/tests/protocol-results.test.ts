@@ -107,8 +107,34 @@ describe('request-aware result contracts', () => {
       toWireErrorCode(Object.assign(new Error('arbitrary'), { code: 'SESSION_ID_AMBIGUOUS' })),
     ).toBe('SESSION_NOT_FOUND');
     expect(
+      toWireErrorCode(Object.assign(new Error('worktree removed'), { code: 'WORKTREE_MISSING' })),
+    ).toBe('INVALID_REQUEST');
+    expect(
       toWireErrorCode(Object.assign(new Error('private credential'), { code: 'UNRECOGNIZED' })),
     ).toBe('INTERNAL_ERROR');
+  });
+
+  it('accepts worktree.missing=true on session/open for read-only removed-worktree history', () => {
+    expect(
+      validateMethodResult(
+        'session/open',
+        { workspaceRoot: '/repo', conversationId: 'conv-1' },
+        {
+          sessionId: 'sess-1',
+          conversationId: 'conv-1',
+          worktree: {
+            id: 'wt-1',
+            projectRoot: '/repo',
+            worktreePath: '/repo/.wt/wt-1',
+            branch: 'wt/feat',
+            baseRef: 'main',
+            baseCommit: 'abc1234',
+            createdAt: 1_700_000_000_000,
+            missing: true,
+          },
+        },
+      ).ok,
+    ).toBe(true);
   });
   it('selects the snapshot result from the original request, never the response shape', () => {
     expect(validateMethodResult('session/snapshot', { sessionId: 's' }, first).ok).toBe(true);

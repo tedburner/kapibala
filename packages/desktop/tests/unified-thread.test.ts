@@ -796,6 +796,10 @@ describe('四域 Zustand Stores 与全局快捷键契约（017 §2.3 & §5.1）'
       true,
     );
     expect(shell.getState().activeSurface).toBe('workspace');
+
+    shell.getState().clearSessionWorkbench(s1);
+    expect(s1 in shell.getState().workbenchBySession).toBe(false);
+    expect(selectSessionWorkbench(shell.getState(), s1).tabs).toHaveLength(0);
   });
 
   it('SessionStore / SettingsStore / dispatchAppShellShortcut 完整覆盖草稿历史召回与 Y/S/N 单键审批', async () => {

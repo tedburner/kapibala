@@ -334,15 +334,19 @@ const externalTemplateItem = object({
   loginHint: nullable(text),
   website: nullable(text),
 });
-const worktreeSummary = object({
-  id,
-  projectRoot: text,
-  worktreePath: text,
-  branch: text,
-  baseRef: text,
-  baseCommit: id,
-  createdAt: integer,
-});
+const worktreeSummary = object(
+  {
+    id,
+    projectRoot: text,
+    worktreePath: text,
+    branch: text,
+    baseRef: text,
+    baseCommit: id,
+    createdAt: integer,
+    missing: bool,
+  },
+  ['missing'],
+);
 const diffSummaryWire = object({
   additions: integer,
   deletions: integer,

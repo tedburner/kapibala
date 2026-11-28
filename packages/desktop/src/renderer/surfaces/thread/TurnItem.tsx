@@ -19,6 +19,7 @@ export interface ParsedUserProvenance {
     readonly id: string;
     readonly label: string;
     readonly role?: string;
+    readonly count?: number;
   }[];
   readonly systemSummary?: string;
 }
@@ -69,7 +70,9 @@ export function parseUserMessageProvenance(rawText: string): ParsedUserProvenanc
     };
   }
 
-  const references: Array<{ id: string; label: string; role?: string }> = [];
+  const references: Array<{ id: string; label: string; role?: string; count?: number }> = [];
+  const seenRecordIds = new Set<string>();
+  const bySession = new Map<string, { id: string; label: string; role?: string; count?: number }>();
   let handoffFromTitle: string | undefined;
 
   let working = rawText.replace(SESSION_REF_BLOCK_RE, (_full, attrStr: string) => {
@@ -78,12 +81,20 @@ export function parseUserMessageProvenance(rawText: string): ParsedUserProvenanc
     const recordId = attrs.record;
     const title = attrs.title?.trim() || `会话 ${sessionId.slice(0, 8)}`;
     const id = recordId ? `${sessionId}:${recordId}` : sessionId;
-    if (!references.some((r) => r.id === id)) {
-      references.push({
-        id,
-        label: title,
-        role: attrs.role,
-      });
+    if (!seenRecordIds.has(id)) {
+      seenRecordIds.add(id);
+      const existing = bySession.get(sessionId);
+      if (existing) {
+        existing.count = (existing.count ?? 1) + 1;
+      } else {
+        const entry = {
+          id,
+          label: title,
+          ...(attrs.role ? { role: attrs.role } : {}),
+        };
+        bySession.set(sessionId, entry);
+        references.push(entry);
+      }
     }
     return '';
   });
@@ -249,6 +260,7 @@ export function TurnItem({
                   {userParsed.references.map((ref) => (
                     <Badge key={ref.id} tone="info" icon="file-text">
                       @{ref.label}
+                      {ref.count && ref.count > 1 ? ` · ${ref.count}` : ''}
                     </Badge>
                   ))}
                 </div>

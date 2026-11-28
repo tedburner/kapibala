@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { DesktopAPI } from '../../shared/contracts.js';
+import { buildExternalSessionKey, buildNativeSessionKey } from '../adapters/index.js';
 import {
   type WorkspaceHierarchyNode,
   useSessionStore,
@@ -31,9 +32,15 @@ export function useSessionLifecycle(api: DesktopAPI, rt: RuntimeBag) {
     rt.bumpArchiveRevision();
   };
 
+  const pruneSessionRendererState = (sessionKey: string) => {
+    useShellStore.getState().clearSessionWorkbench(sessionKey);
+    rt.clearSessionTerminals(sessionKey);
+  };
+
   const executeArchive = (workspaceId: string, conversationId: string) =>
     void rt.act(async () => {
       await api.session.archive({ workspaceId, conversationId });
+      pruneSessionRendererState(buildNativeSessionKey(workspaceId, conversationId));
       if (rt.opened?.workspaceId === workspaceId && rt.opened.conversationId === conversationId) {
         rt.setOpened(undefined);
         await rt.client.clear();
@@ -45,6 +52,7 @@ export function useSessionLifecycle(api: DesktopAPI, rt: RuntimeBag) {
   const executeNativeDelete = (workspaceId: string, conversationId: string) =>
     void rt.act(async () => {
       await api.session.delete({ workspaceId, conversationId });
+      pruneSessionRendererState(buildNativeSessionKey(workspaceId, conversationId));
       if (rt.opened?.workspaceId === workspaceId && rt.opened.conversationId === conversationId) {
         rt.setOpened(undefined);
         await rt.client.clear();
@@ -56,6 +64,7 @@ export function useSessionLifecycle(api: DesktopAPI, rt: RuntimeBag) {
   const executeExternalDelete = (workspaceId: string, sessionId: string) =>
     void rt.act(async () => {
       await api.external.delete({ workspaceId, sessionId });
+      pruneSessionRendererState(buildExternalSessionKey(sessionId));
       if (rt.activeExternalRef.current?.sessionId === sessionId) {
         await rt.detachActiveExternal();
         useSessionStore.getState().openLaunchpad();
@@ -81,7 +90,11 @@ export function useSessionLifecycle(api: DesktopAPI, rt: RuntimeBag) {
           return;
         }
         if (!rt.opened) return;
-        await api.session.close(scopeOf(rt.opened));
+        const closing = rt.opened;
+        await api.session.close(scopeOf(closing));
+        pruneSessionRendererState(
+          buildNativeSessionKey(closing.workspaceId, closing.conversationId),
+        );
         rt.setOpened(undefined);
         await rt.client.clear();
         useSessionStore.getState().openLaunchpad();
@@ -197,6 +210,7 @@ export function useSessionLifecycle(api: DesktopAPI, rt: RuntimeBag) {
       void rt.act(async () => {
         const cur = rt.activeExternal!;
         await api.external.close({ workspaceId: cur.workspaceId, sessionId: cur.sessionId });
+        rt.clearSessionTerminals(buildExternalSessionKey(cur.sessionId));
         const snap = await api.external.snapshot({
           workspaceId: cur.workspaceId,
           sessionId: cur.sessionId,

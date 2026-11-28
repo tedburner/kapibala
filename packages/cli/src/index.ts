@@ -9,6 +9,7 @@ import {
   ToolRegistry,
   WatchInbox,
   WorkspaceLeaseCoordinator,
+  isSamePath,
   resolveSessionProject,
 } from '@kiturone/kapibala';
 import { attachMcpToSession, resolveCliMcpOptions } from '@kiturone/kapibala-host/internal';
@@ -566,6 +567,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         onRoleBound: (role, id) => models.bindRole(active.session, role, id),
         onRoleSelected: (role) => models.selectRole(active.session, role),
         onCredentialsUpdated: (id) => models.refreshCredentials(active.session, id),
+        onBeforeRemoveWorktree: async (record) => {
+          if (!externalService) return;
+          const idleExternals = externalService
+            .listSessions(projectIdentity.projectRoot)
+            .filter(
+              (ext) =>
+                ext.status === 'idle' &&
+                ext.worktree &&
+                isSamePath(ext.worktree.worktreePath, record.worktreePath),
+            );
+          for (const ext of idleExternals) {
+            await externalService.closeSession(ext.id, projectIdentity.projectRoot).catch(() => {});
+          }
+        },
         onExit: () => {
           inputCoordinator.close();
         },

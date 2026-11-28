@@ -293,7 +293,7 @@ export function DiffWorktreePanel({
                 !onApplyMerge ||
                 preview.canApply === false ||
                 preview.mainDirty ||
-                preview.aheadCount === 0
+                (preview.aheadCount === 0 && !preview.worktreeDirty)
               }
               onClick={() => void handleApply()}
             >

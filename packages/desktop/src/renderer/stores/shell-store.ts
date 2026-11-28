@@ -109,6 +109,8 @@ export interface ShellStoreState {
   setWorkbenchWidthRatio: (sessionKey: string, ratio: number, containerWidth?: number) => void;
   toggleWorkbench: (sessionKey: string) => void;
   activateTabByIndex: (sessionKey: string, index: number) => void;
+  /** 会话关闭、归档或删除后清理对应工作台标签与载荷快照，防止长会话多项目使用下内存无界增长。 */
+  clearSessionWorkbench: (sessionKey: string) => void;
   closeTopmostLayerOnEscape: (context?: {
     readonly sessionKey?: string | null;
     readonly viewportWidth?: number;
@@ -329,6 +331,16 @@ export function createShellStore(initial?: Partial<Pick<ShellStoreState, 'railOp
       } else {
         state.openWorkbenchTab(sessionKey, { kind: targetKind });
       }
+    },
+
+    clearSessionWorkbench: (sessionKey) => {
+      if (!sessionKey) return;
+      set((state) => {
+        if (!(sessionKey in state.workbenchBySession)) return state;
+        const next = { ...state.workbenchBySession };
+        delete next[sessionKey];
+        return { workbenchBySession: next };
+      });
     },
 
     closeTopmostLayerOnEscape: (context) => {

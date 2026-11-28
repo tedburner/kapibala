@@ -399,9 +399,10 @@ test('@ 跨会话引用挂载快照胶囊注入上下文，且流中瞬时断流
     expect(attempt).toBeGreaterThanOrEqual(2);
     expect(capturedReferenceXml).toBe(true);
 
-    // 3. 用户消息气泡剥离原始 XML 包络并展示结构化 @溯源徽章，右侧四维证据看板计入 2 条跨会话消息记录引用
+    // 3. 用户消息气泡剥离原始 XML 包络并合并展示同会话 @溯源徽章，右侧四维证据看板计入 2 条跨会话消息记录引用
     const userTurn = page.getByRole('article', { name: '你的消息' });
-    await expect(userTurn.getByText(/@架构基线讨论/).first()).toBeVisible();
+    await expect(userTurn.getByText(/@架构基线讨论/)).toHaveCount(1);
+    await expect(userTurn.getByText(/@架构基线讨论.*· 2/)).toBeVisible();
     await expect(userTurn.getByText('<session-reference')).toHaveCount(0);
 
     await page.getByRole('button', { name: '展开或收起工作台', exact: true }).click();
@@ -412,6 +413,149 @@ test('@ 跨会话引用挂载快照胶囊注入上下文，且流中瞬时断流
     await stop(app);
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('受管 Git Worktree 物理隔离编辑与两阶段可视化合并审阅（未提交改动自动打包合并回主工作区）', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-e2e-wt-merge-'));
+  const userData = path.join(home, 'desktop-state');
+  const projectDir = path.join(home, 'wt-repo');
+  initGitRepoWithCommit(projectDir, 'src/feature.ts', 'export const featureFlag = 0;\n');
+
+  const modelServer = http.createServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += chunk.toString('utf8');
+    const body = JSON.parse(raw);
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const lastRole = body.messages.at(-1)?.role;
+    if (lastRole !== 'tool') {
+      const toolArgs = JSON.stringify({
+        path: 'src/feature.ts',
+        content: 'export const featureFlag = 42;\n',
+      });
+      response.end(
+        `data: ${JSON.stringify({
+          id: 'wt-1',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call_wt_write_1',
+                    type: 'function',
+                    function: { name: 'write_file', arguments: toolArgs },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        })}\n\ndata: ${JSON.stringify({
+          id: 'wt-1',
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        })}\n\ndata: [DONE]\n\n`,
+      );
+      return;
+    }
+    response.end(
+      `data: ${JSON.stringify({
+        id: 'wt-2',
+        choices: [
+          {
+            index: 0,
+            delta: { content: '已在隔离工作树中更新 featureFlag 为 42。' },
+            finish_reason: null,
+          },
+        ],
+      })}\n\ndata: ${JSON.stringify({
+        id: 'wt-2',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      })}\n\ndata: [DONE]\n\n`,
+    );
+  });
+
+  await new Promise<void>((resolve) => modelServer.listen(0, '127.0.0.1', resolve));
+  const { port } = modelServer.address() as { port: number };
+  fs.mkdirSync(path.join(home, '.kapibala'), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, '.kapibala/settings.json'),
+    JSON.stringify({
+      profiles: [
+        {
+          id: 'wt-fixture',
+          name: '工作树验收模型',
+          provider: 'openai-compatible',
+          modelName: 'wt-fixture',
+          baseURL: `http://127.0.0.1:${port}/v1`,
+          apiKeyEnv: 'KPBL_WT_FIXTURE_KEY',
+          apiKey: 'test-only-wt-credential',
+          contextWindow: 32000,
+        },
+      ],
+      defaultModel: 'wt-fixture',
+    }),
+  );
+
+  const app = await electron.launch({ args: [entry], env: environment(home, userData) });
+  try {
+    const page = await firstWindow(app);
+    await expect(page.getByRole('textbox', { name: '发送消息' })).toBeEnabled();
+
+    // 1. 注册并授信真实 Git 项目工作区
+    await app.evaluate(({ dialog }, selection) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selection] });
+    }, projectDir);
+    await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
+    await page.getByRole('menuitem', { name: '新建项目' }).click();
+    const creation = page.getByRole('dialog', { name: '创建项目', exact: true });
+    await creation.getByRole('textbox', { name: '项目名称', exact: true }).fill('工作树项目');
+    await creation.getByRole('button', { name: '选择文件夹', exact: true }).click();
+    await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+    await page
+      .getByRole('dialog', { name: '信任此文件夹吗？', exact: true })
+      .getByRole('button', { name: '信任文件夹并创建', exact: true })
+      .click();
+    await expect(page.getByRole('button', { name: '会话空间：工作树项目' })).toBeVisible();
+
+    // 2. 开启「⎇ 独立工作树」开关并发起修改，验证主工作区完全未被污染
+    const wtToggle = page.getByRole('button', { name: '⎇ 独立工作树', exact: true });
+    await wtToggle.click();
+    await expect(wtToggle).toHaveAttribute('aria-pressed', 'true');
+    const composer = page.getByRole('textbox', { name: '发送消息' });
+    await composer.fill('请在独立工作树更新 src/feature.ts');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const approvalDeck = page.getByRole('region', { name: '待处理审批', exact: true });
+    await expect(approvalDeck).toBeVisible({ timeout: 15_000 });
+    await approvalDeck.getByRole('button', { name: '批准一次', exact: true }).click();
+    await expect(page.getByText('已在隔离工作树中更新 featureFlag 为 42。')).toBeVisible({
+      timeout: 15_000,
+    });
+    expect(fs.readFileSync(path.join(projectDir, 'src/feature.ts'), 'utf8')).toBe(
+      'export const featureFlag = 0;\n',
+    );
+
+    // 3. 打开右侧「变更」工作台，执行两阶段合并审阅：预览合并 → 确认合并回主工作区
+    await page.getByRole('button', { name: /查看变更/ }).click();
+    const workbench = page.getByRole('complementary', { name: '工作台面板', exact: true });
+    await expect(workbench).toBeVisible();
+    await workbench.getByRole('button', { name: '预览合并到主分支', exact: true }).click();
+    await expect(
+      workbench.getByText('当前工作树含未提交文件改动，确认合并时将在工作树分支内自动创建提交。'),
+    ).toBeVisible({ timeout: 10_000 });
+    const applyBtn = workbench.getByRole('button', { name: '确认合并回主工作区', exact: true });
+    await expect(applyBtn).toBeEnabled();
+    await applyBtn.click();
+    await expect(workbench.getByText(/已无冲突快进合并回/)).toBeVisible({ timeout: 15_000 });
+    expect(fs.readFileSync(path.join(projectDir, 'src/feature.ts'), 'utf8')).toBe(
+      'export const featureFlag = 42;\n',
+    );
+  } finally {
+    await stop(app);
+    modelServer.closeAllConnections();
+    await new Promise<void>((resolve) => modelServer.close(() => resolve()));
     fs.rmSync(home, { recursive: true, force: true });
   }
 });

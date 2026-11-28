@@ -898,6 +898,20 @@ describe('C-5 / H-11 / H-12 / M-5 输入草稿与 @ 胶囊防丢、外部引用�
     expect(parsedBack.cleanText).toBe('@README.md 请核查实现一致性');
     expect(parsedBack.references).toEqual([{ id: 'sess-prev-1:rec-9', label: '历史架构评审' }]);
 
+    const multiSameSession = threadMod.parseUserMessageProvenance(
+      [
+        '<session-reference session="sess-prev-1" record="rec-1" title="历史架构评审">u</session-reference>',
+        '<session-reference session="sess-prev-1" record="rec-2" title="历史架构评审">a</session-reference>',
+        '<session-reference session="sess-prev-2" record="rec-3" title="另一会话">b</session-reference>',
+        '合并验证',
+      ].join('\n'),
+    );
+    expect(multiSameSession.cleanText).toBe('合并验证');
+    expect(multiSameSession.references).toEqual([
+      { id: 'sess-prev-1:rec-1', label: '历史架构评审', count: 2 },
+      { id: 'sess-prev-2:rec-3', label: '另一会话' },
+    ]);
+
     /* 1) 前置条件拒绝（未配置模型或首页普通斜杠命令）绝不清空草稿与胶囊。 */
     const launchScope = buildDraftScopeKey(null, 'ws-guard');
     const sess = useSessionStore.getState();

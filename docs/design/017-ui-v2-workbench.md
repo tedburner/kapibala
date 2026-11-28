@@ -1,6 +1,6 @@
 # 017 · Kapibala UI 2.0 工作台架构与重构规范（墨工坊 Ink Atelier）
 
-> **状态**：**定稿**（2026-11-26 确认；`v0.1.5` 保持既有界面完成外部代理收口发布，本规范自 **`v0.1.6` 版本分支**起作为头号底座分五阶段实施）。
+> **状态**：**已全量落地**（2026-11-26 定稿，2026-11-28 在 `v0.1.6` 分支完成五阶段全量实施与门禁收口）。
 > **边界与继承**：完整保留 [004 桌面宿主设计](004-v0.1.0-desktop-harness.md) 的四进程安全隔离（`main` / `preload` / `agent-host` / `shared`、`contextIsolation: true`、`sandbox: true`、`kpbl-preview://` 独立源沙箱、`desktopLaunchEnv()` 环境白名单）与 `@kiturone/kapibala-host/view-model` 共享纯展示契约；**推翻重塑 `packages/desktop/src/renderer/` 全量视图、样式、组件与状态层**，同步对齐 `packages/cli/src/ui/` 终端主题出口，并在收口阶段彻底卸载 `@cloudflare/kumo`。
 > **承接关系**：自 `v0.1.6` 起取代 [006 桌面视觉精修](006-desktop-visual-refinement.md) 的单抽屉骨架、Kumo 桥接变量、全屏模态审批与全屏模态设置；直接作为 [RELEASES.md](../RELEASES.md) 中 `v0.1.6`（并排多标签右侧工作台、Git Worktree 并行隔离、Shadow Git 检查点 Diff、桌面委派可见化、`@` 跨会话引用弹层、模型请求自动重试）与 `v0.1.7`（多模态输入托盘、缓存计费看板、三级权限规则页）的统一界面底座。
 
@@ -166,7 +166,8 @@ Kapibala UI 2.0（代号 **「墨工坊 Ink Atelier」**）= **「思考时安�
 | `split-pane.tsx` | `SplitPane` | 主舞台左右分栏容器：支持指针拖拽（`setPointerCapture`）、键盘左右方向键微调（`role="separator" aria-valuenow`）与双击复位 |
 | `settings-kit.tsx` | `SettingSection`, `SettingRow`, `EmptyState` | 单层细框分组与左文右控标准行，从结构上禁止「卡片套卡片」 |
 | `toast.tsx` | `ToastViewport` | 右上角非模态轻量通知栈（`error` 走 `role="alert"`，其余走 `role="status"`，按通知 `id` 独立计时收起） |
-| `icon.tsx` | `Icon`, `BrandMark` | 全应用 UI 图标唯一出口：封装 `@phosphor-icons/react`（默认 `16px` `regular`）；`BrandMark` 仅用于左栏顶带、Launchpad 与关于页，移除普通导航按钮上的常驻 `rAF` 动态图标引擎 |
+| `icon.tsx` | `Icon`, `BrandMark` | 全应用 UI 图标唯一出口：封装 `@phosphor-icons/react`（默认 `16px` `regular`）；`BrandMark` 仅用于 Win/Linux 左栏顶带、Launchpad 与关于页，移除普通导航按钮上的常驻 `rAF` 动态图标引擎 |
+| `activity-glyph.tsx`（含 `activity-glyph-frames.ts` / `activity-glyph-clock.ts`） | `AgentActivityGlyph`, `resolveToolActivityKind` | 8 态 SVG 墨线智能体运行微动效原语（`thinking / reading / searching / writing / checking / sending / on_hold / waiting`）：消费 `--kpbl-ink-faint` 静默轨道与 `--kpbl-pulse` 焦点；全局单时钟按需驱动，空闲/隐藏标签页 0 CPU，`prefers-reduced-motion: reduce` 渲染清晰静帧，零 CSS `@keyframes` |
 
 ---
 
@@ -176,7 +177,7 @@ Kapibala UI 2.0（代号 **「墨工坊 Ink Atelier」**）= **「思考时安�
 
 严守「Host / Main 是业务与持久事实唯一真源，Renderer Store 仅管易失 UI 状态与 Host 快照镜像」原则，拆解原 `App.tsx` 与 `settings-dialog.tsx` 的 46 个散落状态：
 
-1. **`shell-store.ts`**：管理 `activeSurface: 'workspace' | 'settings'`、`settingsTab`、`railOpen`、`commandPaletteOpen`、按 `sessionKey` 索引的右侧工作台状态 `{ open: boolean; widthRatio: number; tabs: WorkbenchTab[]; activeTabId: string }`。
+1. **`shell-store.ts`**：管理 `activeSurface: 'workspace' | 'settings'`、`settingsTab`、`railOpen`、`commandPaletteOpen`、按 `sessionKey` 索引的右侧工作台状态 `{ open: boolean; widthRatio: number; tabs: WorkbenchTab[]; activeTabId: string }`，并在会话关闭、归档或删除时通过 `clearSessionWorkbench(sessionKey)`（联动 `clearSessionTerminals(sessionKey)`）主动清理易失缓存防无界增长。
 2. **`workspace-store.ts`**：同步 `spaces`、各空间历史会话分页、`runtime` 快照与 `external.list` 清单；提供派生选择器 `selectInboxItems()`（聚合全空间待审批、运行中、监视触发项）。
 3. **`session-store.ts`**：封装 `ViewClient` 与 `external.*` IPC 订阅，管理当前打开会话句柄、按 `sessionKey` 隔离的输入框草稿/附件/引用快照与滚动跟随位置。
 4. **`settings-store.ts`**：管理桌面本地常规偏好（`themeMode: 'system' | 'light' | 'dark'`、`localePreference: 'system' | 'zh-CN' | 'en'`、`resolvedLocale: 'zh-CN' | 'en'`、`typography` 字体/字号/连字配置、`general` 发送快捷键/时间格式/折行/桌面通知开关，以及删除/归档/关终端确认开关 `confirmations`）、`settings.read` 模型目录、`external.harnesses` 列表与探针状态、MCP/技能诊断与跨工具导入状态、版本更新下载状态。
@@ -270,7 +271,7 @@ export interface UnifiedThreadViewModel {
 
 ### 6.1 左栏（`NavigationRail`）
 
-- **顶带（`42px`）**：macOS `titleBarStyle: 'hiddenInset'` 红绿灯右侧同行排布 `BrandMark(20px)` + `Kapibala` 字标 + 右侧 `新建对话` `IconButton`；Windows/Linux 无左侧内边距偏移。下方紧接全宽 `28px` 高 `⌘K` 搜索与命令触发钮（删除旧版顶部 `70px` 空白与死板横线）。
+- **顶带（`42px`）**：macOS（`titleBarStyle: 'hiddenInset'`）下隐藏左栏品牌图标与字标，留出 `padding-left: 84px` 与 `.kpbl-drag` 原生窗口拖拽呼吸区并将 `新建对话` / `展开或收起侧栏` 按钮靠右对齐；Windows/Linux 无左侧红绿灯偏移，保留 `BrandMark(20px)` + `Kapibala` 字标与右侧操作按钮。下方紧接全宽 `28px` 高 `⌘K` 搜索与命令触发钮（删除旧版顶部 `70px` 空白与死板横线）。
 - **动态运行收件箱（`InboxSection`）**：`selectInboxItems()` 非空时渲染，按「待审批（琥珀呼吸点 + `待审批` 胶囊）→ 运行中 → 监视已触发」排序；空闲时整区 `null` 不占位。
 - **工作区与层级会话树（`WorkspaceTree`）**：
   - 空分组（如无条目的「临时对话」）整组隐藏，禁止渲染「暂无临时对话」。
@@ -286,7 +287,7 @@ export interface UnifiedThreadViewModel {
 
 - 继续采用 `@tanstack/react-virtual` 虚拟滚动（显式保持 Streamdown 容器 `content-visibility: visible` 防测量跳动）。
 - **轮次节奏**：用户消息居右（`--kpbl-bg-subtle`，最大宽 `82%`）→ 间隔 `14px` → 助手过程层（左缘与助手正文严格共线）→ 正文 Streamdown 卡片流 → 轮次尾栏（悬停或聚焦显露 `复制正文`、`重试`、后续 `还原检查点`，右侧常驻弱化 Token/缓存命中摘要）。
-- **执行组与工作台联动**：工具行结构固定为 `[状态图标] [中文动作词] [等宽目标路径/命令] [+A −D] [耗时]`；点击文件编辑行打开右侧工作台 `Diff` 标签，点击 HTML/SVG/图片产物行打开 `Preview` 标签，点击普通命令/MCP 行打开 `Inspector` 标签并定位到该 `callId`。
+- **执行组、语义运行态与工作台联动**：工具行结构固定为 `[状态图标] [中文动作词] [等宽目标路径/命令] [+A −D] [耗时]`；运行中的工具行、流式思考头与对话底部运行状态条按当前工具/阶段展示 8 态 `AgentActivityGlyph`（结束后即刻切回静态 `Icon`）；同会话多条 `<session-reference>` 合并为单枚 `@标题 · N` 徽标；点击文件编辑行打开右侧工作台 `Diff` 标签，点击 HTML/SVG/图片产物行打开 `Preview` 标签，点击普通命令/MCP 行打开 `Inspector` 标签并定位到该 `callId`。
 - **回到底部**：偏离底部时在输入坞正上方居中浮现 `28px` 高轻量胶囊按钮 `↓ 返回底部`。
 
 ### 6.4 全能输入坞（`ComposerDock`）

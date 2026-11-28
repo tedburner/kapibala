@@ -7,7 +7,11 @@
  * 3. 支持 `targetOrdinal = -1` 还原至本会话第 0 轮开始前的基线状态；检测到用户事后手动修改冲突时默认拒绝并提示 `--force`。
  */
 
-import { isProjectTrusted, loadSettings } from '@kiturone/kapibala-host/internal';
+import {
+  isProjectTrusted,
+  loadSettings,
+  redactCommonSecrets,
+} from '@kiturone/kapibala-host/internal';
 import { resolveCommandOutput } from '../command-output.js';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
 
@@ -139,9 +143,9 @@ export const checkpointsCommand: CommandHandler = async (args, ctx) => {
     );
     for (const file of diff.files) {
       const statBadge = file.binary ? 'binary' : `+${file.additions} -${file.deletions}`;
-      output.log(`• [${file.status}] ${file.path} (${statBadge})`);
+      output.log(`• [${file.status}] ${redactCommonSecrets(file.path)} (${statBadge})`);
       if (file.patch) {
-        output.log(file.patch.trimEnd());
+        output.log(redactCommonSecrets(file.patch).trimEnd());
       }
     }
     return;

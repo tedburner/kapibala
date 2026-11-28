@@ -75,6 +75,14 @@ export function useDesktopRuntime(api: DesktopAPI) {
   const [dismissedNotices, setDismissedNotices] = useState<Record<string, true>>({});
   const [externalToasts, setExternalToasts] = useState<readonly ExternalToastNotice[]>([]);
   const [terminalBySession, setTerminalBySession] = useState<SessionTerminalSnapshotMap>({});
+  const clearSessionTerminals = useCallback((sessionKey: string) => {
+    setTerminalBySession((prev) => {
+      if (!(sessionKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[sessionKey];
+      return next;
+    });
+  }, []);
 
   const act = useCallback(async (task: () => Promise<void>) => {
     setBusy(true);
@@ -421,6 +429,7 @@ export function useDesktopRuntime(api: DesktopAPI) {
     setExternalToasts,
     terminalBySession,
     setTerminalBySession,
+    clearSessionTerminals,
     messages,
     run,
     activeThread,
