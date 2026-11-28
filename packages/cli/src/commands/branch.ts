@@ -12,7 +12,12 @@ import { resolveCommandOutput } from '../command-output.js';
  *    失败时不移动游标、不损坏当前投影。
  */
 
-import { KapibalaError, sanitizeSessionTitle } from '@kiturone/kapibala';
+import {
+  KapibalaError,
+  type SessionRecord,
+  assertClosedToolTransaction,
+  sanitizeSessionTitle,
+} from '@kiturone/kapibala';
 import { isProjectTrusted, loadSettings } from '@kiturone/kapibala-host/internal';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
 
@@ -171,60 +176,141 @@ function ensureTrustedForBranchRestore(ctx: CommandContext, projectRoot: string)
   );
 }
 
+interface PreparedBranchRestore {
+  readonly execute: () => Promise<boolean>;
+}
+
 /**
- * 在切换或分叉前校验工作区信任并按需回滚磁盘文件至目标分支切点对应的检查点水位；
- * 未信任或命中用户事后手动改动冲突时中止操作并返回 `false`。
+ * 在任何磁盘回滚或分支写入前校验新建分支目标：
+ * 拦截只读存储、重名分支、缺失的显式切点记录、全局控制记录切点与未闭合工具事务。
  */
-async function maybeRestoreFilesForBranch(
+async function validateBranchCreateTarget(
+  store: {
+    isReadOnly?: () => boolean;
+    getBranches?: () => Promise<readonly { branchId: string; leafRecordId: string }[]>;
+    readRecords?: () => Promise<readonly SessionRecord[]>;
+  },
+  targetBranchId: string,
+  baseRecordId?: string | null,
+): Promise<void> {
+  if (store.isReadOnly?.()) {
+    throw new KapibalaError('Cannot create branch on a read-only session store', {
+      code: 'LEGACY_SESSION_READ_ONLY',
+      safeMessage: '当前只读历史会话不支持创建分支',
+    });
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(targetBranchId)) {
+    throw new Error(
+      'Branch ID must be a non-empty string containing only alphanumeric, hyphen or underscore characters',
+    );
+  }
+  if (typeof store.getBranches === 'function') {
+    const branches = await store.getBranches();
+    if (branches.some((b) => b.branchId === targetBranchId)) {
+      throw new Error(`Branch already exists: ${targetBranchId}`);
+    }
+  }
+  if (baseRecordId && typeof store.readRecords === 'function') {
+    const records = await store.readRecords();
+    if (!records.some((r) => r.recordId === baseRecordId)) {
+      throw new Error(`Base record not found: ${baseRecordId}`);
+    }
+    assertClosedToolTransaction([...records], baseRecordId);
+  }
+}
+
+function reportBranchRestoreConflicts(ctx: CommandContext, conflicts: readonly string[]): void {
+  const out = resolveCommandOutput(ctx);
+  out.error(
+    `❌ 检测到 ${conflicts.length} 个文件在检查点后被手动修改，已中止分支切换/创建以防覆盖本地改动:`,
+  );
+  for (const file of conflicts) {
+    out.error(`  - ${file}`);
+  }
+  out.error(
+    '若确认覆盖这些手动修改，请附加 --force 重试（或去掉 --restore-files 仅切换对话分支）。',
+  );
+}
+
+/**
+ * 写盘前预检工作区信任与三路手动改动冲突，返回延迟执行的真实回滚闭包：
+ * - 任一前置条件不满足或预检命中冲突时立即返回 `null`（零分支变更、零模型摘要调用、零磁盘改动）；
+ * - 实际回滚仅在分支创建/切换/摘要全部完成后由调用方触发，确保分支失败绝不会提前改盘。
+ */
+async function prepareBranchFileRestore(
   ctx: CommandContext,
   store: Parameters<typeof resolveTargetOrdinalAtRecord>[0],
   leafOrBaseRecordId: string | null | undefined,
   force: boolean,
-): Promise<boolean> {
+): Promise<PreparedBranchRestore | null> {
   if (!ctx.checkpoints) {
     resolveCommandOutput(ctx).log('当前宿主未启用工作区检查点服务，跳过文件还原。');
-    return true;
+    return { execute: async () => true };
   }
   const executionRoot = ctx.executionRoot ?? ctx.session.workspaceRoot;
   const projectRoot =
     ctx.projectRoot ?? ctx.controller?.manager.project.projectRoot ?? executionRoot;
   if (!ensureTrustedForBranchRestore(ctx, projectRoot)) {
     resolveCommandOutput(ctx).error(`当前工作区 (${projectRoot}) 尚未被信任，拒绝执行文件回滚。`);
-    return false;
+    return null;
   }
   const sessionId = ctx.session.conversationId;
   const existing = await ctx.checkpoints.listCheckpoints({ projectRoot, executionRoot, sessionId });
   if (existing.length === 0) {
-    return true;
+    return { execute: async () => true };
   }
   const targetOrdinal = await resolveTargetOrdinalAtRecord(store, leafOrBaseRecordId, existing);
-  const outcome = await ctx.checkpoints.restore({
-    projectRoot,
-    executionRoot,
-    sessionId,
-    targetOrdinal,
-    force,
-  });
-  if (outcome.status === 'conflict') {
-    const out = resolveCommandOutput(ctx);
-    out.error(
-      `❌ 检测到 ${outcome.conflicts.length} 个文件在检查点后被手动修改，已中止分支切换/创建以防覆盖本地改动:`,
-    );
-    for (const file of outcome.conflicts) {
-      out.error(`  - ${file}`);
+  if (!force) {
+    const dryOutcome = await ctx.checkpoints.restore({
+      projectRoot,
+      executionRoot,
+      sessionId,
+      targetOrdinal,
+      force: false,
+      dryRun: true,
+    });
+    if (dryOutcome.status === 'conflict') {
+      reportBranchRestoreConflicts(ctx, dryOutcome.conflicts);
+      return null;
     }
-    out.error(
-      '若确认覆盖这些手动修改，请附加 --force 重试（或去掉 --restore-files 仅切换对话分支）。',
-    );
-    return false;
   }
-  if (outcome.status === 'restored') {
-    await ctx.onCheckpointRestored?.();
-    resolveCommandOutput(ctx).log(
-      `已联动还原工作区文件至检查点水位 #${targetOrdinal}（恢复 ${outcome.restoredFiles.length} 项，清理 ${outcome.deletedFiles.length} 项）。`,
-    );
+  return {
+    execute: async () => {
+      const outcome = await ctx.checkpoints!.restore({
+        projectRoot,
+        executionRoot,
+        sessionId,
+        targetOrdinal,
+        force,
+      });
+      if (outcome.status === 'conflict') {
+        reportBranchRestoreConflicts(ctx, outcome.conflicts);
+        return false;
+      }
+      if (outcome.status === 'restored') {
+        await ctx.onCheckpointRestored?.();
+        resolveCommandOutput(ctx).log(
+          `已联动还原工作区文件至检查点水位 #${targetOrdinal}（恢复 ${outcome.restoredFiles.length} 项，清理 ${outcome.deletedFiles.length} 项）。`,
+        );
+      }
+      return true;
+    },
+  };
+}
+
+/** 回滚因并发文件冲突或还原异常中断的分支切换，恢复原活动分支与内存投影。 */
+async function revertBranchSelection(
+  store: { selectBranch?: (branchId: string) => Promise<unknown> },
+  active: ReturnType<typeof getController>,
+  previousBranchId: string | undefined,
+): Promise<void> {
+  if (!previousBranchId || typeof store.selectBranch !== 'function') return;
+  try {
+    await store.selectBranch(previousBranchId);
+    await active.reloadCurrent();
+  } catch {
+    /* 尽力切回原分支，不掩盖原始冲突或错误。 */
   }
-  return true;
 }
 
 /**
@@ -278,20 +364,36 @@ export const branchCommand: CommandHandler = async (args, ctx) => {
       if (typeof store.selectBranch !== 'function') {
         throw new Error('当前存储不支持分支切换');
       }
+      const previousBranchId = store.getActiveBranchId?.();
+      let preparedRestore: PreparedBranchRestore | null = null;
       if (restoreFiles && typeof store.getBranches === 'function') {
         const branches = await store.getBranches();
         const targetMeta = branches.find((b) => b.branchId === targetBranchId);
-        if (targetMeta) {
-          const ok = await maybeRestoreFilesForBranch(
-            ctx,
-            store,
-            targetMeta.leafRecordId,
-            forceRestore,
-          );
-          if (!ok) return;
+        if (!targetMeta) {
+          throw new Error(`Branch not found: ${targetBranchId}`);
         }
+        preparedRestore = await prepareBranchFileRestore(
+          ctx,
+          store,
+          targetMeta.leafRecordId,
+          forceRestore,
+        );
+        if (!preparedRestore) return;
       }
       await store.selectBranch(targetBranchId);
+      if (preparedRestore) {
+        let restoredOk = false;
+        try {
+          restoredOk = await preparedRestore.execute();
+        } catch (restoreErr) {
+          await revertBranchSelection(store, active, previousBranchId);
+          throw restoreErr;
+        }
+        if (!restoredOk) {
+          await revertBranchSelection(store, active, previousBranchId);
+          return;
+        }
+      }
       // 切换成功后通过 reloadCurrent 重新加载内存因果投影
       await active.reloadCurrent();
       resolveCommandOutput(ctx).log(`已成功切换至分支: ${targetBranchId}`);
@@ -341,14 +443,35 @@ export const branchCommand: CommandHandler = async (args, ctx) => {
         ? branchName
         : `branch-${Date.now().toString(36)}`;
     try {
+      const previousBranchId = store.getActiveBranchId?.();
+      const effectiveBaseRecordId = baseRecordId ?? (await resolveActiveLeafRecordId(store));
+      await validateBranchCreateTarget(store, targetBranchId, effectiveBaseRecordId);
+      let preparedRestore: PreparedBranchRestore | null = null;
       if (restoreFiles) {
-        const restoreLeaf = baseRecordId ?? (await resolveActiveLeafRecordId(store));
-        const ok = await maybeRestoreFilesForBranch(ctx, store, restoreLeaf, forceRestore);
-        if (!ok) return;
+        preparedRestore = await prepareBranchFileRestore(
+          ctx,
+          store,
+          effectiveBaseRecordId,
+          forceRestore,
+        );
+        if (!preparedRestore) return;
       }
       const created = await ctx.session.createBranchWithSummary(targetBranchId, {
         ...(baseRecordId ? { baseRecordId } : {}),
       });
+      if (preparedRestore) {
+        let restoredOk = false;
+        try {
+          restoredOk = await preparedRestore.execute();
+        } catch (restoreErr) {
+          await revertBranchSelection(store, active, previousBranchId);
+          throw restoreErr;
+        }
+        if (!restoredOk) {
+          await revertBranchSelection(store, active, previousBranchId);
+          return;
+        }
+      }
       await active.reloadCurrent();
       const baseDesc = baseRecordId ? `在记录 ${baseRecordId} 处` : '从当前分支叶子';
       resolveCommandOutput(ctx).log(
@@ -373,9 +496,10 @@ export const branchCommand: CommandHandler = async (args, ctx) => {
 
   if (!recordId && restoreFiles) {
     const activeLeaf = await resolveActiveLeafRecordId(store);
-    const ok = await maybeRestoreFilesForBranch(ctx, store, activeLeaf, forceRestore);
-    if (!ok) return;
     if (!activeLeaf) {
+      const prepared = await prepareBranchFileRestore(ctx, store, activeLeaf, forceRestore);
+      if (!prepared) return;
+      await prepared.execute();
       resolveCommandOutput(ctx).log('当前会话尚无历史记录可分叉，已完成工作区检查点还原检查。');
       return;
     }
@@ -391,22 +515,35 @@ export const branchCommand: CommandHandler = async (args, ctx) => {
     if (typeof store.createBranch !== 'function') {
       throw new Error('当前存储不支持创建分支');
     }
-    // 若 recordId 是显式指定的（非上方无参 --restore-files 分支已执行过还原），在此执行检查点还原
-    if (
-      restoreFiles &&
-      (isExplicitCreate ? Boolean(effectiveArgs[1]?.trim()) : Boolean(effectiveArgs[0]?.trim()))
-    ) {
-      const ok = await maybeRestoreFilesForBranch(ctx, store, recordId, forceRestore);
-      if (!ok) return;
-    }
+    const previousBranchId = store.getActiveBranchId?.();
     const targetBranchId =
       branchName && /^[a-zA-Z0-9_-]+$/.test(branchName)
         ? branchName
         : `branch-${Date.now().toString(36)}`;
+    // 写盘前先校验切点记录存在性、分支唯一性与工具事务闭合性，再执行只读冲突预检。
+    await validateBranchCreateTarget(store, targetBranchId, recordId);
+    let preparedRestore: PreparedBranchRestore | null = null;
+    if (restoreFiles) {
+      preparedRestore = await prepareBranchFileRestore(ctx, store, recordId, forceRestore);
+      if (!preparedRestore) return;
+    }
     await store.createBranch(targetBranchId, recordId);
     // 自动切换到新创建的分支
     if (typeof store.selectBranch === 'function') {
       await store.selectBranch(targetBranchId);
+    }
+    if (preparedRestore) {
+      let restoredOk = false;
+      try {
+        restoredOk = await preparedRestore.execute();
+      } catch (restoreErr) {
+        await revertBranchSelection(store, active, previousBranchId);
+        throw restoreErr;
+      }
+      if (!restoredOk) {
+        await revertBranchSelection(store, active, previousBranchId);
+        return;
+      }
     }
     await active.reloadCurrent();
     const nameDesc = branchName ? ` (${sanitizeSessionTitle(branchName)})` : '';

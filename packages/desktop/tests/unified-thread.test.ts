@@ -376,6 +376,102 @@ describe('UnifiedThread 适配器：本地与四类外部代理会话同构投�
     expect(vm.turns).toHaveLength(1);
     const turn = vm.turns[0]!;
     expect(turn.turnOrdinal).toBe(1);
+    expect(turn.checkpointOrdinal).toBeUndefined();
+    expect(turn.canRestoreCheckpoint).toBe(false);
+
+    // 验证 0-based 宿主检查点身份精准关联到对应轮次，缺失快照的轮次隐藏操作，工作树缺失时进入只读态。
+    const twoTurnMessages: readonly ViewMessage[] = [
+      {
+        id: 'u-0',
+        role: 'user',
+        state: 'completed',
+        persisted: true,
+        blocks: [{ id: 'bu-0', kind: 'text', text: '第一轮修改', state: 'completed', revision: 1 }],
+      },
+      {
+        id: 'a-0',
+        role: 'assistant',
+        state: 'completed',
+        persisted: true,
+        blocks: [{ id: 'ba-0', kind: 'text', text: '完成第一轮', state: 'completed', revision: 1 }],
+      },
+      {
+        id: 'u-1',
+        role: 'user',
+        state: 'completed',
+        persisted: true,
+        blocks: [
+          { id: 'bu-1', kind: 'text', text: '第二轮超时跳过', state: 'completed', revision: 1 },
+        ],
+      },
+      {
+        id: 'a-1',
+        role: 'assistant',
+        state: 'completed',
+        persisted: true,
+        blocks: [{ id: 'ba-1', kind: 'text', text: '完成第二轮', state: 'completed', revision: 1 }],
+      },
+    ];
+    const idlePresentation: PresentationState = {
+      ...presentation,
+      messages: twoTurnMessages,
+      order: twoTurnMessages.map((m) => m.id),
+      operation: { id: 'op-idle', phase: 'idle', result: 'completed' },
+    };
+    const mappedVm = projectNativeThread({
+      workspaceId: 'ws-main',
+      workspaceName: 'kapibala',
+      workspaceRoot: '/repo/kapibala',
+      sessionId: 'sess-native-1',
+      conversationId: 'conv-1',
+      presentation: idlePresentation,
+      checkpoints: [
+        {
+          ordinal: 0,
+          createdAt: 1_700_000_000_000,
+          startTree: 't0s',
+          endTree: 't0e',
+          additions: 1,
+          deletions: 0,
+          changedFilesCount: 1,
+        },
+      ],
+    });
+    expect(mappedVm.turns[0]?.turnOrdinal).toBe(1);
+    expect(mappedVm.turns[0]?.checkpointOrdinal).toBe(0);
+    expect(mappedVm.turns[0]?.canRestoreCheckpoint).toBe(true);
+    expect(mappedVm.turns[1]?.turnOrdinal).toBe(2);
+    expect(mappedVm.turns[1]?.checkpointOrdinal).toBeUndefined();
+    expect(mappedVm.turns[1]?.canRestoreCheckpoint).toBe(false);
+
+    const missingWtVm = projectNativeThread({
+      workspaceId: 'ws-main',
+      workspaceName: 'kapibala',
+      workspaceRoot: '/repo/kapibala',
+      sessionId: 'sess-native-1',
+      conversationId: 'conv-1',
+      presentation: idlePresentation,
+      worktree: {
+        id: 'wt-del',
+        branch: 'kpbl/deleted',
+        worktreePath: '/tmp/deleted',
+        missing: true,
+      },
+      checkpoints: [
+        {
+          ordinal: 0,
+          createdAt: 1_700_000_000_000,
+          startTree: 't0s',
+          endTree: 't0e',
+          additions: 1,
+          deletions: 0,
+          changedFilesCount: 1,
+        },
+      ],
+    });
+    expect(missingWtVm.capabilities.canContinue).toBe(false);
+    expect(missingWtVm.capabilities.canForkOrCheckpoint).toBe(false);
+    expect(missingWtVm.turns[0]?.canRestoreCheckpoint).toBe(false);
     expect(turn.userMessage?.skillNames).toEqual(['hunt']);
     expect(turn.usage).toEqual({ promptTokens: 2800, completionTokens: 500, totalTokens: 3300 });
     expect(turn.turnMetaBadge).toBe('Kapibala · Claude Sonnet · High · Approval');

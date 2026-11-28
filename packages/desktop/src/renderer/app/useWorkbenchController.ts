@@ -243,8 +243,7 @@ export function useWorkbenchController(
         setDiffScope('checkpoint');
         setSelectedCpOrdinal(ord);
       },
-      onRestoreCheckpoint: async (selectedOrdinal, force) => {
-        const targetOrdinal = diffScope === 'session' ? -1 : Math.max(-1, selectedOrdinal - 1);
+      onRestoreCheckpoint: async (targetOrdinal, force) => {
         const res = await api.checkpoint.restore({
           ...cpBaseParams,
           targetOrdinal,
@@ -252,6 +251,7 @@ export function useWorkbenchController(
         });
         setDiffRefreshTick((v) => v + 1);
         rt.reloadEvidence();
+        rt.reloadCheckpoints();
         if (res.status === 'conflict') {
           return { status: 'conflict' as const, conflicts: res.conflicts };
         }

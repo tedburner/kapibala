@@ -45,7 +45,8 @@ export type SessionRecordType =
   | 'archive_state'
   | 'pin_state'
   | 'mode_state'
-  | 'watch_state';
+  | 'watch_state'
+  | 'worktree_binding';
 
 /**
  * 判断指定记录类型是否属于全局控制记录。
@@ -64,6 +65,7 @@ export function isGlobalControlRecordType(type: SessionRecordType): boolean {
     type === 'pin_state' ||
     type === 'mode_state' ||
     type === 'watch_state' ||
+    type === 'worktree_binding' ||
     type === 'usage' ||
     type === 'legacy_import'
   );
@@ -277,6 +279,7 @@ const types = new Set<SessionRecordType>([
   'pin_state',
   'mode_state',
   'watch_state',
+  'worktree_binding',
 ]);
 
 /** 允许落盘的会话模式白名单；未知值一律拒绝，避免手工改文件绕过审批边界。 */
@@ -670,6 +673,43 @@ export class SessionStore implements StatefulMessageStore {
       });
     }
     return this.appendRecord('mode_state', { mode });
+  }
+
+  /**
+   * 追加执行根工作树重绑定控制记录（`null` 表示解除已失效的工作树绑定并切回项目主工作区）。
+   *
+   * 约束：
+   * - `worktree_binding` 为全局控制记录（parentId 为 null），不推进上下文叶子、不修改活动时间；
+   * - 最后一次写入覆盖 `header.worktree`，v1 只读会话拒绝写入。
+   */
+  async setWorktreeBinding(worktree: SessionWorktreeBinding | null): Promise<SessionRecord> {
+    if (this.isReadOnly()) {
+      throw new KapibalaError('Cannot modify worktree binding of legacy v1 session', {
+        code: 'LEGACY_SESSION_READ_ONLY',
+        safeMessage: '无法变更只读历史会话的执行根绑定',
+      });
+    }
+    return this.appendRecord('worktree_binding', {
+      worktree: worktree ? structuredClone(worktree) : null,
+    });
+  }
+
+  /**
+   * 查询当前生效的受管工作树绑定：优先返回最后一条 `worktree_binding` 控制记录，
+   * 若从未重绑定则回退至首条 `header.worktree`。
+   */
+  getWorktreeBinding(): SessionWorktreeBinding | undefined {
+    let resolved: SessionWorktreeBinding | undefined;
+    for (const rec of this.records) {
+      if (rec.type === 'header') {
+        const header = rec.payload as unknown as SessionHeader;
+        resolved = header.worktree ? structuredClone(header.worktree) : undefined;
+      } else if (rec.type === 'worktree_binding') {
+        const next = rec.payload.worktree as SessionWorktreeBinding | null | undefined;
+        resolved = next && typeof next === 'object' ? structuredClone(next) : undefined;
+      }
+    }
+    return resolved;
   }
 
   /**

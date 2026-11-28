@@ -19,8 +19,11 @@ import {
 import {
   type ApplyWorktreeMergeResult,
   CheckpointConflictDialog,
+  type DiffRestoreTarget,
   DiffWorktreePanel,
   type RestoreCheckpointResult,
+  SessionRevertConfirmDialog,
+  formatRestoreSuccessMessage,
 } from './DiffWorktreePanel.js';
 import {
   buildSplitDiffRows,
@@ -57,7 +60,7 @@ export interface DiffTabProps {
   readonly onSelectCheckpoint?: (ordinal: number) => void;
   readonly onSelectFile?: (path: string) => void;
   readonly onRestoreCheckpoint?: (
-    ordinal: number,
+    targetOrdinal: number,
     force?: boolean,
   ) => Promise<RestoreCheckpointResult> | RestoreCheckpointResult;
   readonly onPreviewMerge?: (
@@ -111,6 +114,8 @@ export function DiffTab({
     readonly text: string;
   } | null>(null);
   const [conflictPaths, setConflictPaths] = useState<readonly string[]>(initialRestoreConflicts);
+  const [confirmSessionRevert, setConfirmSessionRevert] = useState(false);
+  const [conflictTarget, setConflictTarget] = useState<DiffRestoreTarget | null>(null);
 
   useEffect(() => {
     if (selectedFilePath) setInternalPath(selectedFilePath);
@@ -123,7 +128,11 @@ export function DiffTab({
   }, [selectedCheckpointOrdinal]);
 
   const activeScope = selectedScope ?? internalScope;
-  const activeOrdinal = selectedCheckpointOrdinal ?? internalOrdinal ?? checkpoints.at(-1)?.ordinal;
+  const preferredOrdinal = selectedCheckpointOrdinal ?? internalOrdinal;
+  const activeOrdinal =
+    preferredOrdinal !== undefined && checkpoints.some((cp) => cp.ordinal === preferredOrdinal)
+      ? preferredOrdinal
+      : checkpoints.at(-1)?.ordinal;
 
   const scopeOptions = useMemo<readonly SegmentedOption<DiffScopeMode>[]>(() => {
     const base: SegmentedOption<DiffScopeMode>[] = [
@@ -166,21 +175,22 @@ export function DiffTab({
     [activeFile],
   );
 
-  const executeRestore = async (force: boolean) => {
-    if (!onRestoreCheckpoint || activeOrdinal === undefined) return;
+  const executeRestore = async (target: DiffRestoreTarget, force: boolean) => {
+    if (!onRestoreCheckpoint) return;
     setRestoring(true);
     setRestoreFeedback(null);
+    setConfirmSessionRevert(false);
     try {
-      const outcome = await onRestoreCheckpoint(activeOrdinal, force);
+      const outcome = await onRestoreCheckpoint(target.targetOrdinal, force);
       if (outcome.status === 'conflict') {
+        setConflictTarget(target);
         setConflictPaths(outcome.conflicts);
       } else if (outcome.status === 'restored') {
         setConflictPaths([]);
+        setConflictTarget(null);
         setRestoreFeedback({
           tone: 'success',
-          text: isExternalSession
-            ? `已还原轮次 #${activeOrdinal} 归因磁盘文件（外部代理聊天记录保持不变）`
-            : `已还原至轮次 #${activeOrdinal} 检查点状态`,
+          text: formatRestoreSuccessMessage(target, isExternalSession),
         });
       } else {
         setRestoreFeedback({ tone: 'danger', text: outcome.message });
@@ -194,6 +204,15 @@ export function DiffTab({
       setRestoring(false);
     }
   };
+
+  const activeCheckpointTarget: DiffRestoreTarget | null =
+    activeOrdinal !== undefined
+      ? {
+          scope: 'checkpoint',
+          displayOrdinal: activeOrdinal,
+          targetOrdinal: Math.max(-1, activeOrdinal - 1),
+        }
+      : null;
 
   return (
     <div className="kpbl-workbench-panel">
@@ -231,15 +250,26 @@ export function DiffTab({
             options={viewModeOptions}
             onValueChange={setViewMode}
           />
-          {onRestoreCheckpoint && activeOrdinal !== undefined ? (
+          {onRestoreCheckpoint && activeScope === 'checkpoint' && activeCheckpointTarget ? (
             <Button
               variant="outline"
               size="xs"
               leadingIcon="arrow-bend-down-left"
               loading={restoring}
-              onClick={() => void executeRestore(false)}
+              onClick={() => void executeRestore(activeCheckpointTarget, false)}
             >
               {t('diff.restoreBtn')}
+            </Button>
+          ) : null}
+          {onRestoreCheckpoint && activeScope === 'session' && checkpoints.length > 0 ? (
+            <Button
+              variant="outline"
+              size="xs"
+              leadingIcon="arrow-bend-down-left"
+              loading={restoring}
+              onClick={() => setConfirmSessionRevert(true)}
+            >
+              {t('diff.revertSessionBtn')}
             </Button>
           ) : null}
         </div>
@@ -382,13 +412,32 @@ export function DiffTab({
         </>
       )}
 
+      <SessionRevertConfirmDialog
+        open={confirmSessionRevert}
+        checkpointCount={checkpoints.length}
+        busy={restoring}
+        onCancel={() => setConfirmSessionRevert(false)}
+        onConfirm={() => void executeRestore({ scope: 'session', targetOrdinal: -1 }, false)}
+      />
+
       <CheckpointConflictDialog
         open={conflictPaths.length > 0}
-        ordinal={activeOrdinal ?? null}
+        scope={conflictTarget?.scope ?? (activeScope === 'session' ? 'session' : 'checkpoint')}
+        ordinal={conflictTarget?.displayOrdinal ?? activeOrdinal ?? null}
         conflicts={conflictPaths}
         busy={restoring}
-        onCancel={() => setConflictPaths([])}
-        onConfirmForceRestore={() => void executeRestore(true)}
+        onCancel={() => {
+          setConflictPaths([]);
+          setConflictTarget(null);
+        }}
+        onConfirmForceRestore={() => {
+          const fallback: DiffRestoreTarget | null =
+            activeScope === 'session'
+              ? { scope: 'session', targetOrdinal: -1 }
+              : activeCheckpointTarget;
+          const resolved = conflictTarget ?? fallback;
+          if (resolved) void executeRestore(resolved, true);
+        }}
       />
     </div>
   );

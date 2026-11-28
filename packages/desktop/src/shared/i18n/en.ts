@@ -212,6 +212,11 @@ export const EN_MESSAGES = {
   'diff.viewUnified': 'Unified',
   'diff.viewSplit': 'Split',
   'diff.restoreBtn': 'Restore Checkpoint',
+  'diff.revertSessionBtn': 'Revert All Session Changes',
+  'diff.revertSessionConfirmTitle': 'Revert All Session Changes',
+  'diff.revertSessionConfirmDesc':
+    'This will revert all {count} checkpoint turn(s) in this session and restore attributed files to the pre-session baseline (a pre-restore backup snapshot is saved automatically).',
+  'diff.revertSessionConfirmAction': 'Revert All Changes',
   'diff.externalBanner':
     'Restoring an external session reverts attributed disk files without truncating external transcript history.',
   'diff.loading': 'Loading diff snapshot…',
@@ -225,7 +230,9 @@ export const EN_MESSAGES = {
   'diff.noTextDiff': 'No text line changes (mode or rename only)',
   'diff.conflictTitle': 'Manual Edit Conflict Detected',
   'diff.conflictDesc':
-    'Restoring to turn #{ordinal} will overwrite files manually edited after the turn (a pre-restore backup snapshot is saved automatically):',
+    'Restoring to before turn #{ordinal} (reverting turn #{ordinal} and later changes) will overwrite files manually edited after the turn (a pre-restore backup snapshot is saved automatically):',
+  'diff.conflictSessionDesc':
+    'Reverting all session checkpoint changes (back to pre-session baseline) will overwrite files manually edited after the turn (a pre-restore backup snapshot is saved automatically):',
   'diff.forceRestoreBtn': 'Force Overwrite & Restore',
   'diff.wtBaseRef': 'Base: {base}',
   'diff.wtAheadBehind': 'Ahead {ahead} · Behind {behind}',

@@ -115,6 +115,25 @@ describe('shared SSE framing', () => {
     });
     expect(cancelled).toBe(true);
   });
+
+  it('throws retryable MODEL_STREAM_INTERRUPTED when EOF cuts off a JSON frame mid-line', async () => {
+    const truncated = bytes([
+      new TextEncoder().encode(
+        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: {"choices":[{"delta":{"content":"trun',
+      ),
+    ]);
+    const seen: string[] = [];
+    await expect(async () => {
+      for await (const frame of parseSSEFrames(truncated.stream)) {
+        seen.push(frame.data);
+      }
+    }).rejects.toMatchObject({
+      code: 'MODEL_STREAM_INTERRUPTED',
+      stage: 'stream',
+      retryable: true,
+    });
+    expect(seen).toEqual(['{"choices":[{"delta":{"content":"ok"}}]}']);
+  });
 });
 
 describe('parseRetryHeaders', () => {

@@ -332,11 +332,18 @@ export class WorktreeService {
       let rawPatch: Buffer;
       let streamTruncated = false;
       if (untrackedPaths.has(item.path)) {
-        rawPatch = buildUntrackedUnifiedPatch(record.worktreePath, item.path, budget + 4);
+        const untrackedPatch = buildUntrackedUnifiedPatch(
+          record.worktreePath,
+          item.path,
+          budget + 4,
+        );
+        rawPatch = untrackedPatch.patch;
+        streamTruncated = untrackedPatch.truncated;
       } else {
         const res = await runWorktreeGit({
           cwd: record.worktreePath,
           args: [
+            '--literal-pathspecs',
             'diff',
             '--no-ext-diff',
             '--no-color',
@@ -347,6 +354,7 @@ export class WorktreeService {
             item.path,
           ],
           baseEnv: this.hostEnv,
+          envOverrides: { GIT_LITERAL_PATHSPECS: '1' },
           maxStdoutBytes: budget + 4,
         });
         rawPatch = res.stdout;
@@ -480,10 +488,16 @@ export class WorktreeService {
         });
       }
 
-      // 第一阶段：在工作树内预合并主分支，把潜在冲突完全隔离在工作树内部。
+      // 第一阶段：在工作树内预合并主分支，禁用覆盖被忽略文件，把潜在冲突完全隔离在工作树内部。
       const mergeRes = await runWorktreeGit({
         cwd: record.worktreePath,
-        args: [...identityArgs, 'merge', '--no-edit', `refs/heads/${snapshot.targetBranch}`],
+        args: [
+          ...identityArgs,
+          'merge',
+          '--no-edit',
+          '--no-overwrite-ignore',
+          `refs/heads/${snapshot.targetBranch}`,
+        ],
         baseEnv: this.hostEnv,
         allowedExitCodes: [0, 1, 2],
       });
@@ -501,10 +515,10 @@ export class WorktreeService {
 
       const newWorktreeHead = await this.readHeadCommit(record.worktreePath);
       if (newWorktreeHead !== snapshot.mainHead) {
-        // 第二阶段：对主工作区执行零冲突原子快进合并。
+        // 第二阶段：对主工作区执行零冲突原子快进合并，并严禁静默覆盖主仓被忽略的本地文件。
         await runWorktreeGit({
           cwd: record.projectRoot,
-          args: ['merge', '--ff-only', newWorktreeHead],
+          args: ['merge', '--ff-only', '--no-overwrite-ignore', newWorktreeHead],
           baseEnv: this.hostEnv,
         });
       }
@@ -1209,6 +1223,77 @@ export class WorktreeService {
     return splitNulStrings(res.stdout).filter((p) => p.length > 0 && !p.endsWith('/'));
   }
 
+  /**
+   * 仅针对工作树待合入路径及其祖先路径探测主仓内存在的被忽略文件/目录，
+   * 既避免在大型仓库扫描整个 `node_modules`，又能精确拦截快进合并覆盖主仓本地忽略配置的风险。
+   */
+  private async readIgnoredOverlapEntries(
+    projectRoot: string,
+    changedFiles: readonly WorktreeChangedFile[],
+  ): Promise<Array<{ readonly xy: string; readonly path: string }>> {
+    if (changedFiles.length === 0) return [];
+    const probes = new Set<string>();
+    for (const file of changedFiles) {
+      for (const raw of file.oldPath ? [file.path, file.oldPath] : [file.path]) {
+        const cleaned = raw.replaceAll('\\', '/').replace(/\/+$/, '');
+        if (!cleaned) continue;
+        probes.add(cleaned);
+        const parts = cleaned.split('/');
+        for (let i = 1; i < parts.length; i++) {
+          probes.add(parts.slice(0, i).join('/'));
+        }
+      }
+    }
+    const probeList = [...probes];
+    if (probeList.length === 0) return [];
+
+    // 分块控制在 ~3.5 KiB 内，避开 Windows 命令行长度限制。
+    const chunks: string[][] = [];
+    let current: string[] = [];
+    let currentLen = 0;
+    for (const p of probeList) {
+      if (current.length >= 60 || currentLen + p.length > 3500) {
+        chunks.push(current);
+        current = [];
+        currentLen = 0;
+      }
+      current.push(p);
+      currentLen += p.length + 1;
+    }
+    if (current.length > 0) chunks.push(current);
+
+    const seen = new Set<string>();
+    const results: Array<{ xy: string; path: string }> = [];
+    for (const chunk of chunks) {
+      const res = await runWorktreeGit({
+        cwd: projectRoot,
+        args: [
+          '--literal-pathspecs',
+          'status',
+          '--porcelain=v1',
+          '--ignored=matching',
+          '--untracked-files=all',
+          '-z',
+          '--',
+          ...chunk,
+        ],
+        baseEnv: this.hostEnv,
+        envOverrides: { GIT_LITERAL_PATHSPECS: '1' },
+      });
+      for (const token of splitNulStrings(res.stdout)) {
+        if (token.length < 4) continue;
+        const xy = token.slice(0, 2);
+        if (xy !== '!!') continue;
+        const entryPath = token.slice(3);
+        if (entryPath && !seen.has(entryPath)) {
+          seen.add(entryPath);
+          results.push({ xy, path: entryPath });
+        }
+      }
+    }
+    return results;
+  }
+
   private async collectMergeStateSnapshot(record: WorktreeRecord): Promise<{
     readonly targetBranch: string;
     readonly currentMainBranch?: string;
@@ -1283,19 +1368,30 @@ export class WorktreeService {
 
     const wtEntries = await this.readPorcelainEntries(record.worktreePath, 'all');
     const mainEntries = await this.readPorcelainEntries(record.projectRoot, 'all');
+    const mainIgnoredEntries = await this.readIgnoredOverlapEntries(
+      record.projectRoot,
+      changedFiles,
+    );
     const [worktreeUnmerged, mainUnmerged] = await Promise.all([
       this.detectRepoUnmergedState(record.worktreePath, wtEntries, { scanConflictMarkers: true }),
       this.detectRepoUnmergedState(record.projectRoot, mainEntries),
     ]);
 
-    const overlappingMainDirtyPaths = findOverlappingMainDirtyPaths(changedFiles, mainEntries);
+    const overlappingDirty = findOverlappingMainDirtyPaths(changedFiles, mainEntries);
+    const overlappingIgnored = findOverlappingMainDirtyPaths(changedFiles, mainIgnoredEntries);
+    const overlappingMainDirtyPaths = Array.from(
+      new Set([...overlappingDirty, ...overlappingIgnored]),
+    ).sort();
 
     const worktreePorcelain = wtPorcelainRes.stdout.toString('utf8');
     const mainPorcelain = mainPorcelainRes.stdout.toString('utf8');
     const worktreeDirty = worktreePorcelain.length > 0;
-    const mainDirty = mainPorcelain.length > 0;
+    const mainDirty = mainPorcelain.length > 0 || overlappingIgnored.length > 0;
     const wtDirtyDigest = computePorcelainContentDigest(record.worktreePath, wtEntries);
-    const mainDirtyDigest = computePorcelainContentDigest(record.projectRoot, mainEntries);
+    const mainDirtyDigest = computePorcelainContentDigest(record.projectRoot, [
+      ...mainEntries,
+      ...mainIgnoredEntries,
+    ]);
 
     const previewToken = createHash('sha256')
       .update(
@@ -1311,7 +1407,10 @@ export class WorktreeService {
     } else if (currentMainBranch !== targetBranch) {
       blockingReason = `主工作区当前分支为 ${currentMainBranch ?? 'HEAD'}，需先切回 ${targetBranch}`;
     } else if (overlappingMainDirtyPaths.length > 0) {
-      blockingReason = `主工作区存在冲突的未提交改动：${overlappingMainDirtyPaths.join(', ')}`;
+      blockingReason =
+        overlappingIgnored.length > 0 && overlappingDirty.length === 0
+          ? `主工作区存在会被合并覆盖的忽略文件：${overlappingIgnored.join(', ')}`
+          : `主工作区存在冲突的未提交改动或忽略文件：${overlappingMainDirtyPaths.join(', ')}`;
     }
 
     return {
@@ -1511,46 +1610,170 @@ export class WorktreeService {
   }
 }
 
+const MAX_UNTRACKED_STAT_BYTES = 2 * 1024 * 1024;
+
+/**
+ * 校验未跟踪相对路径在受管工作树内且所有父级分量均非符号链接，防通过软链目录穿越读取工作树外文件。
+ */
+function resolveSafeUntrackedEntry(
+  worktreePath: string,
+  relPath: string,
+): { readonly fullPath: string; readonly stat: fs.Stats } | undefined {
+  if (!relPath || relPath.includes('\0') || path.isAbsolute(relPath)) return undefined;
+  const canonicalSep = process.platform === 'win32' ? relPath.replaceAll('\\', '/') : relPath;
+  const segments = canonicalSep.split('/');
+  if (
+    segments.length === 0 ||
+    segments.some((seg) => seg === '' || seg === '.' || seg === '..') ||
+    segments[0] === '.git'
+  ) {
+    return undefined;
+  }
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = toNativePhysicalPath(worktreePath);
+  } catch {
+    return undefined;
+  }
+  let current = canonicalRoot;
+  for (let i = 0; i < segments.length - 1; i++) {
+    current = path.join(current, segments[i]!);
+    try {
+      const parentStat = fs.lstatSync(current);
+      if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  const fullPath = path.join(canonicalRoot, ...segments);
+  try {
+    const resolvedParent = toNativePhysicalPath(path.dirname(fullPath));
+    if (!isPathInside(canonicalRoot, resolvedParent)) return undefined;
+    const stat = fs.lstatSync(fullPath);
+    return { fullPath, stat };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 以 `O_NOFOLLOW`（可用时）打开并复核常规文件，按 `maxBytes` 上限读取前段字节，
+ * 杜绝符号链接跟随与超大未跟踪文件全量读入内存。
+ */
+function readBoundedRegularFile(
+  fullPath: string,
+  maxBytes: number,
+): { readonly data: Buffer; readonly totalSize: number; readonly truncated: boolean } | undefined {
+  const flags =
+    fs.constants.O_RDONLY |
+    (typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0);
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(fullPath, flags);
+    const fstat = fs.fstatSync(fd);
+    if (!fstat.isFile()) return undefined;
+    const readBudget = Math.max(0, Math.min(fstat.size, maxBytes + 1));
+    const buf = Buffer.allocUnsafe(readBudget);
+    let offset = 0;
+    while (offset < readBudget) {
+      const n = fs.readSync(fd, buf, offset, readBudget - offset, offset);
+      if (n <= 0) break;
+      offset += n;
+    }
+    const truncated = fstat.size > maxBytes || offset > maxBytes;
+    const sliced = buf.subarray(0, Math.min(offset, maxBytes));
+    return { data: sliced, totalSize: fstat.size, truncated };
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* 忽略关闭句柄异常。 */
+      }
+    }
+  }
+}
+
 function inspectUntrackedFileStats(
   worktreePath: string,
   relPath: string,
 ): { additions: number; deletions: number; binary: boolean } {
-  const full = path.join(worktreePath, relPath);
-  try {
-    const stat = fs.lstatSync(full);
-    if (!stat.isFile() || stat.size > 2 * 1024 * 1024) {
-      return { additions: 0, deletions: 0, binary: stat.isFile() && stat.size > 2 * 1024 * 1024 };
-    }
-    const buf = fs.readFileSync(full);
-    const probeLen = Math.min(buf.length, 8192);
-    for (let i = 0; i < probeLen; i++) {
-      if (buf[i] === 0) return { additions: 0, deletions: 0, binary: true };
-    }
-    if (buf.length === 0) return { additions: 0, deletions: 0, binary: false };
-    const text = buf.toString('utf8');
-    const lines = text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length;
-    return { additions: lines, deletions: 0, binary: false };
-  } catch {
+  const resolved = resolveSafeUntrackedEntry(worktreePath, relPath);
+  if (!resolved) return { additions: 0, deletions: 0, binary: false };
+  const { fullPath, stat } = resolved;
+  if (stat.isSymbolicLink()) {
+    // 符号链接只展示链接目标元数据（单行），绝不跟随读取外部目标文件。
+    return { additions: 1, deletions: 0, binary: false };
+  }
+  if (!stat.isFile()) {
     return { additions: 0, deletions: 0, binary: false };
   }
+  if (stat.size > MAX_UNTRACKED_STAT_BYTES) {
+    return { additions: 0, deletions: 0, binary: true };
+  }
+  const bounded = readBoundedRegularFile(fullPath, MAX_UNTRACKED_STAT_BYTES);
+  if (!bounded) return { additions: 0, deletions: 0, binary: false };
+  if (bounded.totalSize > MAX_UNTRACKED_STAT_BYTES || bounded.truncated) {
+    return { additions: 0, deletions: 0, binary: true };
+  }
+  const buf = bounded.data;
+  const probeLen = Math.min(buf.length, 8192);
+  for (let i = 0; i < probeLen; i++) {
+    if (buf[i] === 0) return { additions: 0, deletions: 0, binary: true };
+  }
+  if (buf.length === 0) return { additions: 0, deletions: 0, binary: false };
+  const text = buf.toString('utf8');
+  const lines = text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length;
+  return { additions: lines, deletions: 0, binary: false };
 }
 
 function buildUntrackedUnifiedPatch(
   worktreePath: string,
   relPath: string,
   maxBytes: number,
-): Buffer {
-  const full = path.join(worktreePath, relPath);
-  try {
-    const buf = fs.readFileSync(full);
-    const text = buf.subarray(0, maxBytes).toString('utf8');
-    const rawLines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
-    const header = `diff --git a/${relPath} b/${relPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1,${rawLines.length} @@\n`;
-    const body = rawLines.map((line) => `+${line}`).join('\n');
-    return Buffer.from(`${header}${body}\n`, 'utf8');
-  } catch {
-    return Buffer.alloc(0);
+): { readonly patch: Buffer; readonly truncated: boolean } {
+  const resolved = resolveSafeUntrackedEntry(worktreePath, relPath);
+  if (!resolved) return { patch: Buffer.alloc(0), truncated: false };
+  const { fullPath, stat } = resolved;
+
+  if (stat.isSymbolicLink()) {
+    try {
+      const target = fs.readlinkSync(fullPath);
+      const header = `diff --git a/${relPath} b/${relPath}\nnew file mode 120000\n--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1 @@\n`;
+      const raw = Buffer.from(`${header}+${target}\n\\ No newline at end of file\n`, 'utf8');
+      return {
+        patch: raw.length > maxBytes ? raw.subarray(0, maxBytes) : raw,
+        truncated: raw.length > maxBytes,
+      };
+    } catch {
+      return { patch: Buffer.alloc(0), truncated: false };
+    }
   }
+
+  if (!stat.isFile()) {
+    return { patch: Buffer.alloc(0), truncated: false };
+  }
+
+  const bounded = readBoundedRegularFile(fullPath, maxBytes);
+  if (!bounded) return { patch: Buffer.alloc(0), truncated: false };
+  const probeLen = Math.min(bounded.data.length, 8192);
+  for (let i = 0; i < probeLen; i++) {
+    if (bounded.data[i] === 0) {
+      return { patch: Buffer.alloc(0), truncated: false };
+    }
+  }
+
+  const text = truncateUtf8Safe(bounded.data, maxBytes).text;
+  const rawLines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
+  const header = `diff --git a/${relPath} b/${relPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1,${rawLines.length} @@\n`;
+  const body = rawLines.map((line) => `+${line}`).join('\n');
+  const raw = Buffer.from(`${header}${body}\n`, 'utf8');
+  return {
+    patch: raw.length > maxBytes ? raw.subarray(0, maxBytes) : raw,
+    truncated: bounded.truncated || raw.length > maxBytes,
+  };
 }
 
 /**

@@ -265,6 +265,8 @@ export interface RestoreCheckpointInput {
   readonly targetOrdinal: number;
   /** 为 `true` 时忽略事后用户手动修改冲突，强制覆盖归因路径（仍先生成 `pre-restore` 备份快照）。 */
   readonly force?: boolean;
+  /** 为 `true` 时仅执行三路冲突预检而不写入 `pre-restore` 备份或修改磁盘/清单，用于跨子系统写盘前原子门禁。 */
+  readonly dryRun?: boolean;
   readonly signal?: AbortSignal;
 }
 

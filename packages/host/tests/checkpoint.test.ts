@@ -785,4 +785,71 @@ describe('CheckpointService', () => {
       process.chdir(originalCwd);
     }
   });
+
+  it('uses literal pathspecs and preserves POSIX backslashes so restore never touches unattributed sibling files', async () => {
+    const fakeHome = makeTempDir('kpbl-ckpt-literal-home-');
+    const repo = initSampleGitRepo();
+
+    // 预置不会被 Agent 触碰的兄弟文件（与 glob 字符和 POSIX 反斜杠同名子目录路径相邻）。
+    fs.writeFileSync(path.join(repo, 'src', 'a1.ts'), 'export const untouchedA1 = "v0";\n', 'utf8');
+    fs.writeFileSync(path.join(repo, 'src', 'a2.ts'), 'export const untouchedA2 = "v0";\n', 'utf8');
+    const globNamedPath = path.join(repo, 'src', 'a[12].ts');
+    fs.writeFileSync(globNamedPath, 'export const literalBracket = "v0";\n', 'utf8');
+    const hasPosixBackslash = process.platform !== 'win32';
+    if (hasPosixBackslash) {
+      fs.mkdirSync(path.join(repo, 'dirlike'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'dirlike', 'keep.txt'), 'real-subdir-file\n', 'utf8');
+    }
+    gitIn(repo, ['add', '-A']);
+    gitIn(repo, ['commit', '-m', 'add literal pathspec fixtures']);
+
+    const service = new CheckpointService({ homeDir: fakeHome });
+    const pre = await service.capturePreTurn({
+      projectRoot: repo,
+      executionRoot: repo,
+      sessionId: 'sess-literal-paths',
+      ordinal: 0,
+    });
+    if (!pre.captured) throw new Error('Expected pre captured');
+
+    // 用户在轮次外（或并发）有自己的修改位于归因外的兄弟文件 src/a1.ts，Agent 只修改 src/a[12].ts 与新建含反斜杠文件名。
+    fs.writeFileSync(globNamedPath, 'export const literalBracket = "agent-v1";\n', 'utf8');
+    if (hasPosixBackslash) {
+      fs.writeFileSync(path.join(repo, 'dirlike\\keep.txt'), 'agent-backslash-file\n', 'utf8');
+    }
+
+    await service.capturePostTurn({
+      projectRoot: repo,
+      executionRoot: repo,
+      sessionId: 'sess-literal-paths',
+      ordinal: 0,
+      startTree: pre.startTree,
+    });
+
+    // 轮次结束后用户在归因范围外的兄弟文件写入手动修改；若 checkout 误展开 `a[12].ts` 为 glob，就会覆盖 src/a1.ts！
+    fs.writeFileSync(
+      path.join(repo, 'src', 'a1.ts'),
+      'export const untouchedA1 = "user-manual-after-turn";\n',
+      'utf8',
+    );
+
+    const restored = await service.restore({
+      projectRoot: repo,
+      executionRoot: repo,
+      sessionId: 'sess-literal-paths',
+      targetOrdinal: -1,
+    });
+    expect(restored.status).toBe('restored');
+    expect(fs.readFileSync(globNamedPath, 'utf8')).toBe('export const literalBracket = "v0";\n');
+    // 归因范围外的 src/a1.ts 与 dirlike/keep.txt 必须 100% 完好无损！
+    expect(fs.readFileSync(path.join(repo, 'src', 'a1.ts'), 'utf8')).toBe(
+      'export const untouchedA1 = "user-manual-after-turn";\n',
+    );
+    if (hasPosixBackslash) {
+      expect(fs.existsSync(path.join(repo, 'dirlike\\keep.txt'))).toBe(false);
+      expect(fs.readFileSync(path.join(repo, 'dirlike', 'keep.txt'), 'utf8')).toBe(
+        'real-subdir-file\n',
+      );
+    }
+  });
 });

@@ -58,6 +58,8 @@ export function useDesktopCatalogs(params: {
   const [evidence, setEvidence] = useState<Output<'session.evidence'>>();
   const [evidenceReloadTick, setEvidenceReloadTick] = useState(0);
   const evidenceFlushedAt = useRef(0);
+  const [checkpoints, setCheckpoints] = useState<Output<'checkpoint.list'>['items']>([]);
+  const [checkpointReloadTick, setCheckpointReloadTick] = useState(0);
 
   const artifactBaseline = useRef(new Set<string>());
   const artifactScope = useRef('');
@@ -170,6 +172,41 @@ export function useDesktopCatalogs(params: {
       clearTimeout(timer);
     };
   }, [api, evidenceWorkspaceId, evidenceSessionId, projection, runPhase, evidenceReloadTick]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: checkpointReloadTick 与 diffSummary 在轮次完成或还原后驱动检查点清单刷新。
+  useEffect(() => {
+    if (!opened?.workspaceId || !opened.sessionId || !projection) {
+      setCheckpoints([]);
+      return;
+    }
+    let cancelled = false;
+    void api.checkpoint
+      .list({
+        workspaceId: opened.workspaceId,
+        sessionId: opened.sessionId,
+        conversationId: opened.conversationId,
+      })
+      .then((res) => {
+        if (!cancelled) setCheckpoints(res.items);
+      })
+      .catch(() => {
+        if (!cancelled) setCheckpoints([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    api,
+    opened?.workspaceId,
+    opened?.sessionId,
+    opened?.conversationId,
+    projection?.diffSummary?.additions,
+    projection?.diffSummary?.deletions,
+    projection?.identity.branchId,
+    runPhase,
+    messages.length,
+    checkpointReloadTick,
+  ]);
 
   // 基线之外的新图片产物自动展开右侧 Preview 标签一次。
   useEffect(() => {
@@ -309,6 +346,8 @@ export function useDesktopCatalogs(params: {
     setActiveTerminalsCount,
     evidence,
     reloadEvidence: () => setEvidenceReloadTick((v) => v + 1),
+    checkpoints,
+    reloadCheckpoints: () => setCheckpointReloadTick((v) => v + 1),
     commandList,
     skillList,
     fileList,

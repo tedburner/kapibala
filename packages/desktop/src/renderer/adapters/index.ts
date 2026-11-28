@@ -2,6 +2,7 @@ import type {
   PresentationState,
   ViewArtifact,
   ViewBlock,
+  ViewCheckpointItem,
   ViewEvidence,
   ViewExternalApproval,
   ViewExternalConfigCategory,
@@ -32,6 +33,7 @@ export interface ThreadWorktreeBinding {
   readonly branch: string;
   readonly worktreePath: string;
   readonly baseRef?: string;
+  readonly missing?: boolean;
 }
 
 /** 本地 Core、委派子代理与外部代理共用的内联审批单结构（首屏脱敏路径，详情入 `inspectorPayload`）。 */
@@ -134,6 +136,8 @@ export type UnifiedProcessStep =
 export interface UnifiedTurn {
   readonly id: string;
   readonly turnOrdinal: number;
+  /** 宿主 Shadow Git 检查点真实 0-based 序号；该轮缺少快照时为 `undefined`。 */
+  readonly checkpointOrdinal?: number;
   readonly userMessage?: {
     readonly id: string;
     readonly text: string;
@@ -228,6 +232,7 @@ export interface ProjectNativeThreadInput {
   readonly evidence?: ViewEvidence;
   readonly worktree?: ThreadWorktreeBinding;
   readonly diffSummary?: { readonly additions: number; readonly deletions: number };
+  readonly checkpoints?: readonly ViewCheckpointItem[];
   readonly canForkOrCheckpoint?: boolean;
 }
 

@@ -523,12 +523,13 @@ export class CheckpointService {
           turnsToRevert,
           targetOrdinal: input.targetOrdinal,
           force: input.force === true,
+          dryRun: input.dryRun === true,
           now: this.now,
           baseEnv: this.hostEnv,
           signal: input.signal,
         });
 
-        if (outcome.status === 'conflict') {
+        if (outcome.status === 'conflict' || outcome.status === 'noop') {
           return outcome;
         }
 

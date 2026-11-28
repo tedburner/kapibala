@@ -258,6 +258,7 @@ export const WorktreeSummarySchema = z
     createdAt: z.number().int().nonnegative(),
     inUse: z.boolean().optional(),
     prunable: z.boolean().optional(),
+    missing: z.boolean().optional(),
   })
   .strict();
 /** 受管 Git Worktree 只读摘要 DTO。 */
@@ -1379,17 +1380,20 @@ export const PARAMS = {
     restoreFiles: z.boolean().optional(),
     /** 还原检查点命中手动改动冲突时是否强制覆盖。 */
     force: z.boolean().optional(),
+    /** 重试时可选指定历史轮次用户消息 ID；缺省重试最后一轮。 */
+    targetMessageId: id.optional(),
     /** 跨代理接力上下文：以受控 `promptSource` 注入请求，不在用户气泡平铺历史文本。 */
     handoff: handoffPayload.optional(),
     /** 跨会话引用身份选择（客户端只传身份，宿主在运行锁内读取冻结并脱敏展开）。 */
     references: z.array(referenceSelection).max(8).optional(),
   }),
-  /** 专用重生上一轮回答入口；支持原子联动回退上一轮检查点文件。 */
+  /** 专用重生上一轮或指定历史轮次回答入口；支持原子联动回退目标轮次检查点文件。 */
   'run.regenerate': session.extend({
     operationId: z.uuid().optional(),
     input: z.string().max(512_000).optional(),
     restoreFiles: z.boolean().optional(),
     force: z.boolean().optional(),
+    targetMessageId: id.optional(),
   }),
   'run.cancel': session.extend({ runId: id }),
   'run.status': session,

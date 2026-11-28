@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { DesktopAPI, Workspace } from '../../shared/contracts.js';
-import { parseSessionKey } from '../adapters/index.js';
+import { type UnifiedTurn, parseSessionKey } from '../adapters/index.js';
 import { type WorkspaceHierarchyNode, useSessionStore } from '../stores/index.js';
 import type {
   CommandFeedbackItem,
@@ -426,18 +426,21 @@ export function useSessionActions(api: DesktopAPI, rt: RuntimeBag) {
         void rt.act(() => openExternalSession(space, parsed.sessionId));
       else void rt.act(() => openConversation(parsed.conversationId, space));
     },
-    regenerateLastTurn: (restoreFiles = false) => {
+    regenerateLastTurn: (restoreFiles = false, targetTurn?: UnifiedTurn) => {
       if (!rt.opened || rt.busy) return;
-      const prompt = findLastUserPrompt(rt.messages);
+      const targetMessageId = targetTurn?.userMessage?.id;
+      const prompt = targetTurn?.userMessage?.text?.trim() || findLastUserPrompt(rt.messages);
       if (!prompt) return;
       void rt.act(async () => {
         await flushStagedOpenedConfig(rt.opened!);
-        if (restoreFiles) {
+        if (restoreFiles || targetMessageId) {
           await api.run.regenerate({
             ...scopeOf(rt.opened!),
             operationId: crypto.randomUUID(),
-            restoreFiles: true,
+            ...(restoreFiles ? { restoreFiles: true } : {}),
+            ...(targetMessageId ? { targetMessageId } : {}),
           });
+          rt.reloadCheckpoints();
         } else await rt.client.start(scopeOf(rt.opened!), prompt, { regenerate: true });
       });
     },

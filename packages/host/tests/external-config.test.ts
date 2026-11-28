@@ -99,8 +99,17 @@ describe('外部代理内置预设与官方 ACP Registry 模板', () => {
     const isolatedHostEnv = { PATH: '' };
     const resolved = listResolvedExternalHarnesses({ homeDir, hostEnv: isolatedHostEnv });
     expect(resolved.find((r) => r.definition.id === 'qoder-cn')?.definition.enabled).toBe(true);
-    expect(resolved.find((r) => r.definition.id === 'gemini')?.definition.enabled).toBe(false);
-    expect(resolved.find((r) => r.definition.id === 'omp')?.definition.enabled).toBe(false);
+    // 非隔离系统默认目录（如 macOS `/opt/homebrew/bin`、`/usr/local/bin`）可能已由开发者本机安装了部分 CLI；
+    // 仅对系统默认目录中实际未安装的内置预设断言默认保持关闭。
+    const systemDirs = process.platform === 'win32' ? [] : ['/opt/homebrew/bin', '/usr/local/bin'];
+    const hasSystemBinary = (cmd: string) =>
+      systemDirs.some((dir) => fs.existsSync(path.join(dir, cmd)));
+    if (!hasSystemBinary('gemini')) {
+      expect(resolved.find((r) => r.definition.id === 'gemini')?.definition.enabled).toBe(false);
+    }
+    if (!hasSystemBinary('omp')) {
+      expect(resolved.find((r) => r.definition.id === 'omp')?.definition.enabled).toBe(false);
+    }
 
     // 手动停用已安装的 qoder-cn：必须持久化 enabled: false，不能因等于静态 builtin.enabled 而被删掉
     toggleExternalHarness('qoder-cn', false, { homeDir });

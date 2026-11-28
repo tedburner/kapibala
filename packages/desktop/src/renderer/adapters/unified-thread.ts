@@ -3,13 +3,9 @@ import {
   type ViewEvidence,
   type ViewExternalTransport,
   type ViewMessage,
-  type ViewTool,
   type ViewTurnMeta,
   selectMessages,
-  summarizeToolGroup,
 } from '@kiturone/kapibala-host/view-model';
-import { artifactFileName } from '../artifact-model.js';
-import { textPreviewLabel, toolPreview } from '../html-preview-model.js';
 import { aggregateTurnUsage, formatTurnMetaBadge } from '../turn-usage.js';
 import {
   type ProjectExternalThreadInput,
@@ -18,19 +14,15 @@ import {
   type UnifiedApprovalItem,
   type UnifiedProcessStep,
   type UnifiedThreadViewModel,
-  type UnifiedToolItem,
   type UnifiedTurn,
-  type UnifiedWorkbenchTarget,
   buildExternalSessionKey,
   buildNativeSessionKey,
-  extractJsonStringProp,
   extractPreviewableCodeBlocks,
-  extractToolFailureSummary,
   parseSessionKey,
   projectExternalApproval,
   projectNativeApproval,
-  relativizeWorkspaceText,
 } from './index.js';
+import { projectToolGroup } from './turn-tools.js';
 
 export {
   buildExternalSessionKey,
@@ -43,159 +35,18 @@ export {
   type UnifiedTurn,
 };
 
-const TOOL_VERBS: Readonly<Record<string, string>> = {
-  read_file: '读取',
-  write_file: '写入',
-  edit_file: '编辑',
-  delete_file: '删除',
-  run_command: '运行',
-  glob: '搜索路径',
-  grep: '搜索内容',
-  spawn_agent: '委派子代理',
-  send_agent: '消息子代理',
-};
 const TRANSPORT_LABELS: Readonly<
   Record<ViewExternalTransport, 'ACP' | 'CLI' | 'App-Server' | 'RPC'>
 > = { acp: 'ACP', 'claude-cli': 'CLI', 'codex-app-server': 'App-Server', 'pi-rpc': 'RPC' };
 
-function resolveToolTarget(
-  tool: ViewTool,
-  workspaceRoot: string | undefined,
-  changeMap: ReadonlyMap<
-    string,
-    { additions: number | null; deletions: number | null; path: string }
-  >,
-  delegations: ViewEvidence['delegations'] | undefined,
-): UnifiedWorkbenchTarget {
-  const artifact = tool.status === 'succeeded' ? tool.artifacts?.[0] : undefined;
-  if (artifact) {
-    return {
-      kind: 'preview',
-      callId: tool.callId,
-      previewKind: artifact.ext === 'svg' ? 'svg' : 'image',
-      label: artifactFileName(artifact.path),
-      filePath: relativizeWorkspaceText(artifact.path, workspaceRoot),
-      artifact,
-    };
-  }
-  const inputPath = extractJsonStringProp(tool.input, ['path', 'file_path']) ?? tool.chip ?? '';
-  const inlineHtml = toolPreview(tool.name, tool.input, tool.status);
-  if (inlineHtml) {
-    return {
-      kind: 'preview',
-      callId: tool.callId,
-      previewKind: /\.svg$/i.test(inputPath) ? 'svg' : 'html',
-      label: inputPath ? textPreviewLabel(inputPath) : inlineHtml.label,
-      filePath: inputPath ? relativizeWorkspaceText(inputPath, workspaceRoot) : undefined,
-      html: inlineHtml.html,
-    };
-  }
-  if (tool.name === 'spawn_agent' || tool.name === 'send_agent' || tool.name === 'delegate') {
-    const directId =
-      extractJsonStringProp(tool.result, ['sessionId', 'childSessionId', 'conversationId']) ??
-      extractJsonStringProp(tool.input, ['sessionId', 'childSessionId', 'recipient']);
-    const taskName =
-      extractJsonStringProp(tool.input, ['role', 'taskName', 'description']) ?? tool.chip;
-    const matched = !directId
-      ? delegations?.find((d) => d.taskName === taskName)
-      : delegations?.find((d) => d.sessionId === directId);
-    const childSessionId = directId ?? matched?.sessionId;
-    if (childSessionId) {
-      return {
-        kind: 'delegation',
-        callId: tool.callId,
-        childSessionId,
-        taskName: matched?.taskName ?? taskName,
-      };
-    }
-  }
-  const change = changeMap.get(tool.callId);
-  if (change || tool.name === 'edit_file' || tool.name === 'write_file') {
-    return {
-      kind: 'diff',
-      callId: tool.callId,
-      filePath: relativizeWorkspaceText(
-        change?.path || inputPath || tool.invocation,
-        workspaceRoot,
-      ),
-      additions: change?.additions,
-      deletions: change?.deletions,
-    };
-  }
-  return { kind: 'inspector', callId: tool.callId };
-}
-
-function resolveToolStatus(tools: readonly ViewTool[]): ViewTool['status'] {
-  if (tools.some((t) => t.status === 'running')) return 'running';
-  if (tools.some((t) => t.status === 'failed')) return 'failed';
-  return tools.some((t) => t.status === 'interrupted') ? 'interrupted' : 'succeeded';
-}
-
-function projectToolGroup(
-  groupId: string,
-  blocks: readonly ViewBlock[],
-  workspaceRoot: string | undefined,
-  evidence: ViewEvidence | undefined,
-): UnifiedProcessStep {
-  const changeMap = new Map(
-    (evidence?.changes ?? []).map((c) => [
-      c.callId,
-      { additions: c.additions, deletions: c.deletions, path: c.path },
-    ]),
-  );
-  const rawTools = blocks.flatMap((b) => (b.tool ? [b.tool] : []));
-  let durationSum = 0;
-  let hasDuration = false;
-  const tools: UnifiedToolItem[] = rawTools.map((tool) => {
-    if (tool.durationMs !== undefined) {
-      durationSum += tool.durationMs;
-      hasDuration = true;
-    }
-    const stat = changeMap.get(tool.callId);
-    return {
-      callId: tool.callId,
-      name: tool.name,
-      displayName: tool.displayName,
-      verb: tool.verb ?? TOOL_VERBS[tool.name] ?? tool.displayName,
-      targetLabel: relativizeWorkspaceText(
-        tool.chip ?? tool.invocation ?? tool.displayName,
-        workspaceRoot,
-      ),
-      mono: tool.mono ?? Boolean(tool.chip),
-      status: tool.status,
-      durationMs: tool.durationMs ?? tool.elapsedMs,
-      diffStat:
-        stat && (stat.additions !== null || stat.deletions !== null)
-          ? { additions: stat.additions, deletions: stat.deletions }
-          : undefined,
-      failureReason: tool.status === 'failed' ? extractToolFailureSummary(tool.result) : undefined,
-      primaryTarget: resolveToolTarget(tool, workspaceRoot, changeMap, evidence?.delegations),
-    };
-  });
-  const summary = summarizeToolGroup(rawTools);
-  return {
-    id: groupId,
-    kind: 'tool_group',
-    status: resolveToolStatus(rawTools),
-    summaryText: summary?.text ?? `已执行 ${tools.length} 步操作`,
-    totalCount: summary?.total ?? tools.length,
-    failedCount: summary?.failed ?? tools.filter((t) => t.status === 'failed').length,
-    totalDurationMs: hasDuration ? durationSum : undefined,
-    tools,
-  };
-}
-
-function readPlainUserText(msg: ViewMessage): string {
-  return msg.blocks
+const readPlainUserText = (msg: ViewMessage): string =>
+  msg.blocks
     .filter((b) => b.kind === 'text' && !b.skillName)
     .map((b) => b.text)
     .join('\n')
     .trim();
-}
-
-function isSystemText(text: string): boolean {
-  return text.startsWith('<watch-event ') || text.startsWith('<subagent-notification ');
-}
+const isSystemText = (text: string): boolean =>
+  text.startsWith('<watch-event ') || text.startsWith('<subagent-notification ');
 
 function buildUnifiedTurns(
   messages: readonly ViewMessage[],
@@ -206,12 +57,24 @@ function buildUnifiedTurns(
     readonly isIdleOrFailed: boolean;
     readonly canRegenerateSession: boolean;
     readonly canForkOrCheckpoint: boolean;
+    readonly checkpointOrdinals?: ReadonlySet<number>;
   },
 ): UnifiedTurn[] {
-  const buckets: Array<{ id: string; userMsg?: ViewMessage; assistantMsgs: ViewMessage[] }> = [];
+  const buckets: Array<{
+    id: string;
+    userMsg?: ViewMessage;
+    userTurnIndex?: number;
+    assistantMsgs: ViewMessage[];
+  }> = [];
+  let userTurnCounter = 0;
   for (const message of messages) {
     if (message.role === 'user')
-      buckets.push({ id: message.id, userMsg: message, assistantMsgs: [] });
+      buckets.push({
+        id: message.id,
+        userMsg: message,
+        userTurnIndex: userTurnCounter++,
+        assistantMsgs: [],
+      });
     else if (message.role === 'assistant') {
       const last = buckets.at(-1);
       if (last) last.assistantMsgs.push(message);
@@ -293,9 +156,14 @@ function buildUnifiedTurns(
       .reverse()
       .find((m) => Boolean(m.turnMeta))?.turnMeta;
 
+    const checkpointOrdinal =
+      bucket.userTurnIndex !== undefined && opts.checkpointOrdinals?.has(bucket.userTurnIndex)
+        ? bucket.userTurnIndex
+        : undefined;
     return {
       id: bucket.id,
       turnOrdinal: idx + 1,
+      checkpointOrdinal,
       userMessage,
       processSteps,
       proseBlocks,
@@ -308,6 +176,7 @@ function buildUnifiedTurns(
       canRestoreCheckpoint:
         opts.canForkOrCheckpoint &&
         opts.isIdleOrFailed &&
+        checkpointOrdinal !== undefined &&
         Boolean(userMessage && !userMessage.isSystemEvent && userMessage.persisted),
     };
   });
@@ -345,13 +214,16 @@ export function projectNativeThread(input: ProjectNativeThreadInput): UnifiedThr
           : input.presentation.operation?.result === 'failed'
             ? 'failed'
             : 'idle';
-  const canFork = input.canForkOrCheckpoint ?? true;
+  const worktreeMissing = Boolean(input.worktree?.missing);
+  const canFork = !worktreeMissing && (input.canForkOrCheckpoint ?? true);
+  const checkpointOrdinals = new Set((input.checkpoints ?? []).map((cp) => cp.ordinal));
   const turns = buildUnifiedTurns(selectMessages(input.presentation), input.presentation.expanded, {
     workspaceRoot: input.workspaceRoot,
     evidence: input.evidence,
     isIdleOrFailed: phase === 'idle' || phase === 'failed',
-    canRegenerateSession: true,
+    canRegenerateSession: !worktreeMissing,
     canForkOrCheckpoint: canFork,
+    checkpointOrdinals,
   });
   return {
     sessionKey: buildNativeSessionKey(input.workspaceId, input.conversationId),
@@ -376,9 +248,9 @@ export function projectNativeThread(input: ProjectNativeThreadInput): UnifiedThr
     evidence: input.evidence,
     notices: input.presentation.notices,
     capabilities: {
-      canContinue: true,
-      canSwitchRole: true,
-      canSwitchPermissionMode: true,
+      canContinue: !worktreeMissing,
+      canSwitchRole: !worktreeMissing,
+      canSwitchPermissionMode: !worktreeMissing,
       canForkOrCheckpoint: canFork,
       externalConfigCategories: [],
     },

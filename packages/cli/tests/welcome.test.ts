@@ -85,7 +85,7 @@ describe('CLI 1A 极简墨线像素欢迎区 (welcome.ts)', () => {
     await writeInteractiveWelcome(
       { isTTY: true, columns: 88, write: (chunk: string) => ttyChunks.push(chunk) },
       BASE_FACTS,
-      { frameDelayMs: 1 },
+      { color: true, frameDelayMs: 1 },
     );
     const ttyJoined = ttyChunks.join('');
     // 含光标上移覆写帧并确保恢复光标可见 (\x1b[?25h)

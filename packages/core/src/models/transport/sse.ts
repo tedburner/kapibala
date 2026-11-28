@@ -96,7 +96,22 @@ export async function* parseSSEFrames(
     while (!ended) {
       const next = await readNextChunk();
       ended = next.done;
-      buffer += next.done ? decoder.decode() : decoder.decode(next.value, { stream: true });
+      try {
+        buffer += next.done ? decoder.decode() : decoder.decode(next.value, { stream: true });
+      } catch {
+        if (next.done) {
+          throw new ModelError('Model stream ended with an incomplete UTF-8 sequence', {
+            code: 'MODEL_STREAM_INTERRUPTED',
+            stage: 'stream',
+            retryable: true,
+          });
+        }
+        throw new ModelError('Model stream contained invalid UTF-8 bytes', {
+          code: 'MODEL_INVALID_RESPONSE',
+          stage: 'stream',
+          retryable: false,
+        });
+      }
       while (true) {
         const index = buffer.search(/[\r\n]/);
         if (index < 0 || (!ended && buffer[index] === '\r' && index === buffer.length - 1)) break;
@@ -113,9 +128,31 @@ export async function* parseSSEFrames(
           retryable: false,
         });
     }
+    const hadUnterminatedLine = buffer.length > 0;
     if (buffer) feed(buffer);
     const tail = feed('');
-    if (tail) yield tail;
+    if (tail) {
+      // 未遇空行终止符即到达 EOF 时，若载荷形似 JSON（或截断的 `[DONE]`）且无法解析，
+      // 属于传输层在帧中间被正常 EOF 截断，必须报可重试的流中断而非不可重试的格式错误。
+      const trimmed = tail.data.trimStart();
+      if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.trim() !== '[DONE]') {
+        try {
+          JSON.parse(tail.data);
+        } catch {
+          throw new ModelError(
+            hadUnterminatedLine
+              ? 'Model SSE stream ended mid-line before JSON frame completed'
+              : 'Model SSE stream ended before JSON frame boundary',
+            {
+              code: 'MODEL_STREAM_INTERRUPTED',
+              stage: 'stream',
+              retryable: true,
+            },
+          );
+        }
+      }
+      yield tail;
+    }
   } finally {
     try {
       await reader.cancel();

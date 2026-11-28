@@ -279,6 +279,18 @@ function buildSampleThread(): UnifiedThreadViewModel {
     title: '重构权限网关',
     presentation,
     evidence,
+    checkpoints: [
+      {
+        ordinal: 0,
+        createdAt: 1_700_000_000_000,
+        startTree: 'aaa',
+        endTree: 'bbb',
+        additions: 42,
+        deletions: 15,
+        changedFilesCount: 1,
+        label: '请给出架构建议并生成预览',
+      },
+    ],
     activeWatchesCount: 2,
     worktree: {
       id: 'wt-1',

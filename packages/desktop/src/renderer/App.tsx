@@ -374,9 +374,13 @@ export function App() {
                 const sp = rt.spaces.find((s) => s.id === wsId) ?? rt.workspace;
                 if (sp) void rt.act(() => actions.openConversation(childId, sp));
               }}
-              onRegenerate={() => actions.regenerateLastTurn(false)}
-              onRestoreAndRetry={() => actions.regenerateLastTurn(true)}
-              onRestoreCheckpoint={(turn) => actions.openTurnCheckpointDiff(turn.turnOrdinal)}
+              onRegenerate={(turn) => actions.regenerateLastTurn(false, turn)}
+              onRestoreAndRetry={(turn) => actions.regenerateLastTurn(true, turn)}
+              onRestoreCheckpoint={(turn) => {
+                if (turn.checkpointOrdinal !== undefined) {
+                  actions.openTurnCheckpointDiff(turn.checkpointOrdinal);
+                }
+              }}
               onEditUserMessage={(text) => {
                 if (!rt.activeThread) return;
                 useSessionStore.getState().setDraft(rt.activeThread.sessionKey, text);

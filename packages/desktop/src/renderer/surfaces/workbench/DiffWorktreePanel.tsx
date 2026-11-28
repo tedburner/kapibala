@@ -4,6 +4,28 @@ import type { ThreadWorktreeBinding } from '../../adapters/index.js';
 import { useI18n } from '../../i18n.js';
 import { Badge, Button, MiddleTruncate, ModalDialog } from '../../ui/index.js';
 
+/** 检查点还原目标：显式绑定回滚范围、真实 `targetOrdinal` 与用于提示的展示轮次序号。 */
+export interface DiffRestoreTarget {
+  readonly scope: 'session' | 'checkpoint';
+  readonly targetOrdinal: number;
+  readonly displayOrdinal?: number;
+}
+
+/** 生成与实际回滚目标严格一致的成功提示文案。 */
+export function formatRestoreSuccessMessage(
+  target: DiffRestoreTarget,
+  isExternalSession: boolean,
+): string {
+  if (target.scope === 'session') {
+    return isExternalSession
+      ? '已撤销当前会话全部检查点变更，归因磁盘文件已恢复至会话开始前状态（外部代理聊天记录保持不变）'
+      : '已撤销当前会话全部检查点变更，磁盘文件已恢复至会话开始前状态';
+  }
+  return isExternalSession
+    ? `已还原至轮次 #${target.displayOrdinal} 执行前状态（外部代理聊天记录保持不变）`
+    : `已还原至轮次 #${target.displayOrdinal} 执行前状态（已撤销轮次 #${target.displayOrdinal} 及后续改动）`;
+}
+
 /** `onRestoreCheckpoint` 返回契约：若目标文件在轮次后被手动修改则返回 `conflict` 清单供二次确认。 */
 export type RestoreCheckpointResult =
   | { readonly status: 'restored'; readonly restoredCount?: number }
@@ -37,6 +59,7 @@ export function buildWorktreeConflictResolutionPrompt(
  */
 export interface CheckpointConflictDialogProps {
   readonly open: boolean;
+  readonly scope?: 'session' | 'checkpoint';
   readonly ordinal: number | null;
   readonly conflicts: readonly string[];
   readonly busy?: boolean;
@@ -47,6 +70,7 @@ export interface CheckpointConflictDialogProps {
 /** 检查点回滚手动修改冲突确认模态框。 */
 export function CheckpointConflictDialog({
   open,
+  scope = 'checkpoint',
   ordinal,
   conflicts,
   busy = false,
@@ -55,6 +79,10 @@ export function CheckpointConflictDialog({
 }: CheckpointConflictDialogProps) {
   const { t } = useI18n();
   const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const description =
+    scope === 'session'
+      ? t('diff.conflictSessionDesc')
+      : t('diff.conflictDesc', { ordinal: ordinal ?? 0 });
   return (
     <ModalDialog
       open={open}
@@ -62,7 +90,7 @@ export function CheckpointConflictDialog({
         if (!nextOpen && !busy) onCancel();
       }}
       title={t('diff.conflictTitle')}
-      description={t('diff.conflictDesc', { ordinal: ordinal ?? 0 })}
+      description={description}
       initialFocusRef={cancelRef}
       footer={
         <>
@@ -88,6 +116,56 @@ export function CheckpointConflictDialog({
           </li>
         ))}
       </ul>
+    </ModalDialog>
+  );
+}
+
+/** 累计视图撤销全部会话变更的二次确认框（默认焦点锁定在「取消」安全按钮）。 */
+export interface SessionRevertConfirmDialogProps {
+  readonly open: boolean;
+  readonly checkpointCount: number;
+  readonly busy?: boolean;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}
+
+/** 撤销当前会话全部检查点变更确认模态框。 */
+export function SessionRevertConfirmDialog({
+  open,
+  checkpointCount,
+  busy = false,
+  onCancel,
+  onConfirm,
+}: SessionRevertConfirmDialogProps) {
+  const { t } = useI18n();
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  return (
+    <ModalDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && !busy) onCancel();
+      }}
+      title={t('diff.revertSessionConfirmTitle')}
+      description={t('diff.revertSessionConfirmDesc', { count: checkpointCount })}
+      initialFocusRef={cancelRef}
+      footer={
+        <>
+          <Button ref={cancelRef} variant="outline" size="sm" disabled={busy} onClick={onCancel}>
+            {t('general.cancel')}
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            loading={busy}
+            leadingIcon="arrow-bend-down-left"
+            onClick={onConfirm}
+          >
+            {t('diff.revertSessionConfirmAction')}
+          </Button>
+        </>
+      }
+    >
+      <div />
     </ModalDialog>
   );
 }
@@ -211,7 +289,12 @@ export function DiffWorktreePanel({
               size="xs"
               leadingIcon="check"
               loading={applying}
-              disabled={!onApplyMerge || preview.mainDirty || preview.aheadCount === 0}
+              disabled={
+                !onApplyMerge ||
+                preview.canApply === false ||
+                preview.mainDirty ||
+                preview.aheadCount === 0
+              }
               onClick={() => void handleApply()}
             >
               {t('diff.wtApplyMergeBtn')}
@@ -220,13 +303,13 @@ export function DiffWorktreePanel({
         </div>
       </div>
 
-      {preview?.mainDirty ? (
+      {preview?.blockingReason || preview?.mainDirty ? (
         <div role="alert" data-tone="warning" className="kpbl-wb-banner">
-          <span>{t('diff.wtMainDirty')}</span>
+          <span>{preview.blockingReason || t('diff.wtMainDirty')}</span>
         </div>
       ) : null}
 
-      {preview && !preview.mainDirty && preview.worktreeDirty ? (
+      {preview && !preview.blockingReason && !preview.mainDirty && preview.worktreeDirty ? (
         <div data-tone="info" className="kpbl-wb-banner">
           <span>{t('diff.wtDirtyInfo')}</span>
         </div>

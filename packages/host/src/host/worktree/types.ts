@@ -53,6 +53,7 @@ export type WorktreeErrorCode =
   | 'WORKTREE_BRANCH_EXISTS'
   | 'WORKTREE_CAPACITY_EXCEEDED'
   | 'WORKTREE_LINK_INVALID'
+  | 'WORKTREE_MISSING'
   | 'WORKTREE_NOT_FOUND'
   | 'WORKTREE_ACTIVE_RUN'
   | 'WORKTREE_FENCED'
@@ -73,6 +74,8 @@ const WORKTREE_SAFE_MESSAGES: Readonly<Record<WorktreeErrorCode, string>> = {
   WORKTREE_BRANCH_EXISTS: '同名本地分支已存在，请更换分支名',
   WORKTREE_CAPACITY_EXCEEDED: '受管工作树短路径桶分配冲突过多，请清理闲置工作树后重试',
   WORKTREE_LINK_INVALID: '工作树双向 Git 回链校验失败，已拒绝信任或访问该目录',
+  WORKTREE_MISSING:
+    '该会话绑定的受管工作树已被删除，当前以只读历史模式打开；续跑前请先重新绑定执行根',
   WORKTREE_NOT_FOUND: '找不到指定的受管工作树记录',
   WORKTREE_ACTIVE_RUN: '该工作树仍有运行中的本地或外部任务，请先停止任务后再执行此操作',
   WORKTREE_FENCED: '该工作树正处于合并或移除门闩保护期，暂不接受新任务',

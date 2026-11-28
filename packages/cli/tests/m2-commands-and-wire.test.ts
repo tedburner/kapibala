@@ -601,6 +601,24 @@ describe('M2 CLI 斜杠命令：/checkpoints、/worktrees、/delegate --worktree
     expect(logs.join('\n')).toContain('尚未被信任');
     expect(fs.existsSync(path.join(repoDir, 'turn1.txt'))).toBe(true);
 
+    // 显式指定不存在的 recordId 执行 --restore-files（普通分叉与摘要分叉）必须先报错且零磁盘修改
+    logs.length = 0;
+    await dispatcher.dispatch('/branch create nonexistent-rec bad-fork --restore-files', ctx);
+    expect(logs.join('\n')).toMatch(/Base record not found/);
+    expect(fs.existsSync(path.join(repoDir, 'turn0.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(repoDir, 'turn1.txt'))).toBe(true);
+    expect((await handle.store.getBranches()).map((b) => b.branchId)).toEqual(['main']);
+
+    logs.length = 0;
+    await dispatcher.dispatch(
+      '/branch create nonexistent-rec bad-summary-fork --summary --restore-files',
+      ctx,
+    );
+    expect(logs.join('\n')).toMatch(/Base record not found/);
+    expect(fs.existsSync(path.join(repoDir, 'turn0.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(repoDir, 'turn1.txt'))).toBe(true);
+    expect((await handle.store.getBranches()).map((b) => b.branchId)).toEqual(['main']);
+
     // 在第 2 轮 user 消息 u-1 处分叉（其 assistant 轮次尚未运行 -> targetOrdinal = 0）：应回滚 turn1.txt 并保留 turn0.txt
     logs.length = 0;
     await dispatcher.dispatch(`/branch create ${u1RecordId} alt --restore-files`, ctx);

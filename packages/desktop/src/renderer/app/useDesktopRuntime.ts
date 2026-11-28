@@ -315,11 +315,13 @@ export function useDesktopRuntime(api: DesktopAPI) {
         approvals: facts.approvals,
         activeWatchesCount: runtimeItem?.watches ?? 0,
         evidence: catalogs.evidence,
+        checkpoints: catalogs.checkpoints,
         histories,
         activeExternal,
       }),
     [
       activeExternal,
+      catalogs.checkpoints,
       catalogs.evidence,
       facts.approvals,
       facts.state,

@@ -1333,6 +1333,13 @@ export class SessionManager {
     } else if (record.type === 'watch_state') {
       // 监视状态不进列表元数据：它只由持会话写租约的宿主回放恢复，sidecar 重建无需保留。
       // 此分支必须存在，否则后续新增字段时容易把 watch_state 当成未知记录静默丢弃。
+    } else if (record.type === 'worktree_binding') {
+      const next = record.payload.worktree as SessionHeader['worktree'] | null | undefined;
+      if (next && typeof next === 'object') {
+        meta.worktree = next;
+      } else {
+        meta.worktree = undefined;
+      }
     }
 
     if (branchLeaves && !isGlobalControlRecordType(record.type)) {

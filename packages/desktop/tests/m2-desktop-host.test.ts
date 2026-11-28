@@ -567,4 +567,236 @@ describe('M2 DesktopHost RPCs：worktree.*、checkpoint.*、session.create(workt
     });
     expect(fs.existsSync(dirtyWtPath)).toBe(true);
   });
+
+  it('run.regenerate 先走 operationId 去重再持有写租约还原，跳快照轮次不误撤旧轮次，且支持按历史轮次 targetMessageId 还原重试', async () => {
+    const homeDir = makeTempDir('kpbl-m2-desk-regen-home-');
+    const repoDir = makeTempDir('kpbl-m2-desk-regen-repo-');
+    initGitRepo(repoDir);
+
+    let stepCounter = 0;
+    const seenUserPrompts: string[] = [];
+    const modelServer = http.createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+        messages?: Array<{ role: string; content: unknown }>;
+      };
+      const lastUser = [...(body.messages ?? [])].reverse().find((m) => m.role === 'user');
+      if (lastUser) seenUserPrompts.push(String(lastUser.content ?? ''));
+
+      const callNo = stepCounter++;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const writeToolChunk = (id: string, filePath: string, content: string) => {
+        const chunk = {
+          id: `c-${callNo}`,
+          object: 'chat.completion.chunk',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: 'assistant',
+                tool_calls: [
+                  {
+                    index: 0,
+                    id,
+                    type: 'function',
+                    function: {
+                      name: 'write_file',
+                      arguments: JSON.stringify({ path: filePath, content }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+        };
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      };
+      const writeTextChunk = (text: string) => {
+        const chunk = {
+          id: `c-${callNo}`,
+          object: 'chat.completion.chunk',
+          choices: [
+            {
+              index: 0,
+              delta: { role: 'assistant', content: text },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 6, total_tokens: 16 },
+        };
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      };
+
+      // Turn 0: 写 src/app.ts = v2
+      if (callNo === 0)
+        return writeToolChunk('call_t0', 'src/app.ts', 'export const app = "v2";\n');
+      if (callNo === 1) return writeTextChunk('首轮完成 v2');
+      // Turn 1: 写 src/app.ts = v3
+      if (callNo === 2)
+        return writeToolChunk('call_t1', 'src/app.ts', 'export const app = "v3";\n');
+      if (callNo === 3) return writeTextChunk('第二轮完成 v3');
+      // 历史首轮重试：写 src/app.ts = v2-retry
+      if (callNo === 4)
+        return writeToolChunk('call_t0_retry', 'src/app.ts', 'export const app = "v2-retry";\n');
+      return writeTextChunk('首轮重试完成 v2-retry');
+    });
+
+    await new Promise<void>((resolve) => modelServer.listen(0, '127.0.0.1', resolve));
+    cleanups.push(
+      () =>
+        new Promise<void>((resolve) => {
+          modelServer.close(() => resolve());
+        }),
+    );
+    const port = (modelServer.address() as AddressInfo).port;
+    const settings: UserSettings = {
+      defaultModel: 'mock-desk',
+      permissionMode: 'Auto',
+      profiles: [
+        {
+          id: 'mock-desk',
+          name: 'Mock Desk',
+          provider: 'openai-compatible',
+          modelName: 'mock-desk',
+          baseURL: `http://127.0.0.1:${port}/v1`,
+          apiKeyEnv: 'NONE',
+          apiKey: 'dummy-key',
+        },
+      ],
+    };
+    fs.mkdirSync(path.join(homeDir, '.kapibala'), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeDir, '.kapibala', 'settings.json'),
+      JSON.stringify(settings, null, 2),
+      'utf8',
+    );
+
+    const events: Notification[] = [];
+    const host = new DesktopHost(homeDir, async (evt) => {
+      events.push(evt);
+    });
+    cleanups.push(() => host.disconnect());
+
+    const picked = (await host.dispatch('workspace.pick', {}, repoDir)) as Output<'workspace.pick'>;
+    const ws = (await host.dispatch('workspace.addProject', {
+      workspaceId: picked!.id,
+      name: 'RegenRepo',
+      trustToken: picked!.trustToken,
+      acceptTrust: true,
+    })) as Output<'workspace.addProject'>;
+
+    const created = (await host.dispatch('session.create', {
+      workspaceId: ws.id,
+    })) as Output<'session.create'>;
+
+    const subId = randomUUID();
+    await host.dispatch('presentation.subscribe', {
+      workspaceId: ws.id,
+      sessionId: created.sessionId,
+      subscriptionId: subId,
+    });
+    const firstChunk = events.find(
+      (e): e is Extract<Notification, { type: 'presentation.chunk' }> =>
+        e.type === 'presentation.chunk' && e.subscriptionId === subId,
+    )!;
+    await host.dispatch('presentation.installed', {
+      workspaceId: ws.id,
+      sessionId: created.sessionId,
+      subscriptionId: subId,
+      snapshotId: firstChunk.snapshotId,
+      sequence: firstChunk.sequence,
+    });
+
+    const waitIdle = async () => {
+      await expect
+        .poll(
+          async () => {
+            const st = (await host.dispatch('run.status', {
+              workspaceId: ws.id,
+              sessionId: created.sessionId,
+            })) as Output<'run.status'>;
+            return st?.phase;
+          },
+          { timeout: 20_000 },
+        )
+        .toBe('idle');
+    };
+
+    // 完成 Turn 0（v2）与 Turn 1（v3）
+    await host.dispatch('run.start', {
+      workspaceId: ws.id,
+      sessionId: created.sessionId,
+      operationId: randomUUID(),
+      input: '第一轮任务：写 v2',
+    });
+    await waitIdle();
+    expect(fs.readFileSync(path.join(repoDir, 'src', 'app.ts'), 'utf8')).toBe(
+      'export const app = "v2";\n',
+    );
+
+    await host.dispatch('run.start', {
+      workspaceId: ws.id,
+      sessionId: created.sessionId,
+      operationId: randomUUID(),
+      input: '第二轮任务：写 v3',
+    });
+    await waitIdle();
+    expect(fs.readFileSync(path.join(repoDir, 'src', 'app.ts'), 'utf8')).toBe(
+      'export const app = "v3";\n',
+    );
+
+    // 抓取首轮用户消息 ID
+    const snapEvents = events.filter(
+      (e): e is Extract<Notification, { type: 'presentation.event' }> =>
+        e.type === 'presentation.event' && e.event.change.type === 'message_committed',
+    );
+    const firstUserMsgId = snapEvents.find(
+      (e) =>
+        e.event.change.type === 'message_committed' &&
+        e.event.change.message.role === 'user' &&
+        e.event.change.message.blocks.some((b) => b.text.includes('第一轮任务')),
+    );
+    const targetMessageId =
+      firstUserMsgId?.event.change.type === 'message_committed'
+        ? firstUserMsgId.event.change.message.id
+        : undefined;
+    expect(targetMessageId).toBeTruthy();
+
+    // 按首轮 targetMessageId 执行「还原文件并重试」：应撤销 Turn 0 & Turn 1，并用首轮 prompt 重跑！
+    const regenOpId = randomUUID();
+    const firstReceipt = (await host.dispatch('run.regenerate', {
+      workspaceId: ws.id,
+      sessionId: created.sessionId,
+      operationId: regenOpId,
+      restoreFiles: true,
+      targetMessageId,
+    })) as Output<'run.regenerate'>;
+    await waitIdle();
+
+    expect(fs.readFileSync(path.join(repoDir, 'src', 'app.ts'), 'utf8')).toBe(
+      'export const app = "v2-retry";\n',
+    );
+    expect(seenUserPrompts.at(-1)).toContain('第一轮任务');
+
+    // 以相同 operationId 重复请求 run.regenerate：必须命中去重直接返回旧回执，绝不能二次还原修改磁盘！
+    fs.writeFileSync(path.join(repoDir, 'src', 'app.ts'), 'export const app = "after-dedup";\n');
+    const dupReceipt = (await host.dispatch('run.regenerate', {
+      workspaceId: ws.id,
+      sessionId: created.sessionId,
+      operationId: regenOpId,
+      restoreFiles: true,
+      targetMessageId,
+    })) as Output<'run.regenerate'>;
+    expect(dupReceipt.runId).toBe(firstReceipt.runId);
+    expect(fs.readFileSync(path.join(repoDir, 'src', 'app.ts'), 'utf8')).toBe(
+      'export const app = "after-dedup";\n',
+    );
+  });
 });

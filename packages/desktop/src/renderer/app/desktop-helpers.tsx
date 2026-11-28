@@ -222,6 +222,7 @@ export function buildActiveThreadModel(params: {
   readonly approvals: readonly Approval[];
   readonly activeWatchesCount: number;
   readonly evidence?: Output<'session.evidence'>;
+  readonly checkpoints?: Output<'checkpoint.list'>['items'];
   readonly histories: Readonly<Record<string, Output<'session.list'>>>;
   readonly activeExternal?: {
     readonly workspaceId: string;
@@ -238,6 +239,7 @@ export function buildActiveThreadModel(params: {
     approvals,
     activeWatchesCount,
     evidence,
+    checkpoints,
     histories,
     activeExternal,
   } = params;
@@ -288,6 +290,7 @@ export function buildActiveThreadModel(params: {
     approvals: sessionApprovals,
     activeWatchesCount,
     evidence,
+    checkpoints,
     worktree,
     diffSummary: effectiveState.diffSummary,
   });

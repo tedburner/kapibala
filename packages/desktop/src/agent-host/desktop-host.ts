@@ -162,7 +162,10 @@ export class DesktopHost {
   >();
   private readonly leases = new WorkspaceLeaseCoordinator();
   private readonly sessions = new Map<string, Slot>();
-  private readonly operations = new Map<string, { digest: string; receipt: RunReceipt }>();
+  private readonly operations = new Map<
+    string,
+    { digest: string; receipt: RunReceipt; pending?: Promise<RunReceipt> }
+  >();
   private readonly approvals = new Map<string, PendingApproval>();
   private readonly openings = new Set<Promise<unknown>>();
   private dead = false;
@@ -2616,67 +2619,39 @@ export class DesktopHost {
     };
   }
 
-  private async preRestoreBeforeRegenerate(slot: Slot, force?: boolean): Promise<void> {
-    this.settleIfDone(slot);
-    if (slot.cleanupFailed) throw new Error('SESSION_CLEANUP_FAILED');
-    if (slot.closing || slot.handle.isBusy() || (slot.run && slot.run.phase !== 'idle')) {
-      throw new Error('SESSION_BUSY');
-    }
-    if (!slot.view?.installed || !slot.view.valid) throw new Error('PRESENTATION_STALE');
-    const items = await slot.handle.checkpoints();
-    if (items.length === 0) return;
-    const lastOrdinal = items[items.length - 1]!.ordinal;
-    const restoreRes = await slot.handle.restoreCheckpoint(lastOrdinal - 1, force);
-    if (restoreRes.status === 'conflict') {
-      throw new KapibalaError(
-        `Checkpoint restore conflict on files: ${restoreRes.conflicts.join(', ')}`,
-        {
-          code: 'CHECKPOINT_RESTORE_CONFLICT',
-          retryPolicy: 'after_user_action',
-          safeMessage: `部分文件在检查点后被手动修改：${restoreRes.conflicts.join(', ')}`,
-        },
-      );
-    }
-  }
-
   private async startWithOptionalRestore(
     p: import('../shared/contracts.js').Params<'run.start'>,
   ): Promise<RunReceipt> {
-    this.workspaces.get(p.workspaceId, true);
-    if (p.regenerate && p.restoreFiles) {
-      const slot = this.slot(p);
-      await this.preRestoreBeforeRegenerate(slot, p.force);
-    }
     return this.start(p);
   }
 
   private async regenerate(
     p: import('../shared/contracts.js').Params<'run.regenerate'>,
   ): Promise<RunReceipt> {
-    this.workspaces.get(p.workspaceId, true);
-    const slot = this.slot(p);
-    if (p.restoreFiles) {
-      await this.preRestoreBeforeRegenerate(slot, p.force);
-    }
     return this.start({
       workspaceId: p.workspaceId,
       sessionId: p.sessionId,
       operationId: p.operationId ?? randomUUID(),
       input: p.input?.trim() || '<regenerate>',
       regenerate: true,
+      ...(p.restoreFiles !== undefined ? { restoreFiles: p.restoreFiles } : {}),
+      ...(p.force !== undefined ? { force: p.force } : {}),
+      ...(p.targetMessageId !== undefined ? { targetMessageId: p.targetMessageId } : {}),
     });
   }
 
-  private start(
+  private async start(
     p: {
       workspaceId: string;
       sessionId: string;
       operationId: string;
       input: string;
-      /** 重试：托管层先回退上一轮再重跑，失败按普通运行错误回执。 */
+      /** 重试：托管层在持有写租约后按目标轮次身份对齐检查点并回退重跑。 */
       regenerate?: boolean;
       restoreFiles?: boolean;
       force?: boolean;
+      /** 可选目标历史用户消息 ID；缺省重试最后一轮。 */
+      targetMessageId?: string;
       /** 跨代理接力上下文。 */
       handoff?: { readonly fromTitle: string; readonly context: string };
       /** 跨会话引用身份选择。 */
@@ -2687,7 +2662,7 @@ export class DesktopHost {
       }[];
     },
     execute?: (handle: ManagedHostSession) => Promise<void>,
-  ): RunReceipt {
+  ): Promise<RunReceipt> {
     this.workspaces.get(p.workspaceId, true);
     const slot = this.slot(p);
     this.settleIfDone(slot);
@@ -2695,7 +2670,7 @@ export class DesktopHost {
     const known = this.operations.get(p.operationId);
     if (known) {
       if (known.digest !== digest) throw new Error('OPERATION_CONFLICT');
-      return { ...known.receipt };
+      return known.pending ? await known.pending : { ...known.receipt };
     }
     if (slot.cleanupFailed) throw new Error('SESSION_CLEANUP_FAILED');
     if (slot.closing || slot.handle.isBusy() || (slot.run && slot.run.phase !== 'idle'))
@@ -2715,8 +2690,31 @@ export class DesktopHost {
       phase: 'running',
       startedAt: Date.now(),
     };
+    const awaitPreFlight = !execute && Boolean(p.regenerate && p.restoreFiles);
+    let resolvePreFlight: (() => void) | undefined;
+    let rejectPreFlight: ((err: unknown) => void) | undefined;
+    let preFlightSettled = !awaitPreFlight;
+    const preFlightPromise = awaitPreFlight
+      ? new Promise<void>((resolve, reject) => {
+          resolvePreFlight = () => {
+            if (preFlightSettled) return;
+            preFlightSettled = true;
+            resolve();
+          };
+          rejectPreFlight = (err: unknown) => {
+            if (preFlightSettled) return;
+            preFlightSettled = true;
+            reject(err);
+          };
+        })
+      : undefined;
+
     slot.run = receipt;
-    this.operations.set(p.operationId, { digest, receipt });
+    const operationEntry: { digest: string; receipt: RunReceipt; pending?: Promise<RunReceipt> } = {
+      digest,
+      receipt,
+    };
+    this.operations.set(p.operationId, operationEntry);
     this.emitRun(slot);
     slot.running = (
       execute
@@ -2732,14 +2730,20 @@ export class DesktopHost {
             )
           : slot.handle.run(p.input, undefined, {
               regenerate: p.regenerate,
+              restoreFiles: p.restoreFiles,
+              forceRestore: p.force,
+              ...(p.targetMessageId ? { targetMessageId: p.targetMessageId } : {}),
+              ...(awaitPreFlight ? { onBeforeModelStart: resolvePreFlight } : {}),
               ...(p.handoff ? { handoff: p.handoff } : {}),
             })
     )
       .then(
         () => {
+          resolvePreFlight?.();
           receipt.result = slot.handle.snapshot().operation?.result ?? 'completed';
         },
         (error) => {
+          rejectPreFlight?.(error);
           receipt.result = 'failed';
           receipt.error = safeError(error);
         },
@@ -2754,6 +2758,25 @@ export class DesktopHost {
         if (receipt.phase === 'idle') receipt.settledAt = Date.now();
         this.emitRun(slot);
       });
+
+    if (preFlightPromise) {
+      const pendingReceipt = preFlightPromise
+        .then(() => {
+          operationEntry.pending = undefined;
+          return { ...receipt };
+        })
+        .catch(async (err) => {
+          await slot.running;
+          // 前置还原冲突或目标失效在模型启动前即中止，释放 operationId 便于用户确认覆盖后重试。
+          if (this.operations.get(p.operationId) === operationEntry) {
+            this.operations.delete(p.operationId);
+          }
+          throw err;
+        });
+      operationEntry.pending = pendingReceipt;
+      return await pendingReceipt;
+    }
+
     return { ...receipt };
   }
 

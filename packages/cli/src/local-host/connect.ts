@@ -28,6 +28,13 @@ export async function runConnectedClient(options: ConnectOptions): Promise<void>
   let runId: string | undefined;
   let startingRun = false;
   let printedPartialText = false;
+  /** 非 TTY 输出下按当前模型步缓冲正文；收到 `stream_reset` 时直接作废，仅在步骤闭合或运行结算后写入 stdout。 */
+  let bufferedStepText = '';
+  const flushBufferedStepText = () => {
+    if (!bufferedStepText) return;
+    process.stdout.write(bufferedStepText);
+    bufferedStepText = '';
+  };
   let control: SessionControl | undefined;
   let presentation: ConnectedPresentation | undefined;
   let wantCancel = false;
@@ -91,34 +98,43 @@ export async function runConnectedClient(options: ConnectOptions): Promise<void>
       return;
     }
     presentation.consume(event);
-    const ui = createCliTheme({ isTTY: Boolean(process.stdout.isTTY) });
+    const isTTY = Boolean(process.stdout.isTTY);
+    const ui = createCliTheme({ isTTY });
     if (event.type === 'run_started') {
+      flushBufferedStepText();
       printedPartialText = false;
     } else if (event.type === 'text_delta') {
       const safe = sanitizeUntrustedOutput(event.payload.text);
       if (safe) {
-        printedPartialText = true;
-        process.stdout.write(safe);
+        if (isTTY) {
+          printedPartialText = true;
+          process.stdout.write(safe);
+        } else {
+          bufferedStepText += safe;
+        }
       }
     } else if (event.type === 'tool_start') {
+      flushBufferedStepText();
       printedPartialText = false;
     } else if (event.type === 'stream_reset') {
+      bufferedStepText = '';
       if (printedPartialText) {
         printedPartialText = false;
-        if (process.stdout.isTTY) {
+        if (isTTY) {
           process.stdout.write(`\n${ui.subtle('[流中断，已重置当前未完成片段并准备重试]')}\n`);
         }
       }
     } else if (event.type === 'retry_scheduled') {
       const seconds = Math.max(1, Math.round(event.payload.delayMs / 1_000));
       const notice = `⟳ 模型请求暂时受限，将在 ${seconds}s 后自动重试 (${event.payload.attempt}/${event.payload.maxRetries})…`;
-      if (process.stdout.isTTY) {
+      if (isTTY) {
         process.stdout.write(`\n${ui.warning(notice)}\n`);
       } else {
         process.stderr.write(`${notice}\n`);
       }
     }
     if (event.type === 'run_settled' && event.runId) {
+      flushBufferedStepText();
       printedPartialText = false;
       outcomes.set(event.runId, event.payload.outcome);
       settle?.();

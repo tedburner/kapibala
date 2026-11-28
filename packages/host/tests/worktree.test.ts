@@ -625,4 +625,66 @@ describe('WorktreeService & ExecutionRootCoordinator', () => {
       expect(fs.existsSync(outsideTarget)).toBe(false);
     }
   });
+
+  it('never follows untracked symlinks in diff and blocks fast-forward merge from overwriting main ignored files', async () => {
+    const fakeHome = makeTempDir('kpbl-wt-sec-home-');
+    const outsideDir = makeTempDir('kpbl-wt-sec-outside-');
+    const outsideSecret = path.join(outsideDir, 'secret.txt');
+    fs.writeFileSync(outsideSecret, 'TOP_SECRET_OUTSIDE_CONTENT\n', 'utf8');
+
+    const repo = initMainGitRepo();
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'local.config.json\n', 'utf8');
+    gitIn(repo, ['add', '.gitignore']);
+    gitIn(repo, ['commit', '-m', 'ignore local.config.json']);
+
+    // 主仓存在被 .gitignore 忽略的本地配置文件。
+    fs.writeFileSync(
+      path.join(repo, 'local.config.json'),
+      '{"secret":"main-local-config"}\n',
+      'utf8',
+    );
+
+    const service = new WorktreeService({ homeDir: fakeHome });
+    const wt = await service.create({ projectRoot: repo, name: 'sec-checks' });
+
+    // 1. 未跟踪符号链接：worktree.diff 只能展示链接元数据，绝不能读取并泄露外部文件内容。
+    const linkPath = path.join(wt.binding.worktreePath, 'leak-link.txt');
+    let createdLink = false;
+    try {
+      fs.symlinkSync(outsideSecret, linkPath, 'file');
+      createdLink = true;
+    } catch {
+      createdLink = false;
+    }
+    if (createdLink) {
+      const diffRes = await service.diff(wt.binding.id);
+      const linkDiff = diffRes.files.find((f) => f.path === 'leak-link.txt');
+      expect(linkDiff).toBeDefined();
+      expect(linkDiff!.patch).toContain('new file mode 120000');
+      expect(linkDiff!.patch).not.toContain('TOP_SECRET_OUTSIDE_CONTENT');
+      fs.unlinkSync(linkPath);
+    }
+
+    // 2. 工作树新跟踪了主仓同路径的忽略文件 local.config.json：预览必须标红并列出冲突，合并必须拒绝且不覆盖主仓文件。
+    fs.writeFileSync(
+      path.join(wt.binding.worktreePath, 'local.config.json'),
+      '{"secret":"worktree-overwrite"}\n',
+      'utf8',
+    );
+    gitIn(wt.binding.worktreePath, ['add', '-f', 'local.config.json']);
+    gitIn(wt.binding.worktreePath, ['commit', '-m', 'track local.config.json']);
+
+    const preview = await service.previewMerge(wt.binding.id);
+    expect(preview.canApply).toBe(false);
+    expect(preview.blockingReason).toContain('local.config.json');
+
+    await expect(
+      service.applyMerge({ id: wt.binding.id, previewToken: preview.previewToken }),
+    ).rejects.toMatchObject({ code: 'WORKTREE_MAIN_DIRTY' });
+
+    // 主仓被忽略的本地配置文件 100% 完好无损。
+    expect(fs.readFileSync(path.join(repo, 'local.config.json'), 'utf8')).toBe(
+      '{"secret":"main-local-config"}\n',
+    );
+  });
 });

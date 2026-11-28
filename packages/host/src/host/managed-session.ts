@@ -226,10 +226,14 @@ export interface ManagedHostSession {
     signal?: AbortSignal,
     options?: {
       readonly regenerate?: boolean;
-      /** `regenerate: true` 时是否同步还原上一轮归因磁盘文件；冲突时在分支回退前以 `CHECKPOINT_RESTORE_CONFLICT` 中止。 */
+      /** `regenerate: true` 时是否同步还原目标轮次及之后的归因磁盘文件；冲突时在分支回退前以 `CHECKPOINT_RESTORE_CONFLICT` 中止。 */
       readonly restoreFiles?: boolean;
       /** `restoreFiles: true` 时是否强制覆盖事后手动修改冲突文件（仍先生成 `pre-restore` 快照）。 */
       readonly forceRestore?: boolean;
+      /** 可选目标历史用户消息 ID；传入时按该轮次身份回退历史并对齐其检查点水位，缺省为最后一轮。 */
+      readonly targetMessageId?: string;
+      /** 在完成执行根写租约获取与可选检查点还原后、启动模型流前触发；用于宿主同步暴露前置冲突。 */
+      readonly onBeforeModelStart?: () => void;
       /** 跨代理或跨会话接力上下文：以 `promptSource` 受控块注入请求，不在用户气泡平铺历史原文。 */
       readonly handoff?: { readonly fromTitle: string; readonly context: string };
       /** 可选覆盖本轮模型断流自动回滚重试开关（默认开启 `true`）。 */
@@ -324,6 +328,15 @@ export interface ManagedHostSession {
   restoreCheckpoint(targetOrdinal: number, force?: boolean): Promise<RestoreCheckpointResult>;
   /** 返回当前会话绑定的受管 Git Worktree 只读摘要（运行于主工作区时为 `undefined`）。 */
   worktree(): ViewWorktreeSummary | undefined;
+  /**
+   * 当会话绑定的工作树目录已缺失并处于只读历史模式时，持久化重新绑定执行根（主工作区或新的已验真受管工作树）；
+   * 调用方须在重绑定后重新打开会话，使新 `AgentSession`、工具与沙箱彻底对齐到新执行根。
+   */
+  rebindExecutionRoot?(
+    target:
+      | { readonly mode: 'project_root' }
+      | { readonly mode: 'worktree'; readonly worktree: SessionWorktreeBinding },
+  ): Promise<void>;
 }
 
 /** 只在调用时装配资源；导入不探测环境、不读终端、不启动 Agent 或工具进程。 */
@@ -431,9 +444,15 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         throw new ManagedHostError(code, error);
       throw error;
     }
-    const sessionWorktree: SessionWorktreeBinding | undefined =
-      handle.header.worktree ?? options.worktree;
+    const persistedWorktree: SessionWorktreeBinding | undefined =
+      typeof handle.store.getWorktreeBinding === 'function'
+        ? handle.store.getWorktreeBinding()
+        : handle.header.worktree;
+    const sessionWorktree: SessionWorktreeBinding | undefined = conversationId
+      ? persistedWorktree
+      : (persistedWorktree ?? options.worktree);
     let executionRoot: string;
+    let worktreeMissing = false;
     if (sessionWorktree) {
       if (fs.existsSync(sessionWorktree.worktreePath)) {
         if (
@@ -452,7 +471,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       } else if (!conversationId) {
         throw new ManagedHostError('WORKSPACE_UNAVAILABLE');
       } else {
-        // 既有会话绑定的受管工作树已被移除时安全回退至 projectRoot，保持历史只读查看与清理可用。
+        // 既有会话绑定的受管工作树已被删除：仅以只读方式打开历史，禁止落到主仓执行任何工具或写盘。
+        worktreeMissing = true;
         executionRoot = projectRoot;
       }
     } else {
@@ -470,6 +490,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           baseRef: sessionWorktree.baseRef,
           baseCommit: sessionWorktree.baseCommit,
           createdAt: sessionWorktree.createdAt,
+          ...(worktreeMissing ? { missing: true } : {}),
         }
       : undefined;
     const preference = settings.shell?.preference ?? 'auto';
@@ -539,12 +560,14 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         homeDir: homeDirectory,
       }),
     });
-    registerBuiltinTools(session.tools, {
-      cwd: root,
-      shell: preference,
-      disableShell: settings.shell?.enabled === false,
-      runtime,
-    });
+    if (!worktreeMissing) {
+      registerBuiltinTools(session.tools, {
+        cwd: root,
+        shell: preference,
+        disableShell: settings.shell?.enabled === false,
+        runtime,
+      });
+    }
     models.attach(session);
     const mcp = resolveCliMcpOptions({
       projectRoot,
@@ -636,7 +659,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       );
     }
     const computeSessionDiffSummary = async (): Promise<ViewDiffSummary | undefined> => {
-      if (!checkpoints) return undefined;
+      if (!checkpoints || worktreeMissing) return undefined;
       try {
         const records = await checkpoints.listCheckpoints({
           projectRoot,
@@ -855,13 +878,21 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       skillName?: string,
       prepare?: () => Promise<PreparedTaskResult>,
       runOptions?: {
-        /** 重试：先预检绑定、MCP 与可选文件冲突回滚，再截断上一轮并无损重跑。 */
+        /** 重试：先预检绑定、MCP 与可选文件冲突回滚，再截断目标轮次并无损重跑。 */
         readonly regenerate?: boolean;
         readonly restoreFiles?: boolean;
         readonly forceRestore?: boolean;
+        readonly targetMessageId?: string;
+        readonly onBeforeModelStart?: () => void;
         readonly allowMidStreamRetry?: boolean;
       },
     ): AsyncGenerator<SessionEvent> {
+      if (worktreeMissing) {
+        throw new WorktreeError(
+          'WORKTREE_MISSING',
+          `Bound worktree directory no longer exists: '${sessionWorktree?.worktreePath ?? ''}'. Rebind execution root before continuing.`,
+        );
+      }
       const regenerate = runOptions?.regenerate;
       refresh();
       (
@@ -924,45 +955,84 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           mountMcp = undefined;
         }
         if (regenerate) {
-          // 强原子性保证：按会话回退前的用户轮次定位待撤销轮次序号（rewoundOrdinal = userTurnCountBeforeRewind - 1），
-          // 仅当检查点实际覆盖了该轮（ordinal >= rewoundOrdinal）时才回滚至 rewoundOrdinal - 1，防止某轮因超时跳过检查点后误删前序轮次成果。
-          if (runOptions?.restoreFiles && checkpoints) {
-            const userTurnCountBeforeRewind = current
-              .getHistory()
-              .filter((m) => m.role === 'user').length;
-            const rewoundOrdinal = userTurnCountBeforeRewind - 1;
-            if (rewoundOrdinal >= 0) {
-              const existingTurns = await checkpoints.listCheckpoints({
+          // 强原子性保证：按目标轮次（或末轮）在回退前历史中的 0-based 用户轮次序号定位待撤销水位，
+          // 仅当检查点实际覆盖了该轮（ordinal >= rewoundOrdinal）时才回滚至 rewoundOrdinal - 1，
+          // 防止某轮因超时跳过检查点后误删更早轮次成果。
+          const fullHistoryBeforeRewind = current.getHistory();
+          const userMessagesBeforeRewind = fullHistoryBeforeRewind.filter((m) => m.role === 'user');
+          const rawTargetId = runOptions?.targetMessageId?.trim();
+          let targetMessageId = rawTargetId;
+          if (rawTargetId && !userMessagesBeforeRewind.some((m) => m.id === rawTargetId)) {
+            // 兼容投影层 `displayMessageId` 元组格式 `[scope, 'message', canonicalId, index]`
+            try {
+              const parsed = JSON.parse(rawTargetId) as unknown;
+              if (Array.isArray(parsed) && parsed.length === 4 && parsed[1] === 'message') {
+                if (typeof parsed[2] === 'string' && parsed[2]) {
+                  targetMessageId = parsed[2];
+                } else if (typeof parsed[3] === 'number' && Number.isInteger(parsed[3])) {
+                  targetMessageId = fullHistoryBeforeRewind[parsed[3]]?.id;
+                }
+              }
+            } catch {
+              /* 保留原始 targetMessageId 交由下方精确校验拦截。 */
+            }
+          }
+          let rewoundOrdinal = userMessagesBeforeRewind.length - 1;
+          if (targetMessageId) {
+            const matchedIdx = userMessagesBeforeRewind.findIndex((m) => m.id === targetMessageId);
+            if (matchedIdx < 0) {
+              throw new KapibalaError(
+                `Target user message not found for regenerate: ${rawTargetId ?? targetMessageId}`,
+                {
+                  code: 'REWIND_UNAVAILABLE',
+                  retryPolicy: 'after_user_action',
+                  safeMessage: '未找到待重试的历史轮次消息',
+                },
+              );
+            }
+            rewoundOrdinal = matchedIdx;
+          }
+          let restoredBeforeRewind = false;
+          if (runOptions?.restoreFiles && checkpoints && rewoundOrdinal >= 0) {
+            const existingTurns = await checkpoints.listCheckpoints({
+              projectRoot,
+              executionRoot: root,
+              sessionId: ownedHandle.conversationId,
+            });
+            if (existingTurns.some((t) => t.ordinal >= rewoundOrdinal)) {
+              const restoreRes = await checkpoints.restore({
                 projectRoot,
                 executionRoot: root,
                 sessionId: ownedHandle.conversationId,
+                targetOrdinal: rewoundOrdinal - 1,
+                force: runOptions.forceRestore === true,
+                signal: combinedSignal,
               });
-              if (existingTurns.some((t) => t.ordinal >= rewoundOrdinal)) {
-                const restoreRes = await checkpoints.restore({
-                  projectRoot,
-                  executionRoot: root,
-                  sessionId: ownedHandle.conversationId,
-                  targetOrdinal: rewoundOrdinal - 1,
-                  force: runOptions.forceRestore === true,
-                  signal: combinedSignal,
-                });
-                if (restoreRes.status === 'conflict') {
-                  const conflictErr = new KapibalaError(
-                    `Checkpoint restore conflict on files: ${restoreRes.conflicts.join(', ')}`,
-                    {
-                      code: 'CHECKPOINT_RESTORE_CONFLICT',
-                      retryPolicy: 'after_user_action',
-                      safeMessage: `文件存在手动修改冲突，已中止回退：${restoreRes.conflicts.join(', ')}`,
-                    },
-                  );
-                  (conflictErr as KapibalaError & { conflicts?: readonly string[] }).conflicts =
-                    restoreRes.conflicts;
-                  throw conflictErr;
-                }
+              if (restoreRes.status === 'conflict') {
+                const conflictErr = new KapibalaError(
+                  `Checkpoint restore conflict on files: ${restoreRes.conflicts.join(', ')}`,
+                  {
+                    code: 'CHECKPOINT_RESTORE_CONFLICT',
+                    retryPolicy: 'after_user_action',
+                    safeMessage: `文件存在手动修改冲突，已中止回退：${restoreRes.conflicts.join(', ')}`,
+                  },
+                );
+                (conflictErr as KapibalaError & { conflicts?: readonly string[] }).conflicts =
+                  restoreRes.conflicts;
+                throw conflictErr;
+              }
+              if (restoreRes.status === 'restored') {
+                restoredBeforeRewind = true;
               }
             }
           }
-          const rewound = await current.rewindLastTurn();
+          const rewound = await current.rewindLastTurn(
+            targetMessageId ? { targetMessageId } : undefined,
+          );
+          if (restoredBeforeRewind) {
+            emitDiffSummary(await computeSessionDiffSummary());
+            inspectionChanged();
+          }
           rewoundState = {
             branchId: rewound.branchId,
             previousBranchId: rewound.previousBranchId,
@@ -1075,6 +1145,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           },
         );
         activeProjection = projected;
+        runOptions?.onBeforeModelStart?.();
         const stream = async function* (): AsyncGenerator<SessionEvent> {
           if (mountMcp) {
             const mount = mountMcp;
@@ -1208,12 +1279,14 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         return written;
       },
       isIdle: () =>
+        !worktreeMissing &&
         !activeController &&
         !current.isBusy() &&
         !closing &&
         !disposed &&
         (options.isHostIdle?.() ?? true),
       resume: async (input, signal) => {
+        if (worktreeMissing) return;
         if (options.onAutoResume) {
           await options.onAutoResume(input, signal);
           return;
@@ -1226,7 +1299,9 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       ...(options.onWatchEvent ? { onNotify: options.onWatchEvent } : {}),
     });
     watches = watchService;
-    for (const tool of createWatchTools(watchService)) current.tools.register(tool);
+    if (!worktreeMissing) {
+      for (const tool of createWatchTools(watchService)) current.tools.register(tool);
+    }
     // 等待持久化监视恢复完成再返回资源句柄，避免快速 dispose 与后台回读会话文件竞态。
     await watchService.start().catch((error: unknown) => {
       console.warn('[watch] failed to restore watch states for this session', error);
@@ -1255,6 +1330,8 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           regenerate: runOpts?.regenerate,
           restoreFiles: runOpts?.restoreFiles,
           forceRestore: runOpts?.forceRestore,
+          targetMessageId: runOpts?.targetMessageId,
+          onBeforeModelStart: runOpts?.onBeforeModelStart,
           allowMidStreamRetry: runOpts?.allowMidStreamRetry,
         })) {
           /* 投影已在内部完成。 */
@@ -1400,15 +1477,16 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       // 因此历史重放与实时观察必然同一口径。
       evidence: async () => {
         const phase = presentation.snapshot().operation?.phase;
-        const checkpointRecords = checkpoints
-          ? await checkpoints
-              .listCheckpoints({
-                projectRoot,
-                executionRoot: root,
-                sessionId: ownedHandle.conversationId,
-              })
-              .catch(() => undefined)
-          : undefined;
+        const checkpointRecords =
+          checkpoints && !worktreeMissing
+            ? await checkpoints
+                .listCheckpoints({
+                  projectRoot,
+                  executionRoot: root,
+                  sessionId: ownedHandle.conversationId,
+                })
+                .catch(() => undefined)
+            : undefined;
         return buildSessionEvidence(
           {
             conversationId: ownedHandle.conversationId,
@@ -1432,7 +1510,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         };
       },
       checkpoints: async () => {
-        if (!checkpoints) return [];
+        if (!checkpoints || worktreeMissing) return [];
         const records = await checkpoints.listCheckpoints({
           projectRoot,
           executionRoot: root,
@@ -1450,7 +1528,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         }));
       },
       checkpointDiff: async (diffOptions) => {
-        if (!checkpoints) {
+        if (!checkpoints || worktreeMissing) {
           return { available: false, files: [], additions: 0, deletions: 0, truncated: false };
         }
         const diffRes = await checkpoints.diff({
@@ -1484,6 +1562,12 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       },
       restoreCheckpoint: async (targetOrdinal, force) => {
         assertIdle();
+        if (worktreeMissing) {
+          throw new WorktreeError(
+            'WORKTREE_MISSING',
+            `Bound worktree directory no longer exists: '${sessionWorktree?.worktreePath ?? ''}'. Rebind execution root before restoring checkpoints.`,
+          );
+        }
         if (!checkpoints) {
           throw new CheckpointError(
             'CHECKPOINT_GIT_UNAVAILABLE',
@@ -1517,6 +1601,30 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         }
       },
       worktree: () => (viewWorktree ? { ...viewWorktree } : undefined),
+      rebindExecutionRoot: async (target) => {
+        assertIdle();
+        if (target.mode === 'worktree') {
+          if (!fs.existsSync(target.worktree.worktreePath)) {
+            throw new ManagedHostError('WORKSPACE_UNAVAILABLE');
+          }
+          if (
+            !verifyManagedWorktreeLink({
+              worktreesRoot,
+              projectRoot,
+              worktreePath: target.worktree.worktreePath,
+            })
+          ) {
+            throw new WorktreeError(
+              'WORKTREE_LINK_INVALID',
+              `Managed worktree link verification failed for '${target.worktree.worktreePath}'`,
+            );
+          }
+          await ownedHandle.store.setWorktreeBinding(target.worktree);
+        } else {
+          await ownedHandle.store.setWorktreeBinding(null);
+        }
+        inspectionChanged();
+      },
       status: () =>
         projectStatusFacts(
           {

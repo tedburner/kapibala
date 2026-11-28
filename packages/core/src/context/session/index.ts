@@ -642,21 +642,23 @@ export class AgentSession {
   }
 
   /**
-   * 回退最后一轮（用户输入及其全部回答），创建并切换到新分支后重载内存状态。
+   * 回退最后一轮或指定历史轮次（用户输入及其全部回答），创建并切换到新分支后重载内存状态。
    *
    * 约束与边界：
    * - 必须在空闲会话调用，且异步落盘期间全程持有 `activeRun` 忙碌锁，阻止监视续跑或并发操作穿插；
    * - 依赖具备分支能力的状态化 Store（v2 会话），旧 SDK Store 或 v1 只读会话抛
    *   `REWIND_UNAVAILABLE`，不做破坏性降级；
-   * - 切点取最后一条 `run_started` 的父记录，未闭合工具事务由 Store 拒绝分叉；
+   * - 默认切点取最后一条 `run_started` 的父记录；传入 `targetMessageId` 时按该用户消息定位对应
+   *   `run_started` 的父记录，未闭合工具事务由 Store 拒绝分叉；
    * - 返回新旧分支 ID 以及被回退轮次的原始用户消息副本（完整保留 `referenceSource` / `promptSource` /
    *   `skillSource` 与未脱敏原文），供宿主无损重放或在预检失败时回滚分支。
    *
+   * @param options 可选回退定位参数（`targetMessageId` 指定历史用户消息 ID）。
    * @returns 新旧分支 ID、被截断轮次的用户消息副本及起始时间戳。
    * @throws {SessionBusyError} 会话正在运行或清理时抛出。
-   * @throws {KapibalaError} 没有可回退轮次或存储不支持分支时抛出（code `REWIND_UNAVAILABLE`）。
+   * @throws {KapibalaError} 没有可回退轮次、目标消息不存在或存储不支持分支时抛出（code `REWIND_UNAVAILABLE`）。
    */
-  async rewindLastTurn(): Promise<{
+  async rewindLastTurn(options?: { readonly targetMessageId?: string }): Promise<{
     branchId: string;
     previousBranchId: string;
     rewoundUserMessage?: CanonicalMessage;
@@ -678,26 +680,67 @@ export class AgentSession {
       const before = await branching.loadState();
       const previousBranchId = branching.getActiveBranchId?.() ?? before.activeBranchId;
       const runRecords = before.records.filter((record) => record.type === 'run_started');
-      const lastRun = runRecords.at(-1);
-      if (!lastRun?.parentId)
+
+      let targetRun = runRecords.at(-1);
+      let matchedUser: CanonicalMessage | undefined;
+      const targetMessageId = options?.targetMessageId?.trim();
+      if (targetMessageId) {
+        matchedUser = this.history.find((msg) => msg.role === 'user' && msg.id === targetMessageId);
+        if (!matchedUser) {
+          throw new KapibalaError(`Target user message not found for rewind: ${targetMessageId}`, {
+            code: 'REWIND_UNAVAILABLE',
+            retryPolicy: 'after_user_action',
+            safeMessage: '未找到待重试的历史轮次消息',
+          });
+        }
+        const targetInteractionId = matchedUser.interactionId;
+        targetRun = targetInteractionId
+          ? runRecords.find(
+              (record) =>
+                String(record.payload.runId ?? record.payload.interactionId ?? '') ===
+                targetInteractionId,
+            )
+          : undefined;
+        if (!targetRun) {
+          const msgRecordIndex = before.records.findIndex(
+            (record) =>
+              record.type === 'message' &&
+              (record.recordId === targetMessageId ||
+                (record.payload as { id?: unknown }).id === targetMessageId),
+          );
+          if (msgRecordIndex >= 0) {
+            for (let i = msgRecordIndex; i >= 0; i--) {
+              if (before.records[i]?.type === 'run_started') {
+                targetRun = before.records[i];
+                break;
+              }
+            }
+          }
+        }
+      } else {
+        const lastRunId = String(
+          targetRun?.payload.runId ?? targetRun?.payload.interactionId ?? '',
+        );
+        matchedUser =
+          (lastRunId
+            ? this.history.find((msg) => msg.role === 'user' && msg.interactionId === lastRunId)
+            : undefined) ??
+          [...this.history]
+            .reverse()
+            .find((msg) => msg.role === 'user' && !msg.watchSource && !msg.subagentSource);
+      }
+
+      if (!targetRun?.parentId)
         throw new KapibalaError('No turn available to rewind', {
           code: 'REWIND_UNAVAILABLE',
           retryPolicy: 'after_user_action',
           safeMessage: '没有可重试的上一轮对话',
         });
-      const lastRunId = String(lastRun.payload.runId ?? lastRun.payload.interactionId ?? '');
-      const matchedUser =
-        (lastRunId
-          ? this.history.find((msg) => msg.role === 'user' && msg.interactionId === lastRunId)
-          : undefined) ??
-        [...this.history]
-          .reverse()
-          .find((msg) => msg.role === 'user' && !msg.watchSource && !msg.subagentSource);
       const rewoundUserMessage = matchedUser ? structuredClone(matchedUser) : undefined;
       const rewoundAt = rewoundUserMessage?.timestamp;
 
       const branchId = `retry-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-      await branching.createBranch(branchId, lastRun.parentId);
+      await branching.createBranch(branchId, targetRun.parentId);
       await branching.selectBranch(branchId);
 
       const next = await branching.loadState();

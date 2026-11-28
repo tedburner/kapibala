@@ -193,6 +193,7 @@ export async function computeGroupedStructuredDiff(options: {
     const diffRes = await runGit({
       cwd: options.sideGitDir,
       args: [
+        '--literal-pathspecs',
         '--git-dir',
         options.sideGitDir,
         'diff',
@@ -207,6 +208,7 @@ export async function computeGroupedStructuredDiff(options: {
         summary.path,
       ],
       baseEnv: options.baseEnv,
+      envOverrides: { GIT_LITERAL_PATHSPECS: '1' },
       signal: options.signal,
       // 多读 4 字节以准确侦测是否超出 fileBudget，同时在超大单文件时由流限流器提前终止子进程。
       maxStdoutBytes: fileBudget + 4,
@@ -379,7 +381,7 @@ async function detectPostTurnConflicts(options: {
 
   for (const relPath of options.attributedPaths) {
     const expected = endTreeEntries.get(relPath);
-    const fullPath = path.join(options.executionRoot, relPath);
+    const fullPath = resolveRestoreTargetPath(options.executionRoot, relPath);
     let stat: fs.Stats | undefined;
     try {
       stat = fs.lstatSync(fullPath);
@@ -437,7 +439,12 @@ async function detectPostTurnConflicts(options: {
       continue;
     }
 
-    if (!relPath.includes('\n') && !relPath.includes('\r')) {
+    if (
+      !relPath.includes('\n') &&
+      !relPath.includes('\r') &&
+      !relPath.includes('"') &&
+      !relPath.includes('\\')
+    ) {
       regularFilesToHash.push({ relPath, fullPath, expectedOid: expected.oid });
     } else {
       const singleRes = await runGit({
@@ -474,24 +481,44 @@ async function detectPostTurnConflicts(options: {
 }
 
 /**
- * 校验相对路径在 `executionRoot` 下的所有已存在父级分量均非符号链接且未越界，杜绝软链重定向写/删越权。
+ * 将 Git 树中的相对路径拆分为安全的路径分量列表。
+ *
+ * 平台语义：Git 树路径固定使用 `/` 作为目录分隔符；在 POSIX 上反斜杠 `\` 是合法文件名字符，
+ * 严禁将其改写为路径分隔符，仅在 Windows 上将 `\` 折叠为 `/`。
  */
-function assertNoParentSymlinkEscape(canonicalExecutionRoot: string, relPath: string): string {
-  if (!relPath || path.isAbsolute(relPath)) {
+function splitSafeRestoreSegments(relPath: string): string[] {
+  if (!relPath || relPath.includes('\0') || path.isAbsolute(relPath)) {
     throw new CheckpointError('CHECKPOINT_SYMLINK_ESCAPE', `Invalid relative path: ${relPath}`);
   }
-  const normalizedRel = path.posix.normalize(relPath.replaceAll('\\', '/'));
+  const canonicalSep = process.platform === 'win32' ? relPath.replaceAll('\\', '/') : relPath;
   if (
-    normalizedRel === '.' ||
-    normalizedRel === '..' ||
-    normalizedRel.startsWith('../') ||
-    normalizedRel === '.git' ||
-    normalizedRel.startsWith('.git/')
+    canonicalSep.startsWith('/') ||
+    (process.platform === 'win32' && /^[A-Za-z]:/.test(canonicalSep))
+  ) {
+    throw new CheckpointError('CHECKPOINT_SYMLINK_ESCAPE', `Invalid relative path: ${relPath}`);
+  }
+  const segments = canonicalSep.split('/');
+  if (
+    segments.length === 0 ||
+    segments.some((seg) => seg === '' || seg === '.' || seg === '..') ||
+    segments[0] === '.git'
   ) {
     throw new CheckpointError('CHECKPOINT_SYMLINK_ESCAPE', `Unsafe restore path: ${relPath}`);
   }
+  return segments;
+}
 
-  const segments = normalizedRel.split('/');
+/** 按与写删一致的精确路径分量规则解析磁盘目标路径（POSIX 保留文件名中的反斜杠）。 */
+function resolveRestoreTargetPath(canonicalExecutionRoot: string, relPath: string): string {
+  const segments = splitSafeRestoreSegments(relPath);
+  return path.join(canonicalExecutionRoot, ...segments);
+}
+
+/**
+ * 校验相对路径在 `executionRoot` 下的所有已存在父级分量均非符号链接且未越界，杜绝软链重定向写/删越权。
+ */
+function assertNoParentSymlinkEscape(canonicalExecutionRoot: string, relPath: string): string {
+  const segments = splitSafeRestoreSegments(relPath);
   let current = canonicalExecutionRoot;
   for (let i = 0; i < segments.length - 1; i++) {
     current = path.join(current, segments[i]!);
@@ -533,6 +560,7 @@ export async function executeSurgicalRestore(options: {
   readonly turnsToRevert: readonly CheckpointRecord[];
   readonly targetOrdinal: number;
   readonly force: boolean;
+  readonly dryRun?: boolean;
   readonly now: () => number;
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
   readonly signal?: AbortSignal;
@@ -540,6 +568,11 @@ export async function executeSurgicalRestore(options: {
   | {
       readonly status: 'conflict';
       readonly conflicts: string[];
+    }
+  | {
+      readonly status: 'noop';
+      readonly restoredFiles: [];
+      readonly deletedFiles: [];
     }
   | {
       readonly status: 'restored';
@@ -562,6 +595,11 @@ export async function executeSurgicalRestore(options: {
   const attributedPaths = [...earliestStartTreeByPath.keys()].sort();
   const latestEndTree = options.turnsToRevert.at(-1)!.endTree;
 
+  // 预先对所有归因路径做安全分量与无父级符号链接越界校验，确保预检、备份与写删操作共享同一份精确路径集合。
+  for (const relPath of attributedPaths) {
+    assertNoParentSymlinkEscape(options.canonicalExecutionRoot, relPath);
+  }
+
   // 2. 非强制模式下执行三路冲突预检，命中冲突零磁盘改动直接返回。
   if (!options.force && attributedPaths.length > 0) {
     const conflicts = await detectPostTurnConflicts({
@@ -575,6 +613,10 @@ export async function executeSurgicalRestore(options: {
     if (conflicts.length > 0) {
       return { status: 'conflict', conflicts };
     }
+  }
+
+  if (options.dryRun) {
+    return { status: 'noop', restoredFiles: [], deletedFiles: [] };
   }
 
   // 3. 写任何工作区文件前，强制生成 `pre-restore` 安全备份快照。
@@ -712,6 +754,7 @@ export async function executeSurgicalRestore(options: {
       await runGit({
         cwd: options.canonicalExecutionRoot,
         args: [
+          '--literal-pathspecs',
           '--git-dir',
           options.sideGitDir,
           '--work-tree',
@@ -724,7 +767,10 @@ export async function executeSurgicalRestore(options: {
         ],
         input: Buffer.from(`${pathsToRestore.join('\0')}\0`, 'utf8'),
         baseEnv: options.baseEnv,
-        envOverrides: { GIT_INDEX_FILE: tempCheckoutIndex },
+        envOverrides: {
+          GIT_INDEX_FILE: tempCheckoutIndex,
+          GIT_LITERAL_PATHSPECS: '1',
+        },
         signal: options.signal,
       });
 
@@ -736,31 +782,53 @@ export async function executeSurgicalRestore(options: {
     }
   }
 
-  // 7. 将侧挂持久索引同步对齐到还原后的磁盘文件状态。
+  // 7. 将侧挂持久索引同步对齐到还原后的磁盘文件状态：
+  //    先以 `--force-remove` 纯索引移除已删除路径（不触碰工作区磁盘，避免父路径恢复为符号链接时报 `is beyond a symbolic link`），
+  //    再以 `--add --replace` 刷新已恢复路径的索引条目。
   const sideIndexPath = path.join(options.sideGitDir, 'index');
   if (attributedPaths.length > 0 && fs.existsSync(sideIndexPath)) {
     const syncIndexPath = `${sideIndexPath}.sync-${process.pid}-${++restoreIndexSeq}`;
     try {
       fs.copyFileSync(sideIndexPath, syncIndexPath);
-      await runGit({
-        cwd: options.canonicalExecutionRoot,
-        args: [
-          '--git-dir',
-          options.sideGitDir,
-          '--work-tree',
-          options.canonicalExecutionRoot,
-          'update-index',
-          '--add',
-          '--remove',
-          '--replace',
-          '-z',
-          '--stdin',
-        ],
-        input: Buffer.from(`${attributedPaths.join('\0')}\0`, 'utf8'),
-        baseEnv: options.baseEnv,
-        envOverrides: { GIT_INDEX_FILE: syncIndexPath },
-        signal: options.signal,
-      });
+      if (absentPaths.length > 0) {
+        await runGit({
+          cwd: options.canonicalExecutionRoot,
+          args: [
+            '--git-dir',
+            options.sideGitDir,
+            '--work-tree',
+            options.canonicalExecutionRoot,
+            'update-index',
+            '--force-remove',
+            '-z',
+            '--stdin',
+          ],
+          input: Buffer.from(`${absentPaths.join('\0')}\0`, 'utf8'),
+          baseEnv: options.baseEnv,
+          envOverrides: { GIT_INDEX_FILE: syncIndexPath },
+          signal: options.signal,
+        });
+      }
+      if (restoredFiles.length > 0) {
+        await runGit({
+          cwd: options.canonicalExecutionRoot,
+          args: [
+            '--git-dir',
+            options.sideGitDir,
+            '--work-tree',
+            options.canonicalExecutionRoot,
+            'update-index',
+            '--add',
+            '--replace',
+            '-z',
+            '--stdin',
+          ],
+          input: Buffer.from(`${restoredFiles.join('\0')}\0`, 'utf8'),
+          baseEnv: options.baseEnv,
+          envOverrides: { GIT_INDEX_FILE: syncIndexPath },
+          signal: options.signal,
+        });
+      }
       renameAtomicSync(syncIndexPath, sideIndexPath);
     } finally {
       if (fs.existsSync(syncIndexPath)) {

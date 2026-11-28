@@ -118,10 +118,30 @@ export function toSafeRefSegment(sessionId: string): string {
   return `${prefix}-${digest}`;
 }
 
+const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:[\\/]/;
+
+function normalizeWindowsDrivePath(value: string): string {
+  const normalized = path.win32.normalize(value);
+  return normalized.length > 3
+    ? normalized.replace(/[\\/]+$/, '').toLowerCase()
+    : normalized.toLowerCase();
+}
+
 function matchesUnsafeTarget(canonicalExecutionRoot: string, rawCandidate: string): boolean {
   if (!rawCandidate) return false;
-  if (isSamePath(canonicalExecutionRoot, rawCandidate)) return true;
+  const rootIsWin = WINDOWS_DRIVE_PATH_RE.test(canonicalExecutionRoot);
+  const candIsWin = WINDOWS_DRIVE_PATH_RE.test(rawCandidate);
+  if (rootIsWin !== candIsWin) return false;
+  if (rootIsWin && process.platform !== 'win32') {
+    return (
+      normalizeWindowsDrivePath(canonicalExecutionRoot) === normalizeWindowsDrivePath(rawCandidate)
+    );
+  }
+  if (!path.isAbsolute(canonicalExecutionRoot) || !path.isAbsolute(rawCandidate)) {
+    return false;
+  }
   try {
+    if (isSamePath(canonicalExecutionRoot, rawCandidate)) return true;
     const resolved = toNativePhysicalPath(path.resolve(rawCandidate));
     return isSamePath(canonicalExecutionRoot, resolved);
   } catch {

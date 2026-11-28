@@ -794,6 +794,7 @@ export class CrossProjectSessionCatalog {
       let pinned = false;
       // 审批模式同理：sidecar 重建必须带回 mode_state，否则会话记忆的档位会丢。
       let mode: SessionMode | undefined;
+      let worktree: SessionHeader['worktree'] | undefined = header.worktree;
       let lastRecordId = headerRecord.recordId;
 
       for (const line of iterator) {
@@ -828,6 +829,9 @@ export class CrossProjectSessionCatalog {
           } else if (rec.type === 'watch_state') {
             // 监视状态属于正文控制记录，不参与列表元数据；显式分支保证重建扫描不会把它
             // 当成分支记录推进叶子，也避免未来扩展时静默漏处理。
+          } else if (rec.type === 'worktree_binding') {
+            const next = rec.payload.worktree as SessionHeader['worktree'] | null | undefined;
+            worktree = next && typeof next === 'object' ? next : undefined;
           } else if (rec.type === 'branch_selected') {
             activeBranchId = String(rec.payload.branchId);
           }
@@ -850,9 +854,9 @@ export class CrossProjectSessionCatalog {
         archived,
         pinned,
         ...(mode ? { mode } : {}),
-        // 委派标记与受管 Worktree 绑定只在 header 里；漏转写会让跨项目重建的 sidecar 丢失隔离身份。
+        // 委派标记与受管 Worktree 绑定（含后续重绑定控制记录）须原样写回 sidecar，避免重建丢失隔离身份。
         ...(header.delegation ? { delegation: header.delegation } : {}),
-        ...(header.worktree ? { worktree: header.worktree } : {}),
+        ...(worktree ? { worktree } : {}),
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         revision: lastRecordId,

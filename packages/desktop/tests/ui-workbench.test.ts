@@ -300,6 +300,36 @@ describe('DiffTab 范围切换、检查点手动修改冲突确认与 Worktree �
     expect(html).toContain('检测到手动修改冲突');
     expect(html).toContain('取消');
     expect(html).toContain('强制覆盖还原');
+
+    /* 当前会话累计视图必须显式区分「撤销全部会话变更」按钮，绝不复述「还原选中检查点」。 */
+    const sessionScopeHtml = renderToStaticMarkup(
+      createElement(wb.DiffTab, {
+        files: sampleDiffFiles,
+        checkpoints: sampleCheckpoints,
+        defaultScope: 'session',
+        onRestoreCheckpoint: () => ({ status: 'restored' }),
+      }),
+    );
+    expect(sessionScopeHtml).toContain('撤销全部会话变更');
+    expect(sessionScopeHtml).not.toContain('还原选中检查点');
+
+    /* 相对基线分支视图不属于检查点回滚范围，应隐藏检查点还原按钮。 */
+    const wtScopeHtml = renderToStaticMarkup(
+      createElement(wb.DiffTab, {
+        files: sampleDiffFiles,
+        checkpoints: sampleCheckpoints,
+        worktree: {
+          id: 'wt-1',
+          branch: 'kpbl/fix-sandbox-a3f9',
+          worktreePath: '/tmp/wt/kapibala',
+          baseRef: 'main',
+        },
+        defaultScope: 'worktree_base',
+        onRestoreCheckpoint: () => ({ status: 'restored' }),
+      }),
+    );
+    expect(wtScopeHtml).not.toContain('还原选中检查点');
+    expect(wtScopeHtml).not.toContain('撤销全部会话变更');
   });
 
   it('Worktree 合并面板正确展示领先/落后提交、主工作区脏警告、冲突隔离横幅及一键助手解冲突提示词', () => {

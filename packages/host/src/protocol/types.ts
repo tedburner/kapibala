@@ -334,6 +334,7 @@ export type WireWorktreeSummary = {
   baseRef: string;
   baseCommit: string;
   createdAt: number;
+  missing?: boolean;
 };
 
 /** 工作树相对基线变更文件的 wire 摘要。 */

@@ -202,6 +202,11 @@ export const ZH_CN_MESSAGES = {
   'diff.viewUnified': '统一视图',
   'diff.viewSplit': '并排对比',
   'diff.restoreBtn': '还原选中检查点',
+  'diff.revertSessionBtn': '撤销全部会话变更',
+  'diff.revertSessionConfirmTitle': '确认撤销全部会话变更',
+  'diff.revertSessionConfirmDesc':
+    '将撤销本会话全部 {count} 个检查点轮次的文件改动，并将归因文件恢复至会话开始前状态（执行前会自动保存 pre-restore 备份快照）。',
+  'diff.revertSessionConfirmAction': '确认撤销全部变更',
   'diff.externalBanner': '外部代理会话还原仅回滚归因磁盘文件，不截断外部代理私有对话历史。',
   'diff.loading': '正在读取变更快照…',
   'diff.emptyTitle': '当前范围暂无磁盘变更',
@@ -213,7 +218,9 @@ export const ZH_CN_MESSAGES = {
   'diff.noTextDiff': '无文本行级差异（仅权限或重命名变更）',
   'diff.conflictTitle': '检测到手动修改冲突',
   'diff.conflictDesc':
-    '还原至轮次 #{ordinal} 将覆盖以下在轮次结束后被手动修改过的文件（执行前会自动保存 pre-restore 备份快照）：',
+    '还原至轮次 #{ordinal} 执行前状态（撤销轮次 #{ordinal} 及后续改动）将覆盖以下被手动修改过的文件（执行前会自动保存 pre-restore 备份快照）：',
+  'diff.conflictSessionDesc':
+    '撤销当前会话全部检查点变更（恢复至会话开始前状态）将覆盖以下被手动修改过的文件（执行前会自动保存 pre-restore 备份快照）：',
   'diff.forceRestoreBtn': '强制覆盖还原',
   'diff.wtBaseRef': '目标基线：{base}',
   'diff.wtAheadBehind': '领先 {ahead} · 落后 {behind}',

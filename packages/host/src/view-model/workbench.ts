@@ -21,6 +21,8 @@ export interface ViewWorktreeSummary {
   readonly baseRef: string;
   readonly baseCommit: string;
   readonly createdAt: number;
+  /** 绑定的受管工作树目录已不存在时为 `true`，此时会话以只读历史模式打开，续跑前须重新绑定执行根。 */
+  readonly missing?: boolean;
 }
 
 /** 单条轮次级 Shadow Git 检查点只读摘要，供工作台 `Diff` 标签与回退菜单渲染。 */

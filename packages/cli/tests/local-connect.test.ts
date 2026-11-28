@@ -234,4 +234,85 @@ describe('local CLI command routing', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('buffers non-TTY stdout during mid-stream retry so discarded partial output never leaks into stdout', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-connect-nontty-retry-'));
+    const listeners = new Set<
+      (event: { type: string; runId?: string; payload?: unknown }) => void
+    >();
+    const client = {
+      call: vi.fn(async (method: string) => {
+        if (method === 'session/create') return { sessionId: 'session', conversationId: 'conv' };
+        if (method === 'session/attach')
+          return {
+            sessionId: 'session',
+            streamEpoch: 'stream',
+            controlEpoch: 'control',
+            serverInstanceId: 'instance',
+            seq: 0,
+            history: [],
+          };
+        if (method === 'run/start') {
+          queueMicrotask(() => {
+            for (const listener of listeners) {
+              listener({ type: 'text_delta', runId: 'run', payload: { text: 'discarded-half' } });
+              listener({ type: 'stream_reset', runId: 'run', payload: { step: 1, attempt: 1 } });
+              listener({
+                type: 'retry_scheduled',
+                runId: 'run',
+                payload: {
+                  step: 1,
+                  attempt: 1,
+                  maxRetries: 2,
+                  delayMs: 1_000,
+                  nextRetryAt: Date.now() + 1_000,
+                  category: 'transport',
+                  message: 'eof mid-frame',
+                },
+              });
+              listener({ type: 'text_delta', runId: 'run', payload: { text: 'clean-final' } });
+              listener({ type: 'run_settled', runId: 'run', payload: { outcome: 'completed' } });
+            }
+          });
+          return { runId: 'run' };
+        }
+        if (method === 'session/snapshot') return { history: [], openSessions: 1 };
+        if (method === 'session/close') return { closed: true };
+        return {};
+      }),
+      subscribe: (
+        listener: (event: { type: string; runId?: string; payload?: unknown }) => void,
+      ) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      close: vi.fn(async () => {}),
+      whenClosed: new Promise<void>(() => {}),
+    };
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const origIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+    const writeOut = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdoutChunks.push(String(chunk));
+      return true;
+    });
+    const writeErr = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    });
+    daemon.connectDaemon.mockResolvedValueOnce(client);
+    try {
+      await runConnectedClient({ prompt: 'hello', workspace: root });
+      const stdoutText = stdoutChunks.join('');
+      expect(stdoutText).toBe('clean-final\n');
+      expect(stdoutText).not.toContain('discarded-half');
+      expect(stderrChunks.join('')).toContain('自动重试 (1/2)');
+    } finally {
+      Object.defineProperty(process.stdout, 'isTTY', { value: origIsTTY, configurable: true });
+      writeOut.mockRestore();
+      writeErr.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

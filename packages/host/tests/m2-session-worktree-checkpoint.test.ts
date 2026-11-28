@@ -626,4 +626,138 @@ describe('M2 Host 集成：ManagedHostSession 自动检查点/证据联动与 Ex
     expect(pStore.snapshot().worktree).toBeUndefined();
     expect(pStore.snapshot().diffSummary).toBeUndefined();
   });
+
+  it('opens a session with a deleted worktree in read-only history mode and blocks runs until execution root is rebound', async () => {
+    const homeDir = makeTempDir('kpbl-m2-missing-wt-home-');
+    const repoDir = makeTempDir('kpbl-m2-missing-wt-repo-');
+    initGitRepo(repoDir);
+
+    let callCount = 0;
+    const replies = ['工作树内的回答。', '重新绑定主仓后的续聊回答。'];
+    const server = http.createServer(async (req, res) => {
+      for await (const _chunk of req) {
+        /* consume */
+      }
+      const text = replies[callCount++] ?? '完成。';
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(
+        `data: ${JSON.stringify({
+          id: `m-${callCount}`,
+          object: 'chat.completion.chunk',
+          choices: [
+            { index: 0, delta: { role: 'assistant', content: text }, finish_reason: 'stop' },
+          ],
+          usage: { prompt_tokens: 8, completion_tokens: 6, total_tokens: 14 },
+        })}\n\n`,
+      );
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(
+      () =>
+        new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        }),
+    );
+    const port = (server.address() as AddressInfo).port;
+    const settings: UserSettings = {
+      defaultModel: 'mock-wt',
+      permissionMode: 'Auto',
+      profiles: [
+        {
+          id: 'mock-wt',
+          name: 'Mock WT',
+          provider: 'openai-compatible',
+          modelName: 'mock-wt',
+          baseURL: `http://127.0.0.1:${port}/v1`,
+          apiKeyEnv: 'NONE',
+          apiKey: 'dummy',
+        },
+      ],
+    };
+    fs.mkdirSync(path.join(homeDir, '.kapibala'), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeDir, '.kapibala', 'settings.json'),
+      JSON.stringify(settings, null, 2),
+      'utf8',
+    );
+    trustProject(settings, repoDir, { homeDir });
+
+    const allowAll = { requestApproval: async () => 'allow_once' as const };
+    const coordinator = new ExecutionRootCoordinator();
+    const worktrees = new WorktreeService({ homeDir, coordinator });
+    const checkpoints = new CheckpointService({ homeDir });
+    const wt = await worktrees.create({ projectRoot: repoDir, name: 'ephemeral-deleted' });
+
+    const created = await createManagedSession({
+      workspaceRoot: wt.binding.worktreePath,
+      projectRoot: repoDir,
+      worktree: wt.binding,
+      homeDirectory: homeDir,
+      approvalChannel: allowAll,
+      leaseCoordinator: new WorkspaceLeaseCoordinator(),
+      checkpoints,
+      worktrees,
+      executionCoordinator: coordinator,
+    });
+    const convId = created.conversationId;
+    await created.run('首轮在工作树执行');
+    await created.dispose();
+
+    // 删除该会话绑定的工作树目录
+    await worktrees.remove({ id: wt.binding.id, force: true });
+    expect(fs.existsSync(wt.binding.worktreePath)).toBe(false);
+
+    // 重新打开历史会话：允许只读查看历史，但严禁向主仓续跑或还原检查点
+    const readonlySession = await createManagedSession({
+      workspaceRoot: repoDir,
+      projectRoot: repoDir,
+      conversationId: convId,
+      homeDirectory: homeDir,
+      approvalChannel: allowAll,
+      leaseCoordinator: new WorkspaceLeaseCoordinator(),
+      checkpoints,
+      worktrees,
+      executionCoordinator: coordinator,
+    });
+    cleanups.push(() => readonlySession.dispose().catch(() => {}));
+
+    expect(readonlySession.worktree()?.missing).toBe(true);
+    expect(readonlySession.snapshot().messages.length).toBeGreaterThanOrEqual(2);
+    await expect(readonlySession.run('尝试直接续聊')).rejects.toMatchObject({
+      code: 'WORKTREE_MISSING',
+    });
+    await expect(readonlySession.restoreCheckpoint(-1)).rejects.toMatchObject({
+      code: 'WORKTREE_MISSING',
+    });
+
+    // 显式重新绑定到主仓并重开后即可恢复续聊
+    expect(readonlySession.rebindExecutionRoot).toBeTypeOf('function');
+    await readonlySession.rebindExecutionRoot!({ mode: 'project_root' });
+    await readonlySession.dispose();
+
+    const reboundSession = await createManagedSession({
+      workspaceRoot: repoDir,
+      projectRoot: repoDir,
+      conversationId: convId,
+      homeDirectory: homeDir,
+      approvalChannel: allowAll,
+      leaseCoordinator: new WorkspaceLeaseCoordinator(),
+      checkpoints,
+      worktrees,
+      executionCoordinator: coordinator,
+    });
+    cleanups.push(() => reboundSession.dispose().catch(() => {}));
+
+    expect(reboundSession.worktree()).toBeUndefined();
+    await reboundSession.run('重绑定后续聊');
+    expect(
+      reboundSession
+        .snapshot()
+        .messages.some((m) =>
+          m.blocks.some((b) => b.kind === 'text' && b.text.includes('重新绑定主仓后的续聊回答')),
+        ),
+    ).toBe(true);
+  });
 });
