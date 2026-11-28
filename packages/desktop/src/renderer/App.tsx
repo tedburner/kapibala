@@ -1,3081 +1,442 @@
+import { useMemo, useState } from 'react';
+import type { DesktopAPI } from '../shared/contracts.js';
+import { ConnectedSettingsStage, DesktopModalHost } from './app/DesktopDialogs.js';
+import { HostRecoveryBanner, failureMessage } from './app/desktop-helpers.js';
+import { useDesktopRuntime } from './app/useDesktopRuntime.js';
+import { useSessionActions } from './app/useSessionActions.js';
+import { useWorkbenchController } from './app/useWorkbenchController.js';
+import { useI18n } from './i18n.js';
+import { formatStagedTurnHint } from './mode-labels.js';
 import {
-  Button,
-  DropdownMenu,
-  Input,
-  InputArea,
-  LayerCard,
-  LayerDialog,
-  Sidebar,
-} from '@cloudflare/kumo';
-import brandMark from '@kapibala-assets/icon.svg';
-import {
-  type ViewMessage,
-  type ViewNotice,
-  selectMessages,
-} from '@kiturone/kapibala-host/view-model';
-import {
-  ArrowUpIcon,
-  CaretDownIcon,
-  CheckIcon,
-  FolderPlusIcon,
-  FolderSimpleIcon,
-  GitBranchIcon,
-  HandIcon,
-  ImageSquareIcon,
-  LightbulbIcon,
-  ShieldCheckIcon,
-  ShieldWarningIcon,
-  StopIcon,
-  XIcon,
-} from '@phosphor-icons/react';
-import {
-  type CSSProperties,
-  Fragment,
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from 'react';
-import { flushSync } from 'react-dom';
-import type { DesktopAPI, Output, Workspace } from '../shared/contracts.js';
-import { collectViewArtifacts, latestViewArtifact } from './artifact-model.js';
-import { ComposerModelPicker, type SelectedHarnessChoice } from './composer-model-picker.js';
-import { DetailsDrawer, type DetailsTarget } from './details-drawer.js';
-import { ExternalSessionView } from './external-session-view.js';
-import { rankFileMatches } from './file-completion.js';
-import { buildSessionHandoffPayload } from './handoff-context.js';
-import { HistoryListClient } from './history-list-client.js';
-import { KubaiIcon } from './icons/KubaiIcon.js';
-import { MessageList } from './message-list.js';
-import { MODE_NAMES } from './mode-labels.js';
-import { ProjectDialog } from './project-dialog.js';
-import {
-  type PromptHistoryState,
-  isPromptHistoryBrowsing,
-  rememberPromptEntry,
-  resetPromptBrowsing,
-  seedPromptHistory,
-  stepPromptHistory,
-} from './prompt-history.js';
-import { SessionDeleteDialog, SessionRenameDialog, type SessionTarget } from './session-actions.js';
-import { SettingsDialog } from './settings-dialog.js';
-import { TaskPanel } from './task-panel.js';
-import { useUI } from './ui-state.js';
-import { ViewClient } from './view-client.js';
-import { WorkspaceSidebar, runtimeLabel } from './workspace-sidebar.js';
+  buildDraftScopeKey,
+  selectInboxItems,
+  selectWorkspaceHierarchy,
+  useSessionStore,
+  useShellStore,
+  useWorkspaceStore,
+} from './stores/index.js';
+import { type ActiveWatchSummaryItem, ComposerDock } from './surfaces/composer/index.js';
+import { LaunchpadView } from './surfaces/launchpad/index.js';
+import { AppShell } from './surfaces/shell/index.js';
+import { SessionStage } from './surfaces/thread/index.js';
+import { WorkbenchStage } from './surfaces/workbench/index.js';
+import type { ToastItem } from './ui/index.js';
 
-type Opened = Output<'session.open'>;
-type Catalog = Output<'settings.read'>;
-/** 输入框依赖代理的稳定标识、显示名称与本地缓存的可选模型目录，命令配置始终由宿主解析。 */
-type HarnessEntry = Pick<
-  Output<'external.harnesses'>['harnesses'][number],
-  'id' | 'name' | 'transport' | 'cachedConfigOptions' | 'cachedConfigUpdatedAt'
->;
-type HarnessChoice = SelectedHarnessChoice;
 const api: DesktopAPI = window.kapibala;
-const client = new ViewClient(api);
-const scopeOf = (opened: Opened) => ({
-  workspaceId: opened.workspaceId,
-  sessionId: opened.sessionId,
-});
-type Mode = keyof typeof MODE_NAMES;
-/** 模式菜单的灰色副标题：用一句话说明该模式何时介入，帮助用户区分三个审批档位的强度。 */
-const MODE_HINTS = {
-  Plan: '编辑前先出计划。',
-  Approval: '改文件前先问我。',
-  Auto: '只读命令与文件读写自动执行。',
-  FullAccess: '减少确认次数。',
-} as const;
-/** 各模式的语义图标：计划用灯泡，其余按审批强度从手（逐次确认）递进到盾。 */
-const MODE_ICONS = {
-  Plan: LightbulbIcon,
-  Approval: HandIcon,
-  Auto: ShieldCheckIcon,
-  FullAccess: ShieldWarningIcon,
-} as const;
-/** 菜单展示顺序：计划模式单列一组（它是工作流档位而非审批强度），与三个审批档位之间用分隔线隔开。 */
-const MODE_ORDER: readonly Mode[] = ['Plan', 'Approval', 'Auto', 'FullAccess'];
 
-/** 会话模式图标：菜单项与触发按钮共用，保证同一模式在两处的视觉语义一致。 */
-function ModeGlyph({ mode, size = 16 }: { mode: Mode; size?: number }) {
-  const Glyph = MODE_ICONS[mode];
-  return <Glyph size={size} className="shrink-0 text-kumo-subtle" />;
-}
-
-/**
- * 右上角通知浮层：承载会话诊断，逐条渲染并可单独关闭。
- * 不参与对话流布局，也不拦截空白区域的点击；关闭状态只保存在页面内存里。
- * 浮层默认 3 秒自动收起；审批请求仍走正中弹窗，不在这里承接。
- */
-function NoticeToasts({
-  notices,
-  dismissed,
-  onDismiss,
-}: {
-  notices: readonly ViewNotice[];
-  dismissed: Readonly<Record<string, true>>;
-  onDismiss(id: string): void;
-}) {
-  const visible = notices.filter((notice) => !dismissed[notice.id]);
-  // 只按 id 序列重建计时器：文案流式更新不该给同一条提示续命。
-  const visibleIds = JSON.stringify(visible.map((notice) => notice.id));
-  useEffect(() => {
-    if (visibleIds === '[]') return;
-    const timers = (JSON.parse(visibleIds) as string[]).map((id) =>
-      setTimeout(() => onDismiss(id), 3000),
-    );
-    return () => {
-      for (const timer of timers) clearTimeout(timer);
-    };
-  }, [visibleIds, onDismiss]);
-  if (visible.length === 0) return null;
-  return (
-    <section className="kapibala-toasts" aria-label="通知">
-      {visible.map((notice) => (
-        <div
-          key={notice.id}
-          data-level={notice.level}
-          // 错误级提示用 alert 立即播报；其余走 status，避免打断读屏。
-          role={notice.level === 'error' ? 'alert' : 'status'}
-          className="kapibala-toast"
-        >
-          <span className="min-w-0 flex-1 text-sm leading-5 break-words text-kumo-default">
-            {notice.text}
-          </span>
-          <Button
-            className="kapibala-action -mt-1 -mr-1 shrink-0 text-kumo-subtle"
-            variant="ghost"
-            size="sm"
-            shape="square"
-            aria-label="关闭提示"
-            onClick={() => onDismiss(notice.id)}
-          >
-            <XIcon size={14} />
-          </Button>
-        </div>
-      ))}
-    </section>
-  );
-}
-const ROLE_NAMES = {
-  default: '默认',
-  planning: '规划',
-  execution: '执行',
-  fast: '快速',
-} as const;
-const failure = (error: unknown) =>
-  error instanceof Error ? error.message : '操作失败，请检查配置后重试。';
-/** 首页示例只填入草稿，不创建会话、不自动发送；用户仍可改写后再提交。 */
-const STARTERS = ['梳理当前仓库的目录结构', '为这个项目补一份 README', '检查最近的改动有没有风险'];
-
-/**
- * 取最后一条真实用户消息的回退占位原文。
- * 宿主执行重试时优先无损重放 canonical 历史中的原始用户消息（含引用块、技能信封与未脱敏原文），
- * 此处仅确认存在可重试的用户轮次并提供非空请求字符串；后台监视与子代理通知消息不计入用户轮次。
- */
-function lastUserPrompt(messages: readonly ViewMessage[]): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    if (message.role !== 'user') continue;
-    const text = message.blocks
-      .filter((block) => block.kind === 'text' && !block.skillName)
-      .map((block) => block.text)
-      .join('\n')
-      .trim();
-    if (text.startsWith('<watch-event ') || text.startsWith('<subagent-notification ')) continue;
-    if (message.blocks.some((block) => block.skillName)) return text || '开始执行该技能。';
-    return text || undefined;
+function detectPlatform(): 'darwin' | 'win32' | 'linux' {
+  if (typeof document !== 'undefined') {
+    const p = document.documentElement.dataset.platform;
+    if (p === 'darwin' || p === 'win32' || p === 'linux') return p;
   }
-  return undefined;
+  return 'win32';
 }
 
-/** 证据防抖的 max-wait：流式事件持续重排 trailing 计时器时，看板至少每 3s 放行一次拉取。 */
-const EVIDENCE_MAX_WAIT_MS = 3000;
-
-/** 桌面应用只组合投影事实与临时 UI 状态；运行和审批的最终决定由 Host 校验。 */
+/**
+ * Kapibala UI 2.0 桌面应用根组件：
+ * 组合 `AppShell`、`LaunchpadView`、`SessionStage`、`ComposerDock`、`WorkbenchStage`、`SettingsStage` 与受控模态框集合；
+ * 运行与权限裁决唯一真源始终驻留 `agent-host`。
+ */
 export function App() {
-  const ui = useUI();
-  const facts = useSyncExternalStore(client.subscribe, client.snapshot);
-  const [workspace, setWorkspace] = useState<Workspace>();
-  const [trust, setTrust] = useState<Workspace>();
-  const [projectOpen, setProjectOpen] = useState(false);
-  const [projectSearch, setProjectSearch] = useState('');
-  const [opened, setOpened] = useState<Opened>();
-  const [histories, setHistories] = useState<Record<string, Output<'session.list'>>>({});
-  const [historyClient] = useState(
+  const { locale, t } = useI18n();
+  const [platform] = useState(detectPlatform);
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+
+  const rt = useDesktopRuntime(api);
+  const actions = useSessionActions(api, rt);
+  const workbenchProps = useWorkbenchController(api, rt, (childId, wsId) => {
+    const sp = rt.spaces.find((s) => s.id === wsId) ?? rt.workspace;
+    if (sp) void rt.act(() => actions.openConversation(childId, sp));
+  });
+
+  const wsSpaces = useWorkspaceStore((s) => s.spaces);
+  const wsHistories = useWorkspaceStore((s) => s.historiesByWorkspace);
+  const wsExternal = useWorkspaceStore((s) => s.externalByWorkspace);
+  const wsLive = useWorkspaceStore((s) => s.liveStatuses);
+  const expandedWorkspaces = useWorkspaceStore((s) => s.expandedWorkspaces);
+
+  const worktreeEnabled = useSessionStore((s) => s.worktreeEnabled);
+  const worktreeBranchDraft = useSessionStore((s) => s.worktreeBranchDraft);
+  const launchpadScope = buildDraftScopeKey(null, rt.workspace?.id ?? null);
+  const launchpadDraft = useSessionStore((s) => s.draftsByKey[launchpadScope] ?? '');
+
+  const inboxItems = useMemo(
     () =>
-      new HistoryListClient(
-        (id, page) => api.session.list(id, page),
-        (id, list) => setHistories((previous) => ({ ...previous, [id]: list })),
-      ),
+      selectInboxItems({
+        spaces: wsSpaces,
+        liveStatuses: wsLive,
+        externalByWorkspace: wsExternal,
+      }),
+    [wsExternal, wsLive, wsSpaces],
   );
-  const [spaces, setSpaces] = useState<Workspace[]>([]);
-  const [catalog, setCatalog] = useState<Catalog>();
-  const [recent, setRecent] = useState<Output<'preferences.read'>['recent']>([]);
-  /** 归档集合的变更代数：设置页据此重新拉取，不依赖设置页自己猜测何时过期。 */
-  const [archiveRevision, setArchiveRevision] = useState(0);
-  const [pendingDelete, setPendingDelete] = useState<SessionTarget>();
-  /** 待改名的会话；弹窗自身维护草稿，这里只保存身份与当前标题。 */
-  const [pendingRename, setPendingRename] = useState<SessionTarget>();
-  const [settingsInitialTab, setSettingsInitialTab] = useState<string>();
-  const [externalLists, setExternalLists] = useState<
-    Record<string, readonly Output<'external.list'>['items'][number][]>
-  >({});
-  const [activeExternal, setActiveExternal] = useState<{
-    workspaceId: string;
-    sessionId: string;
-    subscriptionId: string;
-    snapshot: Output<'external.snapshot'>;
-  }>();
-  const activeExternalRef = useRef<typeof activeExternal>(undefined);
-  activeExternalRef.current = activeExternal;
-  const externalNavGen = useRef(0);
-  const [harnessCatalog, setHarnessCatalog] = useState<{
-    workspaceId: string;
-    choices: readonly HarnessEntry[];
-    failed?: true;
-  }>();
-  const [pendingHarness, setPendingHarness] = useState<HarnessChoice>();
-  const [refreshingHarnessId, setRefreshingHarnessId] = useState<string>();
-  /** 已打开本地会话的下一轮配置暂存：切换模型或角色不中断当前轮次，待下一轮发送或重试时生效。 */
-  const [stagedLocalSessionConfig, setStagedLocalSessionConfig] = useState<{
-    readonly conversationId: string;
-    readonly profileId?: string;
-    readonly role?: Opened['configuration']['role'];
-  }>();
-  /** 已打开本地会话跨代理切换暂存：下一轮发送时携带当前对话历史新建外部代理会话接力。 */
-  const [stagedLocalToExternal, setStagedLocalToExternal] = useState<{
-    readonly conversationId: string;
-    readonly harness: HarnessChoice;
-  }>();
-  const [pendingExternalDelete, setPendingExternalDelete] = useState<{
-    space: Workspace;
-    id: string;
-    title: string;
-    harnessName: string;
-  }>();
-  const [externalToasts, setExternalToasts] = useState<
-    readonly {
-      id: string;
-      workspaceId: string;
-      sessionId: string;
-      text: string;
-      level: 'info' | 'warning' | 'error';
-    }[]
-  >([]);
-  const spacesRef = useRef<Workspace[]>([]);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [pendingLaunchPrompt, setPendingLaunchPrompt] = useState<string>();
-  const [replyingApprovals, setReplyingApprovals] = useState<Record<string, true>>({});
-  const [approvalError, setApprovalError] = useState('');
-  const [fullAccess, setFullAccess] = useState(false);
-  // 新对话在创建前没有会话配置，先把用户选的模型暂存；创建成功后立即 configure 再启动，
-  // 避免「输入区显示 A 模型、实际用 B 模型」的静默不一致。
-  const [pendingProfile, setPendingProfile] = useState<string>();
-  const [pendingMode, setPendingMode] = useState<Mode>();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const detailTrigger = useRef<HTMLElement | null>(null);
-  // 编辑回填后聚焦输入框：composer 在首页与对话页互斥复用，同一时刻只挂载一份。
-  const composerShell = useRef<HTMLDivElement | null>(null);
-  /** 输入框元素：历史召回写入受控值后，需要把光标补到末尾。 */
-  const composerInput = useRef<HTMLTextAreaElement | null>(null);
-  /**
-   * 输入历史缓存，按草稿作用域（本地会话 / 外部会话 / `:new`）隔离；
-   * 仅存于渲染进程内存，打开已有会话时从已加载的公开脱敏消息补种，新发送同步追加。
-   */
-  const promptHistory = useRef(new Map<string, PromptHistoryState>());
-  const [details, setDetails] = useState<DetailsTarget>();
-  // 产物自动预览的基线：按「会话 + 工具调用 + 路径」记录已处理过的产物。
-  // 进入会话、窗口重建或切回会话时先把历史产物整体记为基线且不弹，
-  // 之后只有基线之外的新产物才自动打开一次；用户关闭后旧键仍在基线里，不会复弹。
-  const artifactBaseline = useRef(new Set<string>());
-  const artifactScope = useRef('');
-  /** 当前会话的证据聚合；随快照序号防抖刷新，切换会话即清空。 */
-  const [evidence, setEvidence] = useState<Output<'session.evidence'>>();
-  /** 证据拉取失败标记：与「尚未加载」（undefined）区分，失败时界面保留「证据不可用」入口。 */
-  const [evidenceUnavailable, setEvidenceUnavailable] = useState(false);
-  /** 证据手动重拉代数：抽屉「重新加载」按钮自增，复用同一条防抖拉取管线与竞态防护。 */
-  const [evidenceReloadTick, setEvidenceReloadTick] = useState(0);
-  const [wide, setWide] = useState(() => matchMedia('(min-width: 1200px)').matches);
-  const current = useRef<Workspace | undefined>(undefined);
-  const run =
-    opened &&
-    (facts.runs[opened.sessionId] ??
-      facts.runtime?.items.find((item) => item.sessionId === opened.sessionId));
-  const runtimeItem = facts.runtime?.items.find((item) => item.sessionId === opened?.sessionId);
-  const readyToSend = facts.runtimeValid && runtimeItem?.cleanup === 'none';
-  const running = run && run.phase !== 'idle';
-  // 首页副标题的第二句只在确有后台任务时出现：干净环境下常驻这句条件文案，会指向不存在的对象。
-  const backgroundRunning = (facts.runtime?.items ?? []).some((item) => item.phase !== 'idle');
-  // Git 分支是宿主净化后的检查快照事实（StatusFacts.gitBranch），只在已打开会话的 inspection
-  // 里出现；渲染层不自行探测 git，非 git 目录或快照未就绪时保持 undefined，chip 整体不占位。
-  const gitBranch = facts.inspection?.status?.gitBranch;
-  // 未打开会话时输入框直连"新建对话"流程；草稿按目标会话或 ':new' 键暂存。
-  const draftScope = opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new';
-  const draft = ui.drafts[draftScope] ?? '';
-  // 切回某个会话时历史浏览下标可能停在中间项：作用域变化一律回到「未提交草稿」位置。
-  useEffect(() => {
-    resetPromptBrowsing(promptHistory.current.get(draftScope));
-  }, [draftScope]);
-  const externalDraftScope = activeExternal
-    ? `ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`
-    : undefined;
-  useEffect(() => {
-    if (externalDraftScope) resetPromptBrowsing(promptHistory.current.get(externalDraftScope));
-  }, [externalDraftScope]);
-  const selectedModel = catalog?.profiles.find(
-    (model) => model.id === opened?.configuration.profileId,
-  );
-  // 没有密钥或已停用的模型列在菜单里只会让用户点了才失败；选择入口只提供当前真能调用的模型。
-  // 设置页仍展示全量清单，否则用户没有地方为新模型补密钥或重新启用。
-  const usableModels = (catalog?.profiles ?? []).filter(
-    (model) => model.credential.configured && !model.disabled,
-  );
-  // 新对话展示的模型必须是「发送时真会用的那个」：优先取用户临时选择，其次取当前空间生效的默认模型。
-  const defaultModel =
-    usableModels.find((model) => model.id === catalog?.defaultModel) ?? usableModels[0];
-  const activeStagedLocal =
-    opened && stagedLocalSessionConfig?.conversationId === opened.conversationId
-      ? stagedLocalSessionConfig
-      : undefined;
-  const activeStagedHarness =
-    opened && stagedLocalToExternal?.conversationId === opened.conversationId
-      ? stagedLocalToExternal.harness
-      : undefined;
-  const effectiveOpenedProfileId = activeStagedLocal?.profileId ?? opened?.configuration.profileId;
-  const effectiveOpenedRole = activeStagedLocal?.role ?? opened?.configuration.role;
-  const stagedModelChanged = Boolean(
-    opened &&
-      activeStagedLocal?.profileId &&
-      activeStagedLocal.profileId !== opened.configuration.profileId,
-  );
-  const stagedRoleChanged = Boolean(
-    opened && activeStagedLocal?.role && activeStagedLocal.role !== opened.configuration.role,
-  );
-  const hasStagedLocalDiff = stagedModelChanged || stagedRoleChanged;
-  const composerModel = opened
-    ? (usableModels.find((model) => model.id === effectiveOpenedProfileId) ??
-      catalog?.profiles.find((model) => model.id === effectiveOpenedProfileId) ??
-      selectedModel)
-    : (usableModels.find((model) => model.id === pendingProfile) ?? defaultModel);
-  const composerMode = opened?.configuration.mode ?? pendingMode ?? catalog?.permissionMode;
-  const composerHarness = opened ? activeStagedHarness : pendingHarness;
-  const trustedWorkspaceId = workspace?.trusted ? workspace.id : undefined;
-  const currentHarnessCatalog =
-    harnessCatalog?.workspaceId === trustedWorkspaceId ? harnessCatalog : undefined;
-  const availableHarnesses = currentHarnessCatalog?.choices ?? [];
-  const selectedHarnessAvailable = availableHarnesses.some(
-    (item) => item.id === composerHarness?.id,
-  );
-  const reloadHarnessCatalog = useCallback(async (targetWorkspaceId: string | undefined) => {
-    if (!targetWorkspaceId) return;
-    try {
-      const { harnesses } = await api.external.harnesses(targetWorkspaceId);
-      setHarnessCatalog({
-        workspaceId: targetWorkspaceId,
-        choices: harnesses
-          .filter((item) => item.enabled)
-          .map(({ id, name, transport, cachedConfigOptions, cachedConfigUpdatedAt }) => ({
-            id,
-            name,
-            transport,
-            ...(cachedConfigOptions ? { cachedConfigOptions } : {}),
-            ...(cachedConfigUpdatedAt !== undefined ? { cachedConfigUpdatedAt } : {}),
-          })),
-      });
-    } catch {
-      setHarnessCatalog({ workspaceId: targetWorkspaceId, choices: [], failed: true });
+  const hierarchies = useMemo(() => {
+    const record: Record<string, ReturnType<typeof selectWorkspaceHierarchy>> = {};
+    for (const sp of wsSpaces) {
+      record[sp.id] = selectWorkspaceHierarchy(
+        {
+          historiesByWorkspace: wsHistories,
+          externalByWorkspace: wsExternal,
+          liveStatuses: wsLive,
+        },
+        sp.id,
+      );
     }
-  }, []);
-  // 切换空间或离开设置时重新读取，忽略上一空间或设置打开前尚未返回的结果。
-  useEffect(() => {
-    if (!trustedWorkspaceId || ui.settingsOpen) return;
-    let cancelled = false;
-    void api.external
-      .harnesses(trustedWorkspaceId)
-      .then(({ harnesses }) => {
-        if (!cancelled)
-          setHarnessCatalog({
-            workspaceId: trustedWorkspaceId,
-            choices: harnesses
-              .filter((item) => item.enabled)
-              .map(({ id, name, transport, cachedConfigOptions, cachedConfigUpdatedAt }) => ({
-                id,
-                name,
-                transport,
-                ...(cachedConfigOptions ? { cachedConfigOptions } : {}),
-                ...(cachedConfigUpdatedAt !== undefined ? { cachedConfigUpdatedAt } : {}),
-              })),
-          });
-      })
-      .catch(() => {
-        if (!cancelled)
-          setHarnessCatalog({ workspaceId: trustedWorkspaceId, choices: [], failed: true });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [trustedWorkspaceId, ui.settingsOpen]);
-  const refreshHarnessModels = useCallback(
-    async (harnessId: string, options?: { readonly silent?: boolean }) => {
-      if (!trustedWorkspaceId) return;
-      setRefreshingHarnessId(harnessId);
-      if (!options?.silent) setError('');
-      try {
-        const probe = await api.external.testHarness({
-          id: harnessId,
-          workspaceId: trustedWorkspaceId,
-        });
-        await reloadHarnessCatalog(trustedWorkspaceId);
-        if (!probe.available && !options?.silent) {
-          report(
-            probe.reason ||
-              (probe.loginHint
-                ? `需要先登录：${probe.loginHint}`
-                : '未能读取该外部代理的模型列表。'),
-          );
-        }
-      } catch (reason) {
-        if (!options?.silent) report(failure(reason));
-      } finally {
-        setRefreshingHarnessId((currentId) => (currentId === harnessId ? undefined : currentId));
-      }
-    },
-    [trustedWorkspaceId, reloadHarnessCatalog],
-  );
-  // 新对话只校验当前选择的执行入口；外部代理使用自有凭证，不依赖本地模型配置。
-  // 已打开会话支持暂存跨代理接力：同代理续聊沿用运行事实门控，跨代理接力校验空间已信任且目标代理可用。
-  const canSend = opened
-    ? Boolean(draft.trim()) &&
-      !running &&
-      (activeStagedHarness
-        ? Boolean(workspace?.trusted) && selectedHarnessAvailable
-        : facts.valid && readyToSend)
-    : Boolean(draft.trim()) &&
-      Boolean(workspace?.trusted) &&
-      facts.runtimeValid === true &&
-      (composerHarness ? selectedHarnessAvailable : Boolean(composerModel));
-  // 快照到消息列表的推导按引用记忆：自动预览 effect 只应在快照真正变化时重跑，
-  // 不能因为草稿输入等无关渲染反复扫描历史。
-  const messages = useMemo(() => (facts.state ? selectMessages(facts.state) : []), [facts.state]);
-  // 继续历史本地会话时，从当前会话已安装的公开投影消息补种输入历史：
-  // 必须核对 identity.conversationId 与当前 opened 一致，避免切换会话间隙把旧视图消息串入新作用域。
-  const loadedConversationId = facts.state?.identity.conversationId;
-  useEffect(() => {
-    if (!opened || loadedConversationId !== opened.conversationId) return;
-    const scope = `${opened.workspaceId}:${opened.conversationId}`;
-    promptHistory.current.set(scope, seedPromptHistory(promptHistory.current.get(scope), messages));
-  }, [opened, loadedConversationId, messages]);
-  // 继续历史外部代理会话时同步从其公开快照补种输入历史。
-  const activeExternalMessages = activeExternal?.snapshot.messages;
-  useEffect(() => {
-    if (!externalDraftScope || !activeExternalMessages) return;
-    promptHistory.current.set(
-      externalDraftScope,
-      seedPromptHistory(promptHistory.current.get(externalDraftScope), activeExternalMessages),
-    );
-  }, [externalDraftScope, activeExternalMessages]);
-  // 顶栏手动入口：当前会话存在可预览产物时给出常驻按钮。自动弹只覆盖「新产物」一次，
-  // 用户关闭后仍需要主动重开的方式；没有产物时不渲染，避免出现点了没有内容的入口。
-  const latestArtifact = useMemo(
+    return record;
+  }, [wsExternal, wsHistories, wsLive, wsSpaces]);
+
+  const trustedWorkspaceId = rt.workspace?.trusted ? rt.workspace.id : undefined;
+  const availableHarnesses =
+    rt.harnessCatalog && rt.harnessCatalog.workspaceId === trustedWorkspaceId
+      ? rt.harnessCatalog.choices
+      : [];
+
+  const stagedHintText = useMemo(
     () =>
-      opened
-        ? latestViewArtifact(messages, `${opened.workspaceId}:${opened.conversationId}`)
-        : undefined,
-    [messages, opened],
+      formatStagedTurnHint({
+        locale,
+        activeExternalHarnessId: rt.activeExternal?.snapshot.session.harnessId,
+        activeExtStaged: actions.activeExtStaged,
+        hasOpenedNative: Boolean(rt.opened),
+        currentNativeRole: rt.opened?.configuration.role,
+        activeStagedToExtName: actions.activeStagedToExt?.name,
+        activeStagedLocalRole: actions.activeStagedLocal
+          ? (actions.activeStagedLocal.role ?? rt.opened?.configuration.role ?? 'default')
+          : undefined,
+        composerModelName: actions.composerModel?.name,
+      }),
+    [
+      actions.activeExtStaged,
+      actions.activeStagedLocal,
+      actions.activeStagedToExt,
+      actions.composerModel?.name,
+      locale,
+      rt.activeExternal,
+      rt.opened,
+    ],
   );
-  // 重试只对最后一轮生效：最后一条消息已终态（含生成中断或尚未产出回复的失败用户轮次）且宿主空闲时出现；
-  // 历史回答只展示 token，避免「点了却回退多轮」的隐式行为。
-  const lastMessage = messages.at(-1);
-  const retryable =
-    Boolean(opened) &&
-    !running &&
-    facts.valid &&
-    readyToSend &&
-    Boolean(
-      lastMessage &&
-        ((lastMessage.role === 'assistant' &&
-          (lastMessage.state === 'completed' || lastMessage.state === 'interrupted')) ||
-          (lastMessage.role === 'user' && lastMessage.state !== 'streaming')),
-    );
-  const retryCandidate = retryable ? lastMessage?.id : undefined;
-  const retryPrompt = retryCandidate ? lastUserPrompt(messages) : undefined;
-  const retryableMessageId = retryPrompt ? retryCandidate : undefined;
-  const report = setError;
-  // 证据聚合是只读历史扫描：在快照连续变化时防抖，避免流式输出期间每个事件都重算。
-  // 纯 trailing 防抖在流式期间（事件间隔 < 800ms）会让看板整场运行停在旧聚合，
-  // 因此叠加 max-wait：距上次实际拉取超过 3s 就强制放行一次。
-  const evidenceWorkspaceId = opened?.workspaceId;
-  const evidenceSessionId = opened?.sessionId;
-  const evidenceFlushedAt = useRef(0);
-  // facts.state 每次变化都是新的投影对象，用它触发防抖刷新；运行中放宽间隔减少历史扫描。
-  const projection = facts.state;
-  const runPhase = run?.phase;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: evidenceReloadTick 是抽屉「重新加载」的触发信号，effect 有意只消费其变化而不读取其值；移除该依赖手动重拉即失效。
-  useEffect(() => {
-    if (!evidenceWorkspaceId || !evidenceSessionId || !projection) {
-      setEvidence(undefined);
-      setEvidenceUnavailable(false);
-      return;
-    }
-    let cancelled = false;
-    // max-wait 窗口：距上次实际拉取不足 3s 时取「基础间隔」与「窗口剩余」的较小者，
-    // 事件持续重排会让剩余时间单调收敛到 0，保证流式期间每 3s 至少刷新一次看板。
-    const elapsed = evidenceFlushedAt.current ? Date.now() - evidenceFlushedAt.current : 0;
-    const base = runPhase === 'running' ? 800 : 300;
-    const delay =
-      elapsed >= EVIDENCE_MAX_WAIT_MS ? 0 : Math.min(base, EVIDENCE_MAX_WAIT_MS - elapsed);
-    const timer = setTimeout(() => {
-      evidenceFlushedAt.current = Date.now();
-      void api.session
-        .evidence({ workspaceId: evidenceWorkspaceId, sessionId: evidenceSessionId })
-        .then((value) => {
-          if (cancelled) return;
-          setEvidence(value);
-          setEvidenceUnavailable(false);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setEvidence(undefined);
-          setEvidenceUnavailable(true);
-        });
-    }, delay);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [evidenceWorkspaceId, evidenceSessionId, projection, runPhase, evidenceReloadTick]);
-  // 审批请求到达时立即弹出审批面板：队列没有常驻入口，错过弹窗就只能等超时被拒，
-  // 用户最终只会看到莫名其妙的 PERMISSION_DENIED。
-  // 只在「新增」审批时弹出（对比上次已见数量），用户手动关闭后不被反复打断。
-  const seenApprovals = useRef(0);
-  const approvalsCount = facts.approvals.length;
-  const approvalsOpen = ui.approvalsOpen;
-  const openApprovals = ui.approvals;
-  useEffect(() => {
-    const hasNew = approvalsCount > seenApprovals.current;
-    seenApprovals.current = approvalsCount;
-    if (approvalsCount === 0) {
-      setApprovalError('');
-      if (approvalsOpen) openApprovals(false);
-      return;
-    }
-    if (hasNew && !approvalsOpen) openApprovals(true);
-  }, [approvalsCount, approvalsOpen, openApprovals]);
-  // 自动预览只在「基线之外的新产物」出现时触发一次；首帧、历史重放与切回会话都只刷新基线。
-  useEffect(() => {
-    if (!opened) {
-      artifactScope.current = '';
-      artifactBaseline.current.clear();
-      return;
-    }
-    const scope = `${opened.workspaceId}:${opened.conversationId}`;
-    const found = collectViewArtifacts(messages, scope);
-    if (artifactScope.current !== scope) {
-      artifactScope.current = scope;
-      artifactBaseline.current = new Set(found.map((item) => item.key));
-      return;
-    }
-    const fresh = found.filter((item) => !artifactBaseline.current.has(item.key));
-    for (const item of found) artifactBaseline.current.add(item.key);
-    const first = fresh[0];
-    if (!first) return;
-    setDetails({
-      kind: 'artifact',
-      callId: first.callId,
-      path: first.artifact.path,
-      ext: first.artifact.ext,
-      ...(first.artifact.size === undefined ? {} : { size: first.artifact.size }),
-    });
-  }, [messages, opened]);
-  const reloadCatalog = useCallback(async () => {
-    setCatalog(await api.settings.read(current.current?.trusted ? current.current.id : undefined));
-  }, []);
-  const refreshHistory = useCallback(
-    async (space = current.current, page?: number) => {
-      if (!space?.trusted) return;
-      await historyClient.refresh(space.id, page);
-    },
-    [historyClient],
+
+  const activeNotices = rt.activeExternal
+    ? rt.activeExternal.snapshot.notices
+    : (rt.facts.state?.notices ?? []);
+
+  const toasts = useMemo<readonly ToastItem[]>(() => {
+    const diagToasts: ToastItem[] = activeNotices
+      .filter((n) => !rt.dismissedNotices[n.id])
+      .map((n) => ({ id: `notice:${n.id}`, level: n.level, title: n.text, durationMs: 3000 }));
+    const extToasts: ToastItem[] = rt.externalToasts
+      .filter((t) => t.sessionId !== rt.activeExternal?.sessionId)
+      .map((t) => ({
+        id: `ext:${t.id}`,
+        level: t.level,
+        title: t.text,
+        actionLabel: '查看',
+        onAction: () => {
+          rt.setExternalToasts((prev) => prev.filter((x) => x.id !== t.id));
+          const sp = rt.spacesRef.current.find((s) => s.id === t.workspaceId);
+          if (sp) void rt.act(() => actions.openExternalSession(sp, t.sessionId));
+        },
+      }));
+    return [...extToasts, ...diagToasts];
+  }, [activeNotices, actions, rt]);
+
+  const isReadonlyExternalArchive = Boolean(
+    rt.activeExternal && rt.activeThread && !rt.activeThread.capabilities.canContinue,
   );
-  const externalListInFlight = useRef(new Map<string, { running: boolean; queued: boolean }>());
-  const refreshExternalSpace = useCallback(async (id: string) => {
-    const state = externalListInFlight.current.get(id);
-    if (state?.running) {
-      state.queued = true;
-      return;
-    }
-    const tracker = { running: true, queued: false };
-    externalListInFlight.current.set(id, tracker);
-    try {
-      do {
-        tracker.queued = false;
-        try {
-          const result = await api.external.list(id);
-          setExternalLists((prev) => ({ ...prev, [id]: result.items }));
-        } catch {
-          // 空间失效或断连期间静默保留既有列表，由宿主恢复后重刷。
-        }
-      } while (tracker.queued);
-    } finally {
-      externalListInFlight.current.delete(id);
-    }
-  }, []);
-  const refreshExternalList = useCallback(
-    async (spaceId?: string) => {
-      const targets = spaceId
-        ? spacesRef.current.filter((item) => item.id === spaceId && item.trusted)
-        : spacesRef.current.filter((item) => item.trusted);
-      if (
-        spaceId &&
-        targets.length === 0 &&
-        current.current?.id === spaceId &&
-        current.current.trusted
-      ) {
-        targets.push(current.current);
-      }
-      await Promise.all(targets.map((item) => refreshExternalSpace(item.id)));
-    },
-    [refreshExternalSpace],
-  );
-  const detachActiveExternal = useCallback(async () => {
-    externalNavGen.current += 1;
-    const prev = activeExternalRef.current;
-    if (!prev) return;
-    activeExternalRef.current = undefined;
-    setActiveExternal(undefined);
-    await api.external.unsubscribe(prev.subscriptionId).catch(() => {});
-  }, []);
-  const selectSpace = useCallback(
-    async (space: Workspace | null) => {
-      if (!space) return;
-      if (!space.trusted) {
-        setTrust(space);
-        return;
-      }
-      setDetails(undefined);
-      await detachActiveExternal();
-      await client.clear();
-      current.current = space;
-      setWorkspace(space);
-      setSpaces((previous) => {
-        const next = [space, ...previous.filter((item) => item.id !== space.id)].sort(
-          (a, b) => Number(b.kind === 'default') - Number(a.kind === 'default'),
-        );
-        spacesRef.current = next;
-        return next;
-      });
-      setOpened(undefined);
-      setPendingProfile(undefined);
-      setPendingMode(undefined);
-      setPendingHarness(undefined);
-      setStagedLocalSessionConfig(undefined);
-      setStagedLocalToExternal(undefined);
-      setCatalog(undefined);
-      setError('');
-      await refreshHistory(space);
-      await refreshExternalList(space.id);
-      await reloadCatalog();
-      setRecent((await api.preferences.read()).recent);
-    },
-    [detachActiveExternal, refreshExternalList, refreshHistory, reloadCatalog],
-  );
-  const act = useCallback(
-    async function act(task: () => Promise<void>) {
-      setBusy(true);
-      setError('');
-      try {
-        await task();
-      } catch (reason) {
-        report(failure(reason));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [report],
-  );
-  /**
-   * 项目切换器只有一个扁平清单：已登记空间与尚未登记的最近项目合并去重。
-   *
-   * 早前把「最近项目」单独成组，但启动时会把所有最近项目重新登记进 spaces，
-   * 该组几乎总是空的，只剩一个突兀的分组标题；合并后既能少一层层级，
-   * 又保留「登记失败的历史项目仍可点击重试」的能力。
-   */
-  const projectOptions = (() => {
-    const query = projectSearch.trim().toLowerCase();
-    return [
-      ...spaces.map((space) => ({
-        key: space.id,
-        name: space.name,
-        current: space.id === workspace?.id,
-        open: async () => selectSpace(space),
-      })),
-      ...recent
-        .filter((item) => !spaces.some((space) => space.recentId === item.id))
-        .map((item) => ({
-          key: item.id,
-          name: item.name,
-          current: false,
-          open: async () => selectSpace(await api.workspace.openRecent(item.id)),
-        })),
-    ].filter((item) => item.name.toLowerCase().includes(query));
-  })();
-  useEffect(() => {
-    let cancelled = false;
-    /**
-     * 最近项目重登记只影响侧栏聚合，不阻塞输入框可用。
-     *
-     * 空间登记簿是 Host 进程内的：重启后 `spaces` 只剩默认空间，最近项目若不重新登记
-     * 就只存在于偏好文件里，「项目」区无法按项目聚合。这里逐个登记且串行执行：
-     * `openRecent` 会同步调整偏好里的最近顺序，并发会打乱下次启动的展示次序。
-     */
-    const restoreRecentProjects = async (
-      items: Output<'preferences.read'>['recent'],
-    ): Promise<void> => {
-      const restored: Workspace[] = [];
-      // 倒序恢复是因为每次成功登记都会把该项目移到偏好 recent 首位，倒序执行后顺序不变。
-      for (const item of [...items].reverse()) {
-        if (cancelled) return;
-        try {
-          const workspace = await api.workspace.openRecent(item.id);
-          if (workspace && !restored.some((space) => space.id === workspace.id))
-            restored.push(workspace);
-        } catch {
-          // 目录已删除或登记失败的历史项目直接跳过，不阻断启动。
-        }
-      }
-      if (cancelled) return;
-      restored.reverse();
-      setSpaces((previous) => {
-        const known = new Set(previous.map((space) => space.root));
-        const additions = restored.filter((space) => !known.has(space.root));
-        const next = additions.length > 0 ? [...previous, ...additions] : previous;
-        spacesRef.current = next;
-        return next;
-      });
-      for (const space of restored) {
-        if (cancelled) return;
-        if (space.trusted) void refreshExternalList(space.id);
-      }
-    };
-    let recentItems: Output<'preferences.read'>['recent'] = [];
-    void act(async () => {
-      await api.ready();
-      await client.connectRuntime();
-      // 关键路径只保留「默认空间可用」所需步骤；目录清单与模型目录在 selectSpace 内一次加载。
-      const state = await api.preferences.read();
-      recentItems = state.recent;
-      setRecent(state.recent);
-      await selectSpace(await api.workspace.openDefault());
-    }).then(() => {
-      if (!cancelled) void restoreRecentProjects(recentItems);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [act, refreshExternalList, selectSpace]);
-  useEffect(() => {
-    const off = api.onEvent((event) => {
-      if (event.type === 'external.listChanged') {
-        void refreshExternalList(event.workspaceId);
-        return;
-      }
-      if (event.type === 'external.snapshotChanged') {
-        setActiveExternal((prev) => {
-          if (!prev || prev.subscriptionId !== event.subscriptionId) return prev;
-          if (event.snapshot.sequence !== 0 && event.snapshot.sequence < prev.snapshot.sequence) {
-            return prev;
-          }
-          const next = { ...prev, snapshot: event.snapshot };
-          activeExternalRef.current = next;
-          return next;
-        });
-        return;
-      }
-      if (event.type === 'external.snapshotInvalidated') {
-        const cur = activeExternalRef.current;
-        if (!cur || cur.subscriptionId !== event.subscriptionId) return;
-        const nextSubId = crypto.randomUUID();
-        void api.external
-          .subscribe({
-            workspaceId: cur.workspaceId,
-            sessionId: cur.sessionId,
-            subscriptionId: nextSubId,
-          })
-          .then((snapshot) => {
-            if (activeExternalRef.current?.subscriptionId !== event.subscriptionId) {
-              void api.external.unsubscribe(nextSubId).catch(() => {});
-              return;
-            }
-            const updated = { ...cur, subscriptionId: nextSubId, snapshot };
-            activeExternalRef.current = updated;
-            setActiveExternal(updated);
-          })
-          .catch(() => {});
-        return;
-      }
-      if (event.type === 'external.attention') {
-        if (activeExternalRef.current?.sessionId === event.sessionId) return;
-        const text =
-          event.kind === 'approval_requested'
-            ? `${event.harnessName} 请求授权 · ${event.title || '外部任务'}`
-            : event.kind === 'turn_failed'
-              ? `${event.harnessName} 任务失败 · ${event.title || '外部任务'}`
-              : `${event.harnessName} 已完成本轮 · ${event.title || '外部任务'}`;
-        const level: 'info' | 'warning' | 'error' =
-          event.kind === 'turn_failed'
-            ? 'error'
-            : event.kind === 'approval_requested'
-              ? 'warning'
-              : 'info';
-        const toastId = crypto.randomUUID();
-        setExternalToasts((prev) =>
-          [
-            {
-              id: toastId,
-              workspaceId: event.workspaceId,
-              sessionId: event.sessionId,
-              text,
-              level,
-            },
-            ...prev,
-          ].slice(0, 4),
-        );
-        if (event.kind === 'turn_completed') {
-          window.setTimeout(() => {
-            setExternalToasts((prev) => prev.filter((item) => item.id !== toastId));
-          }, 5000);
-        }
-      }
-    });
-    return () => {
-      off();
-      void detachActiveExternal();
-    };
-  }, [detachActiveExternal, refreshExternalList]);
-  useEffect(() => {
-    const query = matchMedia('(min-width: 960px)');
-    const change = () => ui.sidebar(query.matches);
-    query.addEventListener('change', change);
-    return () => query.removeEventListener('change', change);
-  }, [ui.sidebar]);
-  useEffect(() => {
-    const query = matchMedia('(min-width: 1200px)');
-    const change = () => setWide(query.matches);
-    // 窗口可能在首帧渲染后被系统钳制到工作区，挂载时主动同步一次，避免初始值与媒体查询脱节。
-    change();
-    query.addEventListener('change', change);
-    return () => query.removeEventListener('change', change);
-  }, []);
-  useEffect(() => {
-    for (const space of spaces) {
-      if (
-        facts.runtime?.items.some((item) => item.workspaceId === space.id && item.phase === 'idle')
-      )
-        void refreshHistory(space).catch((reason) => report(failure(reason)));
-    }
-  }, [facts.runtime, spaces, refreshHistory, report]);
-  /** 提交本地草稿时按输入框选定的模型和模式创建会话，配置成功后才发起任务。 */
-  async function createSession(space: Workspace) {
-    // 提交界面实际展示的可用模型，而非失效的临时选择或无凭证的默认值。
-    const profileId = composerModel?.id;
-    const result = await api.session.create(space.id, profileId);
-    const requestedProfile = profileId !== result.configuration.profileId ? profileId : undefined;
-    const requestedMode = pendingMode !== result.configuration.mode ? pendingMode : undefined;
-    const configuration =
-      requestedProfile || requestedMode
-        ? await api.session.configure({
-            ...scopeOf(result),
-            ...(requestedProfile ? { profileId: requestedProfile } : {}),
-            ...(requestedMode ? { mode: requestedMode } : {}),
-            ...(requestedMode === 'FullAccess' ? { confirmFullAccess: true } : {}),
-          })
-        : result.configuration;
-    setPendingProfile(undefined);
-    setPendingMode(undefined);
-    ui.select(space.id, result.conversationId);
-    setOpened({ ...result, configuration });
-    await client.select(scopeOf(result));
-    await client.whenReady();
-    return { ...result, configuration };
-  }
 
-  /** 打开新对话草稿，保留输入内容，待确认发送时才创建所选代理的会话。 */
-  async function showNewConversation(space: Workspace | undefined, harness?: HarnessChoice) {
-    if (!space) return;
-    if (!space.trusted) {
-      setTrust(space);
-      return;
-    }
-    if (space.id !== current.current?.id) await selectSpace(space);
-    else {
-      ui.select(space.id, '');
-      setDetails(undefined);
-      setOpened(undefined);
-      await client.clear();
-      await detachActiveExternal();
-    }
-    setPendingHarness(harness);
-    setPendingMode(undefined);
-    setStagedLocalSessionConfig(undefined);
-    setStagedLocalToExternal(undefined);
-    requestAnimationFrame(() => composerInput.current?.focus());
-  }
-
-  async function openConversation(conversationId: string, space = workspace) {
-    if (!space) return;
-    if (space.id !== current.current?.id) await selectSpace(space);
-    else await detachActiveExternal();
-    const result = await api.session.open({ workspaceId: space.id, conversationId });
-    ui.select(space.id, result.conversationId);
-    setDetails(undefined);
-    setStagedLocalSessionConfig(undefined);
-    setStagedLocalToExternal(undefined);
-    setOpened(result);
-    await client.select(scopeOf(result));
-    // 标题栏不再常驻审批计数，打开一个仍在等审批的会话就进入队列：否则用户手动关掉
-    // 自动弹出的面板后没有第二个入口，只能等审批超时被自动拒绝。
-    if (client.snapshot().approvals.some((item) => item.sessionId === result.conversationId))
-      openApprovals(true);
-    await refreshHistory(space);
-  }
-  async function openExternalSession(space: Workspace, sessionId: string) {
-    if (!space.trusted) {
-      setTrust(space);
-      return;
-    }
-    if (space.id !== current.current?.id) await selectSpace(space);
-    else {
-      ui.select(space.id, '');
-      setDetails(undefined);
-      setOpened(undefined);
-      await client.clear();
-      await detachActiveExternal();
-    }
-    const navToken = ++externalNavGen.current;
-    const subscriptionId = crypto.randomUUID();
-    const snapshot = await api.external.subscribe({
-      workspaceId: space.id,
-      sessionId,
-      subscriptionId,
-    });
-    if (navToken !== externalNavGen.current) {
-      await api.external.unsubscribe(subscriptionId).catch(() => {});
-      return;
-    }
-    const next = { workspaceId: space.id, sessionId, subscriptionId, snapshot };
-    activeExternalRef.current = next;
-    setActiveExternal(next);
-    setExternalToasts((prev) => prev.filter((item) => item.sessionId !== sessionId));
-    await refreshExternalList(space.id);
-  }
-  async function sendExternalPrompt(
-    text: string,
-    clearDraft = true,
-    configOverrides?: {
-      readonly modelId?: string;
-      readonly modeId?: string;
-      readonly thoughtLevel?: string;
-    },
-  ) {
-    const cur = activeExternalRef.current;
-    const trimmed = text.trim();
-    if (!cur || !trimmed || busy) return;
-    const draftKey = `ext:${cur.workspaceId}:${cur.sessionId}`;
-    await act(async () => {
-      const snapshot = await api.external.prompt({
-        workspaceId: cur.workspaceId,
-        sessionId: cur.sessionId,
-        text: trimmed,
-        ...(configOverrides ? { configOverrides } : {}),
-      });
-      setActiveExternal((prev) => {
-        if (!prev || prev.sessionId !== cur.sessionId) return prev;
-        if (snapshot.sequence !== 0 && snapshot.sequence < prev.snapshot.sequence) {
-          return prev;
-        }
-        const next = { ...prev, snapshot };
-        activeExternalRef.current = next;
-        return next;
-      });
-      if (clearDraft) {
-        ui.draft(draftKey, '');
-      }
-      rememberPrompt(trimmed, draftKey);
-      await refreshExternalList(cur.workspaceId);
-      if (configOverrides) {
-        await reloadHarnessCatalog(cur.workspaceId);
-      }
-    });
-  }
-  async function handoffExternalToExternal(text: string, choice: HarnessChoice) {
-    const cur = activeExternalRef.current;
-    const trimmed = text.trim();
-    if (!cur || !trimmed || busy) return;
-    const targetSpace = spacesRef.current.find((item) => item.id === cur.workspaceId) ?? workspace;
-    if (!targetSpace?.trusted) return;
-    const oldDraftKey = `ext:${cur.workspaceId}:${cur.sessionId}`;
-    const sourceTitle = cur.snapshot.session.title.trim();
-    const handoff = buildSessionHandoffPayload(cur.snapshot.session.title, cur.snapshot.messages);
-    const navSnapshotBefore = externalNavGen.current;
-    await act(async () => {
-      const snapshot = await api.external.open({
-        workspaceId: targetSpace.id,
-        harnessId: choice.id,
-        ...(sourceTitle && sourceTitle !== '外部任务' ? { title: sourceTitle } : {}),
-        prompt: trimmed,
-        ...(choice.modelId ? { modelId: choice.modelId } : {}),
-        ...(choice.thoughtLevel ? { thoughtLevel: choice.thoughtLevel } : {}),
-        ...(choice.modeId ? { modeId: choice.modeId } : {}),
-        ...(handoff ? { handoff } : {}),
-      });
-      ui.draft(oldDraftKey, '');
-      rememberPrompt(trimmed, oldDraftKey);
-      rememberPrompt(trimmed, `ext:${targetSpace.id}:${snapshot.session.id}`);
-      await reloadHarnessCatalog(targetSpace.id);
-      if (current.current?.id === targetSpace.id && externalNavGen.current === navSnapshotBefore) {
-        await openExternalSession(targetSpace, snapshot.session.id);
-      } else {
-        await refreshExternalList(targetSpace.id);
-      }
-    });
-  }
-  async function handoffExternalToLocal(text: string, profileId: string) {
-    const cur = activeExternalRef.current;
-    const trimmed = text.trim();
-    if (!cur || !trimmed || busy) return;
-    const targetSpace = spacesRef.current.find((item) => item.id === cur.workspaceId) ?? workspace;
-    if (!targetSpace?.trusted) return;
-    const oldDraftKey = `ext:${cur.workspaceId}:${cur.sessionId}`;
-    const sourceTitle = cur.snapshot.session.title.trim();
-    const handoff = buildSessionHandoffPayload(cur.snapshot.session.title, cur.snapshot.messages);
-    await act(async () => {
-      const created = await api.session.create(targetSpace.id, profileId);
-      const configuration =
-        profileId !== created.configuration.profileId
-          ? await api.session.configure({ ...scopeOf(created), profileId })
-          : created.configuration;
-      if (sourceTitle && sourceTitle !== '外部任务') {
-        await api.session
-          .rename({
-            workspaceId: created.workspaceId,
-            conversationId: created.conversationId,
-            title: sourceTitle,
-          })
-          .catch(() => {});
-      }
-      ui.draft(oldDraftKey, '');
-      await detachActiveExternal();
-      setDetails(undefined);
-      ui.select(targetSpace.id, created.conversationId);
-      setOpened({ ...created, configuration });
-      await client.select(scopeOf(created));
-      await client.whenReady();
-      const targetScope = `${created.workspaceId}:${created.conversationId}`;
-      rememberPrompt(trimmed, oldDraftKey);
-      rememberPrompt(trimmed, targetScope);
-      await client.start(scopeOf(created), trimmed, handoff ? { handoff } : undefined);
-      await refreshHistory(targetSpace);
-    });
-  }
-  async function approveExternal(approvalId: string, optionId?: string, cancel?: boolean) {
-    const cur = activeExternalRef.current;
-    if (!cur || busy) return;
-    await act(async () => {
-      await api.external.approve({
-        workspaceId: cur.workspaceId,
-        sessionId: cur.sessionId,
-        approvalId,
-        optionId,
-        cancel,
-      });
-    });
-  }
-  async function cancelExternal() {
-    const cur = activeExternalRef.current;
-    if (!cur) return;
-    await api.external
-      .cancel({ workspaceId: cur.workspaceId, sessionId: cur.sessionId })
-      .catch((reason) => report(failure(reason)));
-  }
-  async function closeExternalSession(space: Workspace, sessionId: string) {
-    await act(async () => {
-      await api.external.close({ workspaceId: space.id, sessionId });
-      if (activeExternalRef.current?.sessionId === sessionId) {
-        const snapshot = await api.external.snapshot({ workspaceId: space.id, sessionId });
-        setActiveExternal((prev) => {
-          if (!prev || prev.sessionId !== sessionId) return prev;
-          const next = { ...prev, snapshot };
-          activeExternalRef.current = next;
-          return next;
-        });
-      }
-      await refreshExternalList(space.id);
-    });
-  }
-  async function confirmDeleteExternal() {
-    const target = pendingExternalDelete;
-    if (!target) return;
-    setPendingExternalDelete(undefined);
-    await act(async () => {
-      await api.external.delete({ workspaceId: target.space.id, sessionId: target.id });
-      if (activeExternalRef.current?.sessionId === target.id) {
-        await detachActiveExternal();
-        setDetails(undefined);
-      }
-      await refreshExternalList(target.space.id);
-    });
-  }
-  async function configure(change: Parameters<DesktopAPI['session']['configure']>[0]) {
-    if (!opened) return;
-    const configuration = await api.session.configure(change);
-    setOpened({ ...opened, configuration });
-  }
-  // 归档或删除后逐空间重取列表：设置页的归档页聚合全部空间，只刷新一个会留下过期行。
-  async function refreshSpaces() {
-    for (const space of spaces) if (space.trusted) await refreshHistory(space);
-    setArchiveRevision((value) => value + 1);
-  }
-  /** 归档/删除都会让 Host 关闭该会话句柄，页面必须同步收敛，否则停在失效快照上。 */
-  async function dropOpenView(workspaceId: string, conversationId: string) {
-    if (opened?.workspaceId !== workspaceId || opened.conversationId !== conversationId) return;
-    ui.select(workspaceId, '');
-    setDetails(undefined);
-    setOpened(undefined);
-    await client.clear();
-  }
-  async function archiveConversation(
-    space: Workspace,
-    row: { conversationId: string; title: string },
-  ) {
-    await act(async () => {
-      await api.session.archive({
-        workspaceId: space.id,
-        conversationId: row.conversationId,
-      });
-      await dropOpenView(space.id, row.conversationId);
-      await refreshSpaces();
-    });
-  }
-  async function deleteConversation(target: SessionTarget) {
-    setPendingDelete(undefined);
-    await act(async () => {
-      await api.session.delete({
-        workspaceId: target.workspaceId,
-        conversationId: target.conversationId,
-      });
-      await dropOpenView(target.workspaceId, target.conversationId);
-      await refreshSpaces();
-    });
-  }
-  /** 改名只写标题记录：保留已打开的视图与运行句柄，仅重取该空间列表以更新标题。 */
-  async function renameConversation(target: SessionTarget, title: string) {
-    setPendingRename(undefined);
-    await act(async () => {
-      await api.session.rename({
-        workspaceId: target.workspaceId,
-        conversationId: target.conversationId,
-        title,
-      });
-      const space = spaces.find((item) => item.id === target.workspaceId);
-      if (space) await refreshHistory(space);
-    });
-  }
-  /** 置顶只改列表次序，Host 已按置顶优先排序，页面不再自行重排。 */
-  async function pinConversation(
-    space: Workspace,
-    row: { conversationId: string; pinned?: boolean },
-  ) {
-    await act(async () => {
-      await api.session.pin({
-        workspaceId: space.id,
-        conversationId: row.conversationId,
-        pinned: !row.pinned,
-      });
-      await refreshHistory(space);
-    });
-  }
-  // 已打开会话与新建会话统一采用「下一轮生效」暂存：选模型时不中断正在运行的轮次，也不提前改写宿主配置；
-  // 两种入口都把选择写入全局默认模型，避免重启后回落到初始默认值。
-  function chooseModel(profileId: string) {
-    void api.settings
-      .setDefault(profileId)
-      .then(reloadCatalog)
-      .catch((reason) => report(failure(reason)));
-    if (!opened) {
-      setPendingProfile(profileId);
-      setPendingHarness(undefined);
-      return;
-    }
-    setStagedLocalToExternal(undefined);
-    const nextRole = effectiveOpenedRole ?? opened.configuration.role;
-    if (profileId === opened.configuration.profileId && nextRole === opened.configuration.role) {
-      setStagedLocalSessionConfig(undefined);
-      return;
-    }
-    setStagedLocalSessionConfig({
-      conversationId: opened.conversationId,
-      profileId,
-      role: nextRole,
-    });
-  }
-  function chooseOpenedRole(nextRole: Opened['configuration']['role']) {
-    if (!opened) return;
-    setStagedLocalToExternal(undefined);
-    const nextProfileId = effectiveOpenedProfileId ?? opened.configuration.profileId;
-    if (
-      nextProfileId === opened.configuration.profileId &&
-      nextRole === opened.configuration.role
-    ) {
-      setStagedLocalSessionConfig(undefined);
-      return;
-    }
-    setStagedLocalSessionConfig({
-      conversationId: opened.conversationId,
-      profileId: nextProfileId,
-      role: nextRole,
-    });
-  }
-  async function flushStagedOpenedConfig(targetOpened: Opened): Promise<void> {
-    if (stagedLocalSessionConfig?.conversationId !== targetOpened.conversationId) return;
-    const nextProfileId =
-      stagedLocalSessionConfig.profileId &&
-      stagedLocalSessionConfig.profileId !== targetOpened.configuration.profileId
-        ? stagedLocalSessionConfig.profileId
-        : undefined;
-    const nextRole =
-      stagedLocalSessionConfig.role &&
-      stagedLocalSessionConfig.role !== targetOpened.configuration.role
-        ? stagedLocalSessionConfig.role
-        : undefined;
-    if (!nextProfileId && !nextRole) {
-      setStagedLocalSessionConfig(undefined);
-      return;
-    }
-    const configuration = await api.session.configure({
-      ...scopeOf(targetOpened),
-      ...(nextProfileId ? { profileId: nextProfileId } : {}),
-      ...(nextRole ? { role: nextRole } : {}),
-    });
-    setStagedLocalSessionConfig(undefined);
-    setOpened((prev) =>
-      prev && prev.sessionId === targetOpened.sessionId ? { ...prev, configuration } : prev,
-    );
-  }
-  /** 记录一条真正发出的输入；空白与连续重复不增加，每个作用域最多保留最近 100 条。 */
-  function rememberPrompt(text: string, scope = draftScope): void {
-    promptHistory.current.set(scope, rememberPromptEntry(promptHistory.current.get(scope), text));
-  }
-
-  /** 用户手动编辑或从补全/示例/回填写入草稿后退出历史浏览态，防止后续按 ↓ 抹掉刚编辑的内容。 */
-  function resetPromptHistoryBrowsing(scope = draftScope): void {
-    resetPromptBrowsing(promptHistory.current.get(scope));
-  }
-
-  /**
-   * ↑/↓ 在已发送输入之间浏览，返回是否消费了按键。
-   * 首次上翻保存当前未提交草稿，下翻越过最新项时原样恢复而不是清空。
-   */
-  function recallPrompt(
-    direction: -1 | 1,
-    scope = draftScope,
-    currentDraft = draft,
-    targetElement: HTMLTextAreaElement | null = composerInput.current,
-  ): boolean {
-    const step = stepPromptHistory(promptHistory.current.get(scope), direction, currentDraft);
-    if (!step.consumed || step.value === undefined) return false;
-    const value = step.value;
-    // 在离散按键事件内同步提交受控值并就地定位末尾光标：用 requestAnimationFrame 延迟到下一帧
-    // 会在后续全选替换或 Home 移光标之间插入旧的末尾定位，吞掉刚建立的选区导致文本重复拼接。
-    flushSync(() => {
-      ui.draft(scope, value);
-    });
-    if (targetElement) {
-      targetElement.selectionStart = targetElement.selectionEnd = targetElement.value.length;
-    }
-    return true;
-  }
-
-  /**
-   * 补全面板关闭时 ↑/↓ 召回历史问句：上翻只在光标位于开头（或在历史浏览中位于末尾）时接管，
-   * 下翻只在历史浏览且光标位于末尾时接管，避免抢占多行编辑的正常行移动。
-   */
-  function handlePromptHistoryKeyDown(
-    event: KeyboardEvent<HTMLTextAreaElement>,
-    scope = draftScope,
-    currentDraft = draft,
-    targetElement: HTMLTextAreaElement | null = composerInput.current,
-  ): boolean {
-    const element = event.currentTarget;
-    const collapsed = element.selectionStart === element.selectionEnd;
-    const atStart = collapsed && element.selectionStart === 0;
-    const atEnd = collapsed && element.selectionStart === element.value.length;
-    const browsing = isPromptHistoryBrowsing(promptHistory.current.get(scope));
-    if (event.key === 'ArrowUp' && (atStart || (browsing && atEnd))) {
-      // 已到最旧项也要吞掉按键：否则浏览中的光标会被浏览器从末尾弹回开头。
-      event.preventDefault();
-      recallPrompt(-1, scope, currentDraft, targetElement ?? element);
-      return true;
-    }
-    if (event.key === 'ArrowDown' && browsing && atEnd) {
-      event.preventDefault();
-      recallPrompt(1, scope, currentDraft, targetElement ?? element);
-      return true;
-    }
-    return false;
-  }
-
-  const currentTitle = activeExternal
-    ? activeExternal.snapshot.session.title || '外部任务'
-    : histories[workspace?.id ?? '']?.items.find(
-        (item) => item.conversationId === opened?.conversationId,
-      )?.title || '新对话';
-
-  async function send() {
-    const input = draft.trim();
-    if (!input || busy) return;
-    if (!opened && (!workspace?.trusted || !facts.runtimeValid)) return;
-    if (opened && workspace && activeStagedHarness) {
-      if (running || !workspace.trusted || !selectedHarnessAvailable) return;
-      const targetSpace = workspace;
-      const sourceOpened = opened;
-      const scopeKey = `${sourceOpened.workspaceId}:${sourceOpened.conversationId}`;
-      const handoff = buildSessionHandoffPayload(currentTitle, messages);
-      const navSnapshotBefore = externalNavGen.current;
-      await act(async () => {
-        const snapshot = await api.external.open({
-          workspaceId: targetSpace.id,
-          harnessId: activeStagedHarness.id,
-          ...(currentTitle && currentTitle !== '新对话' ? { title: currentTitle } : {}),
-          prompt: input,
-          ...(activeStagedHarness.modelId ? { modelId: activeStagedHarness.modelId } : {}),
-          ...(activeStagedHarness.thoughtLevel
-            ? { thoughtLevel: activeStagedHarness.thoughtLevel }
-            : {}),
-          ...(activeStagedHarness.modeId ? { modeId: activeStagedHarness.modeId } : {}),
-          ...(handoff ? { handoff } : {}),
-        });
-        ui.draft(scopeKey, '');
-        setStagedLocalToExternal(undefined);
-        setStagedLocalSessionConfig(undefined);
-        rememberPrompt(input, scopeKey);
-        rememberPrompt(input, `ext:${targetSpace.id}:${snapshot.session.id}`);
-        await api.session.close(scopeOf(sourceOpened)).catch(() => {});
-        await reloadHarnessCatalog(targetSpace.id);
-        if (
-          current.current?.id === targetSpace.id &&
-          externalNavGen.current === navSnapshotBefore
-        ) {
-          await openExternalSession(targetSpace, snapshot.session.id);
-          await refreshHistory(targetSpace);
-        } else {
-          await refreshExternalList(targetSpace.id);
-        }
-      });
-      return;
-    }
-    if (!opened && workspace && composerHarness) {
-      if (!selectedHarnessAvailable) return;
-      const targetSpace = workspace;
-      const targetHarnessId = composerHarness.id;
-      const targetModelId = composerHarness.modelId;
-      const targetThoughtLevel = composerHarness.thoughtLevel;
-      const targetModeId = composerHarness.modeId;
-      const navSnapshotBefore = externalNavGen.current;
-      await act(async () => {
-        // 宿主原子承接首轮：先验工作区并发，启动失败时保留草稿，接受后再订阅消息流。
-        const snapshot = await api.external.open({
-          workspaceId: targetSpace.id,
-          harnessId: targetHarnessId,
-          prompt: input,
-          ...(targetModelId ? { modelId: targetModelId } : {}),
-          ...(targetThoughtLevel ? { thoughtLevel: targetThoughtLevel } : {}),
-          ...(targetModeId ? { modeId: targetModeId } : {}),
-        });
-        rememberPrompt(input);
-        rememberPrompt(input, `ext:${targetSpace.id}:${snapshot.session.id}`);
-        await reloadHarnessCatalog(targetSpace.id);
-        if (
-          current.current?.id === targetSpace.id &&
-          externalNavGen.current === navSnapshotBefore
-        ) {
-          ui.draft(':new', '');
-          setPendingHarness(undefined);
-          await openExternalSession(targetSpace, snapshot.session.id);
-        } else {
-          await refreshExternalList(targetSpace.id);
-        }
-      });
-      return;
-    }
-    // 斜杠输入不再发给模型：会话内走与 CLI 同源的命令系统，反馈以命令消息呈现。
-    // `/skill <名称>` 无任务直发由宿主层承接（合成启动任务走收据管线），此处不拦。
-    if (input.startsWith('/')) {
-      if (!opened) {
-        // 新对话草稿态直接提交 `/skill <名称>` 时自动创建会话并转交宿主执行，对齐首页普通提问体验。
-        if (/^\/skill(?:\s|$)/i.test(input) && workspace?.trusted) {
-          if (!composerModel) {
-            report('还没有可用模型，请先在设置中为模型填写密钥。');
-            return;
-          }
-          await act(async () => {
-            const created = await createSession(workspace);
-            const targetScope = `${created.workspaceId}:${created.conversationId}`;
-            try {
-              const result = await api.run.command({
-                ...scopeOf(created),
-                input,
-              });
-              if (!result.handled) report(`未知命令：${input.split(/\s+/)[0]}`);
-              else if (result.feedback.length) pushFeedback(result.feedback);
-              ui.draft(':new', '');
-              ui.draft(targetScope, '');
-              rememberPrompt(input);
-              rememberPrompt(input, targetScope);
-            } catch (err) {
-              ui.draft(targetScope, draft);
-              ui.draft(':new', '');
-              throw err;
-            }
+  const composerDock = (
+    <ComposerDock
+      thread={rt.activeThread}
+      approvalProps={{
+        onInspectApproval: (approval) => {
+          if (!rt.activeThread) return;
+          useShellStore.getState().openWorkbenchTab(rt.activeThread.sessionKey, {
+            kind: 'inspector',
+            targetKey: `approval:${approval.id}`,
+            payload: { approval },
           });
-          return;
-        }
-        report('斜杠命令需要在已打开的会话中使用。');
-        return;
-      }
-      await act(async () => {
-        const result = await api.run.command({
-          ...scopeOf(opened),
-          input,
-        });
-        if (!result.handled) report(`未知命令：${input.split(/\s+/)[0]}`);
-        else if (result.feedback.length) pushFeedback(result.feedback);
-        ui.draft(draftScope, '');
-        rememberPrompt(input);
-      });
-      return;
-    }
-    if (opened) {
-      if (!facts.valid || !readyToSend || running) return;
-      const scopeKey = `${opened.workspaceId}:${opened.conversationId}`;
-      const previousDraft = draft;
-      // 按下 Enter 当帧即清空输入框，避免等待宿主同步读取配置与收据往返造成输入残留卡顿感；发送失败时无损回填。
-      ui.draft(scopeKey, '');
-      await act(async () => {
-        try {
-          await flushStagedOpenedConfig(opened);
-          await client.start(scopeOf(opened), input);
-          rememberPrompt(input, scopeKey);
-        } catch (err) {
-          if (!useUI.getState().drafts[scopeKey]) ui.draft(scopeKey, previousDraft);
-          throw err;
-        }
-      });
-      return;
-    }
-    // 未打开会话：发送即以当前所选空间创建会话并启动任务，不插入中间确认步骤；
-    // 项目空间未信任时仍必须先走信任确认，不能静默代用户授权。
-    if (!workspace?.trusted) return;
-    // 没有可用模型时创建会话只会拿到一个必然失败的运行，先让用户去配置密钥。
-    if (!composerModel) {
-      report('还没有可用模型，请先在设置中为模型填写密钥。');
-      return;
-    }
-    const previousDraft = draft;
-    ui.draft(':new', '');
-    setPendingLaunchPrompt(input);
-    await act(async () => {
-      let targetScope: string | undefined;
-      try {
-        const result = await createSession(workspace);
-        targetScope = `${result.workspaceId}:${result.conversationId}`;
-        await client.start(scopeOf(result), input);
-        // 首页发出的第一问同时记到新会话作用域：进入会话后 ↑ 仍能召回它。
-        rememberPrompt(input, ':new');
-        rememberPrompt(input, targetScope);
-      } catch (err) {
-        if (targetScope) {
-          ui.draft(targetScope, previousDraft);
-        } else if (!useUI.getState().drafts[':new']) {
-          ui.draft(':new', previousDraft);
-        }
-        throw err;
-      } finally {
-        setPendingLaunchPrompt(undefined);
-      }
-    });
-  }
-  /**
-   * 重试 = 截断上一轮后按同一原文重跑。
-   * 只复用已发送原文：不清草稿、不写入输入历史；宿主负责回退与展示重建，
-   * 失败与普通发送一样进入错误提示，不自动重复请求。
-   */
-  async function retry() {
-    if (!opened || !retryPrompt || busy) return;
-    if (!facts.valid || !readyToSend || running) return;
-    await act(async () => {
-      await flushStagedOpenedConfig(opened);
-      await client.start(scopeOf(opened), retryPrompt, { regenerate: true });
-    });
-  }
-  // 顶栏只回答「现在处于什么状态」，绝对路径与内部计数留在详情和诊断里。
-  const headerHint = !workspace
-    ? '选择空间后开始'
-    : activeExternal
-      ? `外部代理 · ${activeExternal.snapshot.session.harnessName}`
-      : opened
-        ? runtimeLabel(runtimeItem, facts.runtimeValid !== false) || '可以继续对话'
-        : '新建对话或从历史继续';
-  const activeMessages = activeExternal ? activeExternal.snapshot.messages : messages;
-  const detailTool =
-    details?.kind === 'tool'
-      ? activeMessages
-          .flatMap((message) => message.blocks)
-          .find((block) => block.tool?.callId === details.callId)?.tool
-      : undefined;
-  const localWorkspaceBusy = Boolean(
-    activeExternal &&
-      (facts.runtime?.items ?? []).some(
-        (item) => item.workspaceId === activeExternal.workspaceId && item.phase !== 'idle',
-      ),
-  );
-  // 输入卡在首页与对话页共用：只改变落点，不复制发送、模式与模型选择逻辑。
-  const [commandList, setCommandList] = useState<Output<'run.commandList'>>();
-  const [skillList, setSkillList] = useState<Output<'run.skillCatalog'>>();
-  const [fileList, setFileList] = useState<{
-    files: string[];
-    truncated: boolean;
-  }>();
-  const [completion, setCompletion] = useState<{
-    kind: 'command' | 'file';
-    items: { group?: 'command' | 'skill'; insert: string; label: string; detail: string }[];
-    index: number;
-  }>();
-  /**
-   * 输入框上方的命令反馈卡片堆：最新在最上，每张可独立关闭，超过 5 张淘汰最旧。
-   * 卡片宽度随内容收缩（上限 44rem），长输出内部滚动——不再是一条通栏横幅。
-   */
-  const [commandFeedbacks, setCommandFeedbacks] = useState<{ id: string; lines: string[] }[]>([]);
-  const pushFeedback = useCallback((lines: string[]) => {
-    setCommandFeedbacks((prev) => [{ id: crypto.randomUUID(), lines }, ...prev].slice(0, 5));
-  }, []);
-  // 反馈是输入框场景的即时引导：切换会话后旧反馈只会造成误导，按 scope 变化清空。
-  const feedbackScope = opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new';
-  const [feedbackScopeOwner, setFeedbackScopeOwner] = useState(feedbackScope);
-  if (feedbackScopeOwner !== feedbackScope) {
-    setFeedbackScopeOwner(feedbackScope);
-    setCommandFeedbacks([]);
-  }
-  const [interactionValue, setInteractionValue] = useState('');
-  // 新一轮交互到达时清掉上一轮残留输入：secret 明文绝不跨请求存续。
-  // 渲染期重置模式（按请求切换清空）：超时/取消路径不会触发成功应答的清空，
-  // 必须以请求标识变化为锚点兜底。
-  const interactionKey = facts.interactions[0]?.requestId ?? '';
-  const [interactionValueOwner, setInteractionValueOwner] = useState(interactionKey);
-  if (interactionValueOwner !== interactionKey) {
-    setInteractionValueOwner(interactionKey);
-    setInteractionValue('');
-  }
-
-  /** 命令目录、技能目录与文件清单的补全数据源；目录随会话加载，文件随工作区变化刷新。 */
-  const fileListGeneration = useRef(0);
-  const openedWorkspaceId = opened?.workspaceId;
-  const openedSessionId = opened?.sessionId;
-  const refreshCompletionSources = useCallback(() => {
-    void api.run
-      .commandList()
-      .then(setCommandList)
-      .catch(() => {});
-    // 代际守卫：快速切换工作区/会话时，上一轮的慢响应可能后到并覆盖当前清单
-    //（@ 补全会插入错误路径、技能组跨会话串目录）。每轮 refresh 只自增一次，
-    // 技能与文件两个回包共用同一代数，新一轮 refresh 使两者的旧回包同时失效。
-    const generation = ++fileListGeneration.current;
-    // 技能目录双数据源：会话内用运行时目录（「现在就能跑」）；未打开会话时退化为
-    // 配置层快照预览（新会话将可用的技能），两条路径同一条过滤口径——否则 home
-    // 态 `/` 面板只剩命令组，技能搜索看起来像坏了。
-    // 注意：spaces 数组始终把「默认空间」排在第 0 项，未打开会话时必须取当前选中的已信任空间 trustedWorkspaceId，
-    // 否则切换到非默认项目（如 aigc）的新建对话首页时 `@` 文件补全与 `/` 项目技能预览都会误读空默认空间。
-    if (!openedWorkspaceId || !openedSessionId) {
-      const previewSpace = openedWorkspaceId ?? trustedWorkspaceId;
-      if (!previewSpace) {
-        setSkillList(undefined);
-      } else {
-        void api.resources
-          .readSkills(previewSpace)
-          .then((snapshot) => {
-            if (generation !== fileListGeneration.current) return;
-            // 全局开关关闭时新会话不会注册技能工具，预览如实留空。
-            const usable = snapshot.enabled
-              ? snapshot.skills.filter(
-                  (skill) => skill.userInvocable && skill.available && !skill.disabled,
-                )
-              : [];
-            setSkillList({
-              installed: snapshot.skills.length > 0,
-              skills: usable.slice(0, 500).map((skill) => ({
-                name: skill.name,
-                description:
-                  skill.description.length > 256
-                    ? `${skill.description.slice(0, 256)}…`
-                    : skill.description,
-                scope: skill.scope,
-              })),
-              truncated: usable.length > 500,
-            });
-          })
-          .catch(() => {
-            if (generation === fileListGeneration.current) setSkillList(undefined);
+        },
+        onJumpToChildSession: (childSessionId) => {
+          if (rt.workspace) {
+            void rt.act(() => actions.openConversation(childSessionId, rt.workspace));
+          }
+        },
+      }}
+      statusStripProps={{
+        gitBranch: rt.facts.inspection?.status?.gitBranch,
+        contextUsage: rt.facts.inspection?.status?.contextUsage,
+        watches: (
+          rt.facts.inspection as
+            | { readonly watches?: readonly ActiveWatchSummaryItem[] }
+            | undefined
+        )?.watches,
+        onStopRetry: () => void actions.cancelActiveRun(),
+        onCancelWatch: rt.opened
+          ? (watchId) => {
+              void api.run
+                .command({
+                  workspaceId: rt.opened!.workspaceId,
+                  sessionId: rt.opened!.sessionId,
+                  input: `/watches cancel ${watchId}`,
+                })
+                .catch((e) => rt.setError(failureMessage(e)));
+            }
+          : undefined,
+        onOpenPortPreview: (url) => {
+          if (!rt.activeThread) return;
+          useShellStore.getState().openWorkbenchTab(rt.activeThread.sessionKey, {
+            kind: 'preview',
+            targetKey: url,
+            payload: { url },
           });
-      }
-    } else {
-      void api.run
-        .skillCatalog({ workspaceId: openedWorkspaceId, sessionId: openedSessionId })
-        .then((result) => {
-          if (generation === fileListGeneration.current) setSkillList(result);
-        })
-        .catch(() => {
-          if (generation === fileListGeneration.current) setSkillList(undefined);
-        });
-    }
-    const workspaceId = openedWorkspaceId ?? trustedWorkspaceId;
-    if (!workspaceId) {
-      setFileList(undefined);
-      return;
-    }
-    void api.workspace
-      .listFiles(workspaceId)
-      .then((result) => {
-        if (generation === fileListGeneration.current) setFileList(result);
-      })
-      .catch(() => {
-        if (generation === fileListGeneration.current) setFileList(undefined);
-      });
-  }, [openedWorkspaceId, openedSessionId, trustedWorkspaceId]);
-  useEffect(() => {
-    refreshCompletionSources();
-  }, [refreshCompletionSources]);
-
-  /**
-   * 触发符识别：`/` 分组面板（命令在前、技能在后）与 `@` 文件态互斥。
-   * `/skill ` 的名字段是第二触发形态（CLI 同款）：`/skill ` 或 `/skill <前缀>`
-   * 只列技能名，出现任务段（第二个空白后的内容）后不再弹出。
-   */
-  useEffect(() => {
-    if (composerHarness) {
-      setCompletion(undefined);
-      return;
-    }
-    const skillTail = /^\/skill\s+(\S*)$/.exec(draft);
-    if (skillTail) {
-      const prefix = skillTail[1].toLowerCase();
-      const items = (skillList?.skills ?? [])
-        .filter((skill) => skill.name.toLowerCase().startsWith(prefix))
-        .slice(0, 8)
-        .map((skill) => ({
-          group: 'skill' as const,
-          insert: `/skill ${skill.name} `,
-          label: `/skill ${skill.name}`,
-          detail: skill.description,
-        }));
-      setCompletion(items.length ? { kind: 'command', items, index: 0 } : undefined);
-      return;
-    }
-    if (draft.startsWith('/') && !/\s/.test(draft)) {
-      const prefix = draft.slice(1).toLowerCase();
-      const commandItems = (commandList?.commands ?? [])
-        .filter((item) => item.name.toLowerCase().startsWith(prefix))
-        .slice(0, 8)
-        .map((item) => ({
-          group: 'command' as const,
-          insert: `/${item.name} `,
-          label: `/${item.name}`,
-          detail: item.description,
-        }));
-      const skillItems = (skillList?.skills ?? [])
-        .filter(
-          (skill) =>
-            skill.name.toLowerCase().startsWith(prefix) ||
-            skill.description.toLowerCase().includes(prefix),
-        )
-        .slice(0, 8)
-        .map((skill) => ({
-          group: 'skill' as const,
-          insert: `/skill ${skill.name} `,
-          label: `/skill ${skill.name}`,
-          detail: skill.description,
-        }));
-      // 保序拼接：命令组在前、技能组在后，键盘导航按扁平 index 环形移动。
-      const items = [...commandItems, ...skillItems];
-      setCompletion(items.length ? { kind: 'command', items, index: 0 } : undefined);
-      return;
-    }
-    const at = draft.lastIndexOf('@');
-    if (at >= 0 && !/\s/.test(draft.slice(at + 1))) {
-      const prefix = draft.slice(at + 1).toLowerCase();
-      // 排序在 rankFileMatches 定稿：文件名前缀命中优先，避免清单序把目标文件挤出前 8 条。
-      const items = rankFileMatches(fileList?.files ?? [], prefix);
-      setCompletion(items.length ? { kind: 'file', items, index: 0 } : undefined);
-      return;
-    }
-    setCompletion(undefined);
-  }, [composerHarness, draft, commandList, fileList, skillList]);
-
-  /** 补全确认：命令替换整段草稿，文件替换最后一个 @ 触发段。 */
-  function acceptCompletion(current: NonNullable<typeof completion>): void {
-    resetPromptHistoryBrowsing();
-    const item = current.items[current.index];
-    if (current.kind === 'command') {
-      ui.draft(draftScope, item.insert);
-      return;
-    }
-    const at = draft.lastIndexOf('@');
-    if (at < 0) return;
-    ui.draft(draftScope, `${draft.slice(0, at)}${item.insert} `);
-  }
-
-  const composer = (
-    <div ref={composerShell} className="relative w-full space-y-2">
-      {/* key 随会话身份变化重挂 TaskPanel：浮层展开态是会话内状态，切换会话必须收起，
-          不能把上一个会话的浮层直接展示给新会话的任务清单。 */}
-      <TaskPanel
-        key={opened ? `${opened.workspaceId}:${opened.conversationId}` : ':new'}
-        todos={facts.state?.todos}
-      />
-      {completion && (
-        // 浮层与输入卡同宽并居中对齐：宿主外壳是整列宽度，直接 left-3/right-3 会横跨阅读列。
-        <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
-          <div className="max-h-56 overflow-y-auto rounded-lg border border-kumo-line bg-kumo-recessed p-1 shadow-lg">
-            {completion.kind === 'file' && fileList?.truncated && (
-              <p className="px-2 py-1 text-xs text-kumo-subtle">
-                文件较多，列表未列全；可继续输入路径缩小范围。
-              </p>
-            )}
-            {completion.kind === 'file' &&
-              completion.items.map((item, index) => (
-                <Button
-                  key={item.label}
-                  variant="ghost"
-                  size="sm"
-                  className={
-                    index === completion.index
-                      ? 'flex w-full items-center gap-2 rounded-md bg-kumo-brand/15 px-2 py-1.5 text-left'
-                      : 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left'
-                  }
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    acceptCompletion({ ...completion, index });
-                  }}
-                >
-                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                </Button>
-              ))}
-            {completion.kind === 'command' &&
-              (
-                [
-                  { key: 'command', title: '命令' },
-                  { key: 'skill', title: '技能' },
-                ] as const
-              ).map(({ key, title }) => {
-                const indexed = completion.items.flatMap((item, index) =>
-                  item.group === key ? [{ item, index }] : [],
+        },
+      }}
+      composerProps={{
+        sessionKey: rt.activeThread?.sessionKey ?? null,
+        workspaceId: rt.workspace?.id ?? null,
+        spaces: wsSpaces,
+        busy: rt.busy || isReadonlyExternalArchive,
+        placeholder: isReadonlyExternalArchive
+          ? t('composer.readonlyArchivePlaceholder')
+          : undefined,
+        readonlyArchiveActionLabel:
+          isReadonlyExternalArchive && rt.activeExternal
+            ? t('composer.newExternalSessionBtn', {
+                name: rt.activeExternal.snapshot.session.harnessName,
+              })
+            : undefined,
+        onReadonlyArchiveAction:
+          isReadonlyExternalArchive && rt.activeExternal
+            ? () => {
+                const { harnessId, harnessName } = rt.activeExternal!.snapshot.session;
+                void rt.act(() =>
+                  actions.showNewConversation(rt.workspace, { id: harnessId, name: harnessName }),
                 );
-                if (indexed.length === 0) return undefined;
-                return (
-                  <div key={key}>
-                    <p className="px-2 pt-1 pb-0.5 text-xs font-medium text-kumo-subtle">
-                      {title}（{indexed.length}）
-                    </p>
-                    {indexed.map(({ item, index }) => (
-                      <Button
-                        key={item.label}
-                        variant="ghost"
-                        size="sm"
-                        className={
-                          index === completion.index
-                            ? 'flex w-full items-center gap-2 rounded-md bg-kumo-brand/15 px-2 py-1.5 text-left'
-                            : 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left'
-                        }
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          acceptCompletion(completion);
-                        }}
-                      >
-                        <span className="w-32 shrink-0 truncate">{item.label}</span>
-                        {item.detail && (
-                          <span className="min-w-0 flex-1 truncate text-right text-xs text-kumo-subtle">
-                            {item.detail}
-                          </span>
-                        )}
-                      </Button>
-                    ))}
-                  </div>
-                );
-              })}
-            {/* 空技能组的提示只在未过滤时出现：用户正按前缀过滤时不该被无关提示打扰。 */}
-            {completion.kind === 'command' &&
-              skillList &&
-              skillList.skills.length === 0 &&
-              (draft === '/' || /^\/skill\s*$/.test(draft)) && (
-                <p className="px-2 py-1 text-xs text-kumo-subtle">
-                  {skillList.installed
-                    ? '技能已全部禁用或当前不可调用；可在设置的「资源管理」页调整。'
-                    : '没有已安装的技能；全局技能目录见设置的「资源管理」页。'}
-                </p>
-              )}
-            {completion.kind === 'command' && completion.items.length > 0 && (
-              <p className="px-2 pt-1 pb-0.5 text-xs text-kumo-subtle">
-                ↑↓ 切换 · Tab/Enter 补全 · Esc 关闭
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-      {/* 触发符激活但零匹配时也要出现面板：搜索「看起来坏了」比「无匹配」更伤可用性。
-          覆盖两种触发形态（/ 前缀、/skill 名字段）与行首/空白后 @ 文件过滤。 */}
-      {!composerHarness &&
-        !completion &&
-        (/^\/\S*$/.test(draft) || /^\/skill\s+\S*$/.test(draft)) && (
-          <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
-            <div className="rounded-lg border border-kumo-line bg-kumo-recessed p-1 shadow-lg">
-              <p className="px-2 py-1 text-xs text-kumo-subtle">
-                无匹配的命令或技能；继续输入可缩小范围。
-              </p>
-            </div>
-          </div>
-        )}
-      {!composerHarness && !completion && fileList && /(?:^|\s)@[^\s@]+$/.test(draft) && (
-        <div className="absolute inset-x-0 bottom-full z-20 mx-auto mb-1 w-full max-w-[var(--kapibala-content-max)]">
-          <div className="rounded-lg border border-kumo-line bg-kumo-recessed p-1 shadow-lg">
-            <p className="px-2 py-1 text-xs text-kumo-subtle">
-              {fileList.truncated
-                ? '已扫描的前 5000 个文件中无匹配项；可直接输入相对路径。'
-                : '当前工作区没有匹配的文件。'}
-            </p>
-          </div>
-        </div>
-      )}
-      {commandFeedbacks.length > 0 && (
-        <div className="mx-auto flex w-full max-w-[var(--kapibala-content-max)] flex-col gap-2">
-          {commandFeedbacks.map((entry) => (
-            <div
-              key={entry.id}
-              className="relative w-full rounded-lg border border-kumo-line bg-kumo-recessed py-2 pr-11 pl-3 text-sm"
-            >
-              <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words">
-                {entry.lines.map((line, index) => (
-                  <p key={`${index}:${line}`}>{line}</p>
-                ))}
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label="关闭该条反馈"
-                className="absolute top-1 right-1"
-                onClick={() =>
-                  setCommandFeedbacks((prev) => prev.filter((item) => item.id !== entry.id))
-                }
-              >
-                <XIcon size={14} />
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-      {/* 输入、空间、模型、模式与发送同属一张卡：焦点由卡片整体承担，工具条保持低权重。 */}
-      <div className="kapibala-composer px-3 pt-3 pb-2">
-        <InputArea
-          ref={composerInput}
-          aria-label="发送消息"
-          placeholder={opened ? '继续对话…' : '描述你想完成的任务…'}
-          value={draft}
-          onValueChange={(value) => {
-            resetPromptHistoryBrowsing();
-            ui.draft(draftScope, value);
-          }}
-          disabled={busy}
-          autoResize
-          minRows={1}
-          maxRows={8}
-          className="max-h-[200px] rounded-none bg-transparent px-2 py-1 ring-0 focus:ring-0"
-          onKeyDown={(event) => {
-            // IME 组合中的按键（含提交候选词的 Enter）不参与补全与发送：
-            // 补全面板开着时敲中文输入法回车，会被吞成「接受补全」丢字。
-            if (event.nativeEvent.isComposing) return;
-            if (completion) {
-              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-                event.preventDefault();
-                const next =
-                  (completion.index +
-                    (event.key === 'ArrowDown' ? 1 : completion.items.length - 1)) %
-                  completion.items.length;
-                setCompletion({ ...completion, index: next });
-                return;
               }
-              if (event.key === 'Tab' || event.key === 'Enter') {
-                event.preventDefault();
-                // 草稿已与高亮补全等价（完整命令或完整技能名）时 Enter 直接发送：
-                // 此时补全只剩「加一个空格」的语义，要求再按一次才能发送是纯粹的手感摩擦
-                //（典型场景：/skill <名称> 输完回车应立即执行）。
-                const highlighted = completion.items[completion.index];
-                if (
-                  event.key === 'Enter' &&
-                  highlighted &&
-                  highlighted.insert.trim() === draft.trim()
-                ) {
-                  void send();
-                  return;
-                }
-                acceptCompletion(completion);
-                return;
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                setCompletion(undefined);
-                return;
-              }
-            }
-            if (handlePromptHistoryKeyDown(event)) return;
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-0.5">
-            {/* 空间入口在会话内外都保留：换目标空间不必先回侧栏；切空间会关闭当前会话视图，运行中的任务仍在后台。 */}
-            <DropdownMenu>
-              <DropdownMenu.Trigger
-                render={
-                  <Button
-                    className="kapibala-action kapibala-chip max-w-48"
-                    variant="ghost"
-                    size="sm"
-                    disabled={busy}
-                    aria-label={workspace ? `会话空间：${workspace.name}` : '选择空间'}
-                  >
-                    <KubaiIcon name="项目空间" size={18} />
-                    <span className="min-w-0 truncate">{workspace?.name ?? '选择空间'}</span>
-                    <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
-                  </Button>
-                }
-              />
-              <DropdownMenu.Content>
-                <div className="px-2 py-2" onKeyDown={(event) => event.stopPropagation()}>
-                  <Input
-                    size="sm"
-                    aria-label="搜索项目"
-                    placeholder="搜索项目"
-                    className="w-full bg-transparent text-sm"
-                    value={projectSearch}
-                    onValueChange={setProjectSearch}
-                  />
-                </div>
-                <DropdownMenu.Group>
-                  {projectOptions.map((item) => (
-                    <DropdownMenu.Item
-                      key={item.key}
-                      onClick={() => {
-                        setProjectSearch('');
-                        void act(item.open);
-                      }}
-                    >
-                      <FolderSimpleIcon size={16} className="text-kumo-subtle" />
-                      <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                      {item.current && <CheckIcon size={14} />}
-                    </DropdownMenu.Item>
-                  ))}
-                  {projectOptions.length === 0 && (
-                    <p className="px-3 py-2 text-sm text-kumo-subtle">没有匹配的项目。</p>
-                  )}
-                </DropdownMenu.Group>
-                <DropdownMenu.Separator />
-                <DropdownMenu.Item
-                  onClick={() => {
-                    setProjectSearch('');
-                    setProjectOpen(true);
-                  }}
-                >
-                  <FolderPlusIcon size={16} className="text-kumo-subtle" />
-                  新建项目
-                </DropdownMenu.Item>
-              </DropdownMenu.Content>
-            </DropdownMenu>
-            {/* 分支 chip 与空间/模式/模型同一行，是会话运行事实的只读展示而非选择入口；
-                点击进详情抽屉「运行事实」，与头部「会话状态」同一目标；快照无分支时不渲染，
-                不在工具条常驻空 chip。 */}
-            {opened && gitBranch && (
-              <Button
-                className="kapibala-action kapibala-chip max-w-40"
-                variant="ghost"
-                size="sm"
-                aria-label={`Git 分支：${gitBranch}`}
-                onClick={(event) => {
-                  detailTrigger.current = event.currentTarget;
-                  setDetails({ kind: 'status' });
-                }}
-              >
-                <GitBranchIcon size={18} className="shrink-0 text-kumo-subtle" />
-                <span className="min-w-0 truncate">{gitBranch}</span>
-              </Button>
-            )}
-            {composerMode && !composerHarness && (
-              <DropdownMenu>
-                <DropdownMenu.Trigger
-                  render={
-                    <Button
-                      className="kapibala-action kapibala-chip"
-                      variant="ghost"
-                      size="sm"
-                      disabled={Boolean(running) || busy}
-                      aria-label={`会话模式：${MODE_NAMES[composerMode]}`}
-                    >
-                      <ModeGlyph mode={composerMode} size={18} />
-                      <span className="min-w-0 truncate">{MODE_NAMES[composerMode]}</span>
-                      <CaretDownIcon size={13} className="shrink-0 text-kumo-subtle" />
-                    </Button>
-                  }
-                />
-                <DropdownMenu.Content>
-                  {MODE_ORDER.map((mode, index) => (
-                    <Fragment key={mode}>
-                      {index === 1 && <DropdownMenu.Separator />}
-                      <DropdownMenu.Item
-                        onClick={() => {
-                          if (mode === 'FullAccess') setFullAccess(true);
-                          else if (opened) void act(() => configure({ ...scopeOf(opened), mode }));
-                          else setPendingMode(mode);
-                        }}
-                      >
-                        <ModeGlyph mode={mode} />
-                        <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-                          <span className="truncate">{MODE_NAMES[mode]}</span>
-                          <span className="truncate text-xs text-kumo-subtle">
-                            {MODE_HINTS[mode]}
-                          </span>
-                        </span>
-                        {composerMode === mode && <CheckIcon size={14} />}
-                      </DropdownMenu.Item>
-                    </Fragment>
-                  ))}
-                </DropdownMenu.Content>
-              </DropdownMenu>
-            )}
-            <ComposerModelPicker
-              contextMode={opened ? 'session' : 'new'}
-              models={usableModels}
-              providers={catalog?.providers ?? []}
-              harnesses={availableHarnesses}
-              model={composerModel}
-              harness={composerHarness}
-              role={opened ? effectiveOpenedRole : undefined}
-              disabled={busy}
-              harnessesFailed={currentHarnessCatalog?.failed}
-              refreshingHarnessId={refreshingHarnessId}
-              onModel={chooseModel}
-              onRole={opened ? chooseOpenedRole : undefined}
-              onHarness={(choice) => {
-                if (opened) {
-                  setStagedLocalToExternal({
-                    conversationId: opened.conversationId,
-                    harness: choice,
-                  });
-                } else {
-                  setPendingHarness(choice);
-                }
-              }}
-              onRefreshHarnessModels={(id, opts) => void refreshHarnessModels(id, opts)}
-              onSettings={() => ui.settings(true)}
-              onExternalSettings={() => {
-                setSettingsInitialTab('external');
-                ui.settings(true);
-              }}
-            />
-          </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            {running ? (
-              <Button
-                className="kapibala-action kapibala-chip"
-                size="sm"
-                variant="secondary"
-                disabled={run.phase !== 'running'}
-                onClick={() =>
-                  opened &&
-                  void api.run
-                    .cancel({ ...scopeOf(opened), runId: run.runId })
-                    .catch((reason) => report(failure(reason)))
-                }
-              >
-                <StopIcon size={15} />
-                {run.phase === 'running'
-                  ? '停止'
-                  : run.phase === 'cancelling'
-                    ? '正在取消'
-                    : '正在清理'}
-              </Button>
-            ) : (
-              <Button
-                className="kapibala-action kapibala-send text-(--text-color-kumo-inverse)!"
-                size="base"
-                variant="primary"
-                shape="square"
-                style={
-                  {
-                    '--kumo-button-emphasis-ring': 'var(--color-kumo-focus)',
-                  } as CSSProperties
-                }
-                aria-label="发送"
-                disabled={busy || !canSend}
-                onClick={() => void send()}
-              >
-                <ArrowUpIcon size={17} weight="bold" />
-              </Button>
-            )}
-          </div>
-        </div>
-        {/* 阻断原因或下一轮切换提示收进卡片底部的脚注行；没有提示时不占位，卡片高度不额外膨胀。 */}
-        {((!opened && workspace && !workspace.trusted) ||
-          composerHarness ||
-          (opened && hasStagedLocalDiff) ||
-          (!composerHarness && usableModels.length === 0)) && (
-          <div className="mt-2 border-t border-kumo-hairline px-2 pt-2">
-            {!opened && workspace && !workspace.trusted && (
-              <p className="kapibala-composer-hint text-kumo-warning">
-                当前空间尚未信任，确认信任后才能发送。
-              </p>
-            )}
-            {composerHarness && (
-              <p className="kapibala-composer-hint text-kumo-subtle">
-                {!selectedHarnessAvailable
-                  ? '当前外部代理不可用，请重新选择或在设置中启用。'
-                  : opened
-                    ? `下一轮发送时将携带当前对话上下文，新建 ${composerHarness.name} 会话接力继续。`
-                    : '外部代理使用该工具自有的权限与登录状态。'}
-              </p>
-            )}
-            {!composerHarness && opened && hasStagedLocalDiff && (
-              <p className="kapibala-composer-hint text-kumo-subtle">
-                已切换至 {composerModel?.name ?? '新模型'}
-                {stagedRoleChanged && effectiveOpenedRole
-                  ? ` · 角色：${ROLE_NAMES[effectiveOpenedRole]}`
-                  : ''}
-                ，将在下一轮发送时生效。
-              </p>
-            )}
-            {!composerHarness && usableModels.length === 0 && (
-              <p className="kapibala-composer-hint flex flex-wrap items-center gap-1 text-kumo-warning">
-                <span>还没有可用模型，请先在</span>
-                <Button
-                  className="kapibala-action h-auto px-1 py-0 text-xs underline underline-offset-2"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => ui.settings(true)}
-                >
-                  设置
-                </Button>
-                <span>中为模型填写密钥。</span>
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+            : undefined,
+        models: actions.usableModels,
+        providers: rt.catalog?.providers ?? [],
+        harnesses: availableHarnesses,
+        selectedModel: actions.composerModel,
+        selectedHarness: actions.composerHarness,
+        role: rt.opened ? actions.effectiveRole : undefined,
+        refreshingHarnessId: rt.refreshingHarnessId,
+        permissionMode: actions.composerMode,
+        worktreeEnabled,
+        worktreeBranchDraft,
+        commandFeedbacks: actions.commandFeedbacks,
+        stagedHintText,
+        commands: rt.commandList?.commands ?? [],
+        skills: rt.skillList?.skills ?? [],
+        skillsInstalled: rt.skillList?.installed,
+        files: rt.fileList?.files ?? [],
+        filesTruncated: rt.fileList?.truncated,
+        onLoadReferenceCandidates: async (wsId) =>
+          (await api.reference.candidates({ workspaceId: wsId })).items,
+        onSearchReferences: async (wsId, query) =>
+          (await api.reference.search({ workspaceId: wsId, query })).hits,
+        onSend: actions.handleSend,
+        onCancel: actions.cancelActiveRun,
+        onDismissFeedback: actions.dismissFeedback,
+        onSelectModel: actions.chooseModel,
+        onSelectRole: rt.opened ? actions.chooseRole : undefined,
+        onSelectHarness: actions.chooseHarness,
+        onRefreshHarnessModels: (id, opts) => void rt.refreshHarnessModels(id, opts),
+        onOpenModelSettings: () => useShellStore.getState().openSettings('providers'),
+        onOpenExternalSettings: () => useShellStore.getState().openSettings('external'),
+        onSelectWorkspace: (sp) => {
+          const target = rt.spaces.find((s) => s.id === sp.id);
+          if (target) void rt.act(() => rt.selectSpace(target));
+        },
+        onCreateProject: () => setProjectDialogOpen(true),
+        onSelectPermissionMode: actions.choosePermissionMode,
+        onRequestTrustWorkspace: () => {
+          if (rt.workspace && !rt.workspace.trusted) rt.setTrustTarget(rt.workspace);
+        },
+      }}
+    />
   );
+
+  const currentPinned = Boolean(
+    rt.opened &&
+      rt.workspace &&
+      rt.histories[rt.workspace.id]?.items.find(
+        (i) => i.conversationId === rt.opened?.conversationId,
+      )?.pinned,
+  );
+  const errorBannerText = rt.error || rt.facts.error;
 
   return (
-    <Sidebar.Provider
-      open={ui.sidebarOpen}
-      onOpenChange={ui.sidebar}
-      collapsible="icon"
-      resizable={false}
-      animationDuration={0}
-      mobileBreakpoint={768}
-      style={
-        {
-          '--sidebar-width': 'var(--kapibala-sidebar-width)',
-          '--sidebar-width-icon': 'var(--kapibala-sidebar-icon-width)',
-          '--sidebar-bg': 'var(--kapibala-sidebar-surface)',
-        } as CSSProperties
-      }
-      className="h-full min-h-0"
-    >
-      <WorkspaceSidebar
-        spaces={spaces}
-        histories={histories}
-        activeWorkspaceId={workspace?.id}
-        conversationId={opened?.conversationId}
-        runtime={facts.runtime}
-        runtimeValid={facts.runtimeValid === true}
-        busy={busy}
-        onSpace={(space) =>
-          void act(async () => {
-            await selectSpace(space);
-            const selected = ui.selected[space.id];
-            if (selected) await openConversation(selected, space);
-          })
-        }
-        onDefault={() => void act(async () => selectSpace(await api.workspace.openDefault()))}
-        onNew={() => void act(() => showNewConversation(workspace))}
-        onNewInSpace={(space) => void act(() => showNewConversation(space))}
-        onOpen={(space, conversationId) => void act(() => openConversation(conversationId, space))}
-        onRename={(space, row) =>
-          setPendingRename({
-            workspaceId: space.id,
-            conversationId: row.conversationId,
-            title: row.title,
-          })
-        }
-        onPin={(space, row) => void pinConversation(space, row)}
-        onArchive={(space, row) => void archiveConversation(space, row)}
-        onDelete={(space, row) =>
-          setPendingDelete({
-            workspaceId: space.id,
-            conversationId: row.conversationId,
-            title: row.title,
-          })
-        }
-        onPage={(space, page) => void act(() => refreshHistory(space, page))}
-        onSettings={() => ui.settings(true)}
-        onRefreshRuntime={() => void act(() => client.connectRuntime())}
-        externalSessions={externalLists}
-        activeExternalSessionId={activeExternal?.sessionId}
-        onOpenExternal={(space, sessionId) => void act(() => openExternalSession(space, sessionId))}
-        onCloseExternal={(space, sessionId) => void closeExternalSession(space, sessionId)}
-        onDeleteExternal={(space, row) =>
-          setPendingExternalDelete({
-            space,
-            id: row.id,
-            title: row.title,
-            harnessName: row.harnessName,
-          })
-        }
-        onClose={(item) =>
-          void act(async () => {
-            await api.session.close({
-              workspaceId: item.workspaceId,
-              sessionId: item.sessionId,
-            });
-            ui.select(item.workspaceId, '');
-            if (opened?.sessionId === item.sessionId) {
-              setOpened(undefined);
-              await client.clear();
-            }
-            const space = spaces.find((space) => space.id === item.workspaceId);
-            await refreshHistory(space);
-          })
-        }
-      />
-      <div ref={containerRef} className="relative flex min-w-0 flex-1">
-        <main className="flex min-w-0 flex-1 flex-col bg-kumo-base">
-          <header
-            data-dock-open={Boolean(details && wide) || undefined}
-            className="kapibala-titlebar flex shrink-0 items-center justify-between gap-3 px-4"
-          >
-            <div className="flex min-w-0 items-center gap-2">
-              <Sidebar.Trigger aria-label="展开或收起侧栏" />
-              <div className="min-w-0">
-                <p className="truncate text-[13px] font-medium">
-                  {workspace?.name ?? '选择空间'}
-                  {activeExternal || opened ? ` / ${currentTitle}` : ''}
-                </p>
-                <p className="truncate text-[11px] text-kumo-subtle">{headerHint}</p>
-              </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {activeExternal && (
-                <Button
-                  className="kapibala-action"
-                  variant="ghost"
-                  shape="square"
-                  size="sm"
-                  aria-label="关闭当前外部会话视图"
-                  onClick={() =>
-                    void act(async () => {
-                      setDetails(undefined);
-                      await detachActiveExternal();
-                    })
-                  }
-                >
-                  <XIcon size={16} />
-                </Button>
-              )}
-              {opened && latestArtifact && (
-                <Button
-                  className="kapibala-action"
-                  variant="ghost"
-                  shape="square"
-                  size="sm"
-                  aria-label="打开产物预览"
-                  title="打开产物预览"
-                  onClick={(event) => {
-                    detailTrigger.current = event.currentTarget;
-                    setDetails({
-                      kind: 'artifact',
-                      callId: latestArtifact.callId,
-                      path: latestArtifact.artifact.path,
-                      ext: latestArtifact.artifact.ext,
-                      ...(latestArtifact.artifact.size === undefined
-                        ? {}
-                        : { size: latestArtifact.artifact.size }),
-                    });
-                  }}
-                >
-                  <ImageSquareIcon size={16} />
-                </Button>
-              )}
-              {opened && (
-                <Button
-                  className="kapibala-action kapibala-chip"
-                  variant="ghost"
-                  size="sm"
-                  onClick={(event) => {
-                    detailTrigger.current = event.currentTarget;
-                    setDetails({ kind: 'status' });
-                  }}
-                >
-                  会话状态
-                </Button>
-              )}
-              {opened && (
-                <Button
-                  className="kapibala-action"
-                  variant="ghost"
-                  shape="square"
-                  size="sm"
-                  aria-label="关闭当前会话"
-                  onClick={() =>
-                    void act(async () => {
-                      await api.session.close(scopeOf(opened));
-                      ui.select(opened.workspaceId, '');
-                      setDetails(undefined);
-                      setOpened(undefined);
-                      await client.clear();
-                      await refreshHistory();
-                    })
-                  }
-                >
-                  <XIcon size={16} />
-                </Button>
-              )}
-            </div>
-          </header>
-          {(error || facts.error) && (
-            <div
-              role="alert"
-              className="flex shrink-0 flex-wrap items-center gap-3 border-b border-kumo-line bg-kumo-recessed px-5 py-3 text-sm"
-            >
-              <span className="min-w-0 flex-1">{error || facts.error}</span>
-              {opened && (
-                <Button
-                  className="kapibala-action"
-                  variant="secondary"
-                  onClick={() => void act(() => client.refreshRun(scopeOf(opened)))}
-                >
-                  查询运行状态
-                </Button>
-              )}
-              {opened && (
-                <Button
-                  className="kapibala-action"
-                  variant="secondary"
-                  onClick={() => void act(() => client.resync())}
-                >
-                  重新同步
-                </Button>
-              )}
-              <Button className="kapibala-action" variant="ghost" onClick={() => ui.settings(true)}>
-                检查设置
-              </Button>
-              <Button
-                className="kapibala-action"
-                variant="ghost"
-                onClick={() => void api.app.reconnect().catch((reason) => report(failure(reason)))}
-              >
-                核查并重新连接
-              </Button>
-            </div>
-          )}
-          {activeExternal ? (
-            <ExternalSessionView
-              workspaceName={workspace?.name}
-              workspaceRoot={workspace?.root}
-              snapshot={activeExternal.snapshot}
-              draft={
-                ui.drafts[`ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`] ?? ''
+    <>
+      <AppShell
+        platform={platform}
+        inboxItems={inboxItems}
+        spaces={wsSpaces}
+        hierarchies={hierarchies}
+        historiesByWorkspace={wsHistories}
+        activeWorkspaceId={rt.workspace?.id ?? null}
+        expandedWorkspaces={expandedWorkspaces}
+        newDisabled={rt.busy || !rt.workspace?.trusted}
+        enabledHarnesses={availableHarnesses}
+        topBanner={
+          errorBannerText ? (
+            <HostRecoveryBanner
+              message={errorBannerText}
+              hasOpenSession={Boolean(rt.opened)}
+              onRefreshRun={() =>
+                rt.opened &&
+                void rt.act(() =>
+                  rt.client.refreshRun({
+                    workspaceId: rt.opened!.workspaceId,
+                    sessionId: rt.opened!.sessionId,
+                  }),
+                )
               }
-              busy={busy}
-              localBusy={localWorkspaceBusy}
-              wide={wide}
-              detailsOpen={Boolean(details)}
-              scrollRef={scrollRef}
-              models={usableModels}
-              providers={catalog?.providers ?? []}
-              harnesses={availableHarnesses}
-              defaultLocalModel={defaultModel}
-              harnessesFailed={currentHarnessCatalog?.failed}
-              refreshingHarnessId={refreshingHarnessId}
-              onRefreshHarnessModels={(id, opts) => void refreshHarnessModels(id, opts)}
-              onSettings={() => ui.settings(true)}
-              onExternalSettings={() => {
-                setSettingsInitialTab('external');
-                ui.settings(true);
-              }}
-              onDraftChange={(value) => {
-                const extScope = `ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`;
-                resetPromptHistoryBrowsing(extScope);
-                ui.draft(extScope, value);
-              }}
-              onHistoryKeyDown={(event) => {
-                const extScope = `ext:${activeExternal.workspaceId}:${activeExternal.sessionId}`;
-                return handlePromptHistoryKeyDown(
-                  event,
-                  extScope,
-                  ui.drafts[extScope] ?? '',
-                  event.currentTarget,
-                );
-              }}
-              onSend={(text, clearDraft, configOverrides) =>
-                void sendExternalPrompt(text, clearDraft, configOverrides)
+              onResync={() => void rt.act(() => rt.client.resync())}
+              onOpenSettings={() => useShellStore.getState().openSettings('providers')}
+              onReconnect={() =>
+                void api.app.reconnect().catch((e) => rt.setError(failureMessage(e)))
               }
-              onHandoffToExternal={(text, choice) => void handoffExternalToExternal(text, choice)}
-              onHandoffToLocal={(text, profileId) => void handoffExternalToLocal(text, profileId)}
-              onCancel={() => void cancelExternal()}
-              onApprove={(approvalId, optionId, cancel) =>
-                void approveExternal(approvalId, optionId, cancel)
-              }
-              onNewSameHarness={() => {
-                const { harnessId, harnessName } = activeExternal.snapshot.session;
-                void act(() =>
-                  showNewConversation(workspace, { id: harnessId, name: harnessName }),
-                );
-              }}
-              onTool={(callId, trigger) => {
-                detailTrigger.current = trigger;
-                setDetails({ kind: 'tool', callId });
-              }}
-              onArtifact={(callId, artifact, trigger) => {
-                detailTrigger.current = trigger;
-                setDetails({
-                  kind: 'artifact',
-                  callId,
-                  path: artifact.path,
-                  ext: artifact.ext,
-                  ...(artifact.size === undefined ? {} : { size: artifact.size }),
-                });
-              }}
-              report={report}
             />
-          ) : opened ? (
-            facts.state ? (
-              <MessageList
-                key={`${opened.workspaceId}:${opened.conversationId}`}
-                memoryKey={`${opened.workspaceId}:${opened.conversationId}`}
-                messages={messages}
-                operation={
-                  facts.state.operation?.phase && facts.state.operation.phase !== 'idle'
-                    ? facts.state.operation
-                    : run && run.phase !== 'idle'
-                      ? { id: run.sessionId, phase: run.phase }
-                      : facts.state.operation
-                }
-                hasPendingApproval={facts.approvals.some(
-                  (item) => item.sessionId === opened.sessionId,
-                )}
-                latestErrorNotice={
-                  [...facts.state.notices].reverse().find((item) => item.level === 'error')?.text
-                }
-                onContinue={
-                  facts.valid && readyToSend && !running && !busy
-                    ? () => {
-                        void act(async () => {
-                          await flushStagedOpenedConfig(opened);
-                          await client.start(scopeOf(opened), '继续');
-                          rememberPrompt('继续');
-                        });
-                      }
-                    : undefined
-                }
-                retryableMessageId={retryableMessageId}
-                onRetry={() => void retry()}
-                root={workspace?.root}
-                scrollRef={scrollRef}
-                evidence={evidence}
-                evidenceUnavailable={evidenceUnavailable}
-                onTool={(callId, trigger) => {
-                  detailTrigger.current = trigger;
-                  setDetails({ kind: 'tool', callId });
-                }}
-                onArtifact={(callId, artifact, trigger) => {
-                  detailTrigger.current = trigger;
-                  setDetails({
-                    kind: 'artifact',
-                    callId,
-                    path: artifact.path,
-                    ext: artifact.ext,
-                    ...(artifact.size === undefined ? {} : { size: artifact.size }),
-                  });
-                }}
-                onEvidence={(trigger) => {
-                  detailTrigger.current = trigger;
-                  setDetails({ kind: 'evidence' });
-                }}
-                onEdit={(text) => {
-                  // 编辑 = 回填草稿并聚焦，不截断已落盘历史；发送即作为新消息继续。
-                  const targetScope = opened
-                    ? `${opened.workspaceId}:${opened.conversationId}`
-                    : ':new';
-                  resetPromptHistoryBrowsing(targetScope);
-                  ui.draft(targetScope, text);
-                  requestAnimationFrame(() => {
-                    composerShell.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus();
-                  });
-                }}
-                report={report}
-              />
-            ) : (
-              <div className="min-h-0 flex-1 p-6 text-sm text-kumo-subtle" aria-busy="true">
-                {pendingLaunchPrompt ? (
-                  <div className="kapibala-thread space-y-4">
-                    <div className="ml-auto w-fit max-w-[85%] kapibala-user-bubble text-kumo-default whitespace-pre-wrap break-words">
-                      {pendingLaunchPrompt}
-                    </div>
-                    <output className="block text-xs text-kumo-subtle">正在启动任务…</output>
-                  </div>
-                ) : (
-                  '正在加载历史…'
-                )}
-              </div>
-            )
-          ) : pendingLaunchPrompt ? (
-            <div className="relative flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 overflow-y-auto p-6" aria-busy="true">
-                <div className="kapibala-thread space-y-4">
-                  <div className="ml-auto w-fit max-w-[85%] kapibala-user-bubble text-kumo-default whitespace-pre-wrap break-words">
-                    {pendingLaunchPrompt}
-                  </div>
-                  <output className="block text-xs text-kumo-subtle">正在创建会话…</output>
-                </div>
-              </div>
-              <footer
-                className={`kapibala-composer-dock shrink-0 ${
-                  details && !wide ? 'mr-(--kapibala-dock-width)' : ''
-                }`}
-              >
-                {composer}
-              </footer>
-            </div>
-          ) : (
-            <div className="kapibala-home">
-              {/* 首页只保留吉祥物、标题与输入卡：动作入口在侧栏与输入卡内，首屏不再堆叠重复按钮。 */}
-              <div className="kapibala-home-stack">
-                <div className="kapibala-home-hero">
-                  <img src={brandMark} alt="" aria-hidden="true" className="kapibala-home-mark" />
-                  <h1 className="kapibala-home-title">今天想做点什么？</h1>
-                  <p className="kapibala-home-subtitle">
-                    描述任务后按 Enter 发送
-                    {backgroundRunning ? '；其它空间运行中的任务会在后台继续。' : '。'}
-                  </p>
-                  <div className="kapibala-home-starters">
-                    {STARTERS.map((starter) => (
-                      <Button
-                        key={starter}
-                        className="kapibala-action kapibala-starter"
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => {
-                          resetPromptHistoryBrowsing(':new');
-                          ui.draft(':new', starter);
-                        }}
-                      >
-                        {starter}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-                <div className="kapibala-home-composer">{composer}</div>
-              </div>
-            </div>
-          )}
-          {/* 诊断通知改由右上角浮层承载：不再挤压对话流与输入区，出现即提醒，可逐条关闭。 */}
-          <NoticeToasts
-            notices={
-              activeExternal ? activeExternal.snapshot.notices : (facts.state?.notices ?? [])
-            }
-            dismissed={ui.dismissedNotices}
-            onDismiss={ui.dismissNotice}
-          />
-          {externalToasts.some((toast) => toast.sessionId !== activeExternal?.sessionId) && (
-            <section
-              aria-label="外部代理提醒"
-              className="fixed top-14 right-4 z-30 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2"
-            >
-              {externalToasts
-                .filter((toast) => toast.sessionId !== activeExternal?.sessionId)
-                .map((toast) => (
-                  <div
-                    key={toast.id}
-                    role={toast.level === 'error' ? 'alert' : 'status'}
-                    className="flex items-center gap-2 rounded-xl border border-kumo-line bg-kumo-elevated px-3.5 py-2.5 shadow-lg"
-                  >
-                    <span className="min-w-0 flex-1 text-xs leading-5 break-words text-kumo-default">
-                      {toast.text}
-                    </span>
-                    <Button
-                      className="kapibala-action shrink-0"
-                      variant="secondary"
-                      size="sm"
-                      disabled={busy}
-                      onClick={() => {
-                        if (busy) return;
-                        setExternalToasts((prev) => prev.filter((item) => item.id !== toast.id));
-                        const targetSpace = spacesRef.current.find(
-                          (item) => item.id === toast.workspaceId,
-                        );
-                        if (targetSpace) {
-                          void act(() => openExternalSession(targetSpace, toast.sessionId));
-                        }
-                      }}
-                    >
-                      查看
-                    </Button>
-                    <Button
-                      className="kapibala-action shrink-0 text-kumo-subtle"
-                      variant="ghost"
-                      size="sm"
-                      shape="square"
-                      aria-label="忽略外部代理提醒"
-                      onClick={() =>
-                        setExternalToasts((prev) => prev.filter((item) => item.id !== toast.id))
-                      }
-                    >
-                      <XIcon size={14} />
-                    </Button>
-                  </div>
-                ))}
-            </section>
-          )}
-          {!activeExternal && opened && (
-            // 窄窗抽屉是覆盖式（modal）：主列不避让时 composer 连同发送按钮会被抽屉整段盖住。
-            // 覆盖期间给底部输入坞让出抽屉宽度，输入卡收窄但完整可见；宽窗走占位布局不受影响。
-            <footer
-              className={`kapibala-composer-dock shrink-0 ${
-                details && !wide ? 'mr-(--kapibala-dock-width)' : ''
-              }`}
-            >
-              {composer}
-            </footer>
-          )}
-        </main>
-        {details && wide && (
-          <div className="w-(--kapibala-dock-width) shrink-0" aria-hidden="true" />
-        )}
-        <DetailsDrawer
-          target={details}
-          tool={detailTool}
-          evidence={evidence}
-          onReloadEvidence={() => setEvidenceReloadTick((value) => value + 1)}
-          inspection={facts.inspection}
-          runtime={runtimeItem}
-          title={`${workspace?.name ?? ''} / ${currentTitle}`}
-          root={workspace?.root ?? ''}
-          wide={wide}
-          container={containerRef}
-          trigger={detailTrigger}
-          fallback={scrollRef}
-          onClose={() => setDetails(undefined)}
-        />
-      </div>
-      <ProjectDialog open={projectOpen} onOpenChange={setProjectOpen} onCreated={selectSpace} />
-      <LayerDialog
-        open={Boolean(pendingExternalDelete)}
-        onOpenChange={(open) => {
-          if (!open) setPendingExternalDelete(undefined);
-        }}
-      >
-        <LayerDialog.Content size="sm" closeLabel="取消删除外部会话">
-          <LayerDialog.Title>
-            <span data-kapibala-modal="true">删除外部会话记录？</span>
-          </LayerDialog.Title>
-          <LayerDialog.Description>
-            将从本地列表中移除「{pendingExternalDelete?.harnessName} ·{' '}
-            {pendingExternalDelete?.title || '外部任务'}」及其只读展示快照，此操作不可恢复。
-          </LayerDialog.Description>
-          <LayerDialog.Body>
-            <div className="flex justify-end gap-3">
-              <Button
-                className="kapibala-action"
-                variant="secondary"
-                onClick={() => setPendingExternalDelete(undefined)}
-              >
-                取消
-              </Button>
-              <Button
-                className="kapibala-action text-kumo-danger"
-                variant="secondary"
-                disabled={busy}
-                onClick={() => void confirmDeleteExternal()}
-              >
-                确认删除
-              </Button>
-            </div>
-          </LayerDialog.Body>
-        </LayerDialog.Content>
-      </LayerDialog>
-      <SettingsDialog
-        open={ui.settingsOpen}
-        onOpenChange={ui.settings}
-        catalog={catalog}
-        reload={reloadCatalog}
-        report={report}
-        hostDown={facts.error !== undefined || facts.runtimeValid === false}
-        spaces={spaces}
-        workspaceId={
-          activeExternal?.workspaceId ??
-          opened?.workspaceId ??
-          (workspace?.trusted ? workspace.id : undefined) ??
-          spaces.find((item) => item.trusted)?.id
+          ) : null
         }
-        inspection={facts.inspection}
-        archiveRevision={archiveRevision}
-        onArchivedChanged={() => void refreshSpaces().catch((reason) => report(failure(reason)))}
-        onRequestDelete={setPendingDelete}
-        initialTab={settingsInitialTab}
-        onInitialTabConsumed={() => setSettingsInitialTab(undefined)}
-      />
-      {facts.interactions[0] && (
-        <div className="fixed inset-x-0 bottom-24 z-30 mx-auto max-w-xl rounded-xl border border-kumo-line bg-kumo-elevated p-4 shadow-xl">
-          <p className="mb-2 text-sm font-medium">{facts.interactions[0].prompt}</p>
-          {facts.interactions[0].kind === 'select' ? (
-            <div className="space-y-1">
-              {(facts.interactions[0].options ?? []).map((option) => (
-                <Button
-                  key={option.value}
-                  variant="outline"
-                  size="sm"
-                  className="w-full justify-start"
-                  onClick={() => {
-                    const request = facts.interactions[0];
-                    if (!request) return;
-                    void api.interaction
-                      .reply({
-                        workspaceId: request.workspaceId,
-                        sessionId: request.sessionId,
-                        requestId: request.requestId,
-                        value: option.value,
-                      })
-                      .catch((reason) => report(failure(reason)));
-                  }}
-                >
-                  {option.label}
-                </Button>
-              ))}
-              {/* 与 CLI 的 Esc 取消同语义：不带 value 的应答由宿主映射为取消。 */}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  const request = facts.interactions[0];
-                  if (!request) return;
-                  void api.interaction
-                    .reply({
-                      workspaceId: request.workspaceId,
-                      sessionId: request.sessionId,
-                      requestId: request.requestId,
-                    })
-                    .catch((reason) => report(failure(reason)));
-                }}
-              >
-                取消
-              </Button>
-            </div>
-          ) : (
-            <div className="flex gap-2">
-              <Input
-                type={facts.interactions[0].kind === 'secret' ? 'password' : 'text'}
-                aria-label={facts.interactions[0].prompt}
-                value={interactionValue}
-                onValueChange={setInteractionValue}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    const request = facts.interactions[0];
-                    if (!request) return;
-                    void api.interaction
-                      .reply({
-                        workspaceId: request.workspaceId,
-                        sessionId: request.sessionId,
-                        requestId: request.requestId,
-                        value: interactionValue,
-                      })
-                      .then(() => setInteractionValue(''))
-                      .catch((reason) => report(failure(reason)));
-                  }
-                }}
-              />
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => {
-                  const request = facts.interactions[0];
-                  if (!request) return;
-                  void api.interaction
-                    .reply({
-                      workspaceId: request.workspaceId,
-                      sessionId: request.sessionId,
-                      requestId: request.requestId,
-                      value: interactionValue,
-                    })
-                    .then(() => setInteractionValue(''))
-                    .catch((reason) => report(failure(reason)));
-                }}
-              >
-                确定
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  const request = facts.interactions[0];
-                  if (!request) return;
-                  void api.interaction
-                    .reply({
-                      workspaceId: request.workspaceId,
-                      sessionId: request.sessionId,
-                      requestId: request.requestId,
-                    })
-                    .then(() => setInteractionValue(''))
-                    .catch((reason) => report(failure(reason)));
-                }}
-              >
-                取消
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-      <SessionDeleteDialog
-        target={pendingDelete}
-        onCancel={() => setPendingDelete(undefined)}
-        onConfirm={() => {
-          if (pendingDelete) void deleteConversation(pendingDelete);
+        toasts={toasts}
+        onDismissToast={(id) => {
+          if (id.startsWith('notice:')) rt.dismissNotice(id.slice('notice:'.length));
+          else if (id.startsWith('ext:')) {
+            const raw = id.slice('ext:'.length);
+            rt.setExternalToasts((prev) => prev.filter((x) => x.id !== raw));
+          }
         }}
-      />
-      <SessionRenameDialog
-        target={pendingRename}
-        busy={busy}
-        onCancel={() => setPendingRename(undefined)}
-        onConfirm={(title) => {
-          if (pendingRename) void renameConversation(pendingRename, title);
-        }}
-      />
-      <LayerDialog
-        open={Boolean(trust)}
-        onOpenChange={(open) => {
-          if (!open) setTrust(undefined);
-        }}
-      >
-        <LayerDialog.Content size="sm" closeLabel="取消信任">
-          <LayerDialog.Title>
-            <span data-kapibala-modal="true">信任这个空间？</span>
-          </LayerDialog.Title>
-          <LayerDialog.Description>
-            信任后会加载此目录的项目配置、指令、技能与 MCP。请确认目录来源可靠。
-          </LayerDialog.Description>
-          <LayerDialog.Body>
-            <p className="mb-5 break-all font-mono text-sm">{trust?.root}</p>
-            <div className="flex justify-end gap-3">
-              <Button
-                className="kapibala-action"
-                variant="secondary"
-                onClick={() =>
-                  void act(async () => {
-                    if (trust)
-                      await api.workspace.confirmTrust({
-                        workspaceId: trust.id,
-                        trustToken: trust.trustToken,
-                        accept: false,
-                      });
-                    setTrust(undefined);
-                  })
-                }
-              >
-                暂不信任
-              </Button>
-              <Button
-                className="kapibala-action"
-                onClick={() =>
-                  void act(async () => {
-                    if (!trust) return;
-                    const space = await api.workspace.confirmTrust({
-                      workspaceId: trust.id,
-                      trustToken: trust.trustToken,
-                      accept: true,
-                    });
-                    setTrust(undefined);
-                    await selectSpace(space);
-                  })
-                }
-              >
-                信任并打开
-              </Button>
-            </div>
-          </LayerDialog.Body>
-        </LayerDialog.Content>
-      </LayerDialog>
-      <LayerDialog open={ui.approvalsOpen} onOpenChange={ui.approvals}>
-        <LayerDialog.Content size="base" closeLabel="关闭审批队列">
-          <LayerDialog.Title>
-            <span data-kapibala-modal="true">待处理审批</span>
-          </LayerDialog.Title>
-          <LayerDialog.Description>
-            关闭面板不会默认允许。超时、取消或控制连接断开后，请求会拒绝。
-          </LayerDialog.Description>
-          <LayerDialog.Body>
-            {/* 弹窗正文按可用宽度换行：长路径与 JSON 参数不能把滚动内容撑得比弹窗更宽，
-                否则右侧按钮会被裁到浮层外，看起来像被遮挡。 */}
-            <div className="min-w-0 space-y-5">
-              {approvalError && (
-                <p
-                  role="alert"
-                  className="rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-xs text-kumo-danger"
-                >
-                  {approvalError}
-                </p>
-              )}
-              {facts.approvals.length === 0 && (
-                <p className="text-sm text-kumo-subtle">当前没有待处理请求。</p>
-              )}
-              {facts.approvals.map((approval) => {
-                const isReplying = Boolean(replyingApprovals[approval.approvalId]);
-                return (
-                  <LayerCard key={approval.approvalId} className="min-w-0 space-y-3 p-4">
-                    <p className="font-medium">{approval.toolName}</p>
-                    <p className="break-all text-xs text-kumo-subtle">
-                      空间：{approval.workspaceName}
-                      <br />
-                      {approval.workspaceRoot}
-                      <br />
-                      会话 {approval.conversationId} · 运行 {approval.runId}
-                    </p>
-                    <p className="break-all text-sm text-kumo-subtle">
-                      {approval.capabilities.join('、')}
-                    </p>
-                    <pre className="max-h-48 min-w-0 overflow-auto font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere]">
-                      {approval.description}
-                    </pre>
-                    <div className="flex flex-wrap justify-end gap-3">
-                      {(
-                        [
-                          'deny_once',
-                          'allow_once',
-                          ...(approval.sessionAllowed ? ['allow_session'] : []),
-                        ] as const
-                      ).map((choice) => (
-                        <Button
-                          key={choice}
-                          className="kapibala-action"
-                          variant={choice === 'allow_once' ? 'primary' : 'secondary'}
-                          disabled={isReplying}
-                          onClick={() => {
-                            if (replyingApprovals[approval.approvalId]) return;
-                            setApprovalError('');
-                            setReplyingApprovals((prev) => ({
-                              ...prev,
-                              [approval.approvalId]: true,
-                            }));
-                            void api.approval
-                              .reply({
-                                workspaceId: approval.workspaceId,
-                                sessionId: approval.sessionId,
-                                runId: approval.runId,
-                                approvalId: approval.approvalId,
-                                choice: choice as 'deny_once' | 'allow_once' | 'allow_session',
-                              })
-                              // 队列清空就必须收起面板：审批已生效却留着一张挡住正文的空卡片，
-                              // 用户会以为「批了没反应」，还得再手动叉一次。仍有其它待处理请求时保持打开。
-                              .then(() => {
-                                client.dismissApproval(approval.approvalId);
-                                if (client.snapshot().approvals.length === 0) openApprovals(false);
-                              })
-                              .catch((reason: unknown) => {
-                                const code = (reason as { code?: string } | undefined)?.code;
-                                const msg = failure(reason);
-                                if (
-                                  code === 'APPROVAL_EXPIRED' ||
-                                  code === 'SESSION_NOT_FOUND' ||
-                                  code === 'SESSION_CLOSED' ||
-                                  code === 'HOST_UNAVAILABLE' ||
-                                  msg.includes('CONTROL_CLOSED') ||
-                                  msg.includes('PEER_CLOSED')
-                                ) {
-                                  client.dismissApproval(approval.approvalId);
-                                  if (client.snapshot().approvals.length === 0)
-                                    openApprovals(false);
-                                  report(msg);
-                                } else {
-                                  setApprovalError(msg);
-                                  report(msg);
-                                }
-                              })
-                              .finally(() => {
-                                setReplyingApprovals((prev) => {
-                                  const next = { ...prev };
-                                  delete next[approval.approvalId];
-                                  return next;
-                                });
-                              });
-                          }}
-                        >
-                          {
-                            {
-                              deny_once: '拒绝',
-                              allow_once: isReplying ? '处理中…' : '批准一次',
-                              allow_session: '本会话允许相同调用',
-                            }[choice as 'deny_once' | 'allow_once' | 'allow_session']
-                          }
-                        </Button>
-                      ))}
-                    </div>
-                  </LayerCard>
-                );
-              })}
-            </div>
-          </LayerDialog.Body>
-        </LayerDialog.Content>
-      </LayerDialog>
-      <LayerDialog open={fullAccess} onOpenChange={setFullAccess}>
-        <LayerDialog.Content size="sm" closeLabel="取消完全访问">
-          <LayerDialog.Title>
-            <span data-kapibala-modal="true">启用完全访问？</span>
-          </LayerDialog.Title>
-          <LayerDialog.Description>
-            本会话将跳过通常的工具审批，可能修改文件或执行命令。仅在确认当前空间和任务可信时启用。
-          </LayerDialog.Description>
-          <LayerDialog.Body>
-            <Button
-              className="kapibala-action"
-              onClick={() =>
-                void act(async () => {
-                  if (opened)
-                    await configure({
-                      ...scopeOf(opened),
-                      mode: 'FullAccess',
-                      confirmFullAccess: true,
-                    });
-                  else setPendingMode('FullAccess');
-                  setFullAccess(false);
-                })
+        launchpadStage={
+          <LaunchpadView
+            spaces={wsSpaces}
+            activeWorkspaceId={rt.workspace?.id ?? null}
+            draft={launchpadDraft}
+            composerSlot={composerDock}
+            onSelectStarter={(starter) => {
+              useSessionStore.getState().setDraft(launchpadScope, starter.prompt);
+            }}
+          />
+        }
+        sessionStage={
+          rt.activeThread ? (
+            <SessionStage
+              thread={rt.activeThread}
+              workspaceRoot={rt.activeThread.worktree?.worktreePath ?? rt.workspace?.root}
+              platform={platform}
+              pinned={currentPinned}
+              composerSlot={composerDock}
+              onToggleRail={() =>
+                useShellStore
+                  .getState()
+                  .toggleRail(typeof window !== 'undefined' ? window.innerWidth : 1280)
               }
-            >
-              确认启用本会话完全访问
-            </Button>
-          </LayerDialog.Body>
-        </LayerDialog.Content>
-      </LayerDialog>
-    </Sidebar.Provider>
+              onRenameTitle={
+                rt.opened
+                  ? (nextTitle) =>
+                      rt.act(async () => {
+                        await api.session.rename({
+                          workspaceId: rt.opened!.workspaceId,
+                          conversationId: rt.opened!.conversationId,
+                          title: nextTitle,
+                        });
+                        await rt.refreshHistory();
+                      })
+                  : undefined
+              }
+              onTogglePin={
+                rt.opened
+                  ? () =>
+                      actions.togglePinNode(
+                        rt.opened!.workspaceId,
+                        rt.opened!.conversationId,
+                        currentPinned,
+                      )
+                  : undefined
+              }
+              onForkSession={rt.opened ? actions.forkSession : undefined}
+              onBranchWithSummary={rt.opened ? actions.branchWithSummary : undefined}
+              onArchiveSession={
+                rt.opened
+                  ? () =>
+                      actions.archiveNode(
+                        rt.opened!.workspaceId,
+                        rt.opened!.conversationId,
+                        rt.activeThread?.title,
+                      )
+                  : undefined
+              }
+              onCloseExternalProcess={
+                rt.activeExternal ? actions.closeActiveExternalProcess : undefined
+              }
+              onCloseSession={() => void actions.closeCurrentSession()}
+              onJumpToChildSession={(childId, wsId) => {
+                const sp = rt.spaces.find((s) => s.id === wsId) ?? rt.workspace;
+                if (sp) void rt.act(() => actions.openConversation(childId, sp));
+              }}
+              onRegenerate={() => actions.regenerateLastTurn(false)}
+              onRestoreAndRetry={() => actions.regenerateLastTurn(true)}
+              onRestoreCheckpoint={(turn) => actions.openTurnCheckpointDiff(turn.turnOrdinal)}
+              onEditUserMessage={(text) => {
+                if (!rt.activeThread) return;
+                useSessionStore.getState().setDraft(rt.activeThread.sessionKey, text);
+              }}
+              onContinue={
+                rt.opened
+                  ? () => void actions.handleSend({ text: '继续', references: [] })
+                  : undefined
+              }
+              onReport={rt.setError}
+            />
+          ) : null
+        }
+        workbenchStage={workbenchProps ? <WorkbenchStage {...workbenchProps} /> : undefined}
+        settingsStage={<ConnectedSettingsStage api={api} rt={rt} actions={actions} />}
+        onNewConversation={() => void rt.act(() => actions.showNewConversation(rt.workspace))}
+        onCreateProject={() => setProjectDialogOpen(true)}
+        onToggleWorkspace={(wsId) => useWorkspaceStore.getState().toggleWorkspaceExpanded(wsId)}
+        onSelectWorkspace={(sp) => {
+          const target = rt.spaces.find((s) => s.id === sp.id);
+          if (target) void rt.act(() => rt.selectSpace(target));
+        }}
+        onNewInWorkspace={(sp) => {
+          const target = rt.spaces.find((s) => s.id === sp.id);
+          if (target) void rt.act(() => actions.showNewConversation(target));
+        }}
+        onSelectInboxSession={actions.handleInboxSelect}
+        onSelectTreeSession={actions.handleTreeNodeSelect}
+        onSearchSessions={rt.searchSessionsAcrossSpaces}
+        onLaunchExternalHarness={(harnessId) => {
+          const found = availableHarnesses.find((h) => h.id === harnessId);
+          if (found) {
+            void rt.act(() =>
+              actions.showNewConversation(rt.workspace, { id: found.id, name: found.name }),
+            );
+          }
+        }}
+        onRenameSession={(node) =>
+          actions.setPendingRename({
+            workspaceId: node.workspaceId,
+            conversationId: node.id,
+            title: node.title,
+          })
+        }
+        onTogglePinSession={(node) => actions.togglePinNode(node.workspaceId, node.id, node.pinned)}
+        onArchiveSession={(node) => actions.archiveNode(node.workspaceId, node.id, node.title)}
+        onDeleteSession={actions.requestDeleteNode}
+        onPageChange={(sp, page) => {
+          const target = rt.spaces.find((s) => s.id === sp.id);
+          if (target) void rt.act(() => rt.refreshHistory(target, page));
+        }}
+      />
+
+      <DesktopModalHost
+        api={api}
+        rt={rt}
+        actions={actions}
+        projectDialogOpen={projectDialogOpen}
+        onProjectDialogOpenChange={setProjectDialogOpen}
+      />
+    </>
   );
 }

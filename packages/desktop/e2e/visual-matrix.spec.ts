@@ -48,18 +48,21 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
   const page = await app.firstWindow();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const measurements: unknown[] = [];
-  async function check(dialog: Locator, name: string, width: number | 'none') {
-    await expect(dialog).toBeVisible();
-    await expect(dialog).toHaveCSS('max-width', width === 'none' ? 'none' : `${width}px`);
+  async function checkSurface(surface: Locator, name: string, expectedMaxWidth?: number) {
+    await expect(surface).toBeVisible();
     await expect
       .poll(async () =>
-        dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+        surface.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
       )
       .toBe(true);
-    const box = await dialog.boundingBox();
+    const box = await surface.boundingBox();
+    expect(box).not.toBeNull();
+    if (expectedMaxWidth !== undefined) {
+      expect(box!.width).toBeLessThanOrEqual(expectedMaxWidth + 1);
+    }
     expect(box!.x).toBeGreaterThanOrEqual(0);
     expect(box!.y).toBeGreaterThanOrEqual(0);
-    // Windows 分数缩放下 innerWidth/innerHeight 取整，而 fixed inset-0 的亚像素盒宽可能高出 <1px。
+    // Windows 分数缩放下 innerWidth/innerHeight 取整，而 fixed/dialog 的亚像素盒宽可能高出 <1px。
     expect(box!.x + box!.width).toBeLessThanOrEqual((await page.evaluate(() => innerWidth)) + 1);
     expect(box!.y + box!.height).toBeLessThanOrEqual((await page.evaluate(() => innerHeight)) + 1);
     measurements.push({
@@ -69,7 +72,7 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
     });
   }
   try {
-    // 操作、搜索和空间树在正常尺寸与最小窗口的展开/折叠状态下保持可达。
+    // 操作、命令面板入口和空间树在正常尺寸与最小窗口的展开/折叠状态下保持可达。
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
     if (process.platform !== 'darwin') {
       const menuBarVisible = await app.evaluate(({ BrowserWindow }) =>
@@ -77,34 +80,24 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
       );
       expect(menuBarVisible).toBe(false);
     }
-    await expect(page.locator('.kapibala-sidebar-wordmark')).toHaveCount(0);
-    if (process.platform === 'win32') {
-      const paddingRight = await page
-        .locator('.kapibala-titlebar')
-        .evaluate((el) => Number.parseFloat(getComputedStyle(el).paddingRight));
-      expect(paddingRight).toBeGreaterThanOrEqual(130);
-    }
-    const sidebar = page.getByRole('complementary', { name: '空间与会话' });
-    const search = page.getByRole('searchbox', { name: '搜索空间与对话' });
-    await expect(search).toBeVisible();
-    await expect(sidebar.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
-    // 项目创建入口已收敛到输入框旁的空间选择器，侧栏不再提供常驻添加入口。
-    await expect(sidebar.getByRole('button', { name: '添加项目' })).toHaveCount(0);
-    const geometry = await sidebar.evaluate((element) => {
+    const inlineRail = page.locator('aside.kpbl-nav-rail').first();
+    await expect(inlineRail.locator('.kpbl-rail-wordmark')).toHaveText('Kapibala');
+    const cmdTrigger = inlineRail.getByRole('button', { name: '搜索或运行命令', exact: true });
+    await expect(cmdTrigger).toBeVisible();
+    await expect(inlineRail.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
+    const geometry = await inlineRail.evaluate((element) => {
       const bounds = element.getBoundingClientRect();
-      const input = element
-        .querySelector('input[type=search]')!
-        .parentElement!.getBoundingClientRect();
+      const trigger = element.querySelector('.kpbl-rail-cmd-trigger')!.getBoundingClientRect();
       return {
         width: bounds.width,
-        inputWidth: input.width,
-        left: input.left - bounds.left,
-        right: bounds.right - input.right,
+        triggerWidth: trigger.width,
+        left: trigger.left - bounds.left,
+        right: bounds.right - trigger.right,
       };
     });
-    // Windows 分数缩放（如 125% DPI）下 getBoundingClientRect 可能落为 274.99px，按亚像素容差断言。
-    expect(geometry.width).toBeCloseTo(275, 0);
-    expect(geometry.inputWidth).toBeGreaterThan(200);
+    // UI 2.0 展开导航轨固定 248px（--kpbl-rail-width），命令触发器左右留白对称。
+    expect(geometry.width).toBeCloseTo(248, 0);
+    expect(geometry.triggerWidth).toBeGreaterThan(200);
     expect(Math.abs(geometry.left - geometry.right)).toBeLessThan(3);
     await page.screenshot({
       path: path.join(artifacts, 'sidebar-light-1280.png'),
@@ -118,24 +111,27 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
     });
     await page.evaluate(() => window.kapibala.preferences.update('light'));
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(800, 600));
-    await expect(search).toBeHidden();
-    await page.getByRole('button', { name: '展开或收起侧栏' }).click();
-    await expect(search).toBeVisible();
-    await expect(sidebar.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
+    // 800px 落入 minimal 视口档：内联轨自动收起为 52px 图标轨，点击展开为覆盖抽屉。
+    await expect(inlineRail).toHaveAttribute('data-collapsed', 'true');
+    expect(
+      await inlineRail.evaluate((element) => element.getBoundingClientRect().width),
+    ).toBeCloseTo(52, 0);
+    await inlineRail.getByRole('button', { name: '展开或收起侧栏' }).click();
+    const drawerRail = page.locator('aside.kpbl-nav-rail[data-drawer="true"]');
+    await expect(drawerRail).toBeVisible();
+    await expect(drawerRail.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
     await page.screenshot({
       path: path.join(artifacts, 'sidebar-expanded-800.png'),
       animations: 'disabled',
     });
-    await page.getByRole('button', { name: '展开或收起侧栏' }).click();
-    await expect(search).toBeHidden();
-    await expect(sidebar.locator('.kapibala-sidebar-search')).toBeHidden();
-    await expect(sidebar.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
+    await drawerRail.getByRole('button', { name: '展开或收起侧栏' }).click();
+    await expect(drawerRail).toHaveCount(0);
+    await expect(inlineRail.getByRole('button', { name: '新建对话', exact: true })).toBeVisible();
     await page.screenshot({
       path: path.join(artifacts, 'sidebar-collapsed-800.png'),
       animations: 'disabled',
     });
-    // 默认空间默认信任，首屏不再出现信任浮层；浮层密度改为测量项目创建、设置、凭证、
-    // 完全访问与审批队列。
+    // 在四档视口矩阵下测量项目创建模态框、壳内设置舞台（region[name="设置中心"]）与完全访问确认框。
     for (const [width, height] of [
       [1280, 800],
       [800, 800],
@@ -143,41 +139,40 @@ test('全局浮层密度在常规、最窄、最低和最小窗口下保持边�
       [800, 600],
     ]) {
       await app.evaluate(
-        ({ BrowserWindow }, [width, height]) =>
-          BrowserWindow.getAllWindows()[0].setSize(width, height),
+        ({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h),
         [width, height],
       );
-      // 项目创建入口统一在输入框旁的空间选择器；浮层密度测量沿用同一目标。
       await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
       await page.getByRole('menuitem', { name: '新建项目' }).click();
       const dialog = page.getByRole('dialog', { name: '创建项目', exact: true });
-      await check(dialog, `create-${width}-${height}`, 500);
+      await checkSurface(dialog, `create-${width}-${height}`, 460);
       await page.getByRole('button', { name: '关闭创建项目', exact: true }).click();
-      await page.getByRole('button', { name: '打开设置', exact: true }).click();
-      const settings = page.getByRole('dialog', { name: '设置', exact: true });
-      // 设置是 PI 式整页导航：铺满窗口、不设弹窗宽度上限，左栏固定 275px。
-      await check(settings, `settings-${width}-${height}`, 'none');
+      await inlineRail.getByRole('button', { name: '打开设置', exact: true }).click();
+      const settings = page.getByRole('region', { name: '设置中心', exact: true });
+      await checkSurface(settings, `settings-${width}-${height}`);
+      const actualInnerWidth = await page.evaluate(() => innerWidth);
       expect(
         await settings
-          .locator('.kapibala-settings-rail')
+          .locator('.kpbl-settings-rail')
           .evaluate((element) => element.getBoundingClientRect().width),
-      ).toBeCloseTo(275, 0);
-      // 模型设置已改为一次落盘，凭证二次确认浮层不复存在；这里只保留外观页的密度测量。
-      await settings.getByRole('tab', { name: '外观与应用', exact: true }).click();
-      await check(settings, `appearance-${width}-${height}`, 'none');
+      ).toBeCloseTo(actualInnerWidth < 860 ? 164 : 196, 0);
+      await settings.getByRole('tab', { name: '模型与服务商', exact: true }).click();
+      await checkSurface(settings, `providers-${width}-${height}`);
+      await settings.getByRole('tab', { name: '常规', exact: true }).click();
+      await checkSurface(settings, `general-${width}-${height}`);
       await page.screenshot({
         path: path.join(artifacts, `settings-${width}-${height}.png`),
         animations: 'disabled',
       });
-      await page.getByRole('button', { name: '返回应用', exact: true }).click();
+      await settings.getByRole('button', { name: '返回工作台', exact: true }).click();
     }
-    await page.getByRole('button', { name: '新建对话', exact: true }).last().click();
+    await inlineRail.getByRole('button', { name: '新建对话', exact: true }).click();
     await page.getByRole('button', { name: /会话模式/ }).click();
     await page.getByRole('menuitem', { name: /完全访问/ }).click();
-    await check(
+    await checkSurface(
       page.getByRole('dialog', { name: '启用完全访问？', exact: true }),
       'full-access',
-      440,
+      460,
     );
     await page.getByRole('button', { name: '取消完全访问', exact: true }).click();
     // 标题栏的常驻审批计数已移除，空审批队列没有可触达的打开路径；500px 宽度基线

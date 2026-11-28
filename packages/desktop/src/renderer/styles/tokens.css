@@ -1,0 +1,173 @@
+/* 017 §3.1 · Kapibala UI 2.0「墨工坊 Ink Atelier」设计令牌唯一真源。
+ * 全渲染层仅允许 tokens.css 与 shiki.css 出现原始色值字面量；所有组件与业务视图一律消费 --kpbl-* 变量。 */
+@layer tokens {
+  :root,
+  :root[data-mode="light"] {
+    color-scheme: only light;
+
+    /* 表面层级（宣石暖纸） */
+    --kpbl-bg-rail: #f0efea;
+    --kpbl-bg-canvas: #f7f6f3;
+    --kpbl-bg-surface: #ffffff;
+    --kpbl-bg-elevated: #ffffff;
+    --kpbl-bg-subtle: color-mix(in oklab, #181816 4.8%, transparent);
+    --kpbl-bg-active: color-mix(in oklab, #181816 8.5%, transparent);
+
+    /* 墨色字阶（对比度 > 14:1 / > 11:1 / >= 4.8:1） */
+    --kpbl-ink-strong: #141413;
+    --kpbl-ink-default: #262523;
+    --kpbl-ink-subtle: #66645e;
+    --kpbl-ink-faint: #949189;
+
+    /* 碳素主控与反转前景色（零蓝色控件噪音） */
+    --kpbl-control-solid: #181816;
+    --kpbl-control-on-solid: #ffffff;
+
+    /* 水豚琥珀脉搏（全局占比 <= 5%，仅限运行心跳、待审批与品牌标识） */
+    --kpbl-pulse: #c26b33;
+    --kpbl-pulse-soft: color-mix(in oklab, #c26b33 12%, transparent);
+
+    /* 结构分隔与焦点环 */
+    --kpbl-line-subtle: color-mix(in oklab, #181816 7.5%, transparent);
+    --kpbl-line-default: color-mix(in oklab, #181816 13%, transparent);
+    --kpbl-line-strong: color-mix(in oklab, #181816 28%, transparent);
+
+    /* 语义状态与柔和底衬 */
+    --kpbl-status-success: #16794b;
+    --kpbl-status-success-soft: color-mix(in oklab, #16794b 10%, transparent);
+    --kpbl-status-warning: #b45309;
+    --kpbl-status-warning-soft: color-mix(in oklab, #b45309 10%, transparent);
+    --kpbl-status-danger: #c92a2a;
+    --kpbl-status-danger-soft: color-mix(in oklab, #c92a2a 10%, transparent);
+    --kpbl-status-info: #2b6cb0;
+    --kpbl-status-info-soft: color-mix(in oklab, #2b6cb0 10%, transparent);
+
+    /* 遮罩与浮层投影 */
+    --kpbl-overlay-scrim: color-mix(in oklab, #141413 32%, transparent);
+    --kpbl-shadow-popover: 0 8px 24px color-mix(in oklab, #141413 10%, transparent), 0 1px 3px
+      color-mix(in oklab, #141413 6%, transparent);
+    --kpbl-shadow-dialog: 0 20px 48px color-mix(in oklab, #141413 16%, transparent), 0 2px 8px
+      color-mix(in oklab, #141413 8%, transparent);
+
+    /* 品牌矢量标识桥接变量（对齐 assets/capybara.svg）、主题微缩预览固定色样与 Streamdown 浮层映射 */
+    --kpbl-ink: var(--kpbl-ink-strong);
+    --kpbl-amber: var(--kpbl-pulse);
+    --kapibala-mascot-amber: var(--kpbl-pulse);
+    --kpbl-preview-light-rail: #f0efea;
+    --kpbl-preview-light-canvas: #ffffff;
+    --kpbl-preview-light-bubble: #ebe9e2;
+    --kpbl-preview-light-ink: #262523;
+    --kpbl-preview-dark-rail: #111214;
+    --kpbl-preview-dark-canvas: #1a1d21;
+    --kpbl-preview-dark-bubble: #2a2e35;
+    --kpbl-preview-dark-ink: #e2e0da;
+    --color-background: var(--kpbl-bg-surface);
+    --color-foreground: var(--kpbl-ink-default);
+    --color-popover: var(--kpbl-bg-elevated);
+    --color-popover-foreground: var(--kpbl-ink-default);
+    --color-muted: var(--kpbl-bg-subtle);
+    --color-muted-foreground: var(--kpbl-ink-subtle);
+    --color-sidebar: var(--kpbl-bg-rail);
+    --color-border: var(--kpbl-line-default);
+    --color-primary: var(--kpbl-control-solid);
+    --color-primary-foreground: var(--kpbl-control-on-solid);
+
+    /* 圆角严格 5 档（017 §3.3） */
+    --kpbl-r-xs: 4px;
+    --kpbl-r-sm: 6px;
+    --kpbl-r-md: 10px;
+    --kpbl-r-lg: 14px;
+    --kpbl-r-full: 9999px;
+
+    /* 字体栈与字阶严格 6 档 + 启动台主问候档 */
+    --kpbl-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    --kpbl-font-mono: ui-monospace, "SFMono-Regular", "SF Mono", "Cascadia Mono", Menlo, Consolas,
+      "Liberation Mono", monospace;
+    --kpbl-text-xs: 11px;
+    --kpbl-text-sm: 12px;
+    --kpbl-text-md: 13px;
+    --kpbl-text-code: 13px;
+    --kpbl-text-base: 14px;
+    --kpbl-text-prose: 15px;
+    --kpbl-text-title: 18px;
+    --kpbl-text-hero: 20px;
+    --kpbl-leading-prose: 1.72;
+
+    /* 控件高度严格 4 档（24 / 28 / 32 / 36px） */
+    --kpbl-control-xs: 24px;
+    --kpbl-control-sm: 28px;
+    --kpbl-control-md: 32px;
+    --kpbl-control-lg: 36px;
+
+    /* 间距标尺与舞台几何常量 */
+    --kpbl-space-1: 4px;
+    --kpbl-space-2: 8px;
+    --kpbl-space-3: 12px;
+    --kpbl-space-4: 16px;
+    --kpbl-space-5: 20px;
+    --kpbl-space-6: 24px;
+    --kpbl-space-8: 32px;
+    --kpbl-turn-user-gap: 14px;
+    --kpbl-turn-gap: 28px;
+    --kpbl-rail-width: 248px;
+    --kpbl-rail-collapsed-width: 52px;
+    --kpbl-header-height: 42px;
+    --kpbl-reading-max-width: 760px;
+    --kpbl-pane-left-min: 420px;
+    --kpbl-pane-right-min: 360px;
+
+    /* 显式有界过渡参数（禁止 transition: all） */
+    --kpbl-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+    --kpbl-duration-fast: 120ms;
+    --kpbl-duration-panel: 180ms;
+  }
+
+  :root[data-mode="dark"] {
+    color-scheme: only dark;
+
+    /* 表面层级（曜石墨；左栏严禁退化为 #000000 纯黑） */
+    --kpbl-bg-rail: #111214;
+    --kpbl-bg-canvas: #15171a;
+    --kpbl-bg-surface: #1a1d21;
+    --kpbl-bg-elevated: #22262c;
+    --kpbl-bg-subtle: color-mix(in oklab, #f4f3ee 6%, transparent);
+    --kpbl-bg-active: color-mix(in oklab, #f4f3ee 10.5%, transparent);
+
+    /* 墨色字阶 */
+    --kpbl-ink-strong: #f4f3ee;
+    --kpbl-ink-default: #e2e0da;
+    --kpbl-ink-subtle: #96948d;
+    --kpbl-ink-faint: #66645e;
+
+    /* 碳素主控与反转前景色 */
+    --kpbl-control-solid: #eceae4;
+    --kpbl-control-on-solid: #141413;
+
+    /* 水豚琥珀脉搏 */
+    --kpbl-pulse: #e58b52;
+    --kpbl-pulse-soft: color-mix(in oklab, #e58b52 16%, transparent);
+
+    /* 结构分隔与焦点环 */
+    --kpbl-line-subtle: color-mix(in oklab, #f4f3ee 7.5%, transparent);
+    --kpbl-line-default: color-mix(in oklab, #f4f3ee 13%, transparent);
+    --kpbl-line-strong: color-mix(in oklab, #f4f3ee 28%, transparent);
+
+    /* 语义状态与柔和底衬 */
+    --kpbl-status-success: #4cc38a;
+    --kpbl-status-success-soft: color-mix(in oklab, #4cc38a 13%, transparent);
+    --kpbl-status-warning: #f0b35c;
+    --kpbl-status-warning-soft: color-mix(in oklab, #f0b35c 13%, transparent);
+    --kpbl-status-danger: #ff7b72;
+    --kpbl-status-danger-soft: color-mix(in oklab, #ff7b72 13%, transparent);
+    --kpbl-status-info: #79c0ff;
+    --kpbl-status-info-soft: color-mix(in oklab, #79c0ff 13%, transparent);
+
+    /* 遮罩与浮层投影 */
+    --kpbl-overlay-scrim: color-mix(in oklab, #000000 58%, transparent);
+    --kpbl-shadow-popover: 0 12px 28px color-mix(in oklab, #000000 46%, transparent), 0 1px 3px
+      color-mix(in oklab, #000000 32%, transparent);
+    --kpbl-shadow-dialog: 0 24px 56px color-mix(in oklab, #000000 60%, transparent), 0 2px 10px
+      color-mix(in oklab, #000000 40%, transparent);
+  }
+}

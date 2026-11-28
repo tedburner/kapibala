@@ -6,3 +6,5 @@ allowBuilds:
   electron: true
   # Only NSIS/ZIP are supported; the optional Squirrel toolchain is not built.
   electron-winstaller: false
+  # node-pty@1.1+ ships N-API prebuilds for win32/darwin/linux; skip node-gyp rebuild.
+  node-pty: false

@@ -1,4 +1,5 @@
 import type { Notification, RunReceipt } from '../shared/contracts.js';
+import { type ResolvedDesktopLocale, translateDesktop } from '../shared/i18n/index.js';
 
 /** 原生通知只引用当前控制期的会话与运行身份；不包含历史、路径、工具参数或审批执行入口。 */
 export class NativeNotices {
@@ -12,6 +13,8 @@ export class NativeNotices {
     private readonly background: () => boolean,
     private readonly show: (title: string, body: string, click: () => void) => () => void,
     private readonly focus: () => void,
+    private readonly enabled: () => boolean = () => true,
+    private readonly locale: () => ResolvedDesktopLocale = () => 'zh-CN',
   ) {}
   /** 只登记 Main 已从 Host 获得的句柄；页面不能自行提供通知目标。 */
   open(sessionId: string): void {
@@ -50,6 +53,7 @@ export class NativeNotices {
   }
   /** 消费已校验的事实，不依赖 Renderer 正文订阅，最多保留 8 个运行和 128 个审批通知。 */
   observe(event: Notification): void {
+    const lang = this.locale();
     if (event.type === 'approval.closed') {
       this.pending.delete(event.approvalId);
       this.dismiss(event.approvalId);
@@ -68,11 +72,11 @@ export class NativeNotices {
         key,
         `${run.sessionId}:${run.runId}`,
         run.result === 'failed'
-          ? '任务失败'
+          ? translateDesktop(lang, 'notice.runFailed')
           : run.result === 'aborted'
-            ? '任务已停止'
-            : '任务已完成',
-        '打开 Kapibala 查看运行结果。',
+            ? translateDesktop(lang, 'notice.runAborted')
+            : translateDesktop(lang, 'notice.runCompleted'),
+        translateDesktop(lang, 'notice.runBody'),
         () => this.sessions.has(run.sessionId) && this.runs.get(run.sessionId)?.runId === run.runId,
       );
     } else if (event.type === 'watch.triggered') {
@@ -81,15 +85,15 @@ export class NativeNotices {
       if (!this.sessions.has(event.sessionId)) return;
       const title =
         event.state === 'timeout'
-          ? '监视已超时'
+          ? translateDesktop(lang, 'notice.watchTimeout')
           : event.state === 'orphaned'
-            ? '监视已失联'
-            : '监视已触发';
+            ? translateDesktop(lang, 'notice.watchOrphaned')
+            : translateDesktop(lang, 'notice.watchFired');
       this.publish(
         `watch:${event.sessionId}`,
         `watch:${event.sessionId}:${event.watchId}`,
         title,
-        '打开 Kapibala 查看会话进展。',
+        translateDesktop(lang, 'notice.watchBody'),
         () => this.sessions.has(event.sessionId),
       );
     } else if (event.type === 'approval.requested') {
@@ -101,8 +105,8 @@ export class NativeNotices {
       this.publish(
         event.approvalId,
         event.approvalId,
-        '任务等待审批',
-        '打开 Kapibala 查看并处理请求。',
+        translateDesktop(lang, 'notice.approvalTitle'),
+        translateDesktop(lang, 'notice.approvalBody'),
         () =>
           this.sessions.has(event.sessionId) &&
           (this.pending.get(event.approvalId)?.expiresAt ?? 0) > Date.now(),
@@ -110,15 +114,15 @@ export class NativeNotices {
     } else if (event.type === 'external.attention') {
       const title =
         event.kind === 'approval_requested'
-          ? `${event.harnessName} 等待审批`
+          ? translateDesktop(lang, 'notice.extApproval', { name: event.harnessName })
           : event.kind === 'turn_failed'
-            ? `${event.harnessName} 任务失败`
-            : `${event.harnessName} 任务已完成`;
+            ? translateDesktop(lang, 'notice.extFailed', { name: event.harnessName })
+            : translateDesktop(lang, 'notice.extCompleted', { name: event.harnessName });
       this.publish(
         `ext:${event.sessionId}`,
         `ext:${event.sessionId}:${event.kind}`,
         title,
-        '打开 Kapibala 查看外部代理进展。',
+        translateDesktop(lang, 'notice.extBody'),
         () => true,
       );
     }
@@ -130,7 +134,7 @@ export class NativeNotices {
     body: string,
     valid: () => boolean,
   ): void {
-    if (!this.background()) return;
+    if (!this.enabled() || !this.background()) return;
     if (this.seen.has(identity)) return;
     this.seen.add(identity);
     if (this.seen.size > 1024) this.seen.delete(this.seen.values().next().value!);

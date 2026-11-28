@@ -56,6 +56,32 @@ const optionalCommand = { type: 'string', maxLength: 4_096 } as const;
 const argItem = { type: 'string', maxLength: 16_384 } as const;
 const argArray = { type: 'array', items: argItem, maxItems: 128 } as const;
 const envFromArray = { type: 'array', items: id, maxItems: 64 } as const;
+const subagentOrigin = object(
+  {
+    agentId: id,
+    role: id,
+    description: string,
+    childSessionId: id,
+    parentSessionId: id,
+  },
+  ['childSessionId'],
+);
+const referenceSelectionItem = object({ sessionId: id, recordId: id, branchId: id }, [
+  'recordId',
+  'branchId',
+]);
+const referenceSelections = {
+  type: 'array',
+  items: referenceSelectionItem,
+  maxItems: 8,
+} as const;
+const referenceRecordIds = { type: 'array', items: id, maxItems: 8 } as const;
+const checkpointOrdinal = {
+  type: 'integer',
+  minimum: -1,
+  maximum: Number.MAX_SAFE_INTEGER,
+} as const;
+const worktreeOption = object({ enabled: boolean, branch: id, baseRef: id }, ['branch', 'baseRef']);
 
 /** 初始化和方法参数 Schema 为协议单一白名单；额外参数不作隐式忽略。 */
 export const REQUEST_SCHEMAS = {
@@ -65,7 +91,7 @@ export const REQUEST_SCHEMAS = {
     { workspaceRoot: string, cursor: id, limit: { ...integer, minimum: 1, maximum: 50 } },
     ['cursor', 'limit'],
   ),
-  'session/create': object({ workspaceRoot: string }),
+  'session/create': object({ workspaceRoot: string, worktree: worktreeOption }, ['worktree']),
   'session/open': object({ workspaceRoot: string, conversationId: id }),
   'session/attach': object(
     { sessionId: id, mode: enumeration('control', 'observe'), serverInstanceId: id },
@@ -74,17 +100,81 @@ export const REQUEST_SCHEMAS = {
   'session/detach': object({ sessionId: id }),
   'session/close': object(control),
   'session/snapshot': object({ sessionId: id, cursor: id }, ['cursor']),
-  'run/start': object({ ...control, clientOperationId: id, input: string }),
+  'run/start': object(
+    { ...control, clientOperationId: id, input: string, references: referenceSelections },
+    ['references'],
+  ),
   'run/cancel': object({ ...control, runId: id }),
-  'approval/request': object({
-    ...control,
-    approvalId: id,
-    runId: id,
-    toolName: id,
-    target: string,
-    sessionAllowed: boolean,
-    expiresAt: integer,
-  }),
+  'approval/request': object(
+    {
+      ...control,
+      approvalId: id,
+      runId: id,
+      toolName: id,
+      target: string,
+      sessionAllowed: boolean,
+      expiresAt: integer,
+      subagentOrigin,
+    },
+    ['subagentOrigin'],
+  ),
+  'reference/candidates': object(
+    { workspaceRoot: string, limit: { ...integer, minimum: 1, maximum: 100 } },
+    ['limit'],
+  ),
+  'reference/search': object(
+    {
+      workspaceRoot: string,
+      query: { type: 'string', maxLength: 4_096 },
+      limit: { ...integer, minimum: 1, maximum: 200 },
+    },
+    ['limit'],
+  ),
+  'reference/read': object(
+    {
+      workspaceRoot: string,
+      sessionId: id,
+      recordIds: referenceRecordIds,
+      branchId: id,
+      limit: { ...integer, minimum: 1, maximum: 12 },
+    },
+    ['recordIds', 'branchId', 'limit'],
+  ),
+  'checkpoint/list': object({ sessionId: id, external: boolean }, ['external']),
+  'checkpoint/diff': object(
+    {
+      sessionId: id,
+      ordinal: integer,
+      fromOrdinal: integer,
+      toOrdinal: integer,
+      includeLiveWorktree: boolean,
+      external: boolean,
+    },
+    ['ordinal', 'fromOrdinal', 'toOrdinal', 'includeLiveWorktree', 'external'],
+  ),
+  'checkpoint/restore': object(
+    { sessionId: id, targetOrdinal: checkpointOrdinal, force: boolean, external: boolean },
+    ['force', 'external'],
+  ),
+  'worktree/list': object({ workspaceRoot: string }),
+  'worktree/create': object({ workspaceRoot: string, name: id, branch: id, baseRef: id }, [
+    'name',
+    'branch',
+    'baseRef',
+  ]),
+  'worktree/status': object({ workspaceRoot: string, id }),
+  'worktree/diff': object({ workspaceRoot: string, id }),
+  'worktree/previewMerge': object({ workspaceRoot: string, id }),
+  'worktree/applyMerge': object(
+    {
+      workspaceRoot: string,
+      id,
+      previewToken: id,
+      commitMessage: { type: 'string', minLength: 1, maxLength: 4_096 },
+    },
+    ['commitMessage'],
+  ),
+  'worktree/remove': object({ workspaceRoot: string, id, force: boolean }, ['force']),
   'watch/list': object({ sessionId: id }),
   'watch/cancel': object({ ...control, watchId: id }),
   'evidence/read': object({ sessionId: id }),
@@ -107,7 +197,10 @@ export const REQUEST_SCHEMAS = {
   'external/harnessDelete': object({ id }),
   'external/harnessTest': object({ id, workspaceRoot: string }, ['workspaceRoot']),
   'external/list': object({ workspaceRoot: string }),
-  'external/open': object({ workspaceRoot: string, harnessId: id, title: id }, ['title']),
+  'external/open': object(
+    { workspaceRoot: string, harnessId: id, title: id, worktree: worktreeOption },
+    ['title', 'worktree'],
+  ),
   'external/attach': object({ sessionId: id }),
   'external/detach': object({ sessionId: id }),
   'external/snapshot': object({ sessionId: id }),
@@ -148,6 +241,16 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   }),
   run_started: object({ clientOperationId: id }),
   run_settled: object({ outcome: enumeration('completed', 'failed', 'cancelled') }),
+  stream_reset: object({ step: integer, attempt: integer }),
+  retry_scheduled: object({
+    step: integer,
+    attempt: integer,
+    maxRetries: integer,
+    delayMs: integer,
+    nextRetryAt: integer,
+    category: id,
+    message: { type: 'string', maxLength: 16_384 },
+  }),
   approval_closed: object({ approvalId: id }),
   diagnostic: object({ code: id, message: string }),
 } as const satisfies Record<string, WireSchema>;

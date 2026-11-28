@@ -1,3 +1,5 @@
+import type { ViewDiffSummary, ViewWorktreeSummary } from './workbench.js';
+
 /** 本地展示身份；viewEpoch 由宿主单调推进，不充当运行或远程授权标识。 */
 export interface ViewIdentity {
   readonly conversationId: string;
@@ -137,6 +139,23 @@ export interface ViewOperation {
 }
 
 /**
+ * 模型单步自动退避重试状态快照。
+ *
+ * 前置约束与失败边界：
+ * - 仅在单步瞬态失败已进入退避等待期时挂在展示状态上，新内容增量、消息落盘、取消或操作收口时自动清除；
+ * - `message` 经宿主脱敏与不可信字符净化，不含 Provider 原始响应体或凭证。
+ */
+export interface ViewRetryStatus {
+  readonly step: number;
+  readonly attempt: number;
+  readonly maxRetries: number;
+  readonly delayMs: number;
+  readonly nextRetryAt: number;
+  readonly category: string;
+  readonly message: string;
+}
+
+/**
  * 不依赖终端/框架的只读展示快照；已提交历史与活跃片段分开，delta 不复制整份历史。
  * 折叠偏好仅属于当前视图，可在重新加载时丢弃，不能写回 canonical。
  */
@@ -152,6 +171,12 @@ export interface PresentationState {
   readonly notices: readonly ViewNotice[];
   /** 会话级任务清单；无成功 `todo_write` 历史时缺省，桌面 pill 与浮层据此隐藏。 */
   readonly todos?: ViewTodoState;
+  /** 单步模型请求处于指数退避等待期间的状态；无在途重试时缺省。 */
+  readonly retryStatus?: ViewRetryStatus;
+  /** 当前会话绑定的受管 Git Worktree 摘要；直接运行于主工作区时缺省。 */
+  readonly worktree?: ViewWorktreeSummary;
+  /** 当前会话跨轮次累计真实磁盘变更行数摘要；无检查点变更记录时缺省。 */
+  readonly diffSummary?: ViewDiffSummary;
 }
 
 /** Host 适配后的语义变化；不接收 Core 类型，也不承担命令执行或权限裁决。 */
@@ -186,6 +211,9 @@ export type PresentationChange =
     }
   | { readonly type: 'set_expanded'; readonly blockId: string; readonly expanded: boolean }
   | { readonly type: 'todos_changed'; readonly todos?: ViewTodoState }
+  | { readonly type: 'diff_summary_changed'; readonly diffSummary?: ViewDiffSummary }
+  | { readonly type: 'stream_reset'; readonly messageId: string }
+  | { readonly type: 'retry_status_changed'; readonly retryStatus?: ViewRetryStatus }
   | ({ readonly type: 'diagnostic' } & ViewNotice);
 
 /** 有序事件包；宿主必须带当前会话/分支/视图与操作身份，旧代次不能写新视图。 */

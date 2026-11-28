@@ -257,7 +257,8 @@ describe('OpenAICompatibleProvider', () => {
       await expect(iterator.next()).rejects.toMatchObject({
         name: 'ModelError',
         code: ending === 'closed' ? 'MODEL_STREAM_INCOMPLETE' : 'MODEL_STREAM_INTERRUPTED',
-        retryable: false,
+        category: 'network',
+        retryable: true,
       });
     },
   );

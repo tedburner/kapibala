@@ -90,7 +90,10 @@ it('子会话从显式 home 加载指令并恢复审计，独立历史清理后�
     mode: 'ephemeral',
     limits: { maxSteps: 1, timeoutMs: 1000 },
   };
-  await runner(task, new AbortController().signal, { leaseCoordinator: leases });
+  await runner(task, new AbortController().signal, {
+    leaseCoordinator: leases,
+    pauseTimeout: () => () => {},
+  });
   expect(sources).toContain(fs.realpathSync.native(instruction));
   const logs = fs
     .readdirSync(audit)
@@ -160,6 +163,7 @@ it('detached 委派在创建时写头部身份，终态写命名并回传会话 
   const result = await runner(task, new AbortController().signal, {
     leaseCoordinator: leases,
     parentTitle: '数据库迁移',
+    pauseTimeout: () => () => {},
   });
   expect(result.sessionId).toBeDefined();
   const handle = await manager.open(result.sessionId!);

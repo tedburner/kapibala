@@ -213,10 +213,39 @@ export class SessionPresentation {
       }
       case 'message_stop':
         this.syncHistory(event.message);
+        if (this.store.snapshot().retryStatus !== undefined) {
+          this.emit({ type: 'retry_status_changed' });
+        }
         break;
       case 'tool_messages':
         this.syncHistory();
         break;
+      case 'stream_reset': {
+        const previousMessageId = this.messageId;
+        this.thinking.clear();
+        this.anonymousThinking = undefined;
+        this.textId = undefined;
+        this.tools.clear();
+        this.rawInputs.clear();
+        this.emit({ type: 'stream_reset', messageId: previousMessageId });
+        this.messageId = this.nextId('assistant');
+        break;
+      }
+      case 'retry_scheduled': {
+        this.emit({
+          type: 'retry_status_changed',
+          retryStatus: {
+            step: event.step,
+            attempt: event.attempt,
+            maxRetries: event.maxRetries,
+            delayMs: event.delayMs,
+            nextRetryAt: event.nextRetryAt,
+            category: event.category,
+            message: sanitizeUntrustedOutput(event.message),
+          },
+        });
+        break;
+      }
       case 'run_finish':
         this.result = event.metrics.status;
         this.emit({ type: 'operation_result', result: this.result });

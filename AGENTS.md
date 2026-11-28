@@ -35,10 +35,10 @@
   - **NO**：`/** 更新模型 API 密钥。 */`
   - **OK**：`/** 写入模型密钥并清理同 credentialGroup 冗余副本；原始全局配置损坏时抛错中止，防回写合并结果物化内置模型。 */`
 - 品牌拼写只允许 **`Kapibala`**（禁止少一个 i 的旧拼法）；配置目录 **`.kapibala`**；错误基类 `KapibalaError`；默认 `agentName` 为 `'Kapibala'`。
-- **桌面 UI 组件分层（2026-11-24 起的约定）**：桌面端（`packages/desktop`）**不强制绑定 `@cloudflare/kumo` 等预设样式组件库**；常规设置表单/弹窗/菜单可按需复用现有 Kumo 组件，会话流、工具行、富输入区、右侧预览/Diff 等工作台界面在样式或结构受限时直接使用无头原语或语义化原生控件（配齐 `aria-*`/键盘焦点与 `theme-kapibala.css` 语义 Token），禁止为迁就组件库硬套包装或堆 `!important` 覆盖（细则见 `packages/desktop/AGENTS.md`）。
+- **桌面 UI 2.0 原生组件分层（`v0.1.6` 起生效）**：桌面端（`packages/desktop`）已彻底移除 `@cloudflare/kumo`，全量采用 `src/renderer/ui/` 零第三方预设组件库的原生语义原语（`<dialog>` / `popover="auto"` / `<button>` / `<input>` / `<textarea>` 等），配齐 `aria-*`、键盘焦点与 `src/renderer/styles/tokens.css`（`--kpbl-*`）语义 Token；`src/renderer/` 下所有 `.ts`/`.tsx` 单文件严格 `≤ 450` 行、零硬编码颜色字面量、零 `transition-all` / `@keyframes`（由 `pnpm check-desktop` 强制拦截，细则见 `packages/desktop/AGENTS.md`）。
 
 ## 按需阅读索引（触发对应任务时必读）
 
-- **当前基线与版本路线图**：当前最新已发布版本为 `v0.1.4`（本地 wire `PROTOCOL_VERSION = 2`）；查历史版本交付范围或后续排期时读 `docs/RELEASES.md`，开发 `v0.1.5` 外部代理工作台时读 `docs/design/015-v0.1.5-acp-external-harness.md`，推进 `v0.1.6+` 桌面 UI 2.0 重构时读 `docs/design/017-ui-v2-workbench.md`。
+- **当前基线与版本路线图**：当前最新已发布版本为 `v0.1.5`（本地 wire `PROTOCOL_VERSION = 2`），`v0.1.6` 分支已完成全量实现；查历史版本交付范围或后续排期时读 `docs/RELEASES.md`，查阅外部代理架构读 `docs/design/015-v0.1.5-acp-external-harness.md`，查阅 `v0.1.6` 并行工作树/检查点/工作台/重试与桌面 UI 2.0 架构读 `docs/design/018-v0.1.6-version-design.md` 与 `docs/design/017-ui-v2-workbench.md`。
 - **契约与子系统文档**：改 Core/MCP/CLI 公共导出时读 `docs/sdk-compatibility.md` 与 `scripts/fixtures/public-api/migration.json`；改本地客户端协议时读 `docs/local-protocol.md`；改技能体系时读 `docs/skills.md`。
 - **跨包高危联动**：从任意包修改内置模型目录、厂商元数据、API Key 读写或全局配置持久化前，必读 `packages/host/AGENTS.md`；修改品牌 SVG/PNG 或 README 双主题抬头图前，必读 `assets/AGENTS.md`；模型升级巡检或精简 Agent 上下文与 Skills 时，必读 `docs/context-pruning-playbook.md`。

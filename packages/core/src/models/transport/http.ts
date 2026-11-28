@@ -1,5 +1,56 @@
-import { ContextOverflowError, ModelError } from '../../errors/index.js';
+import { ContextOverflowError, ModelError, type ModelErrorOptions } from '../../errors/index.js';
 import type { ModelProtocol } from '../router.js';
+
+/**
+ * 解析服务端响应头中的重试提示与退避等待时长。
+ *
+ * 规则与边界：
+ * - `x-should-retry`：`'false'` / `'0'` 返回 `shouldRetry: false`；`'true'` / `'1'` 返回 `shouldRetry: true`；
+ * - `retry-after-ms`：优先于 `retry-after`，接受有限非负毫秒数并向上取整；
+ * - `retry-after`：接受非负浮点秒（转毫秒向上取整）或 RFC HTTP-date（相对 `nowMs` 夹取非负差值）；
+ * - 负数、NaN 或不可识别的字符串静默忽略，绝不向退避定时器传递非法时长。
+ */
+export function parseRetryHeaders(
+  headers?: Headers | null,
+  nowMs = Date.now(),
+): { shouldRetry?: boolean; retryAfterMs?: number } {
+  if (!headers || typeof headers.get !== 'function') return {};
+  const result: { shouldRetry?: boolean; retryAfterMs?: number } = {};
+
+  const rawShouldRetry = headers.get('x-should-retry')?.trim().toLowerCase();
+  if (rawShouldRetry === 'false' || rawShouldRetry === '0') {
+    result.shouldRetry = false;
+  } else if (rawShouldRetry === 'true' || rawShouldRetry === '1') {
+    result.shouldRetry = true;
+  }
+
+  const rawMs = headers.get('retry-after-ms')?.trim();
+  if (rawMs && /^[+-]?\d+(?:\.\d+)?$/.test(rawMs)) {
+    const parsedMs = Number(rawMs);
+    if (Number.isFinite(parsedMs) && parsedMs >= 0) {
+      result.retryAfterMs = Math.ceil(parsedMs);
+    }
+  }
+
+  if (result.retryAfterMs === undefined) {
+    const rawRetryAfter = headers.get('retry-after')?.trim();
+    if (rawRetryAfter) {
+      if (/^[+-]?\d+(?:\.\d+)?$/.test(rawRetryAfter)) {
+        const sec = Number(rawRetryAfter);
+        if (Number.isFinite(sec) && sec >= 0) {
+          result.retryAfterMs = Math.ceil(sec * 1000);
+        }
+      } else {
+        const dateMs = Date.parse(rawRetryAfter);
+        if (Number.isFinite(dateMs)) {
+          result.retryAfterMs = Math.max(0, Math.ceil(dateMs - nowMs));
+        }
+      }
+    }
+  }
+
+  return result;
+}
 
 /** 仅提取安全的传输错误码，不携带 socket、端点凭据或请求正文。 */
 export function safeTransportCode(error: unknown): string | undefined {
@@ -54,9 +105,63 @@ export interface ModelHTTPOpenOptions {
   signal?: AbortSignal;
   /** 建连（响应头阶段）超时毫秒数，缺省 60 秒；不约束流式读取。 */
   connectTimeoutMs?: number;
+  /** 是否在非 2xx 错误中保留脱敏后的服务端错误消息（供兼容网关诊断）；缺省 false 使用固定状态码摘要。 */
+  preserveErrorMessage?: boolean;
 }
 
-/** 建连超时只约束响应头阶段；调用者必须在流消费 finally 中 close，保持全程取消联动。 */
+/**
+ * 从非 2xx JSON 响应体中兼容提取错误标识字段：
+ * 同时覆盖嵌套 `{ error: { code, type, message } }`、字符串 `{ error: "insufficient_quota" }`
+ * 与国产厂商顶层 `{ code, type, message }` 结构（如智谱 `429 {"code":"1304","message":"配额已耗尽"}`）。
+ */
+function extractErrorDetail(
+  rawText: string,
+): { code?: unknown; type?: unknown; message?: unknown } | undefined {
+  if (!rawText) return undefined;
+  try {
+    const parsed = JSON.parse(rawText);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const record = parsed as Record<string, unknown>;
+    const nested = record.error;
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      const errObj = nested as Record<string, unknown>;
+      return {
+        code: errObj.code ?? record.code,
+        type: errObj.type ?? record.type,
+        message: errObj.message ?? record.message,
+      };
+    }
+    if (typeof nested === 'string') {
+      return {
+        code: record.code ?? nested,
+        type: record.type,
+        message: typeof record.message === 'string' ? record.message : nested,
+      };
+    }
+    if (
+      record.code !== undefined ||
+      record.type !== undefined ||
+      record.message !== undefined ||
+      record.msg !== undefined
+    ) {
+      return {
+        code: record.code,
+        type: record.type,
+        message:
+          typeof record.message === 'string'
+            ? record.message
+            : typeof record.msg === 'string'
+              ? record.msg
+              : undefined,
+      };
+    }
+  } catch {
+    /* 不回显未脱敏原始错误体。 */
+  }
+  return undefined;
+}
+
+/** 建连超时约束响应头阶段，非 2xx 错误体读取施加有界超时保护；调用者必须在流消费 finally 中 close。 */
 export async function openModelResponse(
   options: ModelHTTPOpenOptions,
 ): Promise<{ response: Response; close: () => void }> {
@@ -94,21 +199,78 @@ export async function openModelResponse(
       clearTimeout(timer);
     }
     if (!response.ok) {
-      let detail: { code?: unknown; type?: unknown } | undefined;
+      const retryHeaders = parseRetryHeaders(response.headers);
+      let rawText = '';
+      const errorBodyTimeoutMs = Math.max(1, Math.min(timeout, 15_000));
+      let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+      let onCallerAbort: (() => void) | undefined;
       try {
-        detail = JSON.parse(await response.text())?.error;
-      } catch {
-        /* 不回显原始错误体。 */
+        const textPromise = Promise.resolve().then(() => response.text());
+        textPromise.catch(() => {});
+        rawText = await Promise.race([
+          textPromise,
+          new Promise<string>((_, reject) => {
+            if (options.signal?.aborted) {
+              reject(new Error('Aborted'));
+              return;
+            }
+            onCallerAbort = () => reject(new Error('Aborted'));
+            options.signal?.addEventListener('abort', onCallerAbort, { once: true });
+            bodyTimer = setTimeout(() => {
+              controller.abort();
+              reject(new Error('Error response body timed out'));
+            }, errorBodyTimeoutMs);
+          }),
+        ]);
+      } catch (bodyError) {
+        if (options.signal?.aborted) throw bodyError;
+        /* 非 2xx 响应体挂起或损坏时降级为空正文，按状态码与响应头继续分类，防止阻塞重试循环。 */
+      } finally {
+        if (bodyTimer !== undefined) clearTimeout(bodyTimer);
+        if (onCallerAbort) options.signal?.removeEventListener('abort', onCallerAbort);
       }
-      const errorOptions = {
+      const detail = extractErrorDetail(rawText);
+      const providerMessage = typeof detail?.message === 'string' ? detail.message : undefined;
+      let errorMsg = `Model API request failed (${response.status})`;
+      if (options.preserveErrorMessage) {
+        errorMsg = `API request failed with status ${response.status}: ${response.statusText ?? ''}`;
+        if (providerMessage) {
+          errorMsg = providerMessage;
+        } else if (rawText) {
+          errorMsg += ` - ${rawText.slice(0, 300)}`;
+        }
+      }
+      const errorOptions: ModelErrorOptions = {
         status: response.status,
-        stage: 'response' as const,
-        providerCode: typeof detail?.code === 'string' ? detail.code : undefined,
+        stage: 'response',
+        providerCode:
+          typeof detail?.code === 'string' || typeof detail?.code === 'number'
+            ? String(detail.code)
+            : undefined,
         providerType: typeof detail?.type === 'string' ? detail.type : undefined,
+        providerMessage,
+        ...(retryHeaders.retryAfterMs !== undefined
+          ? { retryAfterMs: retryHeaders.retryAfterMs }
+          : {}),
       };
       if ([400, 413, 422].includes(response.status) && isContextOverflow(detail, options.protocol))
-        throw new ContextOverflowError(response.status, errorOptions);
-      throw new ModelError(`Model API request failed (${response.status})`, errorOptions);
+        throw new ContextOverflowError(response.status, {
+          ...errorOptions,
+          ...(options.preserveErrorMessage ? { message: errorMsg } : {}),
+        });
+      let retryableOverride: boolean | undefined;
+      if (retryHeaders.shouldRetry === false) {
+        retryableOverride = false;
+      } else if (retryHeaders.shouldRetry === true) {
+        const probe = new ModelError(errorMsg, errorOptions);
+        if (!['authentication', 'quota', 'context'].includes(probe.category)) {
+          retryableOverride = true;
+        }
+      }
+      throw new ModelError(errorMsg, {
+        ...errorOptions,
+        ...(retryableOverride !== undefined ? { retryable: retryableOverride } : {}),
+      });
     }
     if (!response.body)
       throw new ModelError('Model response body is missing', {

@@ -75,6 +75,7 @@ export function projectInspection(
       tasks: input.status.tasks?.slice(0, take).map((task) => ({
         ...task,
         agentId: clean(task.agentId),
+        ...(task.sessionId ? { sessionId: clean(task.sessionId) } : {}),
         role: clean(task.role),
         originBranchId: clean(task.originBranchId),
         branchHint: task.branchHint && clean(task.branchHint),

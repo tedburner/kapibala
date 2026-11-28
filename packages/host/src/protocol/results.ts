@@ -60,9 +60,24 @@ export interface RequestResults {
     limits: ProtocolLimits;
   };
   ping: { alive: true; serverInstanceId: string };
-  'session/list': { items: { conversationId: string; title: string }[]; cursor: string | null };
-  'session/create': { sessionId: string; conversationId: string };
-  'session/open': { sessionId: string; conversationId: string };
+  'session/list': {
+    items: {
+      conversationId: string;
+      title: string;
+      delegation?: import('./types.js').WireSessionDelegation;
+    }[];
+    cursor: string | null;
+  };
+  'session/create': {
+    sessionId: string;
+    conversationId: string;
+    worktree?: import('./types.js').WireWorktreeSummary;
+  };
+  'session/open': {
+    sessionId: string;
+    conversationId: string;
+    worktree?: import('./types.js').WireWorktreeSummary;
+  };
   'session/attach': WireSnapshot;
   'session/snapshot': WireSnapshot | SnapshotPage;
   'session/detach': { detached: true };
@@ -70,6 +85,54 @@ export interface RequestResults {
   'run/start': { runId: string; accepted: true };
   'run/cancel': { cancellationRequested: true };
   'approval/request': { choice: import('./types.js').ApprovalChoice };
+  'reference/candidates': { items: import('./types.js').WireReferenceCandidateItem[] };
+  'reference/search': { hits: import('./types.js').WireReferenceSearchHit[] };
+  'reference/read': {
+    sessionId: string;
+    title?: string;
+    branchId: string;
+    records: import('./types.js').WireReferenceRecord[];
+    partial?: string;
+  };
+  'checkpoint/list': { items: import('./types.js').WireCheckpointItem[] };
+  'checkpoint/diff': {
+    available: boolean;
+    additions: number;
+    deletions: number;
+    truncated: boolean;
+    files: import('./types.js').WireFileDiff[];
+  };
+  'checkpoint/restore': {
+    status: 'restored' | 'conflict' | 'noop';
+    restoredFiles: string[];
+    deletedFiles: string[];
+    conflicts: string[];
+  };
+  'worktree/list': { items: import('./types.js').WireWorktreeSummary[] };
+  'worktree/create': import('./types.js').WireWorktreeSummary;
+  'worktree/status': import('./types.js').WireWorktreeStatus;
+  'worktree/diff': {
+    id: string;
+    branch: string;
+    baseCommit: string;
+    headCommit: string;
+    additions: number;
+    deletions: number;
+    truncated: boolean;
+    files: import('./types.js').WireFileDiff[];
+  };
+  'worktree/previewMerge': import('./types.js').WireMergePreview;
+  'worktree/applyMerge': {
+    status: 'merged' | 'conflict';
+    mergedCommit: string | null;
+    targetBranch: string | null;
+    conflictedFiles: string[];
+  };
+  'worktree/remove': {
+    removed: boolean;
+    reason: 'dirty' | 'unmerged_commits' | 'at_risk_ignored_files' | null;
+    details: string[];
+  };
   'watch/list': { items: import('./types.js').WatchWireItem[] };
   'watch/cancel': { cancelled: true };
   'evidence/read': import('./types.js').EvidenceWire;
@@ -127,10 +190,19 @@ const array = <const S extends WireSchema>(items: S) => ({
   items,
   maxItems: 100_000,
 });
-const object = <const P extends Record<string, WireSchema>>(properties: P) => ({
+const object = <
+  const P extends Record<string, WireSchema>,
+  const O extends readonly (keyof P & string)[] = readonly [],
+>(
+  properties: P,
+  optional?: O,
+) => ({
   type: 'object' as const,
   properties,
-  required: Object.keys(properties) as (keyof P)[],
+  required: Object.keys(properties).filter((key) => !optional?.includes(key)) as Exclude<
+    keyof P,
+    O[number]
+  >[],
   additionalProperties: false as const,
 });
 const yes = { type: 'boolean', enum: [true] } as const;
@@ -262,24 +334,115 @@ const externalTemplateItem = object({
   loginHint: nullable(text),
   website: nullable(text),
 });
-const externalSessionItem = object({
+const worktreeSummary = object({
   id,
-  harnessId: id,
-  harnessName: text,
-  transport: externalTransport,
-  workspaceRoot: text,
-  title: text,
-  status: externalStatus,
-  resumable: bool,
-  canContinue: bool,
-  hasArchive: bool,
-  pendingApprovalCount: integer,
-  modelLabel: nullable(text),
-  modeLabel: nullable(text),
+  projectRoot: text,
+  worktreePath: text,
+  branch: text,
+  baseRef: text,
+  baseCommit: id,
   createdAt: integer,
-  updatedAt: integer,
-  lastError: nullable(text),
 });
+const diffSummaryWire = object({
+  additions: integer,
+  deletions: integer,
+});
+const fileDiffStatus = {
+  type: 'string',
+  enum: ['added', 'modified', 'deleted', 'renamed'],
+} as const;
+const wireFileDiffItem = object({
+  path: text,
+  status: fileDiffStatus,
+  originalPath: nullable(text),
+  additions: integer,
+  deletions: integer,
+  binary: bool,
+  patch: text,
+  truncated: bool,
+});
+const wireCheckpointItem = object({
+  ordinal: integer,
+  createdAt: integer,
+  startTree: id,
+  endTree: id,
+  additions: integer,
+  deletions: integer,
+  changedFilesCount: integer,
+  label: nullable(text),
+});
+const wireWorktreeChangedFile = object({
+  path: text,
+  status: fileDiffStatus,
+  oldPath: nullable(text),
+  additions: integer,
+  deletions: integer,
+  binary: bool,
+});
+const wireWorktreeStatus = object({
+  id,
+  projectRoot: text,
+  worktreePath: text,
+  branch: text,
+  baseRef: text,
+  baseCommit: id,
+  headCommit: nullable(id),
+  exists: bool,
+  linkVerified: bool,
+  dirty: bool,
+  untrackedCount: integer,
+  aheadCount: integer,
+  behindCount: integer,
+  additions: integer,
+  deletions: integer,
+  changedFiles: array(wireWorktreeChangedFile),
+});
+const wireMergePreview = object({
+  worktreeId: id,
+  branch: text,
+  baseRef: text,
+  aheadCount: integer,
+  behindCount: integer,
+  worktreeDirty: bool,
+  mainDirty: bool,
+  canApply: bool,
+  blockingReason: nullable(text),
+  additions: integer,
+  deletions: integer,
+  previewToken: id,
+  changedFiles: array(
+    object({
+      path: text,
+      status: fileDiffStatus,
+      additions: integer,
+      deletions: integer,
+    }),
+  ),
+});
+
+const externalSessionItem = object(
+  {
+    id,
+    harnessId: id,
+    harnessName: text,
+    transport: externalTransport,
+    workspaceRoot: text,
+    title: text,
+    status: externalStatus,
+    resumable: bool,
+    canContinue: bool,
+    hasArchive: bool,
+    pendingApprovalCount: integer,
+    modelLabel: nullable(text),
+    modeLabel: nullable(text),
+    createdAt: integer,
+    updatedAt: integer,
+    lastError: nullable(text),
+    worktree: worktreeSummary,
+    diffSummary: diffSummaryWire,
+  },
+  ['worktree', 'diffSummary'],
+);
 const externalApprovalItem = object({
   approvalId: id,
   sessionId: id,
@@ -324,41 +487,81 @@ const externalMessage = object({
     }),
   ),
 });
-const externalSnapshot = object({
-  session: externalSessionItem,
-  sequence: integer,
-  truncatedArchive: bool,
-  messages: array(externalMessage),
-  approvals: array(externalApprovalItem),
-  plan: nullable(
-    object({
-      items: array(
-        object({
-          id: text,
-          title: text,
-          status: {
-            type: 'string',
-            enum: ['pending', 'in_progress', 'completed', 'cancelled'],
-          },
-        }),
-      ),
-      updatedAt: nullable(integer),
-      revision: integer,
-    }),
-  ),
-  notices: array(
-    object({
-      id: text,
-      level: { type: 'string', enum: ['info', 'warning', 'error'] },
-      text,
-    }),
-  ),
-});
+const externalSnapshot = object(
+  {
+    session: externalSessionItem,
+    sequence: integer,
+    truncatedArchive: bool,
+    messages: array(externalMessage),
+    approvals: array(externalApprovalItem),
+    plan: nullable(
+      object({
+        items: array(
+          object({
+            id: text,
+            title: text,
+            status: {
+              type: 'string',
+              enum: ['pending', 'in_progress', 'completed', 'cancelled'],
+            },
+          }),
+        ),
+        updatedAt: nullable(integer),
+        revision: integer,
+      }),
+    ),
+    notices: array(
+      object({
+        id: text,
+        level: { type: 'string', enum: ['info', 'warning', 'error'] },
+        text,
+      }),
+    ),
+    worktree: worktreeSummary,
+    diffSummary: diffSummaryWire,
+  },
+  ['worktree', 'diffSummary'],
+);
 /** `external/event` 通知载荷白名单 Schema。 */
 export const EXTERNAL_EVENT_SCHEMA = object({
   sessionId: id,
   sequence: integer,
   snapshot: externalSnapshot,
+});
+
+const sessionDelegation = object({ parentSessionId: id, parentTitle: text, taskName: text }, [
+  'parentTitle',
+]);
+const referenceRole = {
+  type: 'string',
+  enum: ['user', 'assistant', 'branch_summary'],
+} as const;
+const referenceCandidateItem = object(
+  {
+    sessionId: id,
+    title: text,
+    lastActivityAt: integer,
+    messageCount: integer,
+    isDelegation: bool,
+  },
+  ['isDelegation'],
+);
+const referenceSearchHit = object({
+  sessionId: id,
+  title: text,
+  recordId: id,
+  branchId: id,
+  role: referenceRole,
+  snippet: text,
+  timestamp: integer,
+});
+const referenceRecordItem = object({
+  recordId: id,
+  role: referenceRole,
+  branchId: id,
+  timestamp: integer,
+  text,
+  truncated: bool,
 });
 
 /** 结果变体目录保留现有 wire 字段，首块和续块不能互相代替。 */
@@ -372,11 +575,17 @@ export const RESULT_SCHEMAS = {
   }),
   ping: object({ alive: yes, serverInstanceId: id }),
   'session/list': object({
-    items: array(object({ conversationId: id, title: text })),
+    items: array(
+      object({ conversationId: id, title: text, delegation: sessionDelegation }, ['delegation']),
+    ),
     cursor: nullable(id),
   }),
-  'session/create': object({ sessionId: id, conversationId: id }),
-  'session/open': object({ sessionId: id, conversationId: id }),
+  'session/create': object({ sessionId: id, conversationId: id, worktree: worktreeSummary }, [
+    'worktree',
+  ]),
+  'session/open': object({ sessionId: id, conversationId: id, worktree: worktreeSummary }, [
+    'worktree',
+  ]),
   'snapshot:first': object({ ...metadata, ...page }),
   'snapshot:page': object(page),
   'session/detach': object({ detached: yes }),
@@ -384,6 +593,60 @@ export const RESULT_SCHEMAS = {
   'run/start': object({ runId: id, accepted: yes }),
   'run/cancel': object({ cancellationRequested: yes }),
   'approval/request': APPROVAL_RESPONSE_SCHEMA,
+  'reference/candidates': object({ items: array(referenceCandidateItem) }),
+  'reference/search': object({ hits: array(referenceSearchHit) }),
+  'reference/read': object(
+    {
+      sessionId: id,
+      title: text,
+      branchId: id,
+      records: array(referenceRecordItem),
+      partial: text,
+    },
+    ['title', 'partial'],
+  ),
+  'checkpoint/list': object({ items: array(wireCheckpointItem) }),
+  'checkpoint/diff': object({
+    available: bool,
+    additions: integer,
+    deletions: integer,
+    truncated: bool,
+    files: array(wireFileDiffItem),
+  }),
+  'checkpoint/restore': object({
+    status: { type: 'string', enum: ['restored', 'conflict', 'noop'] },
+    restoredFiles: array(text),
+    deletedFiles: array(text),
+    conflicts: array(text),
+  }),
+  'worktree/list': object({ items: array(worktreeSummary) }),
+  'worktree/create': worktreeSummary,
+  'worktree/status': wireWorktreeStatus,
+  'worktree/diff': object({
+    id,
+    branch: text,
+    baseCommit: id,
+    headCommit: id,
+    additions: integer,
+    deletions: integer,
+    truncated: bool,
+    files: array(wireFileDiffItem),
+  }),
+  'worktree/previewMerge': wireMergePreview,
+  'worktree/applyMerge': object({
+    status: { type: 'string', enum: ['merged', 'conflict'] },
+    mergedCommit: nullable(id),
+    targetBranch: nullable(text),
+    conflictedFiles: array(text),
+  }),
+  'worktree/remove': object({
+    removed: bool,
+    reason: nullable({
+      type: 'string',
+      enum: ['dirty', 'unmerged_commits', 'at_risk_ignored_files'],
+    }),
+    details: array(text),
+  }),
   'watch/list': object({ items: array(watchItem) }),
   'watch/cancel': object({ cancelled: yes }),
   'evidence/read': evidence,
@@ -421,6 +684,19 @@ export const RESULT_SELECTORS = {
   'run/start': fixed('run/start'),
   'run/cancel': fixed('run/cancel'),
   'approval/request': fixed('approval/request'),
+  'reference/candidates': fixed('reference/candidates'),
+  'reference/search': fixed('reference/search'),
+  'reference/read': fixed('reference/read'),
+  'checkpoint/list': fixed('checkpoint/list'),
+  'checkpoint/diff': fixed('checkpoint/diff'),
+  'checkpoint/restore': fixed('checkpoint/restore'),
+  'worktree/list': fixed('worktree/list'),
+  'worktree/create': fixed('worktree/create'),
+  'worktree/status': fixed('worktree/status'),
+  'worktree/diff': fixed('worktree/diff'),
+  'worktree/previewMerge': fixed('worktree/previewMerge'),
+  'worktree/applyMerge': fixed('worktree/applyMerge'),
+  'worktree/remove': fixed('worktree/remove'),
   'watch/list': fixed('watch/list'),
   'watch/cancel': fixed('watch/cancel'),
   'evidence/read': fixed('evidence/read'),

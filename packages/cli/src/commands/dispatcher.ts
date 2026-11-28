@@ -1,10 +1,14 @@
 import type { AgentSession, ModelRole, PrimaryModelRole } from '@kiturone/kapibala';
 import type {
+  CheckpointService,
+  ExecutionRootCoordinator,
   ExternalSessionService,
   SkillImportResult,
   SkillImportScan,
   SkillImportSelection,
   UserSettings,
+  WorktreeRecord,
+  WorktreeService,
 } from '@kiturone/kapibala-host/internal';
 import type { ActiveSessionController } from '../active-session.js';
 import { resolveCommandOutput } from '../command-output.js';
@@ -86,6 +90,20 @@ export interface CommandContext {
   }) => Promise<SkillImportResult>;
   /** 外部代理工作台服务；CLI REPL 与桌面宿主共用同一编排实例。 */
   external?: ExternalSessionService;
+  /** 宿主级 Shadow Git 工作区检查点服务（供 `/checkpoints` 与 `/branch --restore-files` 调用）。 */
+  checkpoints?: CheckpointService;
+  /** 宿主级受管 Git Worktree 服务（供 `/worktrees`、`/delegate --worktree` 与 `/external start --worktree` 调用）。 */
+  worktrees?: WorktreeService;
+  /** 横跨本地会话与外部代理会话的物理执行根运行追踪与移除门闩协调器。 */
+  executionCoordinator?: ExecutionRootCoordinator;
+  /** 多步交互命令期间锁定输入协调器会话，防止后台子代理审批在步骤切换间隙抢占输入。 */
+  withCommandSession?: <T>(action: () => Promise<T>) => Promise<T>;
+  /** 当前会话实际物理执行根路径；绑定受管工作树时为 `worktreePath`，缺省取 `session.workspaceRoot`。 */
+  executionRoot?: string;
+  /** 检查点还原成功后通知宿主刷新累计 Diff 徽标与会话观察面。 */
+  onCheckpointRestored?: () => void | Promise<void>;
+  /** 移除受管工作树前由宿主关闭绑定于该路径的空闲会话与终端句柄。 */
+  onBeforeRemoveWorktree?: (record: WorktreeRecord) => void | Promise<void>;
 }
 
 /** 命令处理器：args 已按定义切分（rawTail 命令为单元素）；抛错由 dispatcher 统一捕获输出。 */

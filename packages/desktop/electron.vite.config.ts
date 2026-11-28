@@ -4,19 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'electron-vite';
-import { type BundledLicense, collectBundledLicenses } from './scripts/bundle-notices.js';
+import { collectBundledLicenses } from './scripts/bundle-notices.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const vendorNotices = JSON.parse(
-  fs.readFileSync(path.join(root, 'licenses/kumo-2.15.0-vendors.json'), 'utf8'),
-) as { owner: string; version: string; entries: BundledLicense[] };
-if (
-  vendorNotices.owner !== '@cloudflare/kumo' ||
-  vendorNotices.version !==
-    JSON.parse(fs.readFileSync(require.resolve('@cloudflare/kumo/package.json'), 'utf8')).version
-)
-  throw new Error('VENDOR_NOTICE_VERSION_MISMATCH');
 // Preload 与 Renderer 内联的第三方源码也属于分发内容；编译期输出无绝对路径的许可附件。
 const bundleNotices = () => ({
   name: 'kapibala-bundle-notices',
@@ -28,10 +19,10 @@ const bundleNotices = () => ({
       type: 'asset',
       fileName: 'bundle-licenses.json',
       source: JSON.stringify(
-        collectBundledLicenses(
-          [...this.getModuleIds(), require.resolve('tailwindcss/package.json')],
-          vendorNotices.entries,
-        ),
+        collectBundledLicenses([
+          ...this.getModuleIds(),
+          require.resolve('tailwindcss/package.json'),
+        ]),
         null,
         2,
       ),
@@ -61,6 +52,7 @@ export default defineConfig({
           index: path.join(root, 'src/main/index.ts'),
           'agent-host': path.join(root, 'src/agent-host/index.ts'),
         },
+        external: ['node-pty'],
         output: { format: 'es', entryFileNames: '[name].js' },
       },
     },

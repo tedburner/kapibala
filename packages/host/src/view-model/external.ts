@@ -1,4 +1,5 @@
 import type { ViewMessage, ViewNotice, ViewOperation, ViewTodoState } from './types.js';
+import type { ViewDiffSummary, ViewWorktreeSummary } from './workbench.js';
 
 /** 外部代理传输通道类型（纯展示枚举，0 Node 依赖）。 */
 export type ViewExternalTransport = 'acp' | 'claude-cli' | 'codex-app-server' | 'pi-rpc';
@@ -113,6 +114,10 @@ export interface ViewExternalSession {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly lastError?: string;
+  /** 若该外部代理会话运行在受管 Git Worktree 内，携带绑定摘要；运行于主工作区时缺省。 */
+  readonly worktree?: ViewWorktreeSummary;
+  /** 该外部代理会话跨轮次累计真实磁盘变更摘要；无检查点变更记录时缺省。 */
+  readonly diffSummary?: ViewDiffSummary;
 }
 
 /** 外部代理人工审批请求卡片投影；完整保留代理提供的原始选项列表（如 `allow_session`）。 */
@@ -149,4 +154,8 @@ export interface ViewExternalSnapshot {
   readonly notices: readonly ViewNotice[];
   /** 当前会话实时可切换的模型、模式与推理档位目录（仅当底层代理提供时存在）。 */
   readonly configOptions?: readonly ViewExternalConfigOption[];
+  /** 当前外部代理会话绑定的受管 Git Worktree 摘要；运行于主工作区时缺省。 */
+  readonly worktree?: ViewWorktreeSummary;
+  /** 当前外部代理会话跨轮次累计真实磁盘变更行数摘要；无检查点变更记录时缺省。 */
+  readonly diffSummary?: ViewDiffSummary;
 }

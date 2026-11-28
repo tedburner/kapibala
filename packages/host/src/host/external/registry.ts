@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { SessionWorktreeBinding } from '@kiturone/kapibala';
 import { isProcessAlive } from '@kiturone/kapibala-mcp';
 import type {
+  ViewDiffSummary,
   ViewExternalSessionStatus,
   ViewMessage,
   ViewNotice,
@@ -36,7 +38,16 @@ export interface ExternalSessionRecord {
   readonly harnessId: string;
   readonly harnessName: string;
   readonly transport: ExternalTransportKind;
+  /** 外部代理进程实际执行的 `cwd`（绑定受管工作树时为 `worktree.worktreePath`，否则同 `projectRoot`）。 */
   readonly workspaceRoot: string;
+  /** 会话归属的主项目物理根（决定空间列表过滤与项目信任锚点；历史记录未存该字段时回退 `workspaceRoot`）。 */
+  readonly projectRoot?: string;
+  /** 会话绑定的受管 Git Worktree 元数据。 */
+  readonly worktree?: SessionWorktreeBinding;
+  /** 累计 Shadow Git 检查点增删行数摘要（用于侧栏与头部 `+A -D` 展示）。 */
+  readonly diffSummary?: ViewDiffSummary;
+  /** 已发起的外部轮次计数（保证重启或归档裁剪后检查点 `ordinal` 仍严格单调递增）。 */
+  readonly turnCount?: number;
   /** 创建会话时的 `computeHarnessConfigDigest`；配置漂移后禁止盲目原地续聊。 */
   readonly configDigest: string;
   readonly title: string;
@@ -137,11 +148,17 @@ export class ExternalSessionRegistry {
     this.snapshotsDirPath = path.join(baseDir, EXTERNAL_SNAPSHOTS_DIR_NAME);
   }
 
-  /** 按更新时间倒序列出全部（或指定工作区根下的）外部会话记录。 */
-  listRecords(workspaceRoot?: string): ExternalSessionRecord[] {
-    const targetNorm = workspaceRoot ? normalizeProjectRoot(workspaceRoot) : undefined;
+  /** 按更新时间倒序列出全部（或指定主项目根下的）外部会话记录；受管工作树会话按 `projectRoot` 归属。 */
+  listRecords(projectRoot?: string): ExternalSessionRecord[] {
+    const targetNorm = projectRoot ? normalizeProjectRoot(projectRoot) : undefined;
     return Object.values(this.readRecordsMap())
-      .filter((rec) => (targetNorm ? normalizeProjectRoot(rec.workspaceRoot) === targetNorm : true))
+      .filter((rec) =>
+        targetNorm
+          ? normalizeProjectRoot(
+              rec.projectRoot ?? rec.worktree?.projectRoot ?? rec.workspaceRoot,
+            ) === targetNorm
+          : true,
+      )
       .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
   }
 

@@ -179,7 +179,7 @@ Kapibala UI 2.0（代号 **「墨工坊 Ink Atelier」**）= **「思考时安�
 1. **`shell-store.ts`**：管理 `activeSurface: 'workspace' | 'settings'`、`settingsTab`、`railOpen`、`commandPaletteOpen`、按 `sessionKey` 索引的右侧工作台状态 `{ open: boolean; widthRatio: number; tabs: WorkbenchTab[]; activeTabId: string }`。
 2. **`workspace-store.ts`**：同步 `spaces`、各空间历史会话分页、`runtime` 快照与 `external.list` 清单；提供派生选择器 `selectInboxItems()`（聚合全空间待审批、运行中、监视触发项）。
 3. **`session-store.ts`**：封装 `ViewClient` 与 `external.*` IPC 订阅，管理当前打开会话句柄、按 `sessionKey` 隔离的输入框草稿/附件/引用快照与滚动跟随位置。
-4. **`settings-store.ts`**：管理 `settings.read` 模型目录、`external.harnesses` 列表与探针状态、MCP/技能诊断与跨工具导入状态、版本更新下载状态。
+4. **`settings-store.ts`**：管理桌面本地常规偏好（`themeMode: 'system' | 'light' | 'dark'`、`localePreference: 'system' | 'zh-CN' | 'en'`、`resolvedLocale: 'zh-CN' | 'en'`、`typography` 字体/字号/连字配置、`general` 发送快捷键/时间格式/折行/桌面通知开关，以及删除/归档/关终端确认开关 `confirmations`）、`settings.read` 模型目录、`external.harnesses` 列表与探针状态、MCP/技能诊断与跨工具导入状态、版本更新下载状态。
 
 ### 5.2 本地与外部会话统一投影（`src/renderer/adapters/unified-thread.ts`）
 
@@ -238,6 +238,32 @@ export interface UnifiedThreadViewModel {
 }
 ```
 
+### 5.3 桌面端常规偏好、动态字体排版与零依赖双语架构（`preferences.ts` & `src/shared/i18n/` · 2026-11-27 增补）
+
+为支持桌面客户端「常规（General）」页的主题、中英文（`zh-CN` / `en`）、字体与字号及高频交互偏好无刷新实时生效，同时严守零外部 UI/i18n 依赖、四视口（最小 `800×600`）零溢出与 E2E 选择器稳定契约，采用以下统一设计：
+
+1. **词典真源与编译期对齐**：
+   - 位于 `packages/desktop/src/shared/i18n/{types.ts,zh-CN.ts,en.ts,index.ts}`（主进程菜单/托盘/通知与渲染进程全界面共用，零 Node 内置依赖）。
+   - 以 `zh-CN.ts` 的键集合推导 `TranslationKey` 类型，`en.ts` 显式声明 `satisfies Record<TranslationKey, string>`，任何新增词条若漏翻英文在 `pnpm typecheck` 阶段直接报错拦截；提供轻量 `t(key, params?)` 纯函数与渲染层 `useI18n()` Hook。
+2. **本地常规偏好持久化契约（`desktop-state.json`）**：
+   - 仅作用域桌面客户端（CLI `kpbl` 保持终端自身配置不耦合，不污染 `~/.kapibala/settings.json`），在主进程 `Preferences`（`packages/desktop/src/main/preferences.ts`）通过 Zod `.default()` 无损扩展：
+     - `locale: 'system' | 'zh-CN' | 'en'`（默认 `'system'`；`locale === 'system'` 时按 `app.getLocale()` / `navigator.language` 将 `zh*` 映射为 `'zh-CN'`，其余映射为 `'en'`；**`KPBL_DESKTOP_E2E=1` 且未显式指定语言时固定回退 `'zh-CN'`**，保障全量既有中文 E2E 在英文 CI Runner 上零回归绿灯）；
+     - `typography`（字体与字号）：
+       - `uiFontFamily: string`（默认 `'system'`；可选预设或自定义本机无衬线字体名，经 CSS 字体名转义后前置拼入 `:root` `--kpbl-font-sans` 回退栈）；
+       - `codeFontFamily: string`（默认 `'system'`；内置 `系统等宽`、`JetBrains Mono`、`Cascadia Mono`、`Fira Code`、`SF Mono` 预设及自定义本机等宽字体输入，统一驱动 `:root` `--kpbl-font-mono`、Streamdown/Shiki 代码块、`FilesTab` / `DiffTab` 与 `@xterm/xterm` `fontFamily`）；
+       - `chatFontSize: number`（默认 `15`，整数受控范围 `13..18` px，驱动 `:root` `--kpbl-text-prose` 并按差值联动代码块字号；左栏导航与顶栏结构字阶固定 `11–13px` 不随正文放大，确保 `800×600` 最小窗口门禁永不横向溢出）；
+       - `terminalFontSize: number`（默认 `13`，整数受控范围 `11..18` px，实时同步右侧工作台 `@xterm/xterm` `options.fontSize` 并触发 `FitAddon.fit()` 重算终端行列）；
+       - `codeLigatures: boolean`（默认 `false`，切换 `html[data-code-ligatures]` 控制代码块与差异视图 `font-variant-ligatures: contextual / none`）。
+     - `general`（显示与交互常规项）：
+       - `timeFormat: 'system' | 'relative' | '24h' | '12h'`（默认 `'relative'`，对标 T3 Code「时间格式」，统一左栏尾槽与消息时间戳渲染）；
+       - `sendShortcut: 'enter' | 'mod-enter'`（默认 `'enter'`：`Enter` 发送 / `Shift+Enter` 换行；`'mod-enter'` 下 `⌘/Ctrl+Enter` 发送、`Enter` 换行，IME `isComposing` 选词期间始终拦截防误发）；
+       - `codeWordWrap: boolean`（默认 `false`，控制对话代码块与工作台只读代码视图默认是否自动折行）；
+       - `desktopNotifications: boolean`（默认 `true`，控制窗口失焦时待审批、任务完成/失败与监视触发的系统级通知总开关）。
+     - `confirmations: { deleteSession: boolean; archiveSession: boolean; closeActiveTerminal: boolean }`（默认值分别为 `true`、`false`、`true`）。
+3. **首帧零闪烁注入与全链路即时同步**：
+   - 首帧 `boot-theme.js` 与预加载初始化同步写入 `document.documentElement.dataset.theme`、`lang`（`'zh-CN'` | `'en'`）及 `--kpbl-font-sans`、`--kpbl-font-mono`、`--kpbl-text-prose`、`data-code-ligatures`、`data-code-wrap`，消除冷启动主题、字体与字号跳变；
+   - 用户在「常规」页修改任意项或点击「恢复默认设置」时，Zustand `settings-store` 立即更新 DOM 令牌与活跃终端实例，并通过 `preferences.update` IPC 同步持久化及刷新 macOS/Win/Linux 原生应用菜单、系统托盘菜单与后台通知门闩。
+
 ---
 
 ## 6. 八大核心界面详细规范（Surfaces）
@@ -284,10 +310,35 @@ export interface UnifiedThreadViewModel {
 
 未打开具体历史会话时，将 `BrandMark`、一句简短标题、`OmniComposer` 输入卡（含工作区选择与 `v0.1.6` Worktree 开关槽位）以及 3 张场景/外部代理快捷起手卡作为**单一紧凑垂直组居中放置在主舞台黄金视觉中心**，彻底消除旧版首页中部 `300px` 空白断层。
 
-### 6.7 壳内设置与代理中心（`SettingsStage`）
+### 6.7 壳内设置与代理中心（`SettingsStage`）与首栏「常规（General）」页
 
-- 作为主舞台一级视图（与会话工作台同级切换），左侧 `196px` 分组导航轨（顶部为 `← 返回工作台`，下方为：模型与服务商、默认模型与路由、外部代理、权限审批、资源管理、外观与应用、会话归档、诊断），右侧独立滚动内容区（常规表单页 `max-width: 660px`，模型与外部代理复合页 `max-width: 960px`）。
-- 标题固定 `18px/600` + `13px` 灰字说明，移除旧版 `28px` 标题与装饰图标框；全部采用单层 `SettingSection` + `SettingRow`。
+- 作为主舞台一级视图（与会话工作台同级切换），左侧 `196px` 分组导航轨顶部为 `← 返回工作台`，下方 **8 个一级分组（将原「外观与应用」合并升级并置顶为第 1 项「常规」，不单拆独立外观页）**：
+  1. **常规（`general`，图标 `sliders`，兼容旧别名 `'appearance'`）**
+  2. 模型与服务商（`providers`）
+  3. 默认模型与路由（`routing`）
+  4. 外部代理（`external`）
+  5. 权限审批（`permissions`）
+  6. 资源管理（`resources`）
+  7. 会话归档（`archives`）
+  8. 诊断（`diagnostics`）
+  右侧独立滚动内容区（常规表单页 `max-width: 660px`，模型与外部代理复合页 `max-width: 960px`）。
+- 标题固定 `18px/600` + `13px` 灰字说明，移除旧版 `28px` 标题与装饰图标框；全部采用单层 `SettingSection` + `SettingRow`。**「常规」页头右侧对标 T3 Code 提供轻量 `恢复默认设置` 按钮**（弹出 `ModalDialog` 确认后仅重置「常规」页的外观、语言、字体字号与交互偏好，不清空模型密钥、项目信任或会话数据）。
+- **首栏「常规（`GeneralPage.tsx`）」六大分组（完整覆盖外观、双语、字体字号与高频交互）**：
+  1. **配色模式（Color Mode）**：采用 **T3 Code 式三列微缩窗口预览选择卡**（`role="radiogroup" aria-label="配色模式"`，纯 CSS/SVG 绘制左轨、气泡与输入坞微缩骨架）：分别为 **跟随系统**（左宣石暖纸 / 右曜石墨分栏微缩图）、**浅色**（宣石暖纸微缩图）、**深色**（曜石墨微缩图）；选中卡片使用 `2px` `--kpbl-line-strong` 碳素墨框高亮，不引入蓝色边框。
+  2. **语言与显示（Language & Display）**：
+     - **界面语言**：下拉框（`Select<'system' | 'zh-CN' | 'en'>`：`跟随系统` / `简体中文` / `English`），切换后全界面、窗口原生菜单与系统托盘即时生效，无需重启；
+     - **时间显示格式**：下拉框（`跟随系统` / `相对时间` / `24 小时制` / `12 小时制`，对标 T3 Code「显示 → 时间格式」，统一左栏会话时间与轮次时间戳）。
+  3. **字体与字号（Typography & Font Size）**：
+     - **界面与正文字体（`uiFontFamily`）**：提供 `系统默认` 预设与可选本机字体名输入（实时更新 `:root` `--kpbl-font-sans` 并附一行中英文排版预览句）；
+     - **代码与终端等宽字体（`codeFontFamily`）**：提供 `系统等宽`、`JetBrains Mono`、`Cascadia Mono`、`Fira Code`、`SF Mono` 预设及自定义等宽字体输入，同步驱动代码块、`FilesTab` / `DiffTab` 与工作台 `@xterm/xterm` 终端字体；
+     - **对话阅读字号（`chatFontSize`）**：受控步进控制（`13px–18px`，默认 `15px`），实时驱动 `--kpbl-text-prose` 与代码块字号（左轨与顶栏保持紧凑标尺不溢出）；
+     - **终端字号（`terminalFontSize`）**：受控步进控制（`11px–18px`，默认 `13px`），实时同步保活终端并自动重算行列；
+     - **代码连字（`codeLigatures`）** 与 **代码块默认折行（`codeWordWrap`）**：碳素墨 `Switch` 开关。
+  4. **输入与通知（Input & Notifications）**：
+     - **发送消息快捷键（`sendShortcut`）**：单选下拉（默认 `Enter 发送 / Shift+Enter 换行` vs `⌘/Ctrl+Enter 发送 / Enter 换行`）；
+     - **后台桌面通知（`desktopNotifications`）**：碳素墨 `Switch` 开关（控制窗口失焦时待审批、运行完成/失败或监视触发的系统通知）。
+  5. **确认操作（Confirmation Prompts）**：碳素墨 `Switch` 开关组——**删除会话确认**（默认开启：永久删除会话前弹窗确认）、**归档会话确认**（默认关闭：开启后归档需二次确认）、**关闭运行中终端确认**（默认开启：关闭仍有活跃进程的会话工作台终端前询问）。
+  6. **终端环境与版本更新（Terminal & Updates）**：保留首选交互 Shell 选择下拉框，以及未签名 GitHub Releases 手动检查更新、SHA-256 摘要校验下载与 macOS `xattr` 放行指引。
 - **外部代理列表重排**：每行固定双层左列（代理名 + 传输协议胶囊 + 检测状态点 / 次行等宽命令中段省略）+ 右侧紧凑操作组（`检测连接`、`配置覆盖`、碳素墨 `Switch`）；点击「配置覆盖」在该行下方手风琴式展开路径、参数与 `envFrom` 编辑区。
 
 ### 6.8 全局命令面板（`CommandPalette`）与 CLI 终端同构（`packages/cli/src/ui/theme.ts`）
@@ -310,7 +361,7 @@ UI 可访问名是 `packages/desktop/e2e/*.spec.ts` 的精确选择器契约。�
 | **输入坞** | `textbox[name="发送消息"]`、`button[name="发送"]`、`button[name="停止"]`、`button[name="任务清单"]` | 空间与模型选择统一收敛至 `OmniComposer` 底栏按钮（保留 `/会话空间：|选择空间/` 与模型按钮可访问名） |
 | **人工审批** | `button[name="批准一次"]`、`button[name="拒绝"]` | 原阻断模态 `dialog[name="待处理审批"]` 迁移为输入坞内联区域 `region[name="待处理审批"]`（不再断言模态遮罩宽度） |
 | **右侧工作台** | `button[name="查看详情"]`、`button[name="预览 HTML"]` | 原 `dialog[name="工具详情" \| "会话证据" \| "产物预览"]` 统一迁移为 `complementary[name="工作台面板"]` 及其内部 `tab[name="变更" \| "预览" \| "文件" \| "终端" \| "详情与证据"]` |
-| **设置中心** | 各分组名称（`模型与服务商`、`外部代理`、`权限审批`、`资源管理`、`外观与应用` 等） | 原全屏模态 `dialog[name="设置"]` + `button[name="返回应用"]` 迁移为壳内视图 `region[name="设置中心"]` + `button[name="返回工作台"]` |
+| **设置中心与双语** | 其余分组名称（`模型与服务商`、`外部代理`、`权限审批`、`资源管理`、`会话归档`、`诊断`） | 原 `tab[name="外观与应用"]` 合并升级为左轨首项 `tab[name="常规"]`（`normalizeSettingsTab` 保留 `'appearance' → 'general'` 兼容）；原全屏模态 `dialog[name="设置"]` + `button[name="返回应用"]` 迁移为壳内视图 `region[name="设置中心"]` + `button[name="返回工作台"]`；`KPBL_DESKTOP_E2E=1` 默认回退 `'zh-CN'` 保持全量中文 E2E 稳定，另立专项用例断言切换 `'en'` 及修改字体/字号/快捷键后的实时联动 |
 | **保留模态框** | `dialog[name="创建项目"]`、`dialog[name="信任此文件夹吗？"]`、`dialog[name="启用完全访问？"]` | 底层实现切换为原生 `<dialog>`，可访问名与内部确认/取消按钮文案 100% 保持不变 |
 
 ---
@@ -321,7 +372,7 @@ UI 可访问名是 `packages/desktop/e2e/*.spec.ts` 的精确选择器契约。�
 
 1. **移除 Kumo 依赖**：从 `packages/desktop/package.json` 及 `scripts/check-desktop.ts` 白名单删除 `@cloudflare/kumo`，拦截任何第三方预设样式组件库导入。
 2. **业务层 UI 进口收束**：`packages/desktop/src/renderer/surfaces/**` 禁止直接导入 `@phosphor-icons/react`（必须经 `ui/icon.tsx` 统一出口），禁止使用非语义颜色字面量与内联像素圆角。
-3. **文件体积防线**：`packages/desktop/src/renderer/` 下除自动生成/静态数据表外，任意 `.ts` / `.tsx` 源文件行数 `> 450` 直接报错，防止巨石组件复发。
+3. **文件体积防线与双语对齐**：`packages/desktop/src/renderer/` 下除自动生成/静态数据表外，任意 `.ts` / `.tsx` 源文件行数 `> 450` 直接报错（`packages/desktop/src/shared/i18n/{zh-CN,en}.ts` 纯静态词典表豁免行数上限，并由 TypeScript 编译期强制锁死双语键集合 100% 对齐），防止巨石组件复发。
 4. **CLI 主题收束**：`scripts/check-cli-boundary.ts` 增加规则——`packages/cli/src/ui/` 下除 `theme.ts` 外禁止直接书写 `\x1b[` ANSI SGR 颜色转义（光标移动控制集中在 `tui/` 与 `events.ts` 锚点层除外）。
 
 ---
@@ -366,16 +417,17 @@ UI 可访问名是 `packages/desktop/e2e/*.spec.ts` 的精确选择器契约。�
 - **同步更新 E2E**：更新 `desktop.spec.ts` 工具详情、证据看板与图片/HTML 产物预览断言至 `WorkbenchStage` 标签页，验证按会话切换记住标签状态与 `SplitPane` 拖拽边界。
 - **阶段门禁**：`Diff`、`Preview`（`kpbl-preview://` 沙箱）、`Files`、`Inspector` 四标签全部跑通，`Terminal` 保活槽位就绪。
 
-### 阶段 5：壳内设置中心、卸载 `@cloudflare/kumo`、CLI 主题对齐与静态门禁锁死
+### 阶段 5：壳内设置中心（含首栏「常规」与客户端中英双语）、卸载 `@cloudflare/kumo`、CLI 主题对齐与静态门禁锁死
 
-- **新建、删除与收口**：
-  - 新建 `packages/desktop/src/renderer/surfaces/settings/{SettingsStage.tsx,ProvidersPage.tsx,RoutingPage.tsx,ExternalHarnessesPage.tsx,PermissionsPage.tsx,ResourcesPage.tsx,ArchivesPage.tsx,AppearancePage.tsx,DiagnosticsPage.tsx}`
+- **新建、删除与收口（待前序并行功能收尾后统一实施）**：
+  - 新建桌面端零依赖强类型双语词典 `packages/desktop/src/shared/i18n/{types.ts,zh-CN.ts,en.ts,index.ts}`，扩展主进程 `preferences.ts` 支持 `locale`、`typography`（界面/代码字体、对话/终端字号、连字）、`general`（时间格式、发送快捷键、折行、后台通知）、`confirmations` 持久化、恢复默认值及菜单/托盘语言同步
+  - 新建/收口 `packages/desktop/src/renderer/surfaces/settings/{SettingsStage.tsx,GeneralPage.tsx,ProvidersPage.tsx,RoutingPage.tsx,ExternalHarnessesPage.tsx,PermissionsPage.tsx,ResourcesPage.tsx,ArchivesPage.tsx,DiagnosticsPage.tsx}`（由 `GeneralPage.tsx` 合并替换原 `AppearancePage.tsx` 并置顶为第 1 项「常规」）
   - 删除 `packages/desktop/src/renderer/settings-dialog.tsx`、`external-settings-panel.tsx`、`theme-kapibala.css` 及未再引用的动态图标脚本
   - 精简 `packages/desktop/src/renderer/App.tsx` 至 `< 150` 行纯顶层装配入口
   - 从 `packages/desktop/package.json` 移除 `@cloudflare/kumo`
   - 新建 `packages/cli/src/ui/theme.ts` 并重构 `events.ts`、`approval.ts`、`select.ts` 的 ANSI 输出，补齐 `NO_COLOR=1` 单测
   - 按 §8 升级 `scripts/check-desktop.ts` 与 `scripts/check-cli-boundary.ts`
 - **最终验收门禁**：
-  1. `pnpm verify`（`typecheck → test → lint`，含升级后的 `check-desktop`、`check-cli-boundary`、`check-secrets`）全绿；
-  2. `pnpm verify:desktop` 全量 Playwright E2E 与四视口浅/深视觉矩阵全绿；
+  1. `pnpm verify`（`typecheck → test → lint`，含升级后的 `check-desktop`、`check-cli-boundary`、`check-secrets` 及双语键集合编译期对齐）全绿；
+  2. `pnpm verify:desktop` 全量 Playwright E2E（含中英文实时切换、字体/字号/快捷键联动专项断言）与四视口浅/深视觉矩阵全绿；
   3. `packages/desktop/src/renderer/` 下最大单文件 `≤ 450` 行，`@cloudflare/kumo` 零残留，全应用零蓝色异常控件、深色代码块全语法高亮清晰可读。

@@ -10,18 +10,22 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type {
-  DelegationHeader,
-  RestoredDelegationRequest,
-  SessionHeader,
-  SessionManager,
-  SessionMetadata,
-  SessionRecord,
-  SpawnAgentReceipt,
+import {
+  type DelegationHeader,
+  KapibalaError,
+  type RestoredDelegationRequest,
+  type SessionHeader,
+  type SessionManager,
+  type SessionMetadata,
+  type SessionRecord,
+  type SpawnAgentReceipt,
 } from '@kiturone/kapibala';
 
-/** 每个项目桶保留的终态委派会话上限（MVP：达上限拒绝新建，不做自动淘汰）。 */
+/** 每个项目桶保留的终态委派会话上限；新建前先按空闲超期与容量策略尝试自动淘汰。 */
 export const MAX_RETAINED_DELEGATIONS = 20;
+
+/** 终态委派会话默认最长空闲保留时间（7 天）；超出且未置顶、非锁定时自动清理。 */
+export const DEFAULT_DELEGATION_MAX_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** 首行 header 的读取上限；正常 header 远小于该值，超出视为异常文件并跳过。 */
 const HEADER_READ_LIMIT_BYTES = 64 * 1024;
@@ -248,8 +252,89 @@ export async function listDelegationSessions(
  * 统计当前项目桶内仍占用保留预算的委派会话数量（含已归档）。
  *
  * 为什么包含归档：归档只是逻辑标记，文件仍占磁盘与保留名额；
- * 只有 `/delegations delete` 的物理删除才真正释放。
+ * 只有 `/delegations delete` 或自动淘汰的物理删除才真正释放。
  */
 export async function countRetainedDelegations(manager: SessionManager): Promise<number> {
   return (await listDelegationSessions(manager)).length;
+}
+
+/**
+ * 委派会话自动淘汰（`pruneDelegationSessions`）策略参数。
+ */
+export interface PruneDelegationOptions {
+  /** 允许保留的最大委派会话数（默认 `MAX_RETAINED_DELEGATIONS = 20`）；超出部分从最旧活动项起淘汰。 */
+  readonly maxRetained?: number;
+  /** 未置顶终态委派会话的最大空闲毫秒数（默认 7 天）；早于该阈值的会话优先清理。 */
+  readonly maxIdleMs?: number;
+  /** 当前仍在运行中的子会话 ID 集合；集合内条目绝不删除。 */
+  readonly activeSessionIds?: ReadonlySet<string>;
+  /** 可选时钟注入（毫秒时间戳），仅供确定性测试使用。 */
+  readonly now?: number;
+  /** 每次淘汰成功时发出的诊断日志回调。 */
+  readonly onDiagnostic?: (message: string) => void;
+}
+
+/**
+ * 按最旧活动时间优先顺序（oldest-`lastActivityAt`-first）自动清理过期或超限的保留型委派会话。
+ *
+ * 前置约束与安全边界：
+ * - 置顶（`pinned === true`）、运行中（命中 `activeSessionIds`）或被当前/外部存活进程持锁（`SESSION_IN_USE` /
+ *   `SESSION_LOCKED`）的委派会话一律跳过，绝不抢锁或中断活跃任务；
+ * - 满足「距今超过 `maxIdleMs`（默认 7 天）」或「当前总保留数仍高于 `maxRetained`（默认 20）」的可淘汰项
+ *   将被物理删除并返回已删 `sessionId` 列表，供调用方同步执行 `runtime.forgetDelegationSession`。
+ */
+export async function pruneDelegationSessions(
+  manager: SessionManager,
+  options?: PruneDelegationOptions,
+): Promise<string[]> {
+  const maxRetained = Math.max(0, options?.maxRetained ?? MAX_RETAINED_DELEGATIONS);
+  const maxIdleMs = Math.max(0, options?.maxIdleMs ?? DEFAULT_DELEGATION_MAX_IDLE_MS);
+  const now = options?.now ?? Date.now();
+  const activeIds = options?.activeSessionIds;
+
+  const metadata = (await readAllMetadata(manager)).filter((item) => Boolean(item.delegation));
+  if (metadata.length === 0) return [];
+
+  // 按最后活动时间升序排列，确保先淘汰最久未活动的终态委派会话。
+  const ordered = [...metadata].sort(
+    (a, b) =>
+      a.lastActivityAt - b.lastActivityAt || a.conversationId.localeCompare(b.conversationId),
+  );
+
+  let remaining = ordered.length;
+  const deleted: string[] = [];
+  for (const item of ordered) {
+    if (item.pinned === true) continue;
+    if (activeIds?.has(item.conversationId)) continue;
+
+    const expired = now - item.lastActivityAt > maxIdleMs;
+    const overCapacity = remaining > maxRetained;
+    if (!expired && !overCapacity) continue;
+
+    try {
+      await manager.deleteSession(item.conversationId);
+      deleted.push(item.conversationId);
+      remaining--;
+      try {
+        options?.onDiagnostic?.(
+          `[delegations] pruned retained delegation session ${item.conversationId} (${expired ? 'idle_expired' : 'over_capacity'})`,
+        );
+      } catch {
+        /* 诊断回调异常不阻断清理循环 */
+      }
+    } catch (error) {
+      if (
+        error instanceof KapibalaError &&
+        (error.code === 'SESSION_IN_USE' ||
+          error.code === 'SESSION_LOCKED' ||
+          error.code === 'SESSION_NOT_FOUND')
+      ) {
+        if (error.code === 'SESSION_NOT_FOUND') remaining--;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return deleted;
 }

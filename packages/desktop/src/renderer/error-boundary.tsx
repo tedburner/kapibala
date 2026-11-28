@@ -1,5 +1,5 @@
-import { Button } from '@cloudflare/kumo';
 import { Component, type ErrorInfo, type ReactNode, useEffect, useState } from 'react';
+import { Button } from './ui/index.js';
 
 /** 渲染故障兜底界面的事实载体；只保留安全文案，不携带堆栈或组件树详情。 */
 interface RenderFault {
@@ -35,12 +35,17 @@ export class RendererErrorBoundary extends Component<{ children: ReactNode }, Bo
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center gap-4 p-8">
         <h1 className="text-lg font-medium">界面渲染出现异常</h1>
-        <p className="max-w-xl text-center text-sm text-kumo-subtle">
+        <p className="max-w-xl text-center text-sm" style={{ color: 'var(--kpbl-ink-subtle)' }}>
           当前界面未能继续绘制，任务与历史不受影响。可先尝试重新加载界面；
           若连接状态异常，请使用重新连接（会等待 Host 清理后恢复）。
         </p>
         {fault.message ? (
-          <p className="max-w-xl break-all text-center text-xs text-kumo-subtle">{fault.message}</p>
+          <p
+            className="max-w-xl break-all text-center text-xs"
+            style={{ color: 'var(--kpbl-ink-subtle)' }}
+          >
+            {fault.message}
+          </p>
         ) : null}
         <div className="flex gap-2">
           <Button size="sm" onClick={() => void window.kapibala.app.reload().catch(() => {})}>

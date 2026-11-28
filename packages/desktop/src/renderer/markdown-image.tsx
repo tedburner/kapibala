@@ -35,7 +35,7 @@ export function MarkdownImage({
   if (source.kind === 'local') return <LocalImage path={source.path} root={root} alt={alt} />;
   if (source.kind === 'placeholder')
     return (
-      <span className="text-kumo-subtle">
+      <span style={{ color: 'var(--kpbl-ink-subtle)' }}>
         {source.reason === 'local'
           ? `[本地图片：${alt?.trim() || src || '未命名'}]`
           : alt?.trim()
@@ -45,7 +45,7 @@ export function MarkdownImage({
     );
   if (tiny)
     return (
-      <span className="text-kumo-subtle">
+      <span style={{ color: 'var(--kpbl-ink-subtle)' }}>
         {alt?.trim()
           ? `[图片：${alt.trim()}]`
           : source.url.startsWith('data:')
@@ -65,11 +65,16 @@ export function MarkdownImage({
         const element = event.currentTarget;
         if (element.naturalWidth <= 8 && element.naturalHeight <= 8) setTiny(true);
       }}
-      className="max-h-80 w-auto max-w-full rounded-md border border-kumo-line object-contain"
+      className="max-h-80 w-auto max-w-full rounded-md border object-contain"
+      style={{ borderColor: 'var(--kpbl-line-default)' }}
     />
   );
   if (failed)
-    return <span className="text-kumo-subtle">[图片加载失败：{alt?.trim() || source.url}]</span>;
+    return (
+      <span style={{ color: 'var(--kpbl-ink-subtle)' }}>
+        [图片加载失败：{alt?.trim() || source.url}]
+      </span>
+    );
   if (!source.url.startsWith('http')) return image;
   return (
     <a
@@ -126,14 +131,27 @@ function LocalImage({
     };
   }, [path, root]);
   if (error)
-    return <span className="text-kumo-subtle">[本地图片：{alt?.trim() || path}（无法读取）]</span>;
+    return (
+      <span style={{ color: 'var(--kpbl-ink-subtle)' }}>
+        [本地图片：{alt?.trim() || path}（无法读取）]
+      </span>
+    );
   if (!url)
     return (
-      <span className="rounded-md border border-kumo-line px-3 py-2 text-xs text-kumo-subtle">
+      <span
+        className="rounded-md border px-3 py-2 text-xs"
+        style={{
+          borderColor: 'var(--kpbl-line-default)',
+          color: 'var(--kpbl-ink-subtle)',
+        }}
+      >
         正在加载图片…
       </span>
     );
-  if (tiny) return <span className="text-kumo-subtle">[本地图片：{alt?.trim() || path}]</span>;
+  if (tiny)
+    return (
+      <span style={{ color: 'var(--kpbl-ink-subtle)' }}>[本地图片：{alt?.trim() || path}]</span>
+    );
   return (
     <img
       src={url}
@@ -144,7 +162,8 @@ function LocalImage({
         const element = event.currentTarget;
         if (element.naturalWidth <= 8 && element.naturalHeight <= 8) setTiny(true);
       }}
-      className="max-h-80 w-auto max-w-full rounded-md border border-kumo-line object-contain"
+      className="max-h-80 w-auto max-w-full rounded-md border object-contain"
+      style={{ borderColor: 'var(--kpbl-line-default)' }}
     />
   );
 }

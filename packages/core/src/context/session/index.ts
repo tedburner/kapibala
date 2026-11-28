@@ -59,6 +59,7 @@ import {
   type ContentBlock,
   type ContextUsage,
   type ModelRequest,
+  type ModelRetryOptions,
   type RunMetrics,
   type SessionEvent,
   type TurnMetrics,
@@ -71,12 +72,15 @@ import { sessionToolResultsDirectory } from '../managed-results.js';
 import { ContextManager, type ContextSnapshot } from '../manager.js';
 import { resolveSessionProject } from '../session-manager.js';
 import {
+  type BranchSummaryPayload,
   type SessionRecord,
   type StatefulMessageStore,
+  assertClosedToolTransaction,
   supportsSessionState,
 } from '../session-store.js';
 import type { MessageStore } from '../store/index.js';
-import { resolveWorkspaceContext } from '../workspace.js';
+import { SummaryService, formatContextSummaryAsText, truncateToolOutput } from '../summary.js';
+import { isPathInside, resolveWorkspaceContext } from '../workspace.js';
 import {
   buildInterruptedToolMessage,
   findClosedToolMessages,
@@ -86,6 +90,7 @@ import {
 import { assertSignedContinuationStable, verifyPrivateBlockIntegrity } from './request-prepare.js';
 import { authorizeExplicitSkill, commitSkillEvents, createSkillResourceAuditor } from './skills.js';
 import type {
+  CreateBranchWithSummaryOptions,
   PreparedTaskContext,
   PreparedTaskResult,
   SessionConfig,
@@ -103,6 +108,12 @@ export * from './types.js';
 interface BranchingMessageStore extends StatefulMessageStore {
   createBranch(branchId: string, baseRecordId: string): Promise<SessionRecord>;
   selectBranch(branchId: string): Promise<SessionRecord>;
+  appendBranchSummary?(payload: BranchSummaryPayload): Promise<SessionRecord>;
+  buildProjection?(options?: {
+    branchId?: string;
+    leafRecordId?: string;
+  }): Promise<CanonicalMessage[]>;
+  readRecords?(): Promise<SessionRecord[]>;
   getActiveBranchId?(): string;
   isReadOnly?(): boolean;
 }
@@ -176,6 +187,7 @@ export class AgentSession {
   private readonly depth: number;
   private readonly agentId?: string;
   private readonly managedResultsRoot?: string;
+  private retryOptions?: ModelRetryOptions;
 
   /** 本会话专属的受管结果目录；conversationId 在恢复中可能被改写，因此按当前值即时计算。 */
   private get managedResultsDir(): string | undefined {
@@ -185,6 +197,14 @@ export class AgentSession {
       projectKey: this.projectKey,
       sessionId: this.persistentId,
     });
+  }
+
+  /**
+   * 指令文件目录链上界：链接工作树会话的 `projectRoot` 锚定主仓库以共享会话分桶，
+   * 但 `cwd` 位于独立 `workspaceRoot` 内；此时以 `workspaceRoot` 作为指令链上界，避免越界报错并读取工作树内 `AGENTS.md`。
+   */
+  private get instructionProjectRoot(): string {
+    return isPathInside(this.projectRoot, this.cwd) ? this.projectRoot : this.workspaceRoot;
   }
 
   private history: CanonicalMessage[] = [];
@@ -290,6 +310,7 @@ export class AgentSession {
     this.rootTaskId = config.rootTaskId;
     this.depth = config.depth ?? 0;
     this.agentId = config.agentId;
+    this.retryOptions = config.retry;
     this.context = this.createContextManager();
   }
 
@@ -303,7 +324,7 @@ export class AgentSession {
       : Promise.resolve(0);
     recovery.catch(() => {});
     this.instructionSnapshot = loadInstructions({
-      projectRoot: this.projectRoot,
+      projectRoot: this.instructionProjectRoot,
       cwd: this.cwd,
       userFile: this.userInstructionsPath,
     });
@@ -474,6 +495,17 @@ export class AgentSession {
 
   getMode(): SessionMode {
     return this.mode;
+  }
+
+  /** 空闲时更新模型请求自动退避重试与断流恢复策略；运行中调用抛 SessionBusyError。 */
+  setRetryOptions(retry?: ModelRetryOptions): void {
+    this.assertIdle('configure retry options');
+    this.retryOptions = retry;
+  }
+
+  /** 读取当前生效的模型自动重试策略配置副本。 */
+  getRetryOptions(): ModelRetryOptions | undefined {
+    return this.retryOptions ? { ...this.retryOptions } : undefined;
   }
 
   /** 获取当前会话生效的权限规则列表。 */
@@ -716,6 +748,157 @@ export class AgentSession {
     }
   }
 
+  /**
+   * 空闲时从当前分支（或指定切点记录）创建新分支、切换过去并写入一条跨分支背景摘要。
+   *
+   * 约束与失败边界：
+   * - 全程持有 `activeRun` 会话互斥锁，运行中调用立即抛出 `SessionBusyError`；
+   * - 在调用摘要模型之前预先校验 `branchId` 格式、分支唯一性、切点存在性与工具事务闭合性，避免无效参数白耗 token；
+   * - 未提供 `customSummary` 时，缺省切点优先复用 `ContextManager` 当前投影（含已提交检查点摘要与剪裁后尾部），避免已压缩长会话超出摘要服务单次 4 调用预算；显式指定 `baseRecordId` 时按目标切点因果链投影；若切点尚无用户/助手对话正文则回退确定性宿主摘要；摘要阶段失败或中止时零落盘保持在原分支；
+   * - 落盘完成后同步重载 `history`、主任务 `usage` 与 `ContextManager` 检查点状态。
+   */
+  async createBranchWithSummary(
+    branchId: string,
+    options?: CreateBranchWithSummaryOptions,
+  ): Promise<{ branchId: string; summary: string }> {
+    this.assertIdle('create branch with summary');
+    this.activeRun = true;
+    try {
+      if (!this.initialized) await this.init();
+      const stateful = this.store && supportsSessionState(this.store) ? this.store : undefined;
+      const branching = stateful && hasBranchingStore(stateful) ? stateful : undefined;
+      if (!branching || branching.isReadOnly?.()) {
+        throw new KapibalaError('Session store does not support branching with summary', {
+          code: 'BRANCH_UNAVAILABLE',
+          retryPolicy: 'after_user_action',
+          safeMessage: '当前会话不支持创建附带摘要的分支',
+        });
+      }
+      await this.pullExternalAppends();
+      if (!branchId || typeof branchId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(branchId)) {
+        throw new Error(
+          'Branch ID must be a non-empty string containing only alphanumeric, hyphen or underscore characters',
+        );
+      }
+      const before = await branching.loadState();
+      if (before.branchLeaves.has(branchId)) {
+        throw new Error(`Branch already exists: ${branchId}`);
+      }
+      const sourceBranchId = branching.getActiveBranchId?.() ?? before.activeBranchId;
+      const allRecords = branching.readRecords ? await branching.readRecords() : undefined;
+      const fallbackRootId = allRecords?.[0]?.recordId;
+      const targetBaseRecordId = options?.baseRecordId ?? before.activeLeafId ?? fallbackRootId;
+      if (!targetBaseRecordId) {
+        throw new KapibalaError('No base record available for branching', {
+          code: 'BRANCH_UNAVAILABLE',
+          retryPolicy: 'after_user_action',
+          safeMessage: '当前会话缺少可用的分支切点记录',
+        });
+      }
+      if (allRecords) {
+        assertClosedToolTransaction(allRecords, targetBaseRecordId);
+      }
+
+      let summary: string;
+      let generatedBy: 'model' | 'host';
+      let modelId: string | undefined;
+
+      if (options?.customSummary !== undefined) {
+        const trimmed = options.customSummary.trim();
+        if (!trimmed) {
+          throw new KapibalaError('Branch summary text must not be empty', {
+            code: 'INVALID_BRANCH_SUMMARY',
+            safeMessage: '分支摘要内容不能为空',
+          });
+        }
+        summary = truncateToolOutput(trimmed, 4000);
+        generatedBy = 'host';
+      } else {
+        const sourceHistory =
+          options?.baseRecordId && branching.buildProjection
+            ? identifyHistory(
+                await branching.buildProjection({
+                  branchId: sourceBranchId,
+                  leafRecordId: targetBaseRecordId,
+                }),
+                'branch-summary',
+              )
+            : identifyHistory(this.context.project(this.history), 'branch-summary');
+        const hasConversationMessages = sourceHistory.some(
+          (msg) => msg.role === 'user' || msg.role === 'assistant',
+        );
+        if (!hasConversationMessages) {
+          summary = `源于分支 ${sourceBranchId}（切点尚无历史对话正文）。`;
+          generatedBy = 'host';
+        } else {
+          if (options?.signal?.aborted) throw new AbortError();
+          const summaryService = new SummaryService({
+            router: this.router,
+            projectRoot: this.projectRoot,
+            estimator: this.estimator,
+            onUsage: async (attemptId, usage, usedModelId) => {
+              if (this.store && supportsSessionState(this.store)) {
+                await this.store.appendRecord('usage', {
+                  attemptId,
+                  role: 'summary',
+                  modelId: usedModelId,
+                  usage: usage ? { ...usage } : undefined,
+                  usageKnown: usage !== undefined,
+                });
+              }
+              this.accountSummaryUsage(attemptId, usage);
+            },
+          });
+          const candidate = await summaryService.generate(
+            sourceHistory,
+            undefined,
+            options?.signal,
+          );
+          summary = formatContextSummaryAsText(candidate.summary);
+          generatedBy = 'model';
+          modelId = candidate.modelId;
+        }
+      }
+
+      await branching.createBranch(branchId, targetBaseRecordId);
+      await branching.selectBranch(branchId);
+      if (branching.appendBranchSummary) {
+        await branching.appendBranchSummary({
+          summary,
+          sourceBranchId,
+          generatedBy,
+          ...(modelId ? { modelId } : {}),
+        });
+      } else {
+        await branching.appendRecord(
+          'branch_summary',
+          {
+            branchId,
+            sourceBranchId,
+            summary,
+            generatedBy,
+            ...(modelId ? { modelId } : {}),
+          },
+          { branchId },
+        );
+      }
+
+      const next = await branching.loadState();
+      this.history = identifyHistory(await branching.load(), 'legacy-sdk');
+      this.totalTurns = next.records.filter((record) => record.type === 'run_started').length;
+      this.restoreUsageFromRecords(next.records);
+      this.lastMetrics = undefined;
+      this.lastRunMetrics = undefined;
+      this.pendingResume = false;
+      this.activeRunUsages.clear();
+      this.context = this.createContextManager();
+      await this.context.restore(this.history);
+      return { branchId, summary };
+    } finally {
+      this.activeRun = false;
+    }
+  }
+
   /** 空闲时清空存储与全部内存状态；conversationId 不变，恢复语义等同全新会话。 */
   async reset(): Promise<void> {
     this.assertIdle('reset session');
@@ -753,10 +936,11 @@ export class AgentSession {
    */
   run(
     userInput: string,
-    options?: { signal?: AbortSignal; role?: PrimaryModelRole },
+    options?: { signal?: AbortSignal; role?: PrimaryModelRole; retry?: Partial<ModelRetryOptions> },
   ): AsyncIterable<SessionEvent> {
     return cancellableGenerator(
-      (signal) => this.runOperation(userInput, { signal, role: options?.role }),
+      (signal) =>
+        this.runOperation(userInput, { signal, role: options?.role, retry: options?.retry }),
       options?.signal,
     );
   }
@@ -765,10 +949,11 @@ export class AgentSession {
   runSkill(
     name: string,
     task: string,
-    options?: { signal?: AbortSignal; role?: PrimaryModelRole },
+    options?: { signal?: AbortSignal; role?: PrimaryModelRole; retry?: Partial<ModelRetryOptions> },
   ): AsyncIterable<SessionEvent> {
     return cancellableGenerator(
-      (signal) => this.runOperation(task, { signal, role: options?.role }, name),
+      (signal) =>
+        this.runOperation(task, { signal, role: options?.role, retry: options?.retry }, name),
       options?.signal,
     );
   }
@@ -778,17 +963,23 @@ export class AgentSession {
    *
    * @param task 用户显式任务正文（或命令描述）。
    * @param prepare 异步任务准备函数；在锁内执行，若准备失败或取消则释放锁且零 append。
-   * @param options 可选中止信号与显式主任务角色。
+   * @param options 可选中止信号、显式主任务角色与单轮重试覆盖参数。
    * @returns 结构化事件的异步流。
    * @throws {SessionBusyError} 当前会话忙碌时抛出。
    */
   runPreparedTask(
     task: string,
     prepare: (context: PreparedTaskContext) => Promise<PreparedTaskResult>,
-    options?: { signal?: AbortSignal; role?: PrimaryModelRole },
+    options?: { signal?: AbortSignal; role?: PrimaryModelRole; retry?: Partial<ModelRetryOptions> },
   ): AsyncIterable<SessionEvent> {
     return cancellableGenerator(
-      (signal) => this.runOperation(task, { signal, role: options?.role }, undefined, prepare),
+      (signal) =>
+        this.runOperation(
+          task,
+          { signal, role: options?.role, retry: options?.retry },
+          undefined,
+          prepare,
+        ),
       options?.signal,
     );
   }
@@ -796,7 +987,7 @@ export class AgentSession {
   /** 单次任务执行主体；调用方 return 的中止与 finally 清理由外层统一协调。 */
   private async *runOperation(
     userInput: string,
-    options?: { signal?: AbortSignal; role?: PrimaryModelRole },
+    options?: { signal?: AbortSignal; role?: PrimaryModelRole; retry?: Partial<ModelRetryOptions> },
     skillName?: string,
     prepare?: (context: PreparedTaskContext) => Promise<PreparedTaskResult>,
   ): AsyncGenerator<SessionEvent> {
@@ -874,7 +1065,7 @@ export class AgentSession {
 
       try {
         this.instructionSnapshot = loadInstructions({
-          projectRoot: this.projectRoot,
+          projectRoot: this.instructionProjectRoot,
           cwd: this.cwd,
           userFile: this.userInstructionsPath,
         });
@@ -1202,6 +1393,10 @@ export class AgentSession {
         runId,
         getMode: () => this.mode,
         permissionRules: this.permissionRules,
+        retry:
+          this.retryOptions || options?.retry
+            ? { ...this.retryOptions, ...options?.retry }
+            : undefined,
       });
 
       // 4. 执行循环并落盘。含 tool_use 的完成事件先缓冲，直到 tool_result 已进入历史并落盘，

@@ -1,0 +1,17 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+
+@layer reset, tokens, base, prose, shiki, primitives, workbench, utilities;
+
+@import "./tokens.css";
+@import "./base.css";
+@import "./prose.css";
+@import "./shiki.css";
+@import "./workbench.css";
+@import "./shell.css";
+@import "./thread-composer.css";
+@import "./workbench-tabs.css";
+@import "./settings.css";
+
+@custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
+@source '../../node_modules/streamdown/dist';

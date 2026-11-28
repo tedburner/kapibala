@@ -19,18 +19,21 @@ import {
 import {
   type Method,
   type Notification,
+  type Output,
   PARAMS,
   ProjectNameSchema,
   type Workspace,
   notificationLane,
 } from '../shared/contracts.js';
+import { resolveDesktopLocale, translateDesktop } from '../shared/i18n/index.js';
+import { isAllowedLoopbackSubframeUrl } from '../shared/preview-url.js';
 import { HTML_PREVIEW_LIMIT, PREVIEW_SCHEME } from '../shared/preview.js';
 import { RpcEndpoint, safeError } from '../shared/rpc.js';
 import { readBuildInfo, testPaths } from './build-info.js';
 import { ControlLifetime } from './control-lifetime.js';
 import { HostGuard } from './guard.js';
 import { NativeNotices } from './native-notices.js';
-import { Preferences } from './preferences.js';
+import { type DesktopPersistedState, Preferences } from './preferences.js';
 import { PreviewDocuments } from './preview-documents.js';
 import {
   isAllowedLocalPreviewPath,
@@ -88,6 +91,14 @@ let expectedURL = '';
 let startup: Promise<void> = Promise.resolve();
 let window: BrowserWindow | undefined;
 let tray: Tray | undefined;
+let preferences: Preferences;
+const currentResolvedLocale = () => {
+  const pref = preferences?.read().locale ?? 'system';
+  if (process.env.KPBL_DESKTOP_E2E === '1' && pref === 'system') {
+    return 'zh-CN' as const;
+  }
+  return resolveDesktopLocale(pref, app.getLocale());
+};
 const notices = new NativeNotices(
   () => Boolean(window && (!window.isVisible() || !window.isFocused())),
   (title, body, click) => {
@@ -104,8 +115,9 @@ const notices = new NativeNotices(
     window?.show();
     window?.focus();
   },
+  () => (preferences ? preferences.read().general.desktopNotifications : true),
+  currentResolvedLocale,
 );
-let preferences: Preferences;
 let guard: HostGuard;
 let supervisor: HostSupervisor | undefined;
 let backend: RpcEndpoint | undefined;
@@ -149,6 +161,25 @@ function syncWindowTheme(target: BrowserWindow | undefined): void {
   }
 }
 
+function projectPreferences(
+  state: DesktopPersistedState = preferences.read(),
+): Output<'preferences.read'> {
+  return {
+    theme: state.theme,
+    mode: displayMode(),
+    locale: state.locale,
+    resolvedLocale: currentResolvedLocale(),
+    typography: state.typography,
+    general: state.general,
+    confirmations: state.confirmations,
+    recent: state.recent.map(({ id, name, root }) => ({
+      id,
+      name,
+      parent: path.dirname(root),
+    })),
+  };
+}
+
 function unavailable(): void {
   notices.reset();
   blocked = true;
@@ -179,13 +210,15 @@ async function recover(): Promise<void> {
     return;
   }
   if (supervisor && !supervisor.hasExited()) throw new Error('RECOVERY_REQUIRED');
+  const isEn = currentResolvedLocale() === 'en';
   const answer = await dialog.showMessageBox({
     type: 'warning',
-    title: '核查上次执行',
-    message: '上次执行未确认完成清理',
-    detail:
-      '请先检查并结束可能残留的工具进程与旧 Agent Host，再确认重新连接。人工确认不代表应用已经自动验证所有后代退出；不会重发上次任务。',
-    buttons: ['保持阻断', '已检查，重新连接'],
+    title: isEn ? 'Verify Previous Execution' : '核查上次执行',
+    message: isEn ? 'Previous execution cleanup was not confirmed' : '上次执行未确认完成清理',
+    detail: isEn
+      ? 'Please inspect and terminate any lingering tool processes and the previous Agent Host before reconnecting. Confirming manually does not mean Kapibala verified every descendant exited; the previous task will not be re-sent.'
+      : '请先检查并结束可能残留的工具进程与旧 Agent Host，再确认重新连接。人工确认不代表应用已经自动验证所有后代退出；不会重发上次任务。',
+    buttons: isEn ? ['Keep Blocked', 'Checked, Reconnect'] : ['保持阻断', '已检查，重新连接'],
     defaultId: 0,
     cancelId: 0,
     noLink: true,
@@ -213,11 +246,16 @@ async function requestQuit(): Promise<void> {
       }
     }
     if (unconfirmed) {
+      const isEn = currentResolvedLocale() === 'en';
       const answer = await dialog.showMessageBox({
         type: 'warning',
-        message: '执行结果未知，退出后仍保留异常记录',
-        detail: '无法确认旧工具进程已经退出。再次启动仍需人工核查；本次退出不会清除异常栅栏。',
-        buttons: ['返回应用', '保留记录并退出'],
+        message: isEn
+          ? 'Execution cleanup status is unknown; abnormal exit record will be kept'
+          : '执行结果未知，退出后仍保留异常记录',
+        detail: isEn
+          ? 'Unable to confirm that lingering tool processes have exited. Manual verification will still be required on next launch; quitting now will not clear the recovery guard.'
+          : '无法确认旧工具进程已经退出。再次启动仍需人工核查；本次退出不会清除异常栅栏。',
+        buttons: isEn ? ['Back to App', 'Keep Record and Quit'] : ['返回应用', '保留记录并退出'],
         defaultId: 0,
         cancelId: 0,
       });
@@ -236,11 +274,14 @@ async function requestQuit(): Promise<void> {
   })().catch((error) => {
     quitTask = undefined;
     unavailable();
+    const isEn = currentResolvedLocale() === 'en';
     void dialog.showMessageBox({
       type: 'error',
-      title: '清理未完成',
-      message: '无法确认全部工具已经清理，应用仍保留异常退出记录。请核查进程后重试退出。',
-      buttons: ['返回应用'],
+      title: isEn ? 'Cleanup Incomplete' : '清理未完成',
+      message: isEn
+        ? 'Unable to confirm all tools were cleaned up; abnormal exit record is retained. Please inspect running processes and try quitting again.'
+        : '无法确认全部工具已经清理，应用仍保留异常退出记录。请核查进程后重试退出。',
+      buttons: isEn ? ['Back to App'] : ['返回应用'],
     });
     throw error;
   });
@@ -362,23 +403,20 @@ async function handle(
       await shell.openExternal(parsed.href);
       return {};
     }
-    case 'preferences.read': {
-      const state = preferences.read();
-      return {
-        theme: state.theme,
-        mode: displayMode(),
-        recent: state.recent.map(({ id, name, root }) => ({
-          id,
-          name,
-          parent: path.dirname(root),
-        })),
-      };
-    }
+    case 'preferences.read':
+      return projectPreferences();
     case 'preferences.update': {
-      const { theme } = PARAMS[method].parse(params);
-      preferences.theme(theme);
-      nativeTheme.themeSource = theme;
+      const patch = PARAMS[method].parse(params);
+      const next = preferences.patch(patch);
+      nativeTheme.themeSource = next.theme;
       syncWindowTheme(window);
+      syncNativeMenus();
+      const nextState = projectPreferences(next);
+      if (renderer) {
+        void renderer
+          .sendEvent({ type: 'preferences.changed', preferences: nextState }, 'control')
+          .catch(() => {});
+      }
       return {};
     }
   }
@@ -388,7 +426,7 @@ async function handle(
   let selection: string | undefined;
   if (method === 'workspace.pick') {
     const picked = await dialog.showOpenDialog(window!, {
-      title: '选择项目目录',
+      title: currentResolvedLocale() === 'en' ? 'Select Project Folder' : '选择项目目录',
       properties: ['openDirectory'],
     });
     if (picked.canceled || !picked.filePaths[0]) return null;
@@ -587,6 +625,17 @@ function createWindow(): void {
   }
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
+  // 子帧导航与 302 重定向守卫：严禁沙箱子帧跳转到主渲染开发端口或非受控外部地址。
+  win.webContents.on('will-frame-navigate', (details) => {
+    if (!details.isMainFrame) {
+      const allowedSubframeNav =
+        details.url.startsWith(`${PREVIEW_SCHEME}:`) ||
+        isAllowedLoopbackSubframeUrl(details.url, { hostOrigin: developmentURL });
+      if (!allowedSubframeNav) {
+        details.preventDefault();
+      }
+    }
+  });
   // 复制使用标准剪贴板写接口；只放行当前主页面，拒绝读取与所有其它浏览器权限。
   win.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) =>
     callback(
@@ -610,14 +659,23 @@ function createWindow(): void {
     const allowedFile = url.startsWith(
       normalizeUrl(pathToFileURL(path.resolve(directory, '../renderer') + path.sep).href),
     );
+    const isSubFrameNavigation = details.resourceType === 'subFrame';
+    const isMainFrameRequest =
+      !isSubFrameNavigation &&
+      (details.resourceType === 'mainFrame' || details.frame === win.webContents.mainFrame);
     const allowedDevelopment =
-      developmentURL &&
+      Boolean(developmentURL) &&
+      isMainFrameRequest &&
       [
-        new URL(developmentURL).origin,
-        new URL(developmentURL.replace('http:', 'ws:')).origin,
+        new URL(developmentURL!).origin,
+        new URL(developmentURL!.replace('http:', 'ws:')).origin,
       ].includes(new URL(url).origin);
     // 预览文档走独立协议；不在白名单里会被这里统一取消，表现为 iframe 空白。
     const allowedPreview = url.startsWith(`${PREVIEW_SCHEME}:`);
+    // 工作台本地开发服务预览：仅允许非主帧（沙箱子帧 iframe 及其内部 HMR）访问非宿主端口的本机回环开发端口。
+    const allowedLoopbackPreview =
+      !isMainFrameRequest &&
+      isAllowedLoopbackSubframeUrl(details.url, { hostOrigin: developmentURL });
     // 消息正文里的远程图片是唯一放行的外部子资源：只认 image 类型与 http(s)，
     // 脚本、样式、字体等请求继续被取消，避免把页面网络的缺口一起打开。
     const allowedRemoteImage = details.resourceType === 'image' && /^https?:\/\//i.test(url);
@@ -626,6 +684,7 @@ function createWindow(): void {
         !allowedFile &&
         !allowedDevelopment &&
         !allowedPreview &&
+        !allowedLoopbackPreview &&
         !allowedRemoteImage &&
         !url.startsWith('devtools://') &&
         !url.startsWith('data:'),
@@ -644,18 +703,22 @@ function createWindow(): void {
     event.preventDefault();
     // Linux 无法仅凭 Tray 对象确认桌面确实展示入口，关窗保留原生退出确认。
     if (process.platform === 'darwin' || (process.platform === 'win32' && tray)) win.hide();
-    else
+    else {
+      const isEn = currentResolvedLocale() === 'en';
       void dialog
         .showMessageBox(win, {
           type: 'question',
-          message: '退出前将停止任务并等待清理',
-          buttons: ['取消', '停止并退出'],
+          message: isEn
+            ? 'Running tasks will be stopped and cleaned up before quitting'
+            : '退出前将停止任务并等待清理',
+          buttons: isEn ? ['Cancel', 'Stop and Quit'] : ['取消', '停止并退出'],
           defaultId: 0,
           cancelId: 0,
         })
         .then((answer) => {
           if (answer.response === 1) void requestQuit().catch(() => {});
         });
+    }
   });
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   win.on('resize', () => {
@@ -676,6 +739,53 @@ function createWindow(): void {
   expectedURL = normalizeUrl(initial.href);
   if (developmentURL) void win.loadURL(expectedURL);
   else void win.loadFile(rendererFile, { query: { mode: displayMode() } });
+}
+
+function syncNativeMenus(): void {
+  const lang = currentResolvedLocale();
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      {
+        label: 'Kapibala',
+        submenu: [
+          {
+            label: translateDesktop(lang, 'menu.reconnect'),
+            click: () => {
+              void recover().catch(() => {});
+            },
+          },
+          {
+            label: translateDesktop(lang, 'menu.quit'),
+            accelerator: 'CmdOrCtrl+Q',
+            click: () => {
+              void requestQuit().catch(() => {});
+            },
+          },
+        ],
+      },
+      { role: 'editMenu', label: translateDesktop(lang, 'menu.edit') },
+      { role: 'viewMenu', label: translateDesktop(lang, 'menu.view') },
+    ]),
+  );
+  if (tray) {
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        {
+          label: lang === 'en' ? 'Show Kapibala' : '显示 Kapibala',
+          click: () => {
+            window?.show();
+            window?.focus();
+          },
+        },
+        {
+          label: lang === 'en' ? 'Stop Tasks and Quit' : '停止任务并退出',
+          click: () => {
+            void requestQuit().catch(() => {});
+          },
+        },
+      ]),
+    );
+  }
 }
 
 if (!app.isPackaged && process.send && process.env.KPBL_DESKTOP_DEV_TOKEN) {
@@ -706,30 +816,7 @@ else {
     preferences = new Preferences(app.getPath('userData'));
     guard = new HostGuard(app.getPath('userData'));
     blocked = guard.inspect().blocked;
-    Menu.setApplicationMenu(
-      Menu.buildFromTemplate([
-        {
-          label: 'Kapibala',
-          submenu: [
-            {
-              label: '重新连接',
-              click: () => {
-                void recover().catch(() => {});
-              },
-            },
-            {
-              label: '退出 Kapibala',
-              accelerator: 'CmdOrCtrl+Q',
-              click: () => {
-                void requestQuit().catch(() => {});
-              },
-            },
-          ],
-        },
-        { role: 'editMenu', label: '编辑' },
-        { role: 'viewMenu', label: '视图' },
-      ]),
-    );
+    syncNativeMenus();
     // 首帧同步读取已在内存中的主题枚举；不读取配置，不开放通用同步 RPC。
     ipcMain.on('kpbl:bootstrap-theme', (event) => {
       event.returnValue =
@@ -764,7 +851,7 @@ else {
         throw new Error('PREVIEW_INVALID');
       return previewUrl(previews.publish(html));
     });
-    // 本地图片预览只接受来自当前主页面的读取请求，且严格限制在已登记工作区与系统临时目录内（硬排除 ~/.kapibala 凭据区）。
+    // 本地图片预览只接受来自当前主页面的读取请求，且严格限制在已登记工作区、已验真受管工作树与系统临时目录内（硬排除 ~/.kapibala 凭据区）。
     ipcMain.handle('kpbl:preview-file', async (event, params: unknown) => {
       if (
         !window ||
@@ -803,23 +890,7 @@ else {
           nativeImage.createFromPath(brandIconFile).resize({ width: 20, height: 20 }),
         );
         tray.setToolTip('Kapibala');
-        tray.setContextMenu(
-          Menu.buildFromTemplate([
-            {
-              label: '显示 Kapibala',
-              click: () => {
-                window?.show();
-                window?.focus();
-              },
-            },
-            {
-              label: '停止任务并退出',
-              click: () => {
-                void requestQuit().catch(() => {});
-              },
-            },
-          ]),
-        );
+        syncNativeMenus();
         tray.on('click', () => {
           window?.show();
           window?.focus();

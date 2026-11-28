@@ -46,6 +46,8 @@ function handle() {
     configure: async () => {},
     rename: vi.fn(async () => {}),
     setPinned: vi.fn(async () => {}),
+    createBranchWithSummary: vi.fn(async (branchId: string) => ({ branchId, summary: '' })),
+    forgetDelegation: vi.fn(),
     snapshot: () => state,
     subscribeEvents: (_listener: (event: PresentationEvent) => void) => () => {},
     configuration: () => ({
@@ -81,6 +83,20 @@ function handle() {
       mcp: [],
       delegations: [],
     }),
+    checkpoints: async () => [],
+    checkpointDiff: async () => ({
+      available: false,
+      files: [],
+      additions: 0,
+      deletions: 0,
+      truncated: false,
+    }),
+    restoreCheckpoint: async () => ({
+      status: 'noop' as const,
+      restoredFiles: [],
+      deletedFiles: [],
+    }),
+    worktree: () => undefined,
   } satisfies ManagedHostSession;
 }
 

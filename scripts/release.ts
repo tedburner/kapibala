@@ -112,7 +112,7 @@ export function readWorkspaceVersion(root: string): string {
 export function validateReleaseNotes(markdown: string): void {
   if (
     !markdown.trim() ||
-    /<发布主题，发布前替换>|<发布前补全：一段话概述>|<发布日期>|<!-- 交付要点：能力、边界、已知限制，逐条列出 -->/.test(
+    /<发布主题，发布前替换>|<发布前补全：一段话概述>|<发布日期>|<!-- 交付要点：能力、边界、已知限制，逐条列出 -->|待正式打标替换/.test(
       markdown,
     )
   ) {

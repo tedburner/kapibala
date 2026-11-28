@@ -591,6 +591,36 @@ describe('OpenAIResponsesProvider', () => {
       code: 'MODEL_STREAM_INTERRUPTED',
       transportCode: 'UND_ERR_SOCKET',
       message: 'Responses stream was interrupted',
+      retryable: true,
+    });
+  });
+
+  it('classifies mid-SSE error frames and premature EOF accurately for retry', async () => {
+    mockStream([{ type: 'error', error: { type: 'overloaded_error', message: 'busy' } }]);
+    await expect(collect()).rejects.toMatchObject({
+      category: 'service',
+      stage: 'stream',
+      retryable: true,
+    });
+
+    mockStream([
+      {
+        type: 'response.failed',
+        response: { status: 'failed', error: { code: 'insufficient_quota', message: 'empty' } },
+      },
+    ]);
+    await expect(collect()).rejects.toMatchObject({
+      category: 'quota',
+      stage: 'stream',
+      retryable: false,
+    });
+
+    mockStream([{ type: 'response.output_item.done', output_index: 0, item: call() }]);
+    await expect(collect()).rejects.toMatchObject({
+      code: 'MODEL_STREAM_INCOMPLETE',
+      category: 'network',
+      stage: 'stream',
+      retryable: true,
     });
   });
   it('keeps the caller abort signal active while awaiting response bytes', async () => {

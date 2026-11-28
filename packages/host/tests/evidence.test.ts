@@ -240,6 +240,56 @@ describe('会话证据聚合', () => {
     expect(evidence.summary.runningDelegations).toBe(1);
   });
 
+  it('存在部分轮次检查点时：已捕获轮次取检查点变更，跳过检查点的轮次回退读取 execution.facts.diff', () => {
+    const history: CanonicalMessage[] = [
+      userMessage('u0', '第 0 轮命令生成'),
+      toolUse('cmd0', 'run_command', { command: 'echo hi > from-shell.txt' }),
+      toolResult('cmd0'),
+      userMessage('u1', '第 1 轮检查点跳过但执行了 write_file'),
+      toolUse('w1', 'write_file', { path: 'src/fallback.ts' }),
+      toolResult('w1', { diff: { additions: 4, deletions: 1 } }),
+    ];
+    const evidence = buildSessionEvidence({
+      conversationId: PARENT,
+      history,
+      checkpoints: [
+        {
+          id: 'cp-0',
+          sessionId: PARENT,
+          ordinal: 0,
+          kind: 'turn',
+          createdAt: 1_700_000_000_000,
+          startTree: '1111',
+          endTree: '2222',
+          commitOid: '3333',
+          refName: 'refs/kpbl/sessions/p/turn-0',
+          additions: 2,
+          deletions: 0,
+          changedFiles: [
+            { path: 'from-shell.txt', status: 'added', additions: 2, deletions: 0, binary: false },
+          ],
+        },
+      ],
+    });
+    expect(evidence.changes).toEqual([
+      {
+        path: 'from-shell.txt',
+        callId: 'cmd0',
+        status: 'recorded',
+        additions: 2,
+        deletions: 0,
+      },
+      {
+        path: 'src/fallback.ts',
+        callId: 'w1',
+        status: 'recorded',
+        additions: 4,
+        deletions: 1,
+      },
+    ]);
+    expect(evidence.summary).toMatchObject({ additions: 6, deletions: 1 });
+  });
+
   it('同一输入重复调用结果深等于，保证历史重放与实时读取同口径', () => {
     const input = {
       conversationId: PARENT,

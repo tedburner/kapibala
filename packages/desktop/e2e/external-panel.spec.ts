@@ -197,29 +197,35 @@ test.describe
       const picker = page.getByRole('button', { name: /新对话模型或代理/ });
       await expect(picker).toBeEnabled();
       await picker.press('Enter');
-      const search = page.getByRole('combobox', { name: '搜索代理或模型' });
+      const search = page.getByRole('searchbox', { name: '搜索代理或模型' });
       await expect(search).toBeFocused();
-      await page.getByRole('button', { name: '本地验收 ACP', exact: true }).click();
-      await expect(page.getByRole('option', { name: '使用默认模型', exact: true })).toBeVisible();
+      await page
+        .getByRole('navigation', { name: '按代理浏览' })
+        .getByRole('button', { name: '本地验收 ACP', exact: true })
+        .click();
+      await expect(page.getByRole('option', { name: /^使用默认模型(?:\s|$)/ })).toBeVisible();
       await page.keyboard.press('Escape');
       await expect(picker).toBeFocused();
       await picker.press('Enter');
       await search.fill('验收 ACP');
-      await expect(page.getByRole('option', { name: '本地验收 ACP', exact: true })).toBeVisible();
+      await expect(page.getByRole('option', { name: /^本地验收 ACP\b/ })).toBeVisible();
       await search.press('Enter');
       await expect(input).toHaveValue('NEED_APPROVAL');
       await expect(page.getByRole('button', { name: '新对话代理：本地验收 ACP' })).toBeVisible();
       await expect(page.getByText(/还没有可用模型，请先在/)).toHaveCount(0);
       await input.press('Enter');
 
-      // 校验顶部边界提示、计划 pill 与内联外部审批卡
-      await expect(page.getByText('外部代理 · 遵循该工具自有权限与登录态')).toBeVisible({
+      // 校验统一页头外部代理徽章、动态运行收件箱、计划 pill 与内联审批叠卡
+      await expect(page.locator('.kpbl-session-header').getByText('本地验收 ACP')).toBeVisible({
         timeout: 15_000,
       });
-      const approvalSection = page.getByRole('region', { name: '外部代理待处理审批' });
+      const approvalSection = page.getByRole('region', { name: '待处理审批', exact: true });
       await expect(approvalSection).toBeVisible({ timeout: 15_000 });
       await expect(
-        page.getByRole('button', { name: '本地验收 ACP · NEED_APPROVAL', exact: true }),
+        page
+          .getByRole('complementary', { name: '空间与会话' })
+          .getByRole('button', { name: /NEED_APPROVAL/ })
+          .first(),
       ).toBeVisible();
       const localSessions = await page.evaluate(async () => {
         const workspace = await window.kapibala.workspace.openDefault();
@@ -228,7 +234,7 @@ test.describe
       expect(localSessions.items).toHaveLength(0);
       await expect(approvalSection.getByText(/外部代理请求授权：/)).toBeVisible();
       await expect(page.getByRole('button', { name: '任务清单', exact: true })).toContainText(
-        '任务 0/2',
+        '清单 0/2',
       );
 
       const proofDir = path.resolve('test-results/visual-proof');
@@ -243,7 +249,7 @@ test.describe
       await expect(page.getByText('执行完毕（allow-session）')).toBeVisible({ timeout: 15_000 });
 
       // 主动关闭子进程：通用自定义 ACP 不声明可恢复，验证历史归档不空白且输入框切换为只读归档态
-      await page.getByRole('button', { name: 'NEED_APPROVAL 的外部会话操作' }).click();
+      await page.getByRole('button', { name: '会话操作', exact: true }).click();
       await page.getByRole('menuitem', { name: '关闭进程' }).click();
 
       await expect(page.getByText('执行完毕（allow-session）')).toBeVisible();
@@ -257,22 +263,22 @@ test.describe
       await expect(input).toBeEnabled();
       await expect(input).toHaveValue('');
 
-      // 验证 T3 Code 式三栏选择器：切到 Codex 自动拉取模型列表、按模型联动推理档位并直发入会话
+      // 验证三栏选择器：切到 Codex 自动拉取模型列表、按模型联动推理档位并直发入会话
       await page.getByRole('button', { name: '新对话代理：本地验收 ACP' }).click();
       await page
-        .getByRole('region', { name: '按代理浏览' })
+        .getByRole('navigation', { name: '按代理浏览' })
         .getByRole('button', { name: 'Codex', exact: true })
         .click();
-      await expect(page.getByRole('option', { name: 'GPT-6-Astra', exact: true })).toBeVisible({
+      await expect(page.getByRole('option', { name: /^GPT-6-Astra\b/ })).toBeVisible({
         timeout: 15_000,
       });
-      const configRegion = page.getByRole('region', { name: '推理与模式配置' });
+      const configRegion = page.getByRole('region', { name: '推理强度' });
       await expect(configRegion).toBeVisible();
 
       // GPT-6-Luna 不支持 Ultra，点击后右栏自动收敛候选档位；切回 GPT-6-Astra 恢复 Ultra 并点选 Extra High
-      await page.getByRole('option', { name: 'GPT-6-Luna', exact: true }).click();
+      await page.getByRole('option', { name: /^GPT-6-Luna\b/ }).click();
       await expect(configRegion.getByRole('button', { name: 'Ultra', exact: true })).toHaveCount(0);
-      await page.getByRole('option', { name: 'GPT-6-Astra', exact: true }).click();
+      await page.getByRole('option', { name: /^GPT-6-Astra\b/ }).click();
       await expect(configRegion.getByRole('button', { name: 'Ultra', exact: true })).toBeVisible();
       await configRegion.getByRole('button', { name: 'Extra High', exact: true }).click();
       await page.keyboard.press('Escape');
@@ -296,7 +302,8 @@ test.describe
         }),
       ).toBeVisible();
       // 验证第 1 轮回答尾部常驻展示当轮代理、模型与推理强度
-      await expect(page.getByText('Codex · GPT-6-Astra · Extra High')).toBeVisible();
+      const chatLog = page.getByRole('log', { name: '对话内容' });
+      await expect(chatLog.getByText('Codex · GPT-6-Astra · Extra High')).toBeVisible();
 
       // 在历史会话中切换到另一模型与推理档位（GPT-6-Luna · High），验证仅在下一轮生效且第 1 轮尾部信息保持不变
       await page
@@ -305,9 +312,9 @@ test.describe
           exact: true,
         })
         .click();
-      await page.getByRole('option', { name: 'GPT-6-Luna', exact: true }).click();
+      await page.getByRole('option', { name: /^GPT-6-Luna\b/ }).click();
       await page
-        .getByRole('region', { name: '推理与模式配置' })
+        .getByRole('region', { name: '推理强度' })
         .getByRole('button', { name: 'High', exact: true })
         .click();
       await page.keyboard.press('Escape');
@@ -318,7 +325,7 @@ test.describe
       await expect(
         page.getByText('Codex config: model=gpt-6-luna, effort=high, sandbox=workspaceWrite'),
       ).toBeVisible({ timeout: 15_000 });
-      await expect(page.getByText('Codex · GPT-6-Astra · Extra High')).toBeVisible();
-      await expect(page.getByText('Codex · GPT-6-Luna · High')).toBeVisible();
+      await expect(chatLog.getByText('Codex · GPT-6-Astra · Extra High')).toBeVisible();
+      await expect(chatLog.getByText('Codex · GPT-6-Luna · High')).toBeVisible();
     });
   });

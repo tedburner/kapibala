@@ -6,13 +6,17 @@ import {
   AgentSession,
   type ApprovalChannel,
   type CanonicalMessage,
+  type CreateBranchWithSummaryOptions,
+  KapibalaError,
   type ManagedSession,
   type PreparedTaskResult,
   type PrimaryModelRole,
+  SessionBusyError,
   type SessionEvent,
   SessionManager,
   type SessionMode,
   SessionReferenceReader,
+  type SessionWorktreeBinding,
   WatchInbox,
   type WorkspaceLeaseCoordinator,
   isSessionMode,
@@ -21,11 +25,17 @@ import {
 import { type McpPluginInstance, createMcpPlugin } from '@kiturone/kapibala-mcp';
 import { toWireErrorCode } from '../protocol/index.js';
 import type { JsonValue } from '../protocol/index.js';
+import {
+  type CapturePreTurnResult,
+  CheckpointError,
+  type CheckpointService,
+  type RestoreCheckpointResult,
+} from './checkpoint/index.js';
 import { listDelegationSessions, readDelegationRequestEntries } from './delegations.js';
 import { buildSessionEvidence } from './evidence.js';
 import { resolveCliMcpOptions } from './mcp.js';
 import { CliModelBindings, ROUTABLE_MODEL_ROLES } from './model-bindings.js';
-import { StreamingRedactor, redactText } from './redaction.js';
+import { StreamingRedactor, redactText, sanitizeDisplayText } from './redaction.js';
 import { McpServerApprovalStore, createApprovedStartAuthorizer } from './resource/mcp-approval.js';
 import {
   BUILTIN_PROFILES,
@@ -42,21 +52,33 @@ import { formatToolDetail } from './ui/tool-presentation.js';
 import type {
   PresentationEvent,
   PresentationState,
+  ViewCheckpointItem,
+  ViewDiffSummary,
   ViewEvidence,
+  ViewFileDiff,
   ViewTurnMeta,
+  ViewWorktreeSummary,
 } from '../view-model/index.js';
 import type { StatusFacts } from '../view-model/status.js';
 import { buildTodoState, projectHistory } from './history-projection.js';
 import { type ManagedInspection, projectInspection } from './inspection.js';
 import { PresentationStore } from './presentation-store.js';
 import { createArtifactPolicy } from './preview-policy.js';
-import { redactPresentationState } from './public-projection.js';
+import { redactPresentationChange, redactPresentationState } from './public-projection.js';
 import { type ReferenceSelection, readReferenceBlocks } from './reference-blocks.js';
 import { SessionPresentation, presentationScope } from './session-presentation.js';
 import { projectStatusFacts } from './status-facts.js';
+import { SessionApprovalHub } from './subagent-approval.js';
 import { TaskObservation } from './task-observation.js';
 import { WatchService, type WatchView } from './watch/service.js';
 import { createWatchTools } from './watch/tools.js';
+import {
+  type ExecutionRootCoordinator,
+  type ExecutionRunHandle,
+  WorktreeError,
+  type WorktreeService,
+  verifyManagedWorktreeLink,
+} from './worktree/index.js';
 
 const NON_DEFAULT_ROLE_LABELS: Readonly<Record<string, string>> = {
   planning: '规划',
@@ -147,6 +169,16 @@ function publicHistory(history: CanonicalMessage[], redact: (text: string) => st
 /** Node 宿主显式身份；不改变进程 cwd/HOME，不替调用方提升工作区根。 */
 export interface ManagedSessionOptions {
   workspaceRoot: string;
+  /** 项目归属物理根（决定会话存储桶、信任根与跨会话引用桶）；缺省同 `workspaceRoot`。 */
+  projectRoot?: string;
+  /** 新建会话绑定的受管 Git Worktree 元数据；打开既有会话时优先读取已持久化的 `header.worktree`。 */
+  worktree?: SessionWorktreeBinding;
+  /** 宿主级 Shadow Git 检查点服务；注入后在每轮对话首尾自动采样并支持 `regenerate` 原子还原文件。 */
+  checkpoints?: CheckpointService;
+  /** 宿主级受管 Git Worktree 服务；注入后解锁 `spawn_agent(isolation: 'worktree')` 与工作树回链验真。 */
+  worktrees?: WorktreeService;
+  /** 横跨本地与外部代理会话的物理执行根互斥与移除门闩协调器；缺省复用 `worktrees?.coordinator`。 */
+  executionCoordinator?: ExecutionRootCoordinator;
   homeDirectory: string;
   conversationId?: string;
   /** 新会话的临时默认模型；仅影响此会话，不写回用户配置。 */
@@ -194,8 +226,14 @@ export interface ManagedHostSession {
     signal?: AbortSignal,
     options?: {
       readonly regenerate?: boolean;
+      /** `regenerate: true` 时是否同步还原上一轮归因磁盘文件；冲突时在分支回退前以 `CHECKPOINT_RESTORE_CONFLICT` 中止。 */
+      readonly restoreFiles?: boolean;
+      /** `restoreFiles: true` 时是否强制覆盖事后手动修改冲突文件（仍先生成 `pre-restore` 快照）。 */
+      readonly forceRestore?: boolean;
       /** 跨代理或跨会话接力上下文：以 `promptSource` 受控块注入请求，不在用户气泡平铺历史原文。 */
       readonly handoff?: { readonly fromTitle: string; readonly context: string };
+      /** 可选覆盖本轮模型断流自动回滚重试开关（默认开启 `true`）。 */
+      readonly allowMidStreamRetry?: boolean;
     },
   ): Promise<void>;
   /**
@@ -228,6 +266,22 @@ export interface ManagedHostSession {
   rename(title: string): Promise<void>;
   /** 就地切换置顶：追加 pin_state 控制记录，只影响列表次序，不改活动时间。 */
   setPinned(pinned: boolean): Promise<void>;
+  /**
+   * 在当前活动分支或指定记录切点分叉并生成附带背景摘要的新分支，随后原子同步展示投影与监视/任务范围。
+   *
+   * 前置约束与失败边界：
+   * - 仅允许在会话空闲时调用（在途运行或正在关闭时以 `SESSION_BUSY` / `SESSION_CLOSED` 拒绝）；
+   * - 底层存储不支持分支或只读时以 `BRANCH_UNAVAILABLE` 拒绝，切点处于半事务时拒绝且不改动原分支。
+   */
+  createBranchWithSummary(
+    branchId: string,
+    options?: CreateBranchWithSummaryOptions,
+  ): Promise<{ branchId: string; summary: string }>;
+  /**
+   * 从当前已打开父会话的内存运行时中摘除已删除委派子会话的请求幂等索引，
+   * 防止用户手动清理子会话后同一 `requestId` 仍命中已不存在的会话文件。
+   */
+  forgetDelegation(sessionId: string): void;
   /** 返回脱敏后的公共展示快照，不提供原始历史或资源句柄。 */
   snapshot(): PresentationState;
   /** 交付已接受的有序展示事件；退订不取消执行。 */
@@ -251,6 +305,25 @@ export interface ManagedHostSession {
   cancelWatch(watchId: string): Promise<void>;
   /** 监视状态变化订阅；用于刷新徽标，退订不影响触发源。 */
   subscribeWatches(listener: () => void): () => void;
+  /** 返回当前会话已记录的轮次级检查点列表（未注入检查点服务或不可用时返回空数组）。 */
+  checkpoints(): Promise<ViewCheckpointItem[]>;
+  /** 查询当前会话单轮或跨轮归因聚合文件 Diff 明细。 */
+  checkpointDiff(options?: {
+    readonly ordinal?: number;
+    readonly fromOrdinal?: number;
+    readonly toOrdinal?: number;
+    readonly includeLiveWorktree?: boolean;
+  }): Promise<{
+    readonly available: boolean;
+    readonly files: readonly ViewFileDiff[];
+    readonly additions: number;
+    readonly deletions: number;
+    readonly truncated: boolean;
+  }>;
+  /** 在会话空闲且无执行门闩时按归因路径回滚磁盘文件至 `targetOrdinal` 结束态。 */
+  restoreCheckpoint(targetOrdinal: number, force?: boolean): Promise<RestoreCheckpointResult>;
+  /** 返回当前会话绑定的受管 Git Worktree 只读摘要（运行于主工作区时为 `undefined`）。 */
+  worktree(): ViewWorktreeSummary | undefined;
 }
 
 /** 只在调用时装配资源；导入不探测环境、不读终端、不启动 Agent 或工具进程。 */
@@ -272,7 +345,11 @@ class ManagedHostError extends Error {
 
 /** 本地 wire 适配器专用资源；/host 公共入口仅导出上面的窄门面。 */
 export async function createManagedSessionResources(options: ManagedSessionOptions) {
-  if (!path.isAbsolute(options.workspaceRoot) || !path.isAbsolute(options.homeDirectory))
+  if (
+    !path.isAbsolute(options.workspaceRoot) ||
+    !path.isAbsolute(options.homeDirectory) ||
+    (options.projectRoot !== undefined && !path.isAbsolute(options.projectRoot))
+  )
     throw new ManagedHostError('ABSOLUTE_PATH_REQUIRED');
   if (!options.leaseCoordinator) throw new ManagedHostError('LEASE_COORDINATOR_REQUIRED');
   const homeDirectory = fs.realpathSync.native(options.homeDirectory);
@@ -281,16 +358,23 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
   const conversationId = options.conversationId;
   const approval = options.approvalChannel;
   const leases = options.leaseCoordinator;
-  const root = fs.realpathSync.native(workspaceRoot);
-  if (!fs.statSync(root).isDirectory()) throw new ManagedHostError('WORKSPACE_UNAVAILABLE');
-  const loaded = loadSettings({ cwd: root, homeDir: homeDirectory });
+  const checkpoints = options.checkpoints;
+  const worktrees = options.worktrees;
+  const coordinator = options.executionCoordinator ?? worktrees?.coordinator;
+  const worktreesRoot =
+    worktrees?.worktreesRoot ?? path.join(homeDirectory, '.kapibala', 'worktrees');
+  const projectRoot = fs.realpathSync.native(options.projectRoot ?? workspaceRoot);
+  if (!fs.statSync(projectRoot).isDirectory()) throw new ManagedHostError('WORKSPACE_UNAVAILABLE');
+  const loaded = loadSettings({ cwd: projectRoot, homeDir: homeDirectory });
   const settings = options.initialProfileId
     ? { ...loaded.settings, defaultModel: options.initialProfileId }
     : loaded.settings;
-  const trusted = isProjectTrusted(settings, root);
+  const trusted = isProjectTrusted(settings, projectRoot);
   if (
     loaded.pendingProject ||
-    (!trusted && (hasProjectSkills(root) || fs.existsSync(path.join(root, '.kapibala/mcp.json'))))
+    (!trusted &&
+      (hasProjectSkills(projectRoot) ||
+        fs.existsSync(path.join(projectRoot, '.kapibala/mcp.json'))))
   )
     throw new ManagedHostError('TRUST_REQUIRED');
   const profile =
@@ -303,8 +387,26 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
   } catch {
     throw new ManagedHostError('CONFIG_REQUIRED');
   }
+  if (!conversationId && options.worktree) {
+    if (!fs.existsSync(options.worktree.worktreePath)) {
+      throw new ManagedHostError('WORKSPACE_UNAVAILABLE');
+    }
+    if (
+      !verifyManagedWorktreeLink({
+        worktreesRoot,
+        projectRoot,
+        worktreePath: options.worktree.worktreePath,
+      })
+    ) {
+      throw new WorktreeError(
+        'WORKTREE_LINK_INVALID',
+        `Managed worktree link verification failed for '${options.worktree.worktreePath}'`,
+      );
+    }
+  }
+  // 会话历史与跨会话引用桶始终锚定在 `projectRoot`，避免受管工作树会话分裂成孤立空间。
   const manager = new SessionManager({
-    workspaceRoot: root,
+    workspaceRoot: projectRoot,
     homeDirectory,
     projectRootMode: 'exact',
     maxReadBytes: options.maxReadBytes,
@@ -314,19 +416,62 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
   let handle: ManagedSession | undefined;
   let session: AgentSession | undefined;
   let runtime: AgentRuntime | undefined;
+  const approvalHub = new SessionApprovalHub(approval);
+  const rootApproval = approvalHub.createRootChannel();
   // 监视服务先于装配完成进入 liveServices；创建失败时也要停掉它，避免泄漏进全局并发统计。
   let watches: WatchService | undefined;
   try {
     try {
       handle = conversationId
         ? await manager.open(conversationId, { autoUpgradeLegacy: true })
-        : await manager.create();
+        : await manager.create(options.worktree ? { worktree: options.worktree } : undefined);
     } catch (error) {
       const code = toWireErrorCode(error);
       if (code === 'SESSION_BUSY' || code === 'SESSION_NOT_FOUND')
         throw new ManagedHostError(code, error);
       throw error;
     }
+    const sessionWorktree: SessionWorktreeBinding | undefined =
+      handle.header.worktree ?? options.worktree;
+    let executionRoot: string;
+    if (sessionWorktree) {
+      if (fs.existsSync(sessionWorktree.worktreePath)) {
+        if (
+          !verifyManagedWorktreeLink({
+            worktreesRoot,
+            projectRoot,
+            worktreePath: sessionWorktree.worktreePath,
+          })
+        ) {
+          throw new WorktreeError(
+            'WORKTREE_LINK_INVALID',
+            `Managed worktree link verification failed for '${sessionWorktree.worktreePath}'`,
+          );
+        }
+        executionRoot = fs.realpathSync.native(sessionWorktree.worktreePath);
+      } else if (!conversationId) {
+        throw new ManagedHostError('WORKSPACE_UNAVAILABLE');
+      } else {
+        // 既有会话绑定的受管工作树已被移除时安全回退至 projectRoot，保持历史只读查看与清理可用。
+        executionRoot = projectRoot;
+      }
+    } else {
+      executionRoot = fs.realpathSync.native(workspaceRoot);
+      if (!fs.statSync(executionRoot).isDirectory())
+        throw new ManagedHostError('WORKSPACE_UNAVAILABLE');
+    }
+    const root = executionRoot;
+    const viewWorktree: ViewWorktreeSummary | undefined = sessionWorktree
+      ? {
+          id: sessionWorktree.id,
+          projectRoot: sessionWorktree.projectRoot,
+          worktreePath: sessionWorktree.worktreePath,
+          branch: sessionWorktree.branch,
+          baseRef: sessionWorktree.baseRef,
+          baseCommit: sessionWorktree.baseCommit,
+          createdAt: sessionWorktree.createdAt,
+        }
+      : undefined;
     const preference = settings.shell?.preference ?? 'auto';
     // 会话级记忆优先：同一会话重开后沿用上次显式切换的档位；
     // 同时从历史 `run_started` 记录恢复每一轮实际使用的模型与角色，不被后续切换覆盖。
@@ -341,23 +486,31 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           preference,
           isTrusted: trusted,
           approvalChannel: approval,
+          approvalHub,
+          runtime,
           leaseCoordinator: leases,
+          ...(coordinator ? { executionCoordinator: coordinator } : {}),
         })(...args),
-      // 续聊与首次派发共享同一租约、审批与模型装配，避免独立入口绕过父宿主权限。
-      resumer: createCliSubagentResumer({
-        homeDirectory,
-        manager,
-        models,
-        settings,
-        preference,
-        isTrusted: trusted,
-        approvalChannel: approval,
-        leaseCoordinator: leases,
-      }),
+      // 续聊与首次派发共享同一租约、审批中枢与模型装配，避免独立入口绕过父宿主权限。
+      resumer: (...args) =>
+        createCliSubagentResumer({
+          homeDirectory,
+          manager,
+          models,
+          settings,
+          preference,
+          isTrusted: trusted,
+          approvalChannel: approval,
+          approvalHub,
+          runtime,
+          leaseCoordinator: leases,
+          ...(coordinator ? { executionCoordinator: coordinator } : {}),
+        })(...args),
+      ...(worktrees ? { worktreeProvider: worktrees.asSubagentWorktreeProvider() } : {}),
       // 进程重启后从委派头重建幂等索引，同一 requestId 不重复派发。
       restoredRequests: readDelegationRequestEntries(manager),
       validateModelOverride: (id) => settings.profiles.some((item) => item.id === id),
-      outboxPath: path.join(root, '.kapibala/outbox.jsonl'),
+      outboxPath: path.join(projectRoot, '.kapibala/outbox.jsonl'),
     });
     session = new AgentSession({
       userInstructionsPath: path.join(homeDirectory, '.kapibala/AGENTS.md'),
@@ -366,14 +519,15 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       toolResultsDirectory: path.join(homeDirectory, '.kapibala', 'tool-results'),
       workspaceRoot: root,
       executionCwd: root,
-      projectRoot: root,
+      projectRoot,
       store: handle.store,
       conversationId: handle.conversationId,
       defaultProfile: models.defaultBinding.profile,
       defaultProvider: models.defaultBinding.provider,
-      approvalChannel: approval,
+      approvalChannel: rootApproval,
       leaseCoordinator: leases,
       permissionRules: settings.permissionRules,
+      retry: { maxRetries: 2, allowMidStreamRetry: true },
       mode:
         persistedMode ??
         (settings.permissionMode === 'FullAccess'
@@ -381,7 +535,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           : (settings.permissionMode ?? 'Approval')),
       skills: getCliSkillOptions(settings, {
         cwd: root,
-        projectRoot: root,
+        projectRoot,
         homeDir: homeDirectory,
       }),
     });
@@ -393,7 +547,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     });
     models.attach(session);
     const mcp = resolveCliMcpOptions({
-      projectRoot: root,
+      projectRoot,
       homeDir: homeDirectory,
       isProjectTrusted: trusted,
     });
@@ -423,7 +577,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       const mcpSession = session;
       const mcpApprovals = new McpServerApprovalStore({
         homeDir: homeDirectory,
-        projectRoot: root,
+        projectRoot,
       });
       mountMcp = async (runSignal) => {
         mcpPlugin = createMcpPlugin(servers, {
@@ -437,7 +591,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
             ),
             fallback: async (descriptor, signal) => {
               inspectionChanged();
-              const choice = await approval.requestApproval(
+              const choice = await rootApproval.requestApproval(
                 {
                   toolName: 'mcp_start',
                   rootDir: root,
@@ -481,6 +635,32 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         resolveLocalTurnMeta(entry.modelId, entry.modelRole, settings),
       );
     }
+    const computeSessionDiffSummary = async (): Promise<ViewDiffSummary | undefined> => {
+      if (!checkpoints) return undefined;
+      try {
+        const records = await checkpoints.listCheckpoints({
+          projectRoot,
+          executionRoot: root,
+          sessionId: ownedHandle.conversationId,
+        });
+        if (records.length === 0) return undefined;
+        const totalChanged = records.reduce((sum, item) => sum + item.changedFiles.length, 0);
+        if (totalChanged === 0) return undefined;
+        if (records.length === 1) {
+          return { additions: records[0]!.additions, deletions: records[0]!.deletions };
+        }
+        const diffRes = await checkpoints.diff({
+          projectRoot,
+          executionRoot: root,
+          sessionId: ownedHandle.conversationId,
+        });
+        if (!diffRes.available || diffRes.files.length === 0) return undefined;
+        return { additions: diffRes.additions, deletions: diffRes.deletions };
+      } catch {
+        return undefined;
+      }
+    };
+    const initialDiffSummary = conversationId ? await computeSessionDiffSummary() : undefined;
     const presentation = new PresentationStore(
       identity,
       projectHistory(current.getHistory(), presentationScope(identity), redact, {
@@ -489,6 +669,10 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         turnMetaByInteraction,
       }),
       buildTodoState(current.getHistory(), redact),
+      {
+        ...(viewWorktree ? { worktree: viewWorktree } : {}),
+        ...(initialDiffSummary ? { diffSummary: initialDiffSummary } : {}),
+      },
     );
     const tasks = new TaskObservation(
       ownedRuntime,
@@ -515,11 +699,12 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     };
     const refresh = (configuration: ManagedSessionConfiguration = {}) => {
       assertIdle();
-      const latest = loadSettings({ cwd: root, homeDir: homeDirectory });
+      const latest = loadSettings({ cwd: projectRoot, homeDir: homeDirectory });
       if (
         latest.pendingProject ||
-        (!isProjectTrusted(latest.settings, root) &&
-          (hasProjectSkills(root) || fs.existsSync(path.join(root, '.kapibala/mcp.json'))))
+        (!isProjectTrusted(latest.settings, projectRoot) &&
+          (hasProjectSkills(projectRoot) ||
+            fs.existsSync(path.join(projectRoot, '.kapibala/mcp.json'))))
       )
         throw new ManagedHostError('TRUST_REQUIRED');
       const role = configuration.role ?? selectedRole;
@@ -582,6 +767,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       closing = true;
       disposal = (async () => {
         activeController?.abort();
+        approvalHub.dispose();
         const failures: unknown[] = [];
         try {
           await cancelChildren();
@@ -656,16 +842,41 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         });
       }
     };
+    const emitDiffSummary = (diffSummary: ViewDiffSummary | undefined): void => {
+      presentation.dispatch({
+        ...presentation.snapshot().identity,
+        sequence: presentation.snapshot().sequence + 1,
+        change: { type: 'diff_summary_changed', diffSummary },
+      });
+    };
     const run = async function* (
       input: string,
       signal?: AbortSignal,
       skillName?: string,
       prepare?: () => Promise<PreparedTaskResult>,
-      /** 重试：先预检绑定与 MCP，再截断上一轮并按原消息来源块与未脱敏原文无损重跑。 */
-      regenerate?: boolean,
+      runOptions?: {
+        /** 重试：先预检绑定、MCP 与可选文件冲突回滚，再截断上一轮并无损重跑。 */
+        readonly regenerate?: boolean;
+        readonly restoreFiles?: boolean;
+        readonly forceRestore?: boolean;
+        readonly allowMidStreamRetry?: boolean;
+      },
     ): AsyncGenerator<SessionEvent> {
+      const regenerate = runOptions?.regenerate;
       refresh();
+      (
+        current as AgentSession & {
+          setRetryOptions?: (retry?: {
+            maxRetries?: number;
+            allowMidStreamRetry?: boolean;
+          }) => void;
+        }
+      ).setRetryOptions?.({
+        maxRetries: 2,
+        allowMidStreamRetry: runOptions?.allowMidStreamRetry ?? true,
+      });
       current.validatePrimaryBinding(selectedRole);
+      coordinator?.assertNotFenced(root);
       const controller = new AbortController();
       activeController = controller;
       let complete!: () => void;
@@ -675,6 +886,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       const combinedSignal = signal
         ? AbortSignal.any([controller.signal, signal])
         : controller.signal;
+      let execRunHandle: ExecutionRunHandle | undefined;
       let projected: SessionPresentation | undefined;
       let rewoundState:
         | {
@@ -688,18 +900,68 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       let effectivePrepare = prepare;
       let replaceHistory = false;
       let nextBranchId: string | undefined;
+      let turnOrdinal = 0;
+      let preTurnPromise: Promise<CapturePreTurnResult | undefined> | undefined;
+      let preTurnResult: CapturePreTurnResult | undefined;
+      let preTurnResolved = false;
       runUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       hasUsage = false;
       usageComplete = true;
       awaitingUsage = false;
       let failure: unknown;
       try {
+        if (coordinator) {
+          execRunHandle = await coordinator.acquireMutatingLease({
+            executionRoot: root,
+            ownerId: ownedHandle.conversationId,
+            kind: 'native',
+            signal: combinedSignal,
+          });
+        }
         if (regenerate && mountMcp) {
           const mount = mountMcp;
           await mount(combinedSignal);
           mountMcp = undefined;
         }
         if (regenerate) {
+          // 强原子性保证：按会话回退前的用户轮次定位待撤销轮次序号（rewoundOrdinal = userTurnCountBeforeRewind - 1），
+          // 仅当检查点实际覆盖了该轮（ordinal >= rewoundOrdinal）时才回滚至 rewoundOrdinal - 1，防止某轮因超时跳过检查点后误删前序轮次成果。
+          if (runOptions?.restoreFiles && checkpoints) {
+            const userTurnCountBeforeRewind = current
+              .getHistory()
+              .filter((m) => m.role === 'user').length;
+            const rewoundOrdinal = userTurnCountBeforeRewind - 1;
+            if (rewoundOrdinal >= 0) {
+              const existingTurns = await checkpoints.listCheckpoints({
+                projectRoot,
+                executionRoot: root,
+                sessionId: ownedHandle.conversationId,
+              });
+              if (existingTurns.some((t) => t.ordinal >= rewoundOrdinal)) {
+                const restoreRes = await checkpoints.restore({
+                  projectRoot,
+                  executionRoot: root,
+                  sessionId: ownedHandle.conversationId,
+                  targetOrdinal: rewoundOrdinal - 1,
+                  force: runOptions.forceRestore === true,
+                  signal: combinedSignal,
+                });
+                if (restoreRes.status === 'conflict') {
+                  const conflictErr = new KapibalaError(
+                    `Checkpoint restore conflict on files: ${restoreRes.conflicts.join(', ')}`,
+                    {
+                      code: 'CHECKPOINT_RESTORE_CONFLICT',
+                      retryPolicy: 'after_user_action',
+                      safeMessage: `文件存在手动修改冲突，已中止回退：${restoreRes.conflicts.join(', ')}`,
+                    },
+                  );
+                  (conflictErr as KapibalaError & { conflicts?: readonly string[] }).conflicts =
+                    restoreRes.conflicts;
+                  throw conflictErr;
+                }
+              }
+            }
+          }
           const rewound = await current.rewindLastTurn();
           rewoundState = {
             branchId: rewound.branchId,
@@ -765,6 +1027,27 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
             }
           }
         }
+        if (checkpoints) {
+          const existingTurns = await checkpoints.listCheckpoints({
+            projectRoot,
+            executionRoot: root,
+            sessionId: ownedHandle.conversationId,
+          });
+          const userTurnCount = current.getHistory().filter((m) => m.role === 'user').length;
+          turnOrdinal = Math.max(
+            userTurnCount,
+            (existingTurns[existingTurns.length - 1]?.ordinal ?? -1) + 1,
+          );
+          preTurnPromise = checkpoints
+            .capturePreTurn({
+              projectRoot,
+              executionRoot: root,
+              sessionId: ownedHandle.conversationId,
+              ordinal: turnOrdinal,
+              signal: combinedSignal,
+            })
+            .catch(() => undefined);
+        }
         const activeRunTurnMeta = resolveLocalTurnMeta(selectedProfileId, selectedRole, settings);
         const bindCurrentRunTurnMeta = (): void => {
           const hist = current.getHistory();
@@ -807,11 +1090,21 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
               ? current.runSkill(effectiveSkillName, effectiveInput, { signal: combinedSignal })
               : current.run(effectiveInput, { signal: combinedSignal });
           for await (const event of source) {
+            // 在首个工具落地执行前确保并发前置检查点基线（含 5s 超时熔断预算）已完成就位。
+            if (event.type === 'tool_start' && preTurnPromise && !preTurnResolved) {
+              preTurnResult = await preTurnPromise;
+              preTurnResolved = true;
+            }
             if (event.type === 'text_delta')
               yield { ...event, text: textRedactor.push(event.text) };
             else if (event.type === 'thinking_delta')
               yield { ...event, thinking: thinkingRedactor.push(event.thinking) };
-            else {
+            else if (event.type === 'stream_reset') {
+              // 半截流式输出将被丢弃：清空脱敏滑窗残留，不向下游补吐已作废的尾部碎片。
+              textRedactor.flush();
+              thinkingRedactor.flush();
+              yield event;
+            } else {
               const text = textRedactor.flush();
               const thinking = thinkingRedactor.flush();
               if (text) yield { type: 'text_delta' as const, text };
@@ -863,11 +1156,36 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         }
         throw error;
       } finally {
+        // 轮次终态（completed / failed / cancelled）统一结算检查点并刷新会话累计 diffSummary。
+        if (checkpoints && preTurnPromise) {
+          try {
+            if (!preTurnResolved) {
+              preTurnResult = await preTurnPromise;
+              preTurnResolved = true;
+            }
+            if (preTurnResult?.captured) {
+              const turnLabel = sanitizeDisplayText(redact(effectiveInput), 80);
+              await checkpoints.capturePostTurn({
+                projectRoot,
+                executionRoot: root,
+                sessionId: ownedHandle.conversationId,
+                ordinal: turnOrdinal,
+                startTree: preTurnResult.startTree,
+                startCommitOid: preTurnResult.commitOid,
+                ...(turnLabel ? { label: turnLabel } : {}),
+              });
+            }
+            emitDiffSummary(await computeSessionDiffSummary());
+          } catch {
+            /* 检查点后置采样异常不覆盖主轮次终态与错误上报。 */
+          }
+        }
         // 提前结束迭代也会等待 Core 的 return/finally，随后才宣告展示空闲。
         try {
           if (!current.isBusy())
             projected?.settle(combinedSignal.aborted ? 'aborted' : undefined, failure);
         } finally {
+          execRunHandle?.release();
           activeProjection = undefined;
           activeController = undefined;
           complete();
@@ -916,24 +1234,29 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
     const managed: ManagedHostSession = {
       conversationId: ownedHandle.conversationId,
       session: current,
-      async run(input, signal, options) {
+      async run(input, signal, runOpts) {
         const handoffPrepare =
-          options?.handoff && !options.regenerate
+          runOpts?.handoff && !runOpts.regenerate
             ? async (): Promise<PreparedTaskResult> => ({
                 content: [
                   {
                     type: 'text',
-                    text: options.handoff!.context,
+                    text: runOpts.handoff!.context,
                     promptSource: {
                       version: 1,
                       server: 'kapibala-handoff',
-                      name: options.handoff!.fromTitle || '历史会话',
+                      name: runOpts.handoff!.fromTitle || '历史会话',
                     },
                   },
                 ],
               })
             : undefined;
-        for await (const _ of run(input, signal, undefined, handoffPrepare, options?.regenerate)) {
+        for await (const _ of run(input, signal, undefined, handoffPrepare, {
+          regenerate: runOpts?.regenerate,
+          restoreFiles: runOpts?.restoreFiles,
+          forceRestore: runOpts?.forceRestore,
+          allowMidStreamRetry: runOpts?.allowMidStreamRetry,
+        })) {
           /* 投影已在内部完成。 */
         }
       },
@@ -949,9 +1272,9 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           }
           return;
         }
-        // 冻结发生在这里：prepare 在运行锁内读取，失败或超预算时 Core 零 append。
+        // 冻结发生在这里：prepare 在运行锁内按 `projectRoot` 同桶读取，失败或超预算时 Core 零 append。
         const prepare = async (): Promise<PreparedTaskResult> => ({
-          content: await readReferenceBlocks(referenceReader, root, references, { redact }),
+          content: await readReferenceBlocks(referenceReader, projectRoot, references, { redact }),
         });
         for await (const _ of run(input, signal, undefined, prepare)) {
           /* 投影已在内部完成。 */
@@ -992,13 +1315,54 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
         if (disposed || closing) throw new ManagedHostError('SESSION_CLOSED');
         await ownedHandle.store.setPinnedState(pinned);
       },
+      async createBranchWithSummary(branchId, branchOptions) {
+        assertIdle();
+        const previousBranchId = ownedHandle.store.getActiveBranchId();
+        const created = await current.createBranchWithSummary(branchId, branchOptions);
+        await watches?.onBranchRewound(previousBranchId, created.branchId);
+        tasks.refresh({
+          parentSessionId: ownedHandle.conversationId,
+          branchId: created.branchId,
+        });
+        const snap = presentation.snapshot();
+        const nextIdentity = { ...snap.identity, branchId: created.branchId };
+        const history = current.getHistory();
+        const projectedMessages = projectHistory(history, presentationScope(nextIdentity), redact, {
+          artifacts: artifactPolicy,
+          usageByMessageId: current.getMessageUsages(),
+          turnMetaByInteraction,
+        });
+        presentation.dispatch({
+          ...snap.identity,
+          sequence: presentation.snapshot().sequence + 1,
+          change: {
+            type: 'history_replaced',
+            messages: projectedMessages,
+            branchId: created.branchId,
+          },
+        });
+        const todos = buildTodoState(history, redact);
+        presentation.dispatch({
+          ...presentation.snapshot().identity,
+          sequence: presentation.snapshot().sequence + 1,
+          change: todos ? { type: 'todos_changed', todos } : { type: 'todos_changed' },
+        });
+        inspectionChanged();
+        return { branchId: created.branchId, summary: created.summary };
+      },
+      forgetDelegation(sessionId) {
+        ownedRuntime.forgetDelegationSession(sessionId);
+      },
       configuration: () => ({
         profileId: selectedProfileId,
         role: selectedRole,
         mode: current.getMode(),
       }),
       snapshot: () => redactPresentationState(presentation.snapshot(), redact),
-      subscribeEvents: (listener) => presentation.subscribeEvents(listener),
+      subscribeEvents: (listener) =>
+        presentation.subscribeEvents((event) =>
+          listener({ ...event, change: redactPresentationChange(event.change, redact) }),
+        ),
       inspection: () =>
         projectInspection(
           {
@@ -1036,6 +1400,15 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       // 因此历史重放与实时观察必然同一口径。
       evidence: async () => {
         const phase = presentation.snapshot().operation?.phase;
+        const checkpointRecords = checkpoints
+          ? await checkpoints
+              .listCheckpoints({
+                projectRoot,
+                executionRoot: root,
+                sessionId: ownedHandle.conversationId,
+              })
+              .catch(() => undefined)
+          : undefined;
         return buildSessionEvidence(
           {
             conversationId: ownedHandle.conversationId,
@@ -1043,6 +1416,9 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
             delegations: await listDelegationSessions(manager),
             tasks: runtime?.listTasks({ parentSessionId: ownedHandle.conversationId }) ?? [],
             parentActive: phase === 'running' || phase === 'cancelling',
+            ...(checkpointRecords && checkpointRecords.length > 0
+              ? { checkpoints: checkpointRecords }
+              : {}),
           },
           redact,
         );
@@ -1055,6 +1431,92 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
           inspectionListeners.delete(listener);
         };
       },
+      checkpoints: async () => {
+        if (!checkpoints) return [];
+        const records = await checkpoints.listCheckpoints({
+          projectRoot,
+          executionRoot: root,
+          sessionId: ownedHandle.conversationId,
+        });
+        return records.map((rec) => ({
+          ordinal: rec.ordinal,
+          createdAt: rec.createdAt,
+          startTree: rec.startTree,
+          endTree: rec.endTree,
+          additions: rec.additions,
+          deletions: rec.deletions,
+          changedFilesCount: rec.changedFiles.length,
+          ...(rec.label ? { label: sanitizeDisplayText(redact(rec.label), 120) } : {}),
+        }));
+      },
+      checkpointDiff: async (diffOptions) => {
+        if (!checkpoints) {
+          return { available: false, files: [], additions: 0, deletions: 0, truncated: false };
+        }
+        const diffRes = await checkpoints.diff({
+          projectRoot,
+          executionRoot: root,
+          sessionId: ownedHandle.conversationId,
+          ...(diffOptions?.ordinal !== undefined ? { ordinal: diffOptions.ordinal } : {}),
+          ...(diffOptions?.fromOrdinal !== undefined
+            ? { fromOrdinal: diffOptions.fromOrdinal }
+            : {}),
+          ...(diffOptions?.toOrdinal !== undefined ? { toOrdinal: diffOptions.toOrdinal } : {}),
+          ...(diffOptions?.includeLiveWorktree !== undefined
+            ? { includeLiveWorktree: diffOptions.includeLiveWorktree }
+            : {}),
+        });
+        return {
+          available: diffRes.available,
+          additions: diffRes.additions,
+          deletions: diffRes.deletions,
+          truncated: diffRes.truncated,
+          files: diffRes.files.map((f) => ({
+            path: redact(f.path),
+            status: f.status,
+            additions: f.additions,
+            deletions: f.deletions,
+            binary: f.binary,
+            patch: redact(f.patch),
+            truncated: f.truncated,
+          })),
+        };
+      },
+      restoreCheckpoint: async (targetOrdinal, force) => {
+        assertIdle();
+        if (!checkpoints) {
+          throw new CheckpointError(
+            'CHECKPOINT_GIT_UNAVAILABLE',
+            'Checkpoint service is not configured for this session',
+          );
+        }
+        coordinator?.assertNotFenced(root);
+        if (coordinator?.hasActiveRuns(root)) {
+          throw new SessionBusyError('restore checkpoint');
+        }
+        const execHandle = coordinator?.trackActiveRun({
+          executionRoot: root,
+          ownerId: ownedHandle.conversationId,
+          kind: 'checkpoint',
+        });
+        try {
+          const outcome = await checkpoints.restore({
+            projectRoot,
+            executionRoot: root,
+            sessionId: ownedHandle.conversationId,
+            targetOrdinal,
+            force,
+          });
+          if (outcome.status === 'restored') {
+            emitDiffSummary(await computeSessionDiffSummary());
+            inspectionChanged();
+          }
+          return outcome;
+        } finally {
+          execHandle?.release();
+        }
+      },
+      worktree: () => (viewWorktree ? { ...viewWorktree } : undefined),
       status: () =>
         projectStatusFacts(
           {
@@ -1064,7 +1526,7 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
                 : (presentation.snapshot().operation?.phase ?? 'idle'),
             model: current.getActiveProfile().name,
             permissionMode: current.getMode(),
-            gitBranch: manager.project.gitBranch,
+            gitBranch: sessionWorktree?.branch ?? manager.project.gitBranch,
             contextUsage: current.getStats().contextUsage,
             runUsage: hasUsage && usageComplete && !awaitingUsage ? runUsage : undefined,
             tasks: tasks.snapshot(),
@@ -1081,13 +1543,41 @@ export async function createManagedSessionResources(options: ManagedSessionOptio
       redact,
       isBusy: managed.isBusy,
       cancelChildren,
-      run,
+      run: async function* (
+        input: string,
+        signal?: AbortSignal,
+        references?: readonly ReferenceSelection[],
+        runResourceOptions?: { readonly allowMidStreamRetry?: boolean },
+      ): AsyncGenerator<SessionEvent> {
+        const prepare =
+          references && references.length > 0
+            ? async (): Promise<PreparedTaskResult> => ({
+                content: await readReferenceBlocks(referenceReader, projectRoot, references, {
+                  redact,
+                }),
+              })
+            : undefined;
+        yield* run(input, signal, undefined, prepare, {
+          allowMidStreamRetry: runResourceOptions?.allowMidStreamRetry,
+        });
+      },
       dispose,
       watches: { list: () => managed.watches(), cancel: (id: string) => managed.cancelWatch(id) },
+      checkpoints: () => managed.checkpoints(),
+      checkpointDiff: (diffOpts?: {
+        readonly ordinal?: number;
+        readonly fromOrdinal?: number;
+        readonly toOrdinal?: number;
+        readonly includeLiveWorktree?: boolean;
+      }) => managed.checkpointDiff(diffOpts),
+      restoreCheckpoint: (targetOrdinal: number, force?: boolean) =>
+        managed.restoreCheckpoint(targetOrdinal, force),
+      worktree: () => managed.worktree(),
     };
   } catch (error) {
     // 创建失败时也按依赖顺序清理；上游未清理完不能释放存储锁，原始错误优先上报。
     try {
+      approvalHub.dispose();
       watches?.dispose();
       await runtime?.close();
       await session?.destroy();

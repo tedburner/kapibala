@@ -86,26 +86,22 @@ test('任务面板：pill 进度、浮层四态与底栏状态条', async () => 
   try {
     const page = await app.firstWindow();
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    await page.getByRole('searchbox', { name: '搜索空间与对话' }).fill('任务面板验收');
-    await page.getByRole('button', { name: '任务面板验收', exact: true }).click();
+    await page.getByRole('button', { name: '搜索或运行命令' }).click();
+    const palette = page.getByRole('dialog', { name: '命令面板', exact: true });
+    await palette.getByRole('searchbox', { name: '搜索会话或命令' }).fill('任务面板验收');
+    await palette.getByRole('button', { name: /任务面板验收/ }).click();
 
     // 可访问名固定为「任务清单」：不随开合态切换，状态由 aria-expanded 表达（组件契约）。
     const pill = page.getByRole('button', { name: '任务清单', exact: true });
     await expect(pill).toBeVisible();
     await expect(pill).toHaveAttribute('aria-expanded', 'false');
-    await expect(pill).toContainText('任务 1/5');
+    await expect(pill).toContainText('清单 1/5');
     await expect(pill).toContainText('写代码');
     await expect(pill).toContainText('+1');
-    // 任务胶囊水平居中对齐于内容列上方，不再偏向左侧。
-    const pillAlign = await pill.evaluate((el) => {
-      const box = el.getBoundingClientRect();
-      const parentBox = el.parentElement!.getBoundingClientRect();
-      return Math.abs(box.left + box.width / 2 - (parentBox.left + parentBox.width / 2));
-    });
-    expect(pillAlign).toBeLessThan(4);
+    await expect(page.locator('.kpbl-live-strip')).toContainText('清单 1/5');
 
     await pill.click();
-    const panel = page.getByRole('region', { name: '任务清单', exact: true });
+    const panel = page.getByRole('region', { name: '任务清单详情', exact: true });
     await expect(panel).toBeVisible();
     await expect(panel.getByLabel('已完成：写设计', { exact: true })).toBeVisible();
     await expect(panel.getByLabel('进行中：写代码', { exact: true })).toBeVisible();
@@ -128,7 +124,7 @@ test('任务面板：pill 进度、浮层四态与底栏状态条', async () => 
     });
     await page.evaluate(() => window.kapibala.preferences.update('light'));
 
-    await pill.press('Escape');
+    await page.keyboard.press('Escape');
     await expect(panel).toBeHidden();
   } finally {
     await app.close().catch(() => {});
@@ -218,7 +214,6 @@ test('后续轮次自动收起已完成任务看板，且继续历史会话支�
   try {
     const page = await app.firstWindow();
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    await page.getByRole('searchbox', { name: '搜索空间与对话' }).fill('历史第一问');
     await page.getByRole('button', { name: '历史第一问：升级依赖版本', exact: true }).click();
 
     await expect(page.getByText('需要从编译期和运行期两个层面验证。')).toBeVisible({

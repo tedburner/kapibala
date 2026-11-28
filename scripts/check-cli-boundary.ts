@@ -13,7 +13,12 @@ export interface CliBoundarySource {
 export interface CliBoundaryViolation {
   readonly file: string;
   readonly line: number;
-  readonly rule: 'view-model-dependency' | 'view-model-runtime' | 'tui-dependency' | 'tui-session';
+  readonly rule:
+    | 'view-model-dependency'
+    | 'view-model-runtime'
+    | 'tui-dependency'
+    | 'tui-session'
+    | 'ui-raw-sgr';
   readonly message: string;
 }
 
@@ -191,16 +196,68 @@ function scanTuiBoundary(sourceRoot: string): CliBoundaryViolation[] {
   return findCliBoundaryViolations(files, sourceRoot);
 }
 
+/** 递归扫描 `packages/cli/src/ui` 目录，禁止在 `theme.ts` 之外硬编码 ANSI SGR 色彩控制序列。 */
+export function scanUiThemeBoundary(sourceRoot: string): CliBoundaryViolation[] {
+  const uiRoot = path.join(sourceRoot, 'ui');
+  if (!fs.existsSync(uiRoot)) return [];
+  const themeFile = path.resolve(uiRoot, 'theme.ts');
+  const violations: CliBoundaryViolation[] = [];
+  const sgrPattern = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`);
+  const walkUi = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        walkUi(file);
+        continue;
+      }
+      if (!entry.isFile() || !sourceExtensions.has(path.extname(entry.name))) continue;
+      if (isInside(themeFile, file)) continue;
+      const raw = fs.readFileSync(file, 'utf8');
+      const ast = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true);
+      const visit = (node: ts.Node): void => {
+        if (
+          (ts.isStringLiteralLike(node) || ts.isTemplateSpan(node)) &&
+          sgrPattern.test(ts.isTemplateSpan(node) ? node.literal.text : node.text)
+        ) {
+          violations.push({
+            file,
+            line: ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1,
+            rule: 'ui-raw-sgr',
+            message:
+              'CLI ui/ 目录内除 theme.ts 外禁止手写裸 ANSI SGR 颜色转义码，请统一走 theme.ts。',
+          });
+        } else if (ts.isTemplateExpression(node) && sgrPattern.test(node.head.text)) {
+          violations.push({
+            file,
+            line: ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1,
+            rule: 'ui-raw-sgr',
+            message:
+              'CLI ui/ 目录内除 theme.ts 外禁止手写裸 ANSI SGR 颜色转义码，请统一走 theme.ts。',
+          });
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(ast);
+    }
+  };
+  walkUi(uiRoot);
+  return violations;
+}
+
 /**
  * 独立展示分层门禁；违规时设置非零退出码，不接管或替换 Core 门禁。
- * view-model 规则作用于宿主包（packages/host/src/view-model），TUI 规则作用于 CLI 应用层；
+ * view-model 规则作用于宿主包（packages/host/src/view-model），TUI 与 UI 色彩收敛规则作用于 CLI 应用层；
  * CLI 内的 view-model 兼容 barrel 只做整体转发，不参与目录内依赖规则。
  */
 export function runCheckCliBoundary(
   sourceRoot = path.resolve('packages/cli/src'),
   viewModelRoot = path.resolve('packages/host/src'),
 ): void {
-  const violations = [...scanCliBoundary(viewModelRoot), ...scanTuiBoundary(sourceRoot)];
+  const violations = [
+    ...scanCliBoundary(viewModelRoot),
+    ...scanTuiBoundary(sourceRoot),
+    ...scanUiThemeBoundary(sourceRoot),
+  ];
   for (const violation of violations)
     console.error(`${violation.file}:${violation.line} [${violation.rule}] ${violation.message}`);
   if (violations.length) process.exitCode = 1;

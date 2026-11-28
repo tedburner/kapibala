@@ -83,7 +83,9 @@ export class RpcEndpoint {
         ? LIMITS.downloadTimeout
         : method === 'external.open' ||
             method === 'external.prompt' ||
-            method === 'external.setConfig'
+            method === 'external.setConfig' ||
+            method === 'worktree.create' ||
+            method === 'worktree.applyMerge'
           ? LIMITS.externalOpenTimeout
           : LIMITS.requestTimeout;
     return new Promise<Output<M>>((resolve, reject) => {
@@ -246,6 +248,18 @@ const messages: Record<string, string> = {
   RECOVERY_REQUIRED: '上次执行未确认完成清理，请核查残留工具进程后确认恢复。',
   SETTINGS_READ_FAILED: '无法安全读取全局配置，请修复原文件后重试。',
   REWIND_UNAVAILABLE: '当前没有可重试的上一轮对话，或该会话不支持回退重试。',
+  BRANCH_UNAVAILABLE: '当前会话不支持创建附带背景摘要的分支。',
+  INVALID_BRANCH_SUMMARY: '分支摘要内容不能为空。',
+  REFERENCE_SESSION_NOT_FOUND: '找不到被引用的会话，请刷新候选列表后重试。',
+  REFERENCE_PROJECT_MISMATCH: '仅支持引用同一项目空间内的会话。',
+  REFERENCE_ARCHIVED: '被引用的会话已归档，请先恢复后再引用。',
+  REFERENCE_RECORD_NOT_FOUND: '被引用的消息不存在或不在当前分支上。',
+  REFERENCE_UNSUPPORTED_ROLE: '只能引用用户或助手可见正文。',
+  REFERENCE_BUDGET_EXCEEDED: '单轮跨会话引用数量或长度超出上限，请精简后重试。',
+  DELEGATION_BUSY: '该委派子任务仍在运行中。',
+  DELEGATION_NOT_RETAINED: '该子任务未保留独立会话，无法续聊。',
+  DELEGATION_LIMIT_EXCEEDED: '保留型委派会话已达上限，请先清理旧会话。',
+  DELEGATION_NOT_FOUND: '找不到指定的委派子任务。',
   INTERACTION_UNKNOWN: '该交互请求已结束或已过期，无需重复提交。',
   INTERACTION_LIMIT: '待确认的交互过多，请先处理当前提示后再试。',
   MCP_CONFIG_INVALID: 'MCP 配置文件格式有误，请检查并修复 mcp.json 后重试。',
@@ -272,12 +286,52 @@ const messages: Record<string, string> = {
   EXTERNAL_WORKSPACE_BUSY: '当前工作区已有运行中的外部代理会话，请等待其完成或取消后再试。',
   EXTERNAL_SESSION_BUSY: '该外部代理会话正在执行或等待审批，不能并发发送新消息。',
   EXTERNAL_UNTRUSTED_WORKSPACE: '当前工作区尚未确认信任，拒绝运行外部代理。',
+  CHECKPOINT_RESTORE_CONFLICT:
+    '部分文件在检查点生成后被手动修改，已暂停回滚以保护本地改动；如需覆盖请确认强制还原。',
+  CHECKPOINT_UNSAFE_ROOT: '当前目录属于系统高危根路径，已自动禁用工作区检查点。',
+  CHECKPOINT_GIT_UNAVAILABLE: '未检测到可用的 Git 命令，无法使用工作区检查点。',
+  CHECKPOINT_GIT_FAILED: '工作区检查点 Git 操作失败，请检查磁盘空间与目录权限。',
+  CHECKPOINT_LOCK_TIMEOUT: '等待工作区检查点锁超时，请稍后重试。',
+  CHECKPOINT_NOT_FOUND: '未找到指定的工作区检查点记录。',
+  CHECKPOINT_SYMLINK_ESCAPE: '检测到符号链接越界风险，已中止检查点还原。',
+  WORKTREE_NOT_GIT_REPO: '当前空间不是有效的 Git 仓库，无法创建受管工作树。',
+  WORKTREE_REPO_UNMERGED: '主仓库存在未决的合并、变基或冲突状态，请先处理后再创建工作树。',
+  WORKTREE_INVALID_BASE_REF: '指定的基线分支或提交在本地不存在。',
+  WORKTREE_INVALID_BRANCH: '工作树分支名称不符合 Git 引用规范。',
+  WORKTREE_BRANCH_EXISTS: '同名本地分支已存在，请更换分支名。',
+  WORKTREE_CAPACITY_EXCEEDED: '受管工作树短路径桶分配冲突过多，请清理闲置工作树后重试。',
+  WORKTREE_LINK_INVALID: '受管工作树双向 Git 回链校验失败，已拒绝访问该目录。',
+  WORKTREE_NOT_FOUND: '找不到指定的受管工作树记录。',
+  WORKTREE_ACTIVE_RUN: '该工作树仍有运行中的本地或外部任务，请先停止任务后再执行此操作。',
+  WORKTREE_FENCED: '该工作树正处于合并或移除门闩保护期，暂不接受新任务。',
+  WORKTREE_BUSY: '工作树目录正被系统进程占用，请关闭相关终端或编辑器后重试。',
+  WORKTREE_MERGE_STALE_PREVIEW: '工作树或主仓库状态已发生变化，请刷新合并预览后再确认合并。',
+  WORKTREE_DETACHED_MAIN: '主工作区处于游离 HEAD 状态，无法执行目标分支快进合并。',
+  WORKTREE_MAIN_BRANCH_MISMATCH: '主工作区当前检出分支与工作树基线分支不一致，请先切回基线分支。',
+  WORKTREE_MAIN_DIRTY: '主工作区在受影响文件上存在未提交修改，无法安全快进合并。',
+  WORKTREE_GIT_UNAVAILABLE: '未检测到可用的 Git 命令，无法管理工作树。',
+  WORKTREE_GIT_FAILED: '执行 Git 工作树操作失败。',
+  WORKTREE_ESCAPE: '请求路径越出了受管工作树边界。',
+  WORKSPACE_ESCAPE: '请求的文件路径越出了工作区安全边界。',
+  TERMINAL_LIMIT_REACHED: '活跃终端数量已达上限，请先关闭闲置终端。',
+  TERMINAL_NOT_FOUND: '目标终端不存在或已关闭。',
+  TERMINAL_UNAVAILABLE: '当前环境无法启动交互式终端。',
+  PERMISSION_DENIED: '出于安全策略限制，禁止读取该受保护文件（如 .kapibala 或 .env 密钥文件）。',
+  FILE_NOT_FOUND: '目标文件不存在或已被移除。',
+  FILE_IS_DIRECTORY: '目标路径是目录，请选择具体文件查看。',
   FORBIDDEN: '请求来源或资源归属不合法。',
   INTERNAL_ERROR: '操作未完成，请检查配置和目录后重试。',
 };
+const ALLOWED_TERMINAL_LIMIT_MESSAGES = new Set([
+  '单会话最多同时开启 3 个终端。',
+  '全局活跃终端已达上限（8 个），请先关闭闲置终端。',
+]);
+
 /** 不传递原始异常文字、堆栈或路径中的凭据；未知错误只给固定安全说明。 */
 export function safeError(error: unknown): DesktopError {
-  const candidate = error as { code?: string; message?: string; name?: string } | undefined;
+  const candidate = error as
+    | { code?: string; message?: string; safeMessage?: string; name?: string }
+    | undefined;
   const messagePrefix = candidate?.message?.split(':')[0]?.trim();
   const code =
     candidate?.code && messages[candidate.code]
@@ -299,8 +353,15 @@ export function safeError(error: unknown): DesktopError {
     code === 'SESSION_LOCKED' && candidate?.message
       ? /pid=(\d+)/.exec(candidate.message)?.[1]
       : undefined;
+  const specificTerminalLimit =
+    code === 'TERMINAL_LIMIT_REACHED'
+      ? [candidate?.safeMessage, candidate?.message].find(
+          (msg): msg is string =>
+            typeof msg === 'string' && ALLOWED_TERMINAL_LIMIT_MESSAGES.has(msg),
+        )
+      : undefined;
   const message = lockPid
     ? `${messages.SESSION_LOCKED.replace('。', '')}（持有者 pid=${lockPid}）；若确认该进程已退出，重启应用会自动清理残留锁。`
-    : messages[code];
+    : (specificTerminalLimit ?? messages[code]);
   return { code, message };
 }

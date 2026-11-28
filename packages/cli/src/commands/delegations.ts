@@ -13,6 +13,7 @@ import {
   type DelegationSessionSummary,
   MAX_RETAINED_DELEGATIONS,
   listDelegationSessions,
+  pruneDelegationSessions,
 } from '@kiturone/kapibala-host/internal';
 import { resolveCommandOutput } from '../command-output.js';
 import type { CommandContext, CommandHandler } from './dispatcher.js';
@@ -95,8 +96,28 @@ export const delegationsCommand: CommandHandler = async (args, ctx) => {
     return;
   }
 
+  if (sub === 'prune') {
+    const activeSessionIds = new Set(
+      (ctx.runtime?.listTasks({ status: 'active' }) ?? []).flatMap((task) =>
+        task.sessionId ? [task.sessionId] : [],
+      ),
+    );
+    const deleted = await pruneDelegationSessions(manager, { activeSessionIds });
+    for (const deletedId of deleted) {
+      ctx.runtime?.forgetDelegationSession(deletedId);
+    }
+    out.log(
+      deleted.length > 0
+        ? `已清理 ${deleted.length} 个过期或超额委派会话。`
+        : '当前没有需要清理的委派会话。',
+    );
+    return;
+  }
+
   if (!['show', 'open', 'cancel', 'delete'].includes(sub)) {
-    out.log('用法: /delegations [list | show <id> | open <id> | cancel <id> | delete <id>]');
+    out.log(
+      '用法: /delegations [list | prune | show <id> | open <id> | cancel <id> | delete <id>]',
+    );
     return;
   }
   const target = args[1];

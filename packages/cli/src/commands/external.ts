@@ -30,14 +30,25 @@ const TRANSPORT_LABELS: Record<ViewExternalSession['transport'], string> = {
   'pi-rpc': 'Pi 直连',
 };
 
-const EXTERNAL_USAGE =
-  '/external [list | harnesses | harness test [id] | harness add <id> <cmd> [args...] | harness enable|disable|remove|reset <id> | start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务> | config <sessionId> [model|mode|thought <值>] | show <sessionId> | prompt <sessionId> <文本> | approve <sessionId> [approvalId] <选项序号|ID|cancel> | cancel|close|delete <sessionId>]';
+const EXTERNAL_START_USAGE =
+  '用法: /external start <harnessId> [--worktree [--branch <name>]] [--model <id>] [--thought <level>] [--mode <mode>] <任务文本>';
 
-function scanQuotedTokens(raw: string): { tokens: string[]; unclosedQuote: boolean } {
-  const tokens: string[] = [];
+const EXTERNAL_USAGE =
+  '/external [list | harnesses | harness test [id] | harness add <id> <cmd> [args...] | harness enable|disable|remove|reset <id> | start <harnessId> [--worktree [--branch <name>]] [--model <id>] [--thought <level>] [--mode <mode>] <任务> | config <sessionId> [model|mode|thought <值>] | show <sessionId> | prompt <sessionId> <文本> | approve <sessionId> [approvalId] <选项序号|ID|cancel> | cancel|close|delete <sessionId>]';
+
+interface QuotedTokenSpan {
+  readonly value: string;
+  readonly start: number;
+  readonly end: number;
+  readonly quoted: boolean;
+}
+
+function scanQuotedTokenSpans(raw: string): { spans: QuotedTokenSpan[]; unclosedQuote: boolean } {
+  const spans: QuotedTokenSpan[] = [];
   let current = '';
   let quote: '"' | "'" | null = null;
   let sawQuoteInToken = false;
+  let tokenStart = -1;
 
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i]!;
@@ -50,24 +61,168 @@ function scanQuotedTokens(raw: string): { tokens: string[]; unclosedQuote: boole
       continue;
     }
     if (ch === '"' || ch === "'") {
+      if (tokenStart < 0) tokenStart = i;
       quote = ch;
       sawQuoteInToken = true;
       continue;
     }
     if (/\s/.test(ch)) {
       if (current.length > 0 || sawQuoteInToken) {
-        tokens.push(current);
+        spans.push({
+          value: current,
+          start: tokenStart,
+          end: i,
+          quoted: sawQuoteInToken,
+        });
         current = '';
         sawQuoteInToken = false;
+        tokenStart = -1;
       }
       continue;
     }
+    if (tokenStart < 0) tokenStart = i;
     current += ch;
   }
   if (current.length > 0 || sawQuoteInToken) {
-    tokens.push(current);
+    spans.push({
+      value: current,
+      start: tokenStart < 0 ? 0 : tokenStart,
+      end: raw.length,
+      quoted: sawQuoteInToken,
+    });
   }
-  return { tokens, unclosedQuote: quote !== null };
+  return { spans, unclosedQuote: quote !== null };
+}
+
+function scanQuotedTokens(raw: string): { tokens: string[]; unclosedQuote: boolean } {
+  const { spans, unclosedQuote } = scanQuotedTokenSpans(raw);
+  return { tokens: spans.map((item) => item.value), unclosedQuote };
+}
+
+interface ParsedExternalStartArgs {
+  readonly harnessId: string;
+  readonly task: string;
+  readonly useWorktree: boolean;
+  readonly worktreeBranch?: string;
+  readonly modelId?: string;
+  readonly thoughtLevel?: string;
+  readonly modeId?: string;
+}
+
+/**
+ * 解析 `/external start` 参数，允许 `--worktree`、`--branch`、`--model`、`--thought`、`--mode`
+ * 出现在 `<harnessId>` 之前、紧随 `<harnessId>` 之后或任务文本末尾，并拦截前置未知 `--*` 选项。
+ */
+function parseExternalStartArgs(raw: string): {
+  value?: ParsedExternalStartArgs;
+  error?: string;
+} {
+  const { spans, unclosedQuote } = scanQuotedTokenSpans(raw);
+  if (unclosedQuote) {
+    return { error: '参数引号未闭合' };
+  }
+  let harnessId: string | undefined;
+  let useWorktree = false;
+  let worktreeBranch: string | undefined;
+  let modelId: string | undefined;
+  let thoughtLevel: string | undefined;
+  let modeId: string | undefined;
+  const taskEntries: { span: QuotedTokenSpan; index: number }[] = [];
+
+  let i = 1;
+  while (i < spans.length) {
+    const span = spans[i]!;
+    const tok = span.value;
+    const beforeTask = taskEntries.length === 0;
+
+    if (!span.quoted && tok.startsWith('--')) {
+      if (tok === '--worktree') {
+        useWorktree = true;
+        i += 1;
+        continue;
+      }
+      if (tok.startsWith('--worktree=')) {
+        const val = tok.slice('--worktree='.length).trim();
+        if (!val) return { error: EXTERNAL_START_USAGE };
+        useWorktree = true;
+        worktreeBranch = val;
+        i += 1;
+        continue;
+      }
+      if (tok === '--branch' || tok === '--model' || tok === '--thought' || tok === '--mode') {
+        const next = spans[i + 1];
+        if (!next || !next.value.trim() || (!next.quoted && next.value.startsWith('--'))) {
+          return { error: EXTERNAL_START_USAGE };
+        }
+        const val = next.value.trim();
+        if (tok === '--branch') worktreeBranch = val;
+        else if (tok === '--model') modelId = val;
+        else if (tok === '--thought') thoughtLevel = val;
+        else if (tok === '--mode') modeId = val;
+        i += 2;
+        continue;
+      }
+      const eqMatch = /^--(branch|model|thought|mode)=(.*)$/.exec(tok);
+      if (eqMatch) {
+        const key = eqMatch[1]!;
+        const val = eqMatch[2]!.trim();
+        if (!val) return { error: EXTERNAL_START_USAGE };
+        if (key === 'branch') worktreeBranch = val;
+        else if (key === 'model') modelId = val;
+        else if (key === 'thought') thoughtLevel = val;
+        else if (key === 'mode') modeId = val;
+        i += 1;
+        continue;
+      }
+      if (beforeTask) {
+        return { error: `未知选项 '${tok}'` };
+      }
+    }
+
+    if (!harnessId) {
+      harnessId = tok.trim();
+      i += 1;
+      continue;
+    }
+
+    taskEntries.push({ span, index: i });
+    i += 1;
+  }
+
+  if (worktreeBranch && !useWorktree) {
+    return { error: '选项 --branch 必须配合 --worktree 使用' };
+  }
+  if (!harnessId || taskEntries.length === 0) {
+    return { error: EXTERNAL_START_USAGE };
+  }
+
+  const contiguous = taskEntries.every(
+    (entry, idx) => idx === 0 || entry.index === taskEntries[idx - 1]!.index + 1,
+  );
+  const task = contiguous
+    ? taskEntries.length === 1 && taskEntries[0]!.span.quoted
+      ? taskEntries[0]!.span.value.trim()
+      : raw.slice(taskEntries[0]!.span.start, taskEntries[taskEntries.length - 1]!.span.end).trim()
+    : taskEntries
+        .map((entry) => entry.span.value)
+        .join(' ')
+        .trim();
+
+  if (!task) {
+    return { error: EXTERNAL_START_USAGE };
+  }
+
+  return {
+    value: {
+      harnessId,
+      task,
+      useWorktree,
+      ...(worktreeBranch ? { worktreeBranch } : {}),
+      ...(modelId ? { modelId } : {}),
+      ...(thoughtLevel ? { thoughtLevel } : {}),
+      ...(modeId ? { modeId } : {}),
+    },
+  };
 }
 
 /**
@@ -117,19 +272,7 @@ export function validateExternalCommandArgs(args: string[]): string | undefined 
       return '用法: /external harness <test|add|enable|disable|remove|reset> ...';
     }
     case 'start': {
-      let idx = 1;
-      while (
-        idx < tokens.length &&
-        (tokens[idx] === '--model' || tokens[idx] === '--thought' || tokens[idx] === '--mode')
-      ) {
-        if (!tokens[idx + 1]?.trim()) {
-          return '用法: /external start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务文本>';
-        }
-        idx += 2;
-      }
-      return tokens.length >= idx + 2 && tokens[idx]?.trim()
-        ? undefined
-        : '用法: /external start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务文本>';
+      return parseExternalStartArgs(raw).error;
     }
     case 'config': {
       if (tokens.length === 2 && tokens[1]?.trim()) return undefined;
@@ -468,9 +611,10 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
     for (const item of items) {
       const aprBadge =
         item.pendingApprovalCount > 0 ? ` · 待审批 ${item.pendingApprovalCount}` : '';
+      const wtBadge = item.worktree ? ` · ⎇ ${item.worktree.branch}` : '';
       const modeBadge = item.canContinue ? '可恢复' : '只读归档';
       output.log(
-        `• [${item.id}] [${item.harnessName}] ${item.title} · ${STATUS_LABELS[item.status]}${aprBadge} · ${modeBadge}`,
+        `• [${item.id}] [${item.harnessName}] ${item.title} · ${STATUS_LABELS[item.status]}${wtBadge}${aprBadge} · ${modeBadge}`,
       );
     }
     return;
@@ -580,49 +724,60 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
     if (!(await ensureCliWorkspaceTrusted(workspaceRoot, ctx, output))) {
       return;
     }
-    let flagTokens = 0;
-    let modelId: string | undefined;
-    let thoughtLevel: string | undefined;
-    let modeId: string | undefined;
-    let idx = 1;
-    while (
-      idx < tokens.length &&
-      (tokens[idx] === '--model' || tokens[idx] === '--thought' || tokens[idx] === '--mode')
-    ) {
-      const flag = tokens[idx]!;
-      const val = tokens[idx + 1]?.trim();
-      if (!val) {
-        output.error(
-          '用法: /external start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务文本>',
-        );
-        return;
-      }
-      if (flag === '--model') modelId = val;
-      else if (flag === '--thought') thoughtLevel = val;
-      else if (flag === '--mode') modeId = val;
-      flagTokens += 2;
-      idx += 2;
-    }
-    const { head, tail } = splitFirstNTokens(raw, 2 + flagTokens);
-    const harnessId = head[1 + flagTokens];
-    if (!harnessId || !tail) {
-      output.error(
-        '用法: /external start [--model <id>] [--thought <level>] [--mode <mode>] <harnessId> <任务文本>',
-      );
+    const parsedStart = parseExternalStartArgs(raw);
+    if (!parsedStart.value) {
+      output.error(parsedStart.error ?? EXTERNAL_START_USAGE);
       return;
     }
-    const opened = await service.openSession({
-      workspaceRoot,
+    const {
       harnessId,
-      title: tail,
-      customTitle: false,
-      requireIdleWorkspace: true,
-      ...(modelId ? { modelId } : {}),
-      ...(thoughtLevel ? { thoughtLevel } : {}),
-      ...(modeId ? { modeId } : {}),
-    });
+      task: tail,
+      useWorktree,
+      worktreeBranch,
+      modelId,
+      thoughtLevel,
+      modeId,
+    } = parsedStart.value;
+    let allocatedWorktree:
+      | Awaited<ReturnType<NonNullable<CommandContext['worktrees']>['create']>>
+      | undefined;
+    if (useWorktree) {
+      if (!ctx.worktrees) {
+        output.error('当前宿主未启用受管 Git Worktree 服务，无法使用 --worktree。');
+        return;
+      }
+      allocatedWorktree = await ctx.worktrees.create({
+        projectRoot: workspaceRoot,
+        name: tail,
+        ...(worktreeBranch ? { branch: worktreeBranch } : {}),
+      });
+    }
+    let opened: ViewExternalSnapshot;
+    try {
+      opened = await service.openSession({
+        workspaceRoot: allocatedWorktree ? allocatedWorktree.binding.worktreePath : workspaceRoot,
+        ...(allocatedWorktree
+          ? { projectRoot: workspaceRoot, worktree: allocatedWorktree.binding }
+          : {}),
+        harnessId,
+        title: tail,
+        customTitle: false,
+        requireIdleWorkspace: true,
+        ...(modelId ? { modelId } : {}),
+        ...(thoughtLevel ? { thoughtLevel } : {}),
+        ...(modeId ? { modeId } : {}),
+      });
+    } catch (openErr) {
+      if (allocatedWorktree && ctx.worktrees) {
+        await ctx.worktrees
+          .remove({ id: allocatedWorktree.record.id, force: true })
+          .catch(() => {});
+      }
+      throw openErr;
+    }
+    const wtInfo = opened.session.worktree ? ` [⎇ ${opened.session.worktree.branch}]` : '';
     output.log(
-      `已创建外部会话 [${opened.session.id}] (${opened.session.harnessName})，正在执行首轮任务…`,
+      `已创建外部会话 [${opened.session.id}] (${opened.session.harnessName})${wtInfo}，正在执行首轮任务…`,
     );
     let snap: ViewExternalSnapshot;
     try {
@@ -638,6 +793,11 @@ export const externalCommand: CommandHandler = async (args, ctx) => {
       const latest = service.getSnapshot(opened.session.id, workspaceRoot);
       if (latest.messages.length === 0 && !latest.session.hasArchive) {
         await service.deleteSession(opened.session.id, workspaceRoot).catch(() => {});
+        if (allocatedWorktree && ctx.worktrees) {
+          await ctx.worktrees
+            .remove({ id: allocatedWorktree.record.id, force: true })
+            .catch(() => {});
+        }
       }
       throw err;
     }

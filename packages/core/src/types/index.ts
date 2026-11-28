@@ -3,7 +3,7 @@
  */
 
 import type { SkillContentSource } from '../capabilities/skills/types.js';
-import type { ModelErrorInfo } from '../errors/index.js';
+import type { ModelErrorCategory, ModelErrorInfo } from '../errors/index.js';
 
 /** 原生协议内容的来源；仅同一次运行、同模型和端点允许回传私有状态。 */
 export interface ProtocolOrigin {
@@ -427,7 +427,43 @@ export type SessionEvent =
     }
   | { type: 'turn_finish'; turn: number; usage?: Usage; metrics: TurnMetrics }
   | { type: 'run_finish'; metrics: RunMetrics }
+  | { type: 'stream_reset'; step: number; attempt: number }
+  | {
+      type: 'retry_scheduled';
+      step: number;
+      attempt: number;
+      maxRetries: number;
+      delayMs: number;
+      nextRetryAt: number;
+      category: ModelErrorCategory;
+      message: string;
+    }
   | { type: 'error'; error: Error; modelError?: ModelErrorInfo };
+
+/**
+ * 模型单步请求的自动退避重试与断流恢复策略。
+ *
+ * 约束与边界：
+ * - 仅对 `ModelError.retryable === true` 的瞬态失败生效，鉴权、配额耗尽与参数错误立即终止；
+ * - 上下文溢出优先进入单次反应式压缩分支，不消耗退避次数；
+ * - 重试仅重发当前未提交步骤，已落盘闭合的前序工具步骤（1..step-1）保持不变，绝不重跑工具。
+ */
+export interface ModelRetryOptions {
+  /** 单步模型请求最大自动重试次数（不含首次请求）；缺省 2，传 0 禁用自动重试。 */
+  readonly maxRetries?: number;
+  /** 指数退避初始延迟毫秒数；缺省 1000。 */
+  readonly baseDelayMs?: number;
+  /** 指数退避单次延迟上限毫秒数；缺省 30_000。 */
+  readonly maxDelayMs?: number;
+  /** 服务端 Retry-After 允许等待的最大毫秒数；超出立即失败不盲等，缺省 60_000。 */
+  readonly maxRetryAfterMs?: number;
+  /** 是否允许在已产生流式文本/思考增量（outputSeen）后断流重试并通过 stream_reset 回滚半截输出；缺省 false。 */
+  readonly allowMidStreamRetry?: boolean;
+  /** 可选单测注入的退避等待函数；生产环境缺省使用绑定 AbortSignal 的定时器。 */
+  readonly sleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+  /** 可选单测注入的随机源（返回 [0, 1)）；缺省 Math.random。 */
+  readonly random?: () => number;
+}
 
 // 底层 Provider 吐出的原始事件流
 export type ModelEvent =
@@ -474,6 +510,8 @@ export interface ModelRequest {
   maxTokens?: number;
   /** 宿主提供的本次运行来源；缺省时原生适配器不回传来源未知的私有状态。 */
   context?: { runId: string; modelId?: string };
+  /** 可选覆盖流式 SSE 分块最大空闲等待毫秒数；缺省沿用适配器配置（默认 90_000ms）。 */
+  streamIdleTimeoutMs?: number;
 }
 
 /** runtime 通用请求准备契约；实现可以预算或投影，Loop 不依赖具体上下文管理器。 */
@@ -482,3 +520,19 @@ export type RequestPreparation = (
   history: readonly CanonicalMessage[],
   reason?: 'threshold' | 'overflow',
 ) => AsyncGenerator<SessionEvent, ModelRequest>;
+
+/**
+ * 会话或子代理绑定的受管 Git Worktree 物理隔离元数据。
+ *
+ * 约束：随 `SessionHeader` 或子代理任务记录可选携带，保持会话归属主仓 `projectRoot`（历史项目桶与信任根不变），
+ * 同时记录独立工作树执行路径与基线分支快照，供重开恢复、状态展示与冲突隔离合并审阅共用。
+ */
+export interface SessionWorktreeBinding {
+  readonly id: string;
+  readonly projectRoot: string;
+  readonly worktreePath: string;
+  readonly branch: string;
+  readonly baseRef: string;
+  readonly baseCommit: string;
+  readonly createdAt: number;
+}

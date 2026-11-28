@@ -3,6 +3,7 @@ import type {
   PresentationState,
   ViewBlock,
   ViewMessage,
+  ViewRetryStatus,
   ViewTodoState,
 } from '../view-model/index.js';
 import { redactText } from './redaction.js';
@@ -59,6 +60,11 @@ function redactTodoState(state: ViewTodoState, redact: PublicTextRedactor): View
   return { ...state, items: state.items.map((item) => ({ ...item, title: redact(item.title) })) };
 }
 
+/** 自动重试提示消息随凭证集重脱敏；步数、次数与时间戳是受控数值事实，原样保留。 */
+function redactRetryStatus(status: ViewRetryStatus, redact: PublicTextRedactor): ViewRetryStatus {
+  return { ...status, message: redact(status.message) };
+}
+
 /** 历史提交、实时文字、工具与诊断统一处理；不改写任何控制身份或序号。 */
 export function redactPresentationChange(
   change: PresentationChange,
@@ -82,6 +88,13 @@ export function redactPresentationChange(
         ...change,
         todos: change.todos ? redactTodoState(change.todos, redact) : change.todos,
       };
+    case 'retry_status_changed':
+      return {
+        ...change,
+        ...(change.retryStatus
+          ? { retryStatus: redactRetryStatus(change.retryStatus, redact) }
+          : {}),
+      };
     default:
       return change;
   }
@@ -92,11 +105,15 @@ export function redactPresentationState(
   state: PresentationState,
   redact: PublicTextRedactor,
 ): PresentationState {
+  const cloned = structuredClone(state);
   return {
-    ...structuredClone(state),
+    ...cloned,
     messages: state.messages.map((message) => redactViewMessage(message, redact)),
     pendingMessages: state.pendingMessages.map((message) => redactViewMessage(message, redact)),
     notices: state.notices.map((notice) => ({ ...notice, text: redact(notice.text) })),
-    todos: state.todos === undefined ? undefined : redactTodoState(state.todos, redact),
+    ...(state.todos === undefined ? {} : { todos: redactTodoState(state.todos, redact) }),
+    ...(state.retryStatus === undefined
+      ? {}
+      : { retryStatus: redactRetryStatus(state.retryStatus, redact) }),
   };
 }

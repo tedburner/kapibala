@@ -850,8 +850,9 @@ export class CrossProjectSessionCatalog {
         archived,
         pinned,
         ...(mode ? { mode } : {}),
-        // 委派标记只在 header 里；漏转写会让跨项目重建的 sidecar 永久丢失委派归属。
+        // 委派标记与受管 Worktree 绑定只在 header 里；漏转写会让跨项目重建的 sidecar 丢失隔离身份。
         ...(header.delegation ? { delegation: header.delegation } : {}),
+        ...(header.worktree ? { worktree: header.worktree } : {}),
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         revision: lastRecordId,

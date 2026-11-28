@@ -43,6 +43,16 @@ export class CliInputCoordinator {
   private detailToggleHandler?: () => void;
   private completionHandler?: (line: string) => [string[], string];
   private readonly interactionHandlers = new Set<() => void>();
+  /** 后台或并发子代理审批在独占问答/密钥录入或多步命令交互期间的 FIFO 等待唤醒队列。 */
+  private readonly approvalWaiters: Array<() => void> = [];
+  /** 多步交互命令（如 `/model` 分级菜单与补录密钥）嵌套锁计数；大于 0 时阻止后台审批穿插抢占。 */
+  private commandSessionDepth = 0;
+  /** 后台审批打断空闲输入行时暂存的未提交草稿与光标偏移。 */
+  private savedIdleDraft?: { line: string; cursor: number };
+  /** 连接模式空闲行读取挂起回调（不占用 `pending`，允许后台审批随时插入并恢复输入行）。 */
+  private chatLineWaiters: Array<{
+    resolve: (line: string | null) => void;
+  }> = [];
   private closed = false;
   /**
    * 只保留聊天问句的进程内历史；审批答案、菜单选项、确认词与密钥不进入，
@@ -104,7 +114,9 @@ export class CliInputCoordinator {
       if (this.pending) this.pending.finish(line);
       else {
         this.remember(line);
-        this.lineHandler?.(line);
+        const waiter = this.chatLineWaiters.shift();
+        if (waiter) waiter.resolve(line);
+        else this.lineHandler?.(line);
       }
     });
     let finish!: () => void;
@@ -113,7 +125,10 @@ export class CliInputCoordinator {
     });
     this.rl.on('close', () => {
       this.closed = true;
+      this.savedIdleDraft = undefined;
       this.cancel();
+      for (const waiter of this.chatLineWaiters.splice(0)) waiter.resolve(null);
+      for (const wake of this.approvalWaiters.splice(0)) wake();
       this.input.removeListener('keypress', this.keyHandler);
       this.detailToggleHandler = undefined;
       this.completionHandler = undefined;
@@ -199,6 +214,16 @@ export class CliInputCoordinator {
         }
         if (error) reject(error);
         else resolve(value ?? '');
+        if (this.commandSessionDepth === 0) {
+          // 推迟两个微任务再唤醒后台审批：既让 select -> question 链式微任务先拿到 pending，又不跨越宏任务丢失同步写流输入。
+          queueMicrotask(() => {
+            queueMicrotask(() => {
+              if (!this.pending && this.commandSessionDepth === 0 && !this.closed) {
+                this.approvalWaiters.shift()?.();
+              }
+            });
+          });
+        }
       };
       this.pending = { finish, secret: options?.secret ?? false };
       for (const handler of this.interactionHandlers) handler();
@@ -262,17 +287,81 @@ export class CliInputCoordinator {
     return (await this.question(`${prompt} 输入 yes 确认: `)).trim().toLowerCase() === 'yes';
   }
 
-  /** 审批展示完整安全转义的参数与命令，输入由本协调器独占，非 TTY 明确拒绝。 */
-  async approve(request: ApprovalRequest, signal?: AbortSignal): Promise<ApprovalChoice> {
+  /**
+   * 在多步命令交互（如 `/model` 两步菜单与后续补录密钥）期间维持命令会话锁：
+   * 步骤切换间隙不释放给后台子代理审批，整条命令结束后再按 FIFO 唤醒挂起审批。
+   */
+  async withCommandSession<T>(action: () => Promise<T>): Promise<T> {
+    this.commandSessionDepth += 1;
+    try {
+      return await action();
+    } finally {
+      this.commandSessionDepth = Math.max(0, this.commandSessionDepth - 1);
+      if (this.commandSessionDepth === 0 && !this.pending && !this.closed) {
+        this.approvalWaiters.shift()?.();
+      }
+    }
+  }
+
+  /**
+   * 空闲提示符下等待下一条普通输入行（不占用 `pending`），允许后台子代理审批随时插入并在完成后无损恢复草稿。
+   * 输入流关闭（EOF / `close()`）时返回 `null`。
+   */
+  async readChatLine(promptText: string): Promise<string | null> {
+    if (!this.interactive) throw new Error('交互输入不可用，请在 TTY 终端操作');
+    if (this.closed) return null;
+    this.rl.resume();
+    this.prompt(promptText);
+    return new Promise<string | null>((resolve) => {
+      if (this.closed) {
+        resolve(null);
+        return;
+      }
+      this.chatLineWaiters.push({ resolve });
+    });
+  }
+
+  /** 审批展示完整安全转义的参数与命令，输入由本协调器独占（忙碌期按序排队），非 TTY 明确拒绝。 */
+  async approve(
+    request: ApprovalRequest & { readonly formattedTarget?: string },
+    signal?: AbortSignal,
+  ): Promise<ApprovalChoice> {
     if (!this.interactive) return 'deny_once';
-    if (signal?.aborted) return 'cancel';
-    const target = request.shell
-      ? `解释器: ${escapeApprovalText(request.shell.executablePath ?? request.shell.interpreter)}\n工作目录: ${escapeApprovalText(request.shell.cwd)}\n完整命令: ${escapeApprovalText(request.shell.command)}`
-      : `工具: ${escapeApprovalText(request.toolName)}\n参数: ${escapeApprovalText(JSON.stringify(request.input))}`;
+    if (signal?.aborted || this.closed) return 'cancel';
+    while ((this.pending || this.commandSessionDepth > 0) && !this.closed) {
+      if (signal?.aborted) return 'cancel';
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          signal?.removeEventListener('abort', onAbort);
+          const idx = this.approvalWaiters.indexOf(wake);
+          if (idx >= 0) this.approvalWaiters.splice(idx, 1);
+          resolve();
+        };
+        const onAbort = () => wake();
+        this.approvalWaiters.push(wake);
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    }
+    if (signal?.aborted || this.closed) return 'cancel';
+    const rlState = this.rl as unknown as { line: string; cursor: number };
+    if (!this.savedIdleDraft && !this.pending && this.commandSessionDepth === 0) {
+      this.savedIdleDraft = {
+        line: rlState.line ?? '',
+        cursor: Math.max(0, Math.min(rlState.cursor ?? 0, (rlState.line ?? '').length)),
+      };
+    }
+    const originHeader = request.subagentOrigin
+      ? `[子代理: ${escapeApprovalText(request.subagentOrigin.description)}]\n`
+      : '';
+    const target = request.formattedTarget
+      ? `工具: ${escapeApprovalText(request.toolName)}\n${escapeApprovalText(request.formattedTarget)}`
+      : request.shell
+        ? `解释器: ${escapeApprovalText(request.shell.executablePath ?? request.shell.interpreter)}\n工作目录: ${escapeApprovalText(request.shell.cwd)}\n完整命令: ${escapeApprovalText(request.shell.command)}`
+        : `工具: ${escapeApprovalText(request.toolName)}\n参数: ${escapeApprovalText(JSON.stringify(request.input))}`;
     try {
       const answer = (
         await this.question(
-          `\n${target}\n[1] 本次允许 ${request.sessionAllowed ? '[2] 本会话允许 ' : ''}[3] 拒绝 [4] 本会话拒绝\n选择: `,
+          `\n${originHeader}${target}\n[1] 本次允许 ${request.sessionAllowed ? '[2] 本会话允许 ' : ''}[3] 拒绝 [4] 本会话拒绝\n选择: `,
           { signal },
         )
       ).trim();
@@ -282,6 +371,18 @@ export class CliInputCoordinator {
       return 'deny_once';
     } catch {
       return 'cancel';
+    } finally {
+      if (
+        this.savedIdleDraft &&
+        !this.closed &&
+        !this.pending &&
+        this.approvalWaiters.length === 0
+      ) {
+        const draft = this.savedIdleDraft;
+        this.savedIdleDraft = undefined;
+        rlState.line = draft.line;
+        rlState.cursor = Math.max(0, Math.min(draft.cursor, draft.line.length));
+      }
     }
   }
 
@@ -295,12 +396,12 @@ export class CliInputCoordinator {
       this.rl.close();
     }
   }
-  /** 空闲且交互时刷新提示符；忙碌期调用不打印、不打断当前问答。 */
+  /** 空闲且交互时刷新提示符并保留已恢复草稿的光标位置；忙碌期调用不打印、不打断当前问答。 */
   prompt(value: string): void {
     if (!this.closed && !this.pending && this.interactive) {
       for (const handler of this.interactionHandlers) handler();
       this.rl.setPrompt(value);
-      this.rl.prompt();
+      this.rl.prompt(true);
     }
   }
   clearLine(): void {

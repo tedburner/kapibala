@@ -14,6 +14,20 @@ export type ApprovalChoice =
   | 'deny_session'
   | 'cancel';
 
+/**
+ * 子代理向父会话冒泡人工审批时的来源身份快照。
+ *
+ * 约束：多层嵌套（root → A → B）冒泡时保留最内层实际发起调用的子代理身份，
+ * 仅供宿主渲染来源提示与路由，不改变权限裁决逻辑或会话级审批缓存键。
+ */
+export interface SubagentApprovalOrigin {
+  readonly agentId: string;
+  readonly role: string;
+  readonly description: string;
+  readonly childSessionId?: string;
+  readonly parentSessionId: string;
+}
+
 /** 宿主展示实际执行目标并取得人工选择；无通道视为非交互拒绝。 */
 export interface ApprovalRequest {
   toolName: string;
@@ -27,6 +41,8 @@ export interface ApprovalRequest {
   executionIdentity?: ToolExecutionIdentity;
   /** 宿主是否允许本次请求写入会话级允许缓存；deny_session 的缓存不受此限制。 */
   sessionAllowed: boolean;
+  /** 子代理冒泡审批时的最内层发起者身份；根会话直接调用时缺省。 */
+  readonly subagentOrigin?: SubagentApprovalOrigin;
 }
 
 /** 宿主实现的审批入口；未提供通道时执行器按非交互直接拒绝，通道抛错视同 cancel。 */

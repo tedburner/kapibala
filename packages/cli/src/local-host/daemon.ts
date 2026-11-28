@@ -42,6 +42,8 @@ export interface DaemonOptions {
   runtimeDir?: string;
   homeDir?: string;
   entryPath?: string;
+  /** 连接守护进程时声明的本地协议能力列表；`connectDaemon` 缺省声明 `['retry']`，状态与停机探针传空数组。 */
+  capabilities?: readonly string[];
 }
 
 function runtimeFiles(root: string): { metadata: string; lock: string; log: string } {
@@ -133,6 +135,7 @@ export function readDaemonMetadata(runtimeDir: string): DaemonMetadata {
 async function connectDaemonSnapshot(
   metadata: DaemonMetadata,
   clientOptions: LocalClientOptions = {},
+  capabilities: readonly string[] = [],
 ): Promise<LocalClient> {
   const transport = await connectLocal(metadata.endpoint);
   const client = await LocalClient.connect(
@@ -140,7 +143,7 @@ async function connectDaemonSnapshot(
     {
       protocolVersion: PROTOCOL_VERSION,
       clientName: 'kpbl',
-      capabilities: [],
+      capabilities: [...capabilities],
       token: metadata.token,
     },
     clientOptions,
@@ -167,7 +170,7 @@ export async function connectDaemon(
   clientOptions: LocalClientOptions = {},
 ): Promise<LocalClient> {
   const metadata = readDaemonMetadata(getLocalRuntimeDirectory(options.runtimeDir));
-  return connectDaemonSnapshot(metadata, clientOptions);
+  return connectDaemonSnapshot(metadata, clientOptions, options.capabilities ?? ['retry']);
 }
 
 /** 报告可操作状态；无法连接时不通过 PID 猜测健康或自动清除陈旧记录。 */

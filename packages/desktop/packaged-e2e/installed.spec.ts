@@ -155,14 +155,63 @@ test('复制安装后的应用使用自身依赖、隔离历史和受限 GUI PAT
     await page.getByRole('button', { name: '新建对话', exact: true }).last().click();
     await page.getByRole('textbox', { name: '发送消息' }).fill('验证安装包');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    // 新审批自动弹出居中队列，标题栏不再有常驻「审批 N」计数入口；批准一次后队列清空自动收起。
-    const queue = page.getByRole('dialog', { name: '待处理审批', exact: true });
+    // 内联非阻断审批叠卡（region[name="待处理审批"]）：批准一次后自动收起。
+    const queue = page.getByRole('region', { name: '待处理审批', exact: true });
     await expect(queue).toBeVisible();
     await queue.getByRole('button', { name: '批准一次', exact: true }).click();
     await expect(queue).toBeHidden();
     await expect(page.getByText('安装后链路通过。', { exact: true })).toBeVisible();
     const proof = path.join(home, '.kapibala/workspaces/default/installed-proof.txt');
     expect(fs.readFileSync(proof, 'utf8')).toBe('packaged-tool-proof');
+    // 验证安装副本内 asarUnpack 的 node-pty 原生扩展可正常拉起与收发数据（或诚实上报不可用而不崩溃）。
+    const ptySmoke = await page.evaluate(async () => {
+      const ws = await window.kapibala.workspace.openDefault();
+      const hist = await window.kapibala.session.list(ws.id);
+      const convId = hist.items[0]?.conversationId;
+      if (!convId) throw new Error('missing-packaged-conversation');
+      const sessionKey = `native:${ws.id}:${convId}`;
+      let out = '';
+      const off = window.kapibala.onEvent((ev) => {
+        if (ev.type === 'terminal.data' && ev.sessionKey === sessionKey) {
+          out += ev.data;
+        }
+      });
+      try {
+        const snap = await window.kapibala.terminal.ensure({
+          workspaceId: ws.id,
+          sessionKey,
+        });
+        const firstTerm = snap.terminals[0];
+        if (!firstTerm || firstTerm.status === 'unavailable') {
+          return {
+            spawned: false,
+            unavailableReason: firstTerm?.unavailableReason ?? snap.unavailableReason,
+          };
+        }
+        const termId = firstTerm.id;
+        await window.kapibala.terminal.write({
+          workspaceId: ws.id,
+          sessionKey,
+          terminalId: termId,
+          data: 'echo KPBL_PACKAGED_PTY_OK\r',
+        });
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline && !out.includes('KPBL_PACKAGED_PTY_OK')) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        await window.kapibala.terminal.close({
+          workspaceId: ws.id,
+          sessionKey,
+          terminalId: termId,
+        });
+        return { spawned: true, echoed: out.includes('KPBL_PACKAGED_PTY_OK') };
+      } finally {
+        off();
+      }
+    });
+    if (process.platform === 'win32' || process.platform === 'darwin') {
+      expect(ptySmoke).toEqual({ spawned: true, echoed: true });
+    }
     expect(errors).toEqual([]);
     const closed = app.waitForEvent('close');
     await app.evaluate(({ app }) => app.quit());

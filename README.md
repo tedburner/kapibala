@@ -2,7 +2,7 @@
 
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png" />
-    <img src="assets/logo.png" width="480" alt="Kapibala" />
+    <img src="assets/logo.png" width="440" alt="卡皮巴拉" />
   </picture>
 
   **心如止水，稳定如初 —— AI Agent Harness**
@@ -32,7 +32,7 @@
 
 ---
 
-**Kapibala**（命令行入口 `kpbl`）是面向桌面与终端的开源多代理编码工作台。打开桌面客户端，在同一个界面里既能直接驱动本机已经安装登录的外部编码代理（Claude Code、Codex、Pi、Antigravity、OpenCode 以及任意兼容 ACP 的 CLI），也能运行内置的零依赖多协议 Agent 引擎，流式查看思考过程、工具操作、任务清单与变更证据，就地完成风险审批。
+**卡皮巴拉**（命令行入口 `kpbl`）是面向桌面与终端的开源多代理编码工作台。打开桌面客户端，在同一个界面里既能直接驱动本机已经安装登录的外部编码代理（Claude Code、Codex、Pi、Antigravity、OpenCode 以及任意兼容 ACP 的 CLI），也能运行内置的零依赖多协议 Agent 引擎，流式查看思考过程、工具操作、任务清单与变更证据，就地完成风险审批。
 
 外部代理直接复用你本机已有的订阅和登录态（比如 `claude auth login`、`codex login`、`agy acp --login`），不转售 Token，也不在应用内重复保管第三方明文密钥。你熟悉哪个代理就用哪个，需要切模型或换代理时不用离开当前工作区。
 
@@ -74,7 +74,7 @@ Electron 桌面客户端、交互式终端 `kpbl` 与本地守护进程 `kpbl da
 
 ## 支持的外部代理与模型生态
 
-本机终端能跑的编码代理，都能直接接入 Kapibala（未安装的内置预设默认保持停用，不污染选择菜单）：
+本机终端能跑的编码代理，都能直接接入卡皮巴拉（未安装的内置预设默认保持停用，不污染选择菜单）：
 
 <p>
   <kbd>Claude Code</kbd> &nbsp;
@@ -150,7 +150,7 @@ kpbl daemon start                            # 启动本地受控守护进程（
 
 ### 3. 登录外部代理或配置模型密钥
 
-- **使用外部代理**：确保本机已安装至少一款代理 CLI 并完成其自有登录（如 `claude auth login`、`codex login`、`pi` 内 `/login` 或 `agy acp --login`），打开 Kapibala 即可在输入框选用。
+- **使用外部代理**：确保本机已安装至少一款代理 CLI 并完成其自有登录（如 `claude auth login`、`codex login`、`pi` 内 `/login` 或 `agy acp --login`），打开卡皮巴拉即可在输入框选用。
 - **使用内置自研引擎**：首次启动按向导填入任一厂商 API Key，或直接设置环境变量（`DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY` 等）。
 
 ---

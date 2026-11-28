@@ -1,16 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import type { ApprovalChannel } from '@kiturone/kapibala';
-import { detectProjectRoot } from '@kiturone/kapibala-host/internal';
+import { type ApprovalChannel, type SessionWorktreeBinding, isSamePath } from '@kiturone/kapibala';
+import { type ReferenceSelection, detectProjectRoot } from '@kiturone/kapibala-host/internal';
 import {
   DEFAULT_LIMITS,
   type JsonValue,
   type PendingApproval,
   type SessionControl,
   type SnapshotMetadata,
+  type WireReferenceSelection,
+  type WireWorktreeSummary,
 } from '@kiturone/kapibala-host/protocol';
 import { LocalHostError } from './errors.js';
-import { SessionEventFeed } from './events.js';
+import { SessionEventFeed, isRetryWireEvent } from './events.js';
 import { redactText, sanitizeDisplayText } from './redaction.js';
 import { previewToolResult, summarizeToolTarget } from './tool-projection.js';
 import type { ResourceFactory, SessionResources } from './types.js';
@@ -34,14 +36,14 @@ export interface RegisteredSession {
   readonly streamEpoch: string;
   readonly resources: SessionResources;
   readonly feed: SessionEventFeed;
-  controller?: { clientId: string; epoch: string };
+  controller?: { clientId: string; epoch: string; capabilities?: ReadonlySet<string> };
   active?: ActiveRun;
   closing?: boolean;
   /** 共享在途 dispose；失败后清除，允许同一句柄重试尚未完成的释放步骤。 */
   disposal?: Promise<void>;
   /** Core 仍忙时保留可重试围栏：拒绝新运行，但 close/disconnect/shutdown 必须继续可用。 */
   needsCleanup?: boolean;
-  live?: { events: JsonValue[]; bytes: number; complete: boolean };
+  live?: { events: JsonValue[]; baseEvents: JsonValue[]; bytes: number; complete: boolean };
   operations: Map<string, { inputHash: string; runId: string }>;
 }
 
@@ -66,7 +68,8 @@ export class SessionRegistry {
   async open(
     workspaceRoot: string,
     conversationId?: string,
-  ): Promise<{ sessionId: string; conversationId: string }> {
+    openOptions?: { readonly worktree?: SessionWorktreeBinding },
+  ): Promise<{ sessionId: string; conversationId: string; worktree?: WireWorktreeSummary }> {
     if (!path.isAbsolute(workspaceRoot)) throw new Error('WORKSPACE_ROOT_REQUIRED');
     const root = detectProjectRoot(workspaceRoot);
     const identity = identityPath(root);
@@ -74,17 +77,22 @@ export class SessionRegistry {
       .catch(() => {})
       .then(async () => {
         if (this.shuttingDown) throw new Error('SHUTTING_DOWN');
-        const existing = [...this.sessions.values()].find(
-          (entry) =>
-            !entry.closing &&
-            identityPath(entry.workspaceRoot) === identity &&
-            entry.resources.conversationId === conversationId,
-        );
-        if (existing)
-          return {
-            sessionId: existing.sessionId,
-            conversationId: existing.resources.conversationId,
-          };
+        if (conversationId !== undefined) {
+          const existing = [...this.sessions.values()].find(
+            (entry) =>
+              !entry.closing &&
+              identityPath(entry.workspaceRoot) === identity &&
+              entry.resources.conversationId === conversationId,
+          );
+          if (existing) {
+            const existingWt = existing.resources.worktree?.();
+            return {
+              sessionId: existing.sessionId,
+              conversationId: existing.resources.conversationId,
+              ...(existingWt ? { worktree: { ...existingWt } } : {}),
+            };
+          }
+        }
         if (this.sessions.size >= DEFAULT_LIMITS.maxOpenSessions) throw new Error('RESOURCE_LIMIT');
         const holder: { entry?: RegisteredSession } = {};
         const approval: ApprovalChannel = {
@@ -94,6 +102,7 @@ export class SessionRegistry {
               : Promise.resolve('cancel'),
         };
         const resources = await this.options.create(root, conversationId, approval, {
+          ...(openOptions?.worktree ? { worktree: openOptions.worktree } : {}),
           isHostIdle: () =>
             Boolean(holder.entry) &&
             !this.shuttingDown &&
@@ -117,10 +126,36 @@ export class SessionRegistry {
         };
         holder.entry = entry;
         this.sessions.set(sessionId, entry);
-        return { sessionId, conversationId: resources.conversationId };
+        const wt = resources.worktree?.();
+        return {
+          sessionId,
+          conversationId: resources.conversationId,
+          ...(wt ? { worktree: { ...wt } } : {}),
+        };
       });
     this.opening = operation;
     return operation;
+  }
+
+  /**
+   * 在移除受管 Git Worktree 前关闭绑定在该目录下的空闲本地会话句柄，释放进程工作目录引用。
+   */
+  async closeIdleSessionsInWorktree(worktreePath: string): Promise<void> {
+    const targets = [...this.sessions.values()].filter((entry) => {
+      if (entry.closing || entry.active) return false;
+      const wt = entry.resources.worktree?.();
+      return Boolean(wt && isSamePath(wt.worktreePath, worktreePath));
+    });
+    for (const entry of targets) {
+      entry.closing = true;
+      try {
+        await this.disposeEntry(entry);
+        this.sessions.delete(entry.sessionId);
+      } catch (error) {
+        entry.closing = false;
+        throw error;
+      }
+    }
   }
 
   /** 只接受本宿主会话 ID，不将 conversation ID 当作已授权控制身份。 */
@@ -136,15 +171,23 @@ export class SessionRegistry {
     clientId: string,
     mode: 'control' | 'observe',
     pendingApprovals: PendingApproval[] = [],
+    options?: { includeRetry?: boolean; capabilities?: ReadonlySet<string> },
   ): SnapshotMetadata {
     const entry = this.get(sessionId);
     if (entry.closing || this.shuttingDown) throw new Error('SHUTTING_DOWN');
     if (mode === 'control') {
       if (entry.controller && entry.controller.clientId !== clientId)
         throw new Error('SESSION_BUSY');
-      entry.controller ??= { clientId, epoch: randomUUID() };
+      entry.controller ??= {
+        clientId,
+        epoch: randomUUID(),
+        ...(options?.capabilities ? { capabilities: options.capabilities } : {}),
+      };
+      if (options?.capabilities) {
+        entry.controller.capabilities = options.capabilities;
+      }
     }
-    return this.snapshot(entry, clientId, pendingApprovals);
+    return this.snapshot(entry, clientId, pendingApprovals, options);
   }
 
   /** 控制身份包含实际连接，不把仅知晓 epoch 的观察者当作控制者。 */
@@ -166,13 +209,15 @@ export class SessionRegistry {
     entry: RegisteredSession,
     clientId: string,
     pendingApprovals: PendingApproval[] = [],
+    options?: { includeRetry?: boolean },
   ): SnapshotMetadata {
+    const includeRetry = options?.includeRetry ?? true;
     return {
       sessionId: entry.sessionId,
       streamEpoch: entry.streamEpoch,
       controlEpoch: entry.controller?.clientId === clientId ? entry.controller.epoch : '',
       serverInstanceId: this.serverInstanceId,
-      seq: entry.feed.highWaterMark,
+      seq: entry.feed.highWaterMarkFor(includeRetry),
       conversationId: entry.resources.conversationId,
       runId: entry.active?.id ?? null,
       pendingApprovals: pendingApprovals.map((approval) => ({ ...approval })),
@@ -187,10 +232,13 @@ export class SessionRegistry {
     clientId: string,
     clientOperationId: string,
     input: string,
+    references?: readonly WireReferenceSelection[],
   ): { runId: string; accepted: true } {
     const entry = this.control(control.sessionId, clientId, control);
     if (this.shuttingDown) throw new Error('SHUTTING_DOWN');
-    const inputHash = createHash('sha256').update(input).digest('hex');
+    const hashPayload =
+      references && references.length > 0 ? JSON.stringify({ input, references }) : input;
+    const inputHash = createHash('sha256').update(hashPayload).digest('hex');
     const prior = entry.operations.get(clientOperationId);
     if (prior) {
       if (prior.inputHash !== inputHash) throw new Error('OPERATION_CONFLICT');
@@ -205,7 +253,15 @@ export class SessionRegistry {
       throw new Error('RESOURCE_LIMIT');
     const runId = randomUUID();
     entry.operations.set(clientOperationId, { inputHash, runId });
-    this.launchRun(entry, clientOperationId, runId, input);
+    const hostReferences: ReferenceSelection[] | undefined =
+      references && references.length > 0
+        ? references.map((ref) => ({
+            sessionId: ref.sessionId,
+            ...(ref.recordId !== undefined ? { recordIds: [ref.recordId] } : {}),
+            ...(ref.branchId !== undefined ? { branchId: ref.branchId } : {}),
+          }))
+        : undefined;
+    this.launchRun(entry, clientOperationId, runId, input, undefined, hostReferences);
     return { runId, accepted: true };
   }
 
@@ -240,6 +296,7 @@ export class SessionRegistry {
     runId: string,
     input: string,
     externalSignal?: AbortSignal,
+    references?: readonly ReferenceSelection[],
   ): ActiveRun {
     const abort = new AbortController();
     const onExternalAbort = () => abort.abort();
@@ -249,7 +306,12 @@ export class SessionRegistry {
     }
     const active: ActiveRun = { id: runId, abort, done: Promise.resolve() };
     entry.active = active;
-    const live = { events: [] as JsonValue[], bytes: 0, complete: true };
+    const live = {
+      events: [] as JsonValue[],
+      baseEvents: [] as JsonValue[],
+      bytes: 0,
+      complete: true,
+    };
     entry.live = live;
     const remember = entry.feed.subscribe((event) => {
       const encoded = JSON.stringify(event);
@@ -261,6 +323,12 @@ export class SessionRegistry {
       }
       if (live.complete) {
         live.events.push(JSON.parse(encoded));
+        if (!isRetryWireEvent(event)) {
+          const baseSeq = entry.feed.highWaterMarkFor(false);
+          live.baseEvents.push(
+            baseSeq === event.seq ? JSON.parse(encoded) : { ...JSON.parse(encoded), seq: baseSeq },
+          );
+        }
         live.bytes += bytes;
       }
     });
@@ -269,9 +337,12 @@ export class SessionRegistry {
       let outcome: 'completed' | 'failed' | 'cancelled' = 'failed';
       let terminal = false;
       let reportedError = false;
+      const allowMidStreamRetry = Boolean(entry.controller?.capabilities?.has('retry'));
       try {
         entry.feed.publish({ type: 'run_started', payload: { clientOperationId }, runId });
-        for await (const event of entry.resources.run(input, abort.signal)) {
+        for await (const event of entry.resources.run(input, abort.signal, references, {
+          allowMidStreamRetry,
+        })) {
           if (event.type === 'text_delta' || event.type === 'thinking_delta') {
             const text = event.type === 'text_delta' ? event.text : event.thinking;
             for (let offset = 0; offset < text.length; offset += 16_384)
@@ -311,6 +382,29 @@ export class SessionRegistry {
                 result: preview.result,
                 isError: event.isError,
                 truncated: preview.truncated,
+              },
+            });
+          } else if (event.type === 'stream_reset') {
+            entry.feed.publish({
+              type: 'stream_reset',
+              runId,
+              payload: { step: event.step, attempt: event.attempt },
+            });
+          } else if (event.type === 'retry_scheduled') {
+            const rawMessage = entry.resources.redact
+              ? entry.resources.redact(event.message)
+              : redactText(event.message, []);
+            entry.feed.publish({
+              type: 'retry_scheduled',
+              runId,
+              payload: {
+                step: event.step,
+                attempt: event.attempt,
+                maxRetries: event.maxRetries,
+                delayMs: event.delayMs,
+                nextRetryAt: event.nextRetryAt,
+                category: sanitizeDisplayText(event.category, 64) || 'unknown',
+                message: sanitizeDisplayText(rawMessage, 2_000) ?? '正在自动重试',
               },
             });
           } else if (event.type === 'error') {

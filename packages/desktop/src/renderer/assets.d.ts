@@ -3,3 +3,6 @@ declare module '*.svg' {
   const source: string;
   export default source;
 }
+
+/** Vite 异步打包 `@xterm/xterm` 视口基础样式表。 */
+declare module '@xterm/xterm/css/xterm.css' {}

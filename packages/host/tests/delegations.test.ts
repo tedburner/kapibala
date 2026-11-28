@@ -228,7 +228,7 @@ describe('delegation host helpers', () => {
       runner(
         createTask({ workspaceRoot: manager.project.projectRoot }),
         new AbortController().signal,
-        { leaseCoordinator: leases },
+        { leaseCoordinator: leases, pauseTimeout: () => () => {} },
       ),
     ).rejects.toMatchObject({ code: 'DELEGATION_LIMIT_EXCEEDED' });
   });

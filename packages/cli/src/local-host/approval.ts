@@ -9,12 +9,15 @@ import {
   isJsonData,
   matchesSchema,
 } from '@kiturone/kapibala-host/protocol';
+import { sanitizeDisplayText } from './redaction.js';
 
 /** 宿主提供实际控制归属与安全展示；无法描述完整目标时必须返回 undefined。 */
 export interface RpcApprovalOptions {
-  identity(): (SessionControl & { runId: string }) | undefined;
+  identity(request?: ApprovalRequest): (SessionControl & { runId: string }) | undefined;
   request(prompt: ApprovalPrompt, signal: AbortSignal): Promise<unknown>;
   describe(request: ApprovalRequest): string | undefined;
+  /** 控制连接是否支持接收 v0.1.6 `subagentOrigin` 字段；缺省为 true，向旧版客户端下发时置 false。 */
+  includeSubagentOrigin?(request: ApprovalRequest): boolean;
   closed?(approvalId: string): void;
 }
 
@@ -40,13 +43,28 @@ export class RpcApprovalChannel implements ApprovalChannel {
     let identity: ReturnType<RpcApprovalOptions['identity']>;
     try {
       target = this.options.describe(request);
-      const current = this.options.identity();
+      const current = this.options.identity(request);
       identity = current ? { ...current } : undefined;
     } catch {
       return Promise.resolve('cancel');
     }
     if (!target || !identity) return Promise.resolve('cancel');
     const snapshot = identity;
+    const allowSubagentOrigin = this.options.includeSubagentOrigin?.(request) ?? true;
+    const subagentOrigin =
+      allowSubagentOrigin && request.subagentOrigin
+        ? {
+            agentId: request.subagentOrigin.agentId,
+            role: request.subagentOrigin.role,
+            description:
+              sanitizeDisplayText(request.subagentOrigin.description, 400) ||
+              request.subagentOrigin.role,
+            ...(request.subagentOrigin.childSessionId
+              ? { childSessionId: request.subagentOrigin.childSessionId }
+              : {}),
+            parentSessionId: request.subagentOrigin.parentSessionId,
+          }
+        : undefined;
     const approvalId = randomUUID();
     const controller = new AbortController();
     return new Promise((resolve) => {
@@ -79,6 +97,7 @@ export class RpcApprovalChannel implements ApprovalChannel {
         target,
         sessionAllowed: request.sessionAllowed,
         expiresAt: Date.now() + DEFAULT_LIMITS.approvalTimeoutMs,
+        ...(subagentOrigin ? { subagentOrigin } : {}),
       };
       this.pending.set(approvalId, {
         cancel,
@@ -93,12 +112,14 @@ export class RpcApprovalChannel implements ApprovalChannel {
         .then(() => this.options.request(prompt, controller.signal))
         .then((reply) => {
           if (settled) return;
-          const current = this.options.identity();
+          const current = this.options.identity(request);
+          const isBackgroundCapable = request.subagentOrigin !== undefined;
           if (
             !current ||
-            Object.entries(snapshot).some(
-              ([key, value]) => current[key as keyof typeof current] !== value,
-            ) ||
+            current.sessionId !== snapshot.sessionId ||
+            current.streamEpoch !== snapshot.streamEpoch ||
+            current.controlEpoch !== snapshot.controlEpoch ||
+            (!isBackgroundCapable && current.runId !== snapshot.runId) ||
             !isJsonData(reply) ||
             !matchesSchema(reply, APPROVAL_RESPONSE_SCHEMA)
           ) {

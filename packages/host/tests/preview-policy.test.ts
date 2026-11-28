@@ -114,6 +114,46 @@ describe('preview artifact policy', () => {
     });
   });
 
+  it('allows artifacts inside ~/.kapibala/workspaces/default or ~/.kapibala/worktrees only when workspaceRoot is inside that exact root, while still blocking .kapibala subdirs and settings', () => {
+    const defaultWs = path.join(roots.home, '.kapibala', 'workspaces', 'default');
+    const managedWt = path.join(roots.home, '.kapibala', 'worktrees', 'a1b2', 'repo');
+    const otherWt = path.join(roots.home, '.kapibala', 'worktrees', 'c3d4', 'repo');
+    const wtInternalDotKapibala = path.join(managedWt, '.kapibala');
+    const settingsFakeImg = path.join(roots.home, '.kapibala', 'settings.png');
+    for (const dir of [defaultWs, managedWt, otherWt, wtInternalDotKapibala]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const defaultImg = path.join(defaultWs, 'plot.png');
+    const wtImg = path.join(managedWt, 'arch.png');
+    const otherWtImg = path.join(otherWt, 'other.png');
+    const wtHiddenImg = path.join(wtInternalDotKapibala, 'secret.png');
+    for (const file of [defaultImg, wtImg, otherWtImg, wtHiddenImg, settingsFakeImg]) {
+      fs.writeFileSync(file, PNG_BYTES);
+    }
+
+    expect(
+      resolveWriteArtifact(
+        { workspaceRoot: defaultWs, homeDirectory: roots.home, tempRoot: roots.temp },
+        { path: 'plot.png' },
+      ).ok,
+    ).toBe(true);
+
+    const wtOpts = { workspaceRoot: managedWt, homeDirectory: roots.home, tempRoot: roots.temp };
+    expect(resolveWriteArtifact(wtOpts, { path: 'arch.png' }).ok).toBe(true);
+    expect(resolveWriteArtifact(wtOpts, { path: wtHiddenImg })).toEqual({
+      ok: false,
+      code: 'path_not_allowed',
+    });
+    expect(resolveWriteArtifact(wtOpts, { path: otherWtImg })).toEqual({
+      ok: false,
+      code: 'path_not_allowed',
+    });
+    expect(resolveWriteArtifact(wtOpts, { path: settingsFakeImg })).toEqual({
+      ok: false,
+      code: 'path_not_allowed',
+    });
+  });
+
   it('returns file_not_found for an empty or missing path without touching the disk', () => {
     expect(resolveWriteArtifact(options, { path: '' })).toEqual({
       ok: false,

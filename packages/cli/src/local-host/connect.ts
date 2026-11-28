@@ -4,7 +4,7 @@ import path from 'node:path';
 import { sanitizeUntrustedOutput } from '@kiturone/kapibala-host/internal';
 import type { JsonValue, SessionControl, WireEvent } from '@kiturone/kapibala-host/protocol';
 import { CliInputCoordinator } from '../input-coordinator.js';
-import { escapeApprovalText } from '../ui/approval.js';
+import { createCliTheme } from '../ui/theme.js';
 import { type DaemonOptions, connectDaemon } from './daemon.js';
 import { ConnectedPresentation } from './presentation.js';
 
@@ -15,10 +15,10 @@ export interface ConnectOptions extends DaemonOptions {
   prompt?: string;
 }
 
-function object(value: JsonValue): Record<string, JsonValue> {
+function object(value: unknown): Record<string, JsonValue> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Invalid host response');
-  return value;
+  return value as Record<string, JsonValue>;
 }
 
 /** 有限文本连接宿主；使用一个输入协调器，审批与聊天不争抢 stdin。 */
@@ -26,6 +26,8 @@ export async function runConnectedClient(options: ConnectOptions): Promise<void>
   const root = fs.realpathSync.native(path.resolve(options.workspace ?? process.cwd()));
   const input = new CliInputCoordinator();
   let runId: string | undefined;
+  let startingRun = false;
+  let printedPartialText = false;
   let control: SessionControl | undefined;
   let presentation: ConnectedPresentation | undefined;
   let wantCancel = false;
@@ -33,35 +35,53 @@ export async function runConnectedClient(options: ConnectOptions): Promise<void>
   let failed = false;
   const outcomes = new Map<string, string>();
   let settle: (() => void) | undefined;
-  const client = await connectDaemon(options, {
-    approval: async (request, signal) => {
-      if (!input.interactive) return 'cancel';
-      try {
-        const answer = await input.question(
-          `\n审批 ${escapeApprovalText(request.toolName)}\n${escapeApprovalText(request.target)}\n1 本次允许${request.sessionAllowed ? ' / 2 本会话允许' : ''} / 3 拒绝 / 4 本会话拒绝: `,
-          { signal },
-        );
-        if (answer.trim() === '1') return 'allow_once';
-        if (answer.trim() === '2' && request.sessionAllowed) return 'allow_session';
-        if (answer.trim() === '4') return 'deny_session';
-        return 'deny_once';
-      } catch {
-        cancel();
-        return 'cancel';
-      }
-    },
-  });
+  const showIdlePrompt = () => {
+    if (!eof && runId === undefined && !startingRun && !input.isBusy()) {
+      input.prompt('kpbl> ');
+    }
+  };
   const cancel = () => {
+    if (runId === undefined && !startingRun) return;
     wantCancel = true;
     if (runId && control) void client.call('run/cancel', { ...control, runId }).catch(() => {});
   };
+  const client = await connectDaemon(
+    { ...options, capabilities: options.capabilities ?? ['retry'] },
+    {
+      approval: async (request, signal) => {
+        if (!input.interactive) return 'cancel';
+        try {
+          const choice = await input.approve(
+            {
+              toolName: request.toolName,
+              capabilities: [],
+              input: {},
+              rootDir: root,
+              sessionAllowed: request.sessionAllowed,
+              formattedTarget: request.target,
+              ...(request.subagentOrigin ? { subagentOrigin: request.subagentOrigin } : {}),
+            },
+            signal,
+          );
+          if (choice === 'cancel' && !signal.aborted && runId !== undefined) {
+            cancel();
+          }
+          showIdlePrompt();
+          return choice;
+        } catch {
+          if (runId !== undefined) cancel();
+          return 'cancel';
+        }
+      },
+    },
+  );
   const interrupt = input.onInterrupt(() => {
-    if (runId) cancel();
+    if (runId !== undefined || startingRun) cancel();
     else input.close();
   });
   void input.whenClosed.then(() => {
     eof = true;
-    cancel();
+    if (runId !== undefined || startingRun) cancel();
   });
   // attach 响应返回前先缓存事件；展示状态建立并恢复历史后再按序应用，避免正文抢在历史前打印。
   const pendingEvents: WireEvent[] = [];
@@ -71,9 +91,35 @@ export async function runConnectedClient(options: ConnectOptions): Promise<void>
       return;
     }
     presentation.consume(event);
-    if (event.type === 'text_delta')
-      process.stdout.write(sanitizeUntrustedOutput(event.payload.text));
+    const ui = createCliTheme({ isTTY: Boolean(process.stdout.isTTY) });
+    if (event.type === 'run_started') {
+      printedPartialText = false;
+    } else if (event.type === 'text_delta') {
+      const safe = sanitizeUntrustedOutput(event.payload.text);
+      if (safe) {
+        printedPartialText = true;
+        process.stdout.write(safe);
+      }
+    } else if (event.type === 'tool_start') {
+      printedPartialText = false;
+    } else if (event.type === 'stream_reset') {
+      if (printedPartialText) {
+        printedPartialText = false;
+        if (process.stdout.isTTY) {
+          process.stdout.write(`\n${ui.subtle('[流中断，已重置当前未完成片段并准备重试]')}\n`);
+        }
+      }
+    } else if (event.type === 'retry_scheduled') {
+      const seconds = Math.max(1, Math.round(event.payload.delayMs / 1_000));
+      const notice = `⟳ 模型请求暂时受限，将在 ${seconds}s 后自动重试 (${event.payload.attempt}/${event.payload.maxRetries})…`;
+      if (process.stdout.isTTY) {
+        process.stdout.write(`\n${ui.warning(notice)}\n`);
+      } else {
+        process.stderr.write(`${notice}\n`);
+      }
+    }
     if (event.type === 'run_settled' && event.runId) {
+      printedPartialText = false;
       outcomes.set(event.runId, event.payload.outcome);
       settle?.();
     }
@@ -109,36 +155,43 @@ export async function runConnectedClient(options: ConnectOptions): Promise<void>
     // 与建立展示状态同一同步段内排空，期间不会有新事件插入历史恢复之前。
     for (const event of pendingEvents.splice(0)) consume(event);
     const execute = async (text: string) => {
-      const result = object(
-        await client.call('run/start', {
-          ...control!,
-          clientOperationId: randomUUID(),
-          input: text,
-        }),
-      );
-      if (typeof result.runId !== 'string') throw new Error('Invalid run response');
-      runId = result.runId;
-      if (wantCancel) cancel();
-      await Promise.race([
-        new Promise<void>((resolve) => {
-          if (outcomes.has(runId!)) resolve();
-          else settle = resolve;
-        }),
-        client.whenClosed.then(() => {
-          throw new Error('Local host connection closed');
-        }),
-      ]);
-      const canonical = object(
-        await client.call('session/snapshot', { sessionId: control!.sessionId }),
-      );
-      if (Array.isArray(canonical.history)) presentation?.restore(canonical.history);
-      process.stdout.write('\n');
-      const outcome = outcomes.get(runId);
-      outcomes.delete(runId);
-      settle = undefined;
-      runId = undefined;
-      wantCancel = false;
-      if (outcome === 'failed') process.exitCode = 1;
+      startingRun = true;
+      printedPartialText = false;
+      try {
+        const result = object(
+          await client.call('run/start', {
+            ...control!,
+            clientOperationId: randomUUID(),
+            input: text,
+          }),
+        );
+        if (typeof result.runId !== 'string') throw new Error('Invalid run response');
+        runId = result.runId;
+        startingRun = false;
+        if (wantCancel) cancel();
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            if (outcomes.has(runId!)) resolve();
+            else settle = resolve;
+          }),
+          client.whenClosed.then(() => {
+            throw new Error('Local host connection closed');
+          }),
+        ]);
+        const canonical = object(
+          await client.call('session/snapshot', { sessionId: control!.sessionId }),
+        );
+        if (Array.isArray(canonical.history)) presentation?.restore(canonical.history);
+        process.stdout.write('\n');
+        const outcome = outcomes.get(runId);
+        outcomes.delete(runId);
+        if (outcome === 'failed') process.exitCode = 1;
+      } finally {
+        startingRun = false;
+        settle = undefined;
+        runId = undefined;
+        wantCancel = false;
+      }
     };
     if (options.prompt !== undefined) {
       await execute(options.prompt);
@@ -149,12 +202,9 @@ export async function runConnectedClient(options: ConnectOptions): Promise<void>
       '已连接本地宿主。支持 /status、/history、/close、/exit；Ctrl+C 取消运行。\n',
     );
     while (!eof) {
-      let text: string;
-      try {
-        text = (await input.question('kpbl> ')).trim();
-      } catch {
-        break;
-      }
+      const rawLine = await input.readChatLine('kpbl> ');
+      if (rawLine === null) break;
+      const text = rawLine.trim();
       if (!text) continue;
       if (text === '/exit') break;
       if (text === '/close') {

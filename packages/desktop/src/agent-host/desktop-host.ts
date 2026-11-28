@@ -5,9 +5,16 @@ import {
   type ApprovalChannel,
   type ApprovalChoice,
   type ApprovalRequest,
+  CrossProjectSessionCatalog,
+  KapibalaError,
   SessionLock,
   type SessionManager,
+  SessionReferenceReader,
+  type SessionWorktreeBinding,
   WorkspaceLeaseCoordinator,
+  computeProjectKey,
+  isSamePath,
+  toNativePhysicalPath,
 } from '@kiturone/kapibala';
 import {
   type CommandContext,
@@ -24,12 +31,17 @@ import {
 } from '@kiturone/kapibala-host/host';
 // 启动任务文本与技能导入门面只在宿主内部约定里共享：投影与直发两处必须同一个常量。
 import {
+  CheckpointService,
   EXPLICIT_SKILL_KICKOFF,
+  ExecutionRootCoordinator,
   ExternalSessionService,
+  WorktreeError,
+  WorktreeService,
   importSkills,
+  sanitizeDisplayText,
   scanImportableSkills,
 } from '@kiturone/kapibala-host/internal';
-import type { PresentationEvent } from '@kiturone/kapibala-host/view-model';
+import type { PresentationEvent, ViewFileDiff } from '@kiturone/kapibala-host/view-model';
 import {
   LIMITS,
   type Method,
@@ -48,8 +60,37 @@ import type { Lane } from '../shared/transport.js';
 import { LatestSnapshot } from './latest-snapshot.js';
 import { ResourceService } from './resource-service.js';
 import { SettingsService } from './settings-service.js';
-import { enumerateWorkspaceFiles } from './workspace-files.js';
+import { TerminalService } from './terminal-service.js';
+import { enumerateWorkspaceFiles, readWorkspaceFile } from './workspace-files.js';
 import { Workspaces } from './workspaces.js';
+
+/** 单帧 Diff 补丁总 UTF-8 字节预算（720 KiB），确保包裹 RPC 信封后恒低于 `LIMITS.frame`（1 MiB）。 */
+const MAX_DESKTOP_DIFF_PATCH_BYTES = 720 * 1024;
+
+function clampDesktopDiffFiles(files: readonly ViewFileDiff[]): {
+  readonly files: ViewFileDiff[];
+  readonly truncated: boolean;
+} {
+  let remaining = MAX_DESKTOP_DIFF_PATCH_BYTES;
+  let anyTruncated = false;
+  const clamped: ViewFileDiff[] = files.map((file) => {
+    if (file.truncated) anyTruncated = true;
+    if (!file.patch) return { ...file };
+    const patchBytes = Buffer.byteLength(file.patch, 'utf8');
+    if (patchBytes <= remaining) {
+      remaining -= patchBytes;
+      return { ...file };
+    }
+    anyTruncated = true;
+    if (remaining <= 0) {
+      return { ...file, patch: '', truncated: true };
+    }
+    const sliced = Buffer.from(file.patch, 'utf8').subarray(0, remaining).toString('utf8');
+    remaining = 0;
+    return { ...file, patch: sliced, truncated: true };
+  });
+  return { files: clamped, truncated: anyTruncated };
+}
 
 /**
  * 桌面端不承接的斜杠命令：这些命令把实际工作委托给 CLI 宿主回调（模型切换/退出）
@@ -106,7 +147,11 @@ export class DesktopHost {
   readonly workspaces: Workspaces;
   readonly settings: SettingsService;
   readonly resources: ResourceService;
+  readonly checkpoints: CheckpointService;
+  readonly worktrees: WorktreeService;
   readonly external: ExternalSessionService;
+  readonly terminals: TerminalService;
+  private readonly executionCoordinator: ExecutionRootCoordinator;
   private readonly externalStreams = new Map<
     string,
     {
@@ -142,12 +187,55 @@ export class DesktopHost {
     this.workspaces = new Workspaces(home);
     this.settings = new SettingsService(this.workspaces);
     this.resources = new ResourceService(this.workspaces);
+    this.executionCoordinator = new ExecutionRootCoordinator();
+    this.checkpoints = new CheckpointService({
+      homeDir: this.workspaces.home,
+      hostEnv: externalHostEnv,
+    });
+    this.worktrees = new WorktreeService({
+      homeDir: this.workspaces.home,
+      coordinator: this.executionCoordinator,
+      hostEnv: externalHostEnv,
+    });
+    this.terminals = new TerminalService({
+      hostEnv: externalHostEnv,
+      onEvent: (evt) => {
+        if (this.dead) return;
+        if (evt.type === 'data') {
+          void this.notify(
+            {
+              type: 'terminal.data',
+              workspaceId: evt.workspaceId,
+              sessionKey: evt.sessionKey,
+              terminalId: evt.terminalId,
+              data: evt.data,
+            },
+            'data',
+          ).catch(() => {});
+        } else {
+          void this.notify(
+            {
+              type: 'terminal.exit',
+              workspaceId: evt.workspaceId,
+              sessionKey: evt.sessionKey,
+              terminalId: evt.terminalId,
+              exitCode: evt.exitCode,
+            },
+            'control',
+          ).catch(() => {});
+        }
+      },
+    });
     this.external = new ExternalSessionService({
       homeDir: this.workspaces.home,
       hostEnv: externalHostEnv,
+      checkpoints: this.checkpoints,
+      worktrees: this.worktrees,
+      executionCoordinator: this.executionCoordinator,
       onAttentionEvent: (evt) => {
         if (this.dead) return;
-        const wsId = this.workspaces.findIdByRoot(evt.session.workspaceRoot);
+        const ownerRoot = evt.session.worktree?.projectRoot ?? evt.session.workspaceRoot;
+        const wsId = this.workspaces.findIdByRoot(ownerRoot);
         if (!wsId) return;
         void this.notify(
           {
@@ -208,8 +296,14 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         return this.workspaces.confirm(p.workspaceId, p.trustToken, p.accept);
       }
-      case 'workspace.listFiles':
-        return this.listFiles(PARAMS[method].parse(params).workspaceId);
+      case 'workspace.listFiles': {
+        const p = PARAMS[method].parse(params);
+        return this.listFiles(p.workspaceId, p.query, p.worktreeId);
+      }
+      case 'workspace.readFile': {
+        const p = PARAMS[method].parse(params);
+        return this.readFile(p.workspaceId, p.path, p.worktreeId);
+      }
       case 'settings.read':
         return this.settings.read(PARAMS[method].parse(params).workspaceId);
       case 'settings.saveProfile': {
@@ -369,9 +463,13 @@ export class DesktopHost {
         });
         return this.projectHistory(list, redact);
       }
+      case 'session.readArchived': {
+        const p = PARAMS[method].parse(params);
+        return await this.readArchivedConversation(p.workspaceId, p.conversationId);
+      }
       case 'session.create': {
         const p = PARAMS[method].parse(params);
-        return this.open(p.workspaceId, undefined, p.profileId);
+        return this.open(p.workspaceId, undefined, p.profileId, p.worktree);
       }
       case 'session.open': {
         const p = PARAMS[method].parse(params);
@@ -402,6 +500,15 @@ export class DesktopHost {
         const slot = this.slot(PARAMS[method].parse(params));
         return slot.handle.evidence();
       }
+      case 'session.branchWithSummary': {
+        const p = PARAMS[method].parse(params);
+        return await this.branchConversationWithSummary(
+          p.workspaceId,
+          p.conversationId,
+          p.branchName,
+          p.baseRecordId,
+        );
+      }
       case 'session.configure': {
         const p = PARAMS[method].parse(params);
         const slot = this.slot(p);
@@ -417,7 +524,9 @@ export class DesktopHost {
         return slot.handle.configuration();
       }
       case 'run.start':
-        return this.start(PARAMS[method].parse(params));
+        return await this.startWithOptionalRestore(PARAMS[method].parse(params));
+      case 'run.regenerate':
+        return await this.regenerate(PARAMS[method].parse(params));
       case 'run.cancel': {
         const p = PARAMS[method].parse(params);
         const slot = this.slot(p);
@@ -450,6 +559,321 @@ export class DesktopHost {
         if (p.choice === 'allow_session' && !pending.sessionAllowed) throw new Error('FORBIDDEN');
         pending.finish(p.choice, 'resolved');
         return {};
+      }
+      case 'reference.candidates': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const redact = this.settings.captureRedactor(p.workspaceId);
+        const reader = new SessionReferenceReader({
+          homeDirectory: this.workspaces.home,
+          maxReadBytes: LIMITS.history,
+        });
+        const items = await reader.listCandidates({
+          projectRoot: ws.root,
+          ...(p.limit !== undefined ? { limit: p.limit } : {}),
+        });
+        return {
+          items: items.map((item) => ({
+            sessionId: item.sessionId,
+            title: sanitizeDisplayText(redact(item.title), 200) ?? '',
+            lastActivityAt: item.lastActivityAt,
+            messageCount: item.messageCount,
+            ...(item.delegation ? { isDelegation: true } : {}),
+          })),
+        };
+      }
+      case 'reference.search': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const redact = this.settings.captureRedactor(p.workspaceId);
+        const sanitizedQuery = p.query.trim().startsWith('re:')
+          ? p.query
+          : p.query.replace(/\bproject:\S+/gi, '').trim();
+        if (!sanitizedQuery) return { hits: [] };
+        const catalog = new CrossProjectSessionCatalog({ homeDirectory: this.workspaces.home });
+        const bucketEntries = await catalog.scanSessions({
+          projectKey: computeProjectKey(ws.root),
+          projectRoot: ws.root,
+        });
+        const titleBySession = new Map(
+          bucketEntries.map((entry) => [
+            entry.conversationId,
+            sanitizeDisplayText(redact(entry.title), 200) ?? entry.conversationId.slice(0, 8),
+          ]),
+        );
+        const res = await catalog.search(sanitizedQuery, {
+          project: ws.root,
+          limit: p.limit ?? 20,
+        });
+        return {
+          hits: res.hits
+            .filter((hit) => isSamePath(hit.projectRoot, ws.root))
+            .map((hit) => ({
+              sessionId: hit.conversationId,
+              title: titleBySession.get(hit.conversationId) ?? hit.conversationId.slice(0, 8),
+              recordId: hit.recordId,
+              branchId: hit.branchId,
+              role: hit.role,
+              snippet: sanitizeDisplayText(redact(hit.snippet), 400) ?? '',
+              timestamp: hit.timestamp,
+            })),
+        };
+      }
+      case 'reference.read': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const redact = this.settings.captureRedactor(p.workspaceId);
+        const reader = new SessionReferenceReader({
+          homeDirectory: this.workspaces.home,
+          maxReadBytes: LIMITS.history,
+        });
+        const readResult = await reader.read({
+          projectRoot: ws.root,
+          sessionId: p.sessionId,
+          ...(p.recordIds ? { recordIds: p.recordIds } : {}),
+          ...(p.branchId !== undefined ? { branchId: p.branchId } : {}),
+          ...(p.limit !== undefined ? { limit: p.limit } : {}),
+        });
+        const title = readResult.title
+          ? sanitizeDisplayText(redact(readResult.title), 200)
+          : undefined;
+        return {
+          sessionId: readResult.sessionId,
+          ...(title ? { title } : {}),
+          branchId: readResult.branchId,
+          records: readResult.records.map((rec) => ({
+            recordId: rec.recordId,
+            role: rec.role,
+            branchId: rec.branchId,
+            timestamp: rec.timestamp,
+            text: redact(rec.text),
+            truncated: rec.truncated,
+          })),
+          ...(readResult.partial ? { partial: readResult.partial } : {}),
+        };
+      }
+      case 'checkpoint.list': {
+        const p = PARAMS[method].parse(params);
+        return await this.listCheckpointsRpc(p);
+      }
+      case 'checkpoint.diff': {
+        const p = PARAMS[method].parse(params);
+        return await this.diffCheckpointsRpc(p);
+      }
+      case 'checkpoint.restore': {
+        const p = PARAMS[method].parse(params);
+        return await this.restoreCheckpointRpc(p);
+      }
+      case 'worktree.list': {
+        const p = PARAMS[method].parse(params);
+        return await this.listWorktrees(p.workspaceId);
+      }
+      case 'worktree.create': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        const created = await this.worktrees.create({
+          projectRoot: ws.root,
+          ...(p.name ? { name: p.name } : {}),
+          ...(p.branch ? { branch: p.branch } : {}),
+          ...(p.baseRef ? { baseRef: p.baseRef } : {}),
+        });
+        return {
+          id: created.binding.id,
+          projectRoot: created.binding.projectRoot,
+          worktreePath: created.binding.worktreePath,
+          branch: created.binding.branch,
+          baseRef: created.binding.baseRef,
+          baseCommit: created.binding.baseCommit,
+          createdAt: created.binding.createdAt,
+        };
+      }
+      case 'worktree.status': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        this.requireOwnedWorktree(p.id, ws.root);
+        const st = await this.worktrees.status(p.id);
+        return {
+          id: st.id,
+          projectRoot: st.projectRoot,
+          worktreePath: st.worktreePath,
+          branch: st.branch,
+          baseRef: st.baseRef,
+          baseCommit: st.baseCommit,
+          ...(st.headCommit ? { headCommit: st.headCommit } : {}),
+          exists: st.exists,
+          linkVerified: st.linkVerified,
+          dirty: st.dirty,
+          untrackedCount: st.untrackedCount,
+          aheadCount: st.aheadCount,
+          behindCount: st.behindCount,
+          additions: st.additions,
+          deletions: st.deletions,
+          changedFiles: st.changedFiles.map((f) => ({
+            path: f.path,
+            status: f.status,
+            ...(f.oldPath ? { oldPath: f.oldPath } : {}),
+            additions: f.additions,
+            deletions: f.deletions,
+            binary: f.binary,
+          })),
+        };
+      }
+      case 'worktree.diff': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        this.requireOwnedWorktree(p.id, ws.root);
+        const redact = this.settings.captureRedactor(p.workspaceId);
+        const diff = await this.worktrees.diff(p.id);
+        const mapped: ViewFileDiff[] = diff.files.map((f) => ({
+          path: redact(f.path),
+          status: f.status,
+          ...(f.oldPath ? { originalPath: redact(f.oldPath) } : {}),
+          additions: f.additions,
+          deletions: f.deletions,
+          binary: f.binary,
+          patch: redact(f.patch),
+          truncated: f.truncated,
+        }));
+        const clamped = clampDesktopDiffFiles(mapped);
+        return {
+          id: diff.id,
+          branch: diff.branch,
+          baseCommit: diff.baseCommit,
+          headCommit: diff.headCommit,
+          additions: diff.additions,
+          deletions: diff.deletions,
+          truncated: diff.truncated || clamped.truncated,
+          files: clamped.files,
+        };
+      }
+      case 'worktree.previewMerge': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        this.requireOwnedWorktree(p.id, ws.root);
+        const preview = await this.worktrees.previewMerge(p.id);
+        return {
+          worktreeId: preview.id,
+          branch: preview.branch,
+          baseRef: preview.targetBranch,
+          aheadCount: preview.aheadCount,
+          behindCount: preview.behindCount,
+          worktreeDirty: preview.worktreeDirty,
+          mainDirty: preview.mainDirty,
+          canApply: preview.canApply,
+          ...(preview.blockingReason ? { blockingReason: preview.blockingReason } : {}),
+          additions: preview.additions,
+          deletions: preview.deletions,
+          previewToken: preview.previewToken,
+          changedFiles: preview.changedFiles.map((f) => ({
+            path: f.path,
+            status: f.status,
+            additions: f.additions,
+            deletions: f.deletions,
+          })),
+        };
+      }
+      case 'worktree.applyMerge': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        this.requireOwnedWorktree(p.id, ws.root);
+        const outcome = await this.worktrees.applyMerge({
+          id: p.id,
+          previewToken: p.previewToken,
+          ...(p.commitMessage ? { commitMessage: p.commitMessage } : {}),
+        });
+        if (outcome.status === 'conflict') {
+          return {
+            status: 'conflict',
+            conflictedFiles: [...outcome.conflictedFiles],
+          };
+        }
+        return {
+          status: 'merged',
+          mergedCommit: outcome.mergedCommit,
+          targetBranch: outcome.targetBranch,
+          conflictedFiles: [],
+        };
+      }
+      case 'worktree.remove': {
+        const p = PARAMS[method].parse(params);
+        const ws = this.workspaces.get(p.workspaceId, true);
+        this.requireOwnedWorktree(p.id, ws.root);
+        const outcome = await this.worktrees.remove({
+          id: p.id,
+          ...(p.force !== undefined ? { force: p.force } : {}),
+          onBeforeRemove: async (rec) => {
+            await this.closeIdleResourcesInWorktree(ws.id, ws.root, rec.worktreePath);
+          },
+        });
+        if (!outcome.removed) {
+          return {
+            removed: false,
+            reason: outcome.reason,
+            details: [...outcome.details],
+          };
+        }
+        return {
+          removed: true,
+          details: [],
+        };
+      }
+      case 'terminal.listShells': {
+        const p = PARAMS[method].parse(params);
+        this.workspaces.get(p.workspaceId, true);
+        return {
+          shells: this.terminals.listShells(),
+          activeTerminalsCount: this.terminals.liveCount(),
+        };
+      }
+      case 'terminal.ensure': {
+        const p = PARAMS[method].parse(params);
+        const target = await this.resolveTerminalTarget(p.workspaceId, p.sessionKey);
+        return await this.terminals.ensure({
+          workspaceId: p.workspaceId,
+          sessionKey: p.sessionKey,
+          cwd: target.cwd,
+          cwdLabel: target.cwdLabel,
+          ...(p.shellId ? { shellId: p.shellId } : {}),
+          ...(p.cols !== undefined ? { cols: p.cols } : {}),
+          ...(p.rows !== undefined ? { rows: p.rows } : {}),
+        });
+      }
+      case 'terminal.create': {
+        const p = PARAMS[method].parse(params);
+        const target = await this.resolveTerminalTarget(p.workspaceId, p.sessionKey);
+        return await this.terminals.create({
+          workspaceId: p.workspaceId,
+          sessionKey: p.sessionKey,
+          cwd: target.cwd,
+          cwdLabel: target.cwdLabel,
+          ...(p.shellId ? { shellId: p.shellId } : {}),
+          ...(p.replaceTerminalId ? { replaceTerminalId: p.replaceTerminalId } : {}),
+          ...(p.cols !== undefined ? { cols: p.cols } : {}),
+          ...(p.rows !== undefined ? { rows: p.rows } : {}),
+        });
+      }
+      case 'terminal.write': {
+        const p = PARAMS[method].parse(params);
+        this.workspaces.get(p.workspaceId, true);
+        this.terminals.write(p);
+        return {};
+      }
+      case 'terminal.resize': {
+        const p = PARAMS[method].parse(params);
+        this.workspaces.get(p.workspaceId, true);
+        this.terminals.resize(p);
+        return {};
+      }
+      case 'terminal.clear': {
+        const p = PARAMS[method].parse(params);
+        this.workspaces.get(p.workspaceId, true);
+        this.terminals.clear(p);
+        return {};
+      }
+      case 'terminal.close': {
+        const p = PARAMS[method].parse(params);
+        this.workspaces.get(p.workspaceId, true);
+        return await this.terminals.close(p);
       }
       case 'presentation.subscribe':
       case 'presentation.resync': {
@@ -552,15 +976,37 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
         const initialPrompt = p.prompt?.trim();
-        const opened = await this.external.openSession({
-          workspaceRoot: ws.root,
-          harnessId: p.harnessId,
-          ...(p.title ? { title: p.title } : {}),
-          ...(p.modelId ? { modelId: p.modelId } : {}),
-          ...(p.modeId ? { modeId: p.modeId } : {}),
-          ...(p.thoughtLevel ? { thoughtLevel: p.thoughtLevel } : {}),
-          ...(initialPrompt ? { requireIdleWorkspace: true } : {}),
-        });
+        let allocatedWorktree: Awaited<ReturnType<WorktreeService['create']>> | undefined;
+        if (p.worktree?.enabled) {
+          allocatedWorktree = await this.worktrees.create({
+            projectRoot: ws.root,
+            ...(p.title || initialPrompt ? { name: p.title || initialPrompt } : {}),
+            ...(p.worktree.branch ? { branch: p.worktree.branch } : {}),
+            ...(p.worktree.baseRef ? { baseRef: p.worktree.baseRef } : {}),
+          });
+        }
+        let opened: Awaited<ReturnType<ExternalSessionService['openSession']>>;
+        try {
+          opened = await this.external.openSession({
+            workspaceRoot: allocatedWorktree ? allocatedWorktree.binding.worktreePath : ws.root,
+            ...(allocatedWorktree
+              ? { projectRoot: ws.root, worktree: allocatedWorktree.binding }
+              : {}),
+            harnessId: p.harnessId,
+            ...(p.title ? { title: p.title } : {}),
+            ...(p.modelId ? { modelId: p.modelId } : {}),
+            ...(p.modeId ? { modeId: p.modeId } : {}),
+            ...(p.thoughtLevel ? { thoughtLevel: p.thoughtLevel } : {}),
+            ...(initialPrompt ? { requireIdleWorkspace: true } : {}),
+          });
+        } catch (openErr) {
+          if (allocatedWorktree) {
+            await this.worktrees
+              .remove({ id: allocatedWorktree.record.id, force: true })
+              .catch(() => {});
+          }
+          throw openErr;
+        }
         if (initialPrompt) {
           try {
             return await this.external.dispatchPrompt({
@@ -571,6 +1017,11 @@ export class DesktopHost {
             });
           } catch (err) {
             await this.external.deleteSession(opened.session.id, ws.root).catch(() => {});
+            if (allocatedWorktree) {
+              await this.worktrees
+                .remove({ id: allocatedWorktree.record.id, force: true })
+                .catch(() => {});
+            }
             throw err;
           }
         }
@@ -580,7 +1031,7 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
         const snap = this.external.getSnapshot(p.sessionId, ws.root);
-        if (this.workspaces.findIdByRoot(snap.session.workspaceRoot) !== ws.id) {
+        if (this.externalOwnerWorkspaceId(snap.session) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
         return snap;
@@ -589,7 +1040,7 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
         const snap = this.external.getSnapshot(p.sessionId, ws.root);
-        if (this.workspaces.findIdByRoot(snap.session.workspaceRoot) !== ws.id) {
+        if (this.externalOwnerWorkspaceId(snap.session) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
         const existing = this.externalStreams.get(p.subscriptionId);
@@ -652,7 +1103,7 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
         const current = this.external.getSnapshot(p.sessionId, ws.root);
-        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+        if (this.externalOwnerWorkspaceId(current.session) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
         return await this.external.dispatchPrompt({
@@ -667,7 +1118,7 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
         const current = this.external.getSnapshot(p.sessionId, ws.root);
-        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+        if (this.externalOwnerWorkspaceId(current.session) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
         return await this.external.setSessionConfig({
@@ -682,7 +1133,7 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
         const current = this.external.getSnapshot(p.sessionId, ws.root);
-        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+        if (this.externalOwnerWorkspaceId(current.session) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
         await this.external.approveSession({
@@ -698,7 +1149,7 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
         const current = this.external.getSnapshot(p.sessionId, ws.root);
-        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+        if (this.externalOwnerWorkspaceId(current.session) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
         await this.external.cancelSession(current.session.id, ws.root);
@@ -708,9 +1159,10 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
         const current = this.external.getSnapshot(p.sessionId, ws.root);
-        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+        if (this.externalOwnerWorkspaceId(current.session) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
+        await this.terminals.closeBySession(`external:${current.session.id}`);
         await this.external.closeSession(current.session.id, ws.root);
         return {};
       }
@@ -718,9 +1170,11 @@ export class DesktopHost {
         const p = PARAMS[method].parse(params);
         const ws = this.workspaces.get(p.workspaceId, true);
         const current = this.external.getSnapshot(p.sessionId, ws.root);
-        if (this.workspaces.findIdByRoot(current.session.workspaceRoot) !== ws.id) {
+        if (this.externalOwnerWorkspaceId(current.session) !== ws.id) {
           throw new Error('FORBIDDEN');
         }
+        const ownedWorktreeId = current.worktree?.id ?? current.session.worktree?.id;
+        await this.terminals.closeBySession(`external:${current.session.id}`);
         for (const [subId, sub] of this.externalStreams) {
           if (sub.sessionId === current.session.id) {
             sub.unsubscribe();
@@ -729,6 +1183,9 @@ export class DesktopHost {
           }
         }
         const deleted = await this.external.deleteSession(current.session.id, ws.root);
+        if (deleted && ownedWorktreeId) {
+          await this.cleanupOrphanedWorktreeAfterSessionDelete(ws.id, ownedWorktreeId);
+        }
         return { deleted };
       }
       default:
@@ -746,10 +1203,15 @@ export class DesktopHost {
     }
     this.externalStreams.clear();
     for (const pending of [...this.approvals.values()]) pending.finish('deny_once', 'aborted');
+    for (const [reqId, pending] of [...this.interactionPending.entries()]) {
+      this.interactionPending.delete(reqId);
+      clearTimeout(pending.timer);
+      pending.resolve(undefined);
+    }
     const openings = await Promise.allSettled([...this.openings]);
     const [results, externalRes] = await Promise.all([
       Promise.allSettled([...this.sessions.values()].map((slot) => this.close(slot))),
-      Promise.allSettled([this.external.dispose()]),
+      Promise.allSettled([this.external.dispose(), this.terminals.dispose()]),
     ]);
     if (
       openings.some(
@@ -781,8 +1243,13 @@ export class DesktopHost {
     };
   }
 
-  private open(workspaceId: string, conversationId?: string, initialProfileId?: string) {
-    const task = this.openSession(workspaceId, conversationId, initialProfileId);
+  private open(
+    workspaceId: string,
+    conversationId?: string,
+    initialProfileId?: string,
+    worktree?: { readonly enabled?: boolean; readonly branch?: string; readonly baseRef?: string },
+  ) {
+    const task = this.openSession(workspaceId, conversationId, initialProfileId, worktree);
     this.openings.add(task);
     void task.finally(() => this.openings.delete(task)).catch(() => {});
     return task;
@@ -791,31 +1258,59 @@ export class DesktopHost {
     workspaceId: string,
     conversationId?: string,
     initialProfileId?: string,
+    worktreeOption?: {
+      readonly enabled?: boolean;
+      readonly branch?: string;
+      readonly baseRef?: string;
+    },
   ) {
     const workspace = this.workspaces.get(workspaceId, true);
-    const known = [...this.sessions.values()].find(
-      (slot) =>
-        slot.scope.workspaceId === workspaceId && slot.handle.conversationId === conversationId,
-    );
+    const known =
+      conversationId !== undefined
+        ? [...this.sessions.values()].find(
+            (slot) =>
+              slot.scope.workspaceId === workspaceId &&
+              slot.handle.conversationId === conversationId,
+          )
+        : undefined;
     if (known?.cleanupFailed) throw new Error('SESSION_CLEANUP_FAILED');
     if (known?.closing) throw new Error('SESSION_BUSY');
-    if (known)
+    if (known) {
+      const knownWt = known.handle.worktree();
       return {
         ...known.scope,
         conversationId: known.handle.conversationId,
         configuration: known.handle.configuration(),
+        ...(knownWt ? { worktree: knownWt } : {}),
       };
+    }
     if (this.sessions.size + this.openings.size >= LIMITS.sessions)
       throw new Error('SESSION_LIMIT');
     const scope = { workspaceId, sessionId: randomUUID() };
-    let slot: Slot | undefined;
+    const slotRef: { current?: Slot } = {};
     const approvalChannel: ApprovalChannel = {
       requestApproval: (request, signal) =>
-        slot ? this.approve(slot, request, signal) : Promise.resolve('deny_once'),
+        slotRef.current
+          ? this.approve(slotRef.current, request, signal)
+          : Promise.resolve('deny_once'),
     };
-    {
-      const handle = await this.assemble({
-        workspaceRoot: workspace.root,
+    let allocatedWorktree: Awaited<ReturnType<WorktreeService['create']>> | undefined;
+    if (!conversationId && worktreeOption?.enabled) {
+      allocatedWorktree = await this.worktrees.create({
+        projectRoot: workspace.root,
+        ...(worktreeOption.branch ? { branch: worktreeOption.branch } : {}),
+        ...(worktreeOption.baseRef ? { baseRef: worktreeOption.baseRef } : {}),
+      });
+    }
+    let handle: ManagedHostSession;
+    try {
+      handle = await this.assemble({
+        projectRoot: workspace.root,
+        workspaceRoot: allocatedWorktree ? allocatedWorktree.binding.worktreePath : workspace.root,
+        ...(allocatedWorktree ? { worktree: allocatedWorktree.binding } : {}),
+        checkpoints: this.checkpoints,
+        worktrees: this.worktrees,
+        executionCoordinator: this.executionCoordinator,
         homeDirectory: this.workspaces.home,
         conversationId,
         initialProfileId,
@@ -837,61 +1332,77 @@ export class DesktopHost {
           ).catch(() => {});
         },
         isHostIdle: () => {
-          if (!slot || this.dead || slot.cleanupFailed || slot.closing) return false;
-          this.settleIfDone(slot);
-          if (slot.run && slot.run.phase !== 'idle') return false;
+          const current = slotRef.current;
+          if (!current || this.dead || current.cleanupFailed || current.closing) return false;
+          this.settleIfDone(current);
+          if (current.run && current.run.phase !== 'idle') return false;
           if (this.counts().runs >= LIMITS.runs) return false;
           // 若当前标签已建立视图订阅但尚未完成初始快照安装，暂缓一拍避免运行在半安装视图上启动。
-          if (slot.view && (!slot.view.installed || !slot.view.valid)) return false;
+          if (current.view && (!current.view.installed || !current.view.valid)) return false;
           return true;
         },
         onAutoResume: (input, signal) =>
-          slot ? this.autoResume(slot, input, signal) : Promise.resolve(),
+          slotRef.current ? this.autoResume(slotRef.current, input, signal) : Promise.resolve(),
       });
-      if (this.dead) {
-        await handle.dispose();
-        throw new Error('HOST_UNAVAILABLE');
+    } catch (assembleErr) {
+      if (allocatedWorktree) {
+        await this.worktrees
+          .remove({ id: allocatedWorktree.record.id, force: true })
+          .catch(() => {});
       }
-      slot = {
-        scope,
-        handle,
-        redact: (text) => redactText(text, []),
-        inspectionRevision: 0,
-      };
-      const owned = slot;
-      slot.inspectionStream = new LatestSnapshot(
-        (subscriptionId, snapshot) =>
-          this.notify(
+      throw assembleErr;
+    }
+    if (this.dead) {
+      await handle.dispose();
+      if (allocatedWorktree) {
+        await this.worktrees
+          .remove({ id: allocatedWorktree.record.id, force: true })
+          .catch(() => {});
+      }
+      throw new Error('HOST_UNAVAILABLE');
+    }
+    const slot: Slot = {
+      scope,
+      handle,
+      redact: this.settings.captureRedactor(workspaceId),
+      inspectionRevision: 0,
+    };
+    slotRef.current = slot;
+    const owned = slot;
+    slot.inspectionStream = new LatestSnapshot(
+      (subscriptionId, snapshot) =>
+        this.notify(
+          {
+            type: 'session.inspectionChanged',
+            ...scope,
+            subscriptionId,
+            snapshot,
+          },
+          'data',
+        ),
+      (subscriptionId) => {
+        if (!this.dead)
+          void this.notify(
             {
-              type: 'session.inspectionChanged',
+              type: 'session.inspectionInvalidated',
               ...scope,
               subscriptionId,
-              snapshot,
             },
-            'data',
-          ),
-        (subscriptionId) => {
-          if (!this.dead)
-            void this.notify(
-              {
-                type: 'session.inspectionInvalidated',
-                ...scope,
-                subscriptionId,
-              },
-              'control',
-            ).catch(() => {});
-        },
-      );
-      slot.stopInspection = handle.subscribeInspection(() => this.inspectionChanged(owned));
-      slot.stopWatches = handle.subscribeWatches(() => this.runtimeChanged());
-      this.sessions.set(scope.sessionId, slot);
-      this.runtimeChanged();
-      return {
-        ...scope,
-        conversationId: handle.conversationId,
-        configuration: handle.configuration(),
-      };
-    }
+            'control',
+          ).catch(() => {});
+      },
+    );
+    slot.stopInspection = handle.subscribeInspection(() => this.inspectionChanged(owned));
+    slot.stopWatches = handle.subscribeWatches(() => this.runtimeChanged());
+    this.sessions.set(scope.sessionId, slot);
+    this.runtimeChanged();
+    const openedWt = handle.worktree();
+    return {
+      ...scope,
+      conversationId: handle.conversationId,
+      configuration: handle.configuration(),
+      ...(openedWt ? { worktree: openedWt } : {}),
+    };
   }
   private runtimeSnapshot(): RuntimeSnapshot {
     return {
@@ -963,9 +1474,175 @@ export class DesktopHost {
         lastActivityAt: item.lastActivityAt,
         pinned: item.pinned === true,
         unavailableReason: item.unavailableReason,
+        ...(item.delegation
+          ? {
+              delegation: {
+                parentSessionId: item.delegation.parentSessionId,
+                ...(item.delegation.parentTitle
+                  ? { parentTitle: redact(item.delegation.parentTitle) }
+                  : {}),
+                taskName: redact(item.delegation.taskName),
+              },
+            }
+          : {}),
       })),
     };
   }
+  /**
+   * 只读读取单条归档（或历史）会话的消息与工具调用摘要：
+   * - 全程不修改 `archive_state`，读取完毕立即在 `finally` 释放句柄与管理器，绝不残留写锁；
+   * - 将同一轮内的连续助手步骤（`tool_use` + `tool_result` + 回复正文）折叠为单条助手记录并脱敏裁剪至安全帧预算内。
+   */
+  private async readArchivedConversation(
+    workspaceId: string,
+    conversationId: string,
+  ): Promise<Output<'session.readArchived'>> {
+    this.workspaces.get(workspaceId, true);
+    const redact = this.settings.captureRedactor(workspaceId);
+    const manager = this.workspaces.manager(workspaceId);
+    try {
+      const openedHandle = await manager.open(conversationId, { autoUpgradeLegacy: false });
+      try {
+        const meta = openedHandle.metadata;
+        const canonical = await openedHandle.store.load();
+        const toolErrors = new Map<string, boolean>();
+        for (const msg of canonical) {
+          if (msg.role !== 'tool') continue;
+          for (const block of msg.content) {
+            if (block.type === 'tool_result') {
+              toolErrors.set(block.toolUseId, Boolean(block.isError));
+            }
+          }
+        }
+
+        type PreviewTurn = Output<'session.readArchived'>['items'][number];
+        const merged: Array<{
+          id: string;
+          role: 'user' | 'assistant';
+          timestamp: number;
+          texts: string[];
+          tools: Array<{ name: string; summary: string; isError?: boolean }>;
+        }> = [];
+
+        const summarizeToolInput = (rawInput: unknown): string => {
+          if (rawInput && typeof rawInput === 'object') {
+            const obj = rawInput as Record<string, unknown>;
+            const candidate =
+              obj.path ??
+              obj.filePath ??
+              obj.command ??
+              obj.CommandLine ??
+              obj.url ??
+              obj.query ??
+              obj.pattern ??
+              obj.description;
+            if (typeof candidate === 'string' && candidate.trim()) {
+              return sanitizeDisplayText(redact(candidate.trim()), 120) ?? '';
+            }
+          }
+          return '';
+        };
+
+        for (const msg of canonical) {
+          if (msg.role === 'user') {
+            const userTexts: string[] = [];
+            for (const block of msg.content) {
+              if (block.type === 'text' && block.text.trim()) {
+                userTexts.push(redact(block.text.trim()));
+              }
+            }
+            if (userTexts.length > 0) {
+              merged.push({
+                id: msg.id ?? randomUUID(),
+                role: 'user',
+                timestamp: msg.timestamp ?? meta?.lastActivityAt ?? 0,
+                texts: userTexts,
+                tools: [],
+              });
+            }
+          } else if (msg.role === 'assistant') {
+            const assistantTexts: string[] = [];
+            const stepTools: Array<{ name: string; summary: string; isError?: boolean }> = [];
+            for (const block of msg.content) {
+              if (block.type === 'text' && block.text.trim()) {
+                assistantTexts.push(redact(block.text.trim()));
+              } else if (block.type === 'tool_use') {
+                stepTools.push({
+                  name: redact(block.name),
+                  summary: summarizeToolInput(block.input),
+                  isError: toolErrors.get(block.id) ?? false,
+                });
+              }
+            }
+            if (assistantTexts.length === 0 && stepTools.length === 0) continue;
+            const prev = merged.at(-1);
+            if (prev && prev.role === 'assistant') {
+              prev.texts.push(...assistantTexts);
+              prev.tools.push(...stepTools);
+              if (msg.timestamp && msg.timestamp > prev.timestamp) {
+                prev.timestamp = msg.timestamp;
+              }
+            } else {
+              merged.push({
+                id: msg.id ?? randomUUID(),
+                role: 'assistant',
+                timestamp: msg.timestamp ?? meta?.lastActivityAt ?? 0,
+                texts: assistantTexts,
+                tools: stepTools,
+              });
+            }
+          }
+        }
+
+        let truncated = merged.length > 200;
+        const tailSlice = truncated ? merged.slice(-200) : merged;
+        let remainingBytes = 512 * 1024;
+        const items: PreviewTurn[] = [];
+
+        for (let i = tailSlice.length - 1; i >= 0; i -= 1) {
+          const entry = tailSlice[i]!;
+          let joinedText = entry.texts.join('\n\n');
+          if (joinedText.length > 16_000) {
+            joinedText = `${joinedText.slice(0, 16_000)}\n…`;
+            truncated = true;
+          }
+          const byteLen = Buffer.byteLength(joinedText, 'utf8') + 256;
+          if (byteLen > remainingBytes && items.length > 0) {
+            truncated = true;
+            break;
+          }
+          remainingBytes = Math.max(0, remainingBytes - byteLen);
+          items.push({
+            id: entry.id,
+            role: entry.role,
+            timestamp: Math.max(0, Math.trunc(entry.timestamp)),
+            text: joinedText,
+            toolSummaries: entry.tools.slice(0, 64),
+          });
+        }
+        items.reverse();
+
+        const rawTitle = meta?.customTitle ?? meta?.title ?? '';
+        return {
+          conversationId: openedHandle.conversationId,
+          title: sanitizeDisplayText(redact(rawTitle), 200) || '未命名对话',
+          archived: meta?.archived ?? true,
+          ...(meta?.gitBranch
+            ? { gitBranch: sanitizeDisplayText(redact(meta.gitBranch), 120) }
+            : {}),
+          lastActivityAt: Math.max(0, Math.trunc(meta?.lastActivityAt ?? 0)),
+          messageCount: Math.max(0, Math.trunc(meta?.messageCount ?? canonical.length)),
+          truncated,
+          items,
+        };
+      } finally {
+        await openedHandle.release();
+      }
+    } finally {
+      await manager.close();
+    }
+  }
+
   /**
    * 归档/恢复/删除都以「会话文件不被本进程持有」为前提。
    *
@@ -979,18 +1656,42 @@ export class DesktopHost {
     method: 'session.archive' | 'session.restore' | 'session.delete',
   ): Promise<void> {
     const slot = this.findSlot(workspaceId, conversationId);
+    let deletedWorktreeId = method === 'session.delete' ? slot?.handle.worktree()?.id : undefined;
     if (slot) {
       if (slot.closing) throw new Error('SESSION_BUSY');
       if (slot.run && slot.run.phase !== 'idle') throw new Error('SESSION_IN_USE');
       await this.close(slot);
     }
+    if (method === 'session.archive' || method === 'session.delete') {
+      await this.terminals.closeBySession(`native:${workspaceId}:${conversationId}`);
+    }
     const manager = this.workspaces.manager(workspaceId);
     try {
       if (method === 'session.archive') await manager.archiveSession(conversationId);
       else if (method === 'session.restore') await manager.restoreSession(conversationId);
-      else await manager.deleteSession(conversationId);
+      else {
+        if (!deletedWorktreeId) {
+          const matched = await manager
+            .list(1, {
+              pageSize: 1,
+              includeArchived: true,
+              filter: (item) => item.conversationId === conversationId,
+            })
+            .catch(() => undefined);
+          deletedWorktreeId = matched?.items[0]?.worktree?.id;
+        }
+        await manager.deleteSession(conversationId);
+        for (const openSlot of this.sessions.values()) {
+          if (openSlot.scope.workspaceId === workspaceId) {
+            openSlot.handle.forgetDelegation(conversationId);
+          }
+        }
+      }
     } finally {
       await manager.close();
+    }
+    if (method === 'session.delete' && deletedWorktreeId) {
+      await this.cleanupOrphanedWorktreeAfterSessionDelete(workspaceId, deletedWorktreeId);
     }
   }
   /** 同一空间内按会话 ID 找本进程持有的句柄；跨空间同名 ID 不会命中。 */
@@ -1050,12 +1751,22 @@ export class DesktopHost {
     slot.closing = (async () => {
       for (const pending of [...this.approvals.values()])
         if (pending.slot === slot) pending.finish('deny_once', 'aborted');
+      for (const [reqId, pending] of [...this.interactionPending.entries()]) {
+        if (pending.sessionId === slot.scope.sessionId) {
+          this.interactionPending.delete(reqId);
+          clearTimeout(pending.timer);
+          pending.resolve(undefined);
+        }
+      }
       await slot.handle.dispose();
       await slot.running;
       slot.view?.unsubscribe();
       slot.inspectionStream?.close();
       slot.stopInspection?.();
       slot.stopWatches?.();
+      await this.terminals.closeBySession(
+        `native:${slot.scope.workspaceId}:${slot.handle.conversationId}`,
+      );
       this.sessions.delete(slot.scope.sessionId);
       this.runtimeChanged();
     })().catch((error) => {
@@ -1067,12 +1778,598 @@ export class DesktopHost {
     this.runtimeChanged();
     return slot.closing;
   }
-  /** 工作区文件路径枚举（相对路径清单），供 composer @ 文件补全。
-   * 保证：仅枚举受信任工作区（requireTrust），条目/深度双重预算，命中预算即截断明示；
-   * 枚举策略（广度优先、逐层排序、忽略目录）见 workspace-files 模块；只返回路径，不读内容。 */
-  private listFiles(workspaceId: string): Output<'workspace.listFiles'> {
+  /**
+   * 工作区或受管 Git Worktree 文件路径枚举（相对路径清单），供 composer `@` 文件补全与右侧工作台 `Files` 树使用。
+   * 当传入 `worktreeId` 时强制核验该工作树归属当前工作区且通过四步 `.git` 双向回链校验。
+   */
+  private listFiles(
+    workspaceId: string,
+    query?: string,
+    worktreeId?: string,
+  ): Output<'workspace.listFiles'> {
+    const root = this.resolveVerifiedExecutionRoot(workspaceId, worktreeId);
+    return enumerateWorkspaceFiles(root, {
+      maxFiles: 5000,
+      maxDepth: 16,
+      ...(query !== undefined ? { query } : {}),
+    });
+  }
+
+  /**
+   * 只读读取工作区或已验真受管工作树内的单个文件（硬禁区拒绝 `.kapibala` 与敏感 `.env*`，512 KiB UTF-8 截断并脱敏）。
+   */
+  private readFile(
+    workspaceId: string,
+    targetPath: string,
+    worktreeId?: string,
+  ): Output<'workspace.readFile'> {
+    const root = this.resolveVerifiedExecutionRoot(workspaceId, worktreeId);
+    const redact = this.settings.captureRedactor(workspaceId);
+    const read = readWorkspaceFile({ root, targetPath });
+    return {
+      ...read,
+      content: read.binary ? '' : redact(read.content),
+    };
+  }
+
+  private resolveVerifiedExecutionRoot(workspaceId: string, worktreeId?: string): string {
     const workspace = this.workspaces.get(workspaceId, true);
-    return enumerateWorkspaceFiles(workspace.root, { maxFiles: 5000, maxDepth: 16 });
+    if (!worktreeId) return workspace.root;
+    const rec = this.requireOwnedWorktree(worktreeId, workspace.root);
+    if (!fs.existsSync(rec.worktreePath)) {
+      throw new WorktreeError(
+        'WORKTREE_NOT_FOUND',
+        `Worktree directory missing: '${rec.worktreePath}'`,
+      );
+    }
+    if (!this.worktrees.verifyLink(workspace.root, rec.worktreePath)) {
+      throw new WorktreeError(
+        'WORKTREE_LINK_INVALID',
+        `Worktree link verification failed: '${rec.worktreePath}'`,
+      );
+    }
+    return toNativePhysicalPath(rec.worktreePath);
+  }
+
+  /**
+   * 列出指定工作区下的受管 Git Worktree，并结合当前空间内未归档本地会话、已打开槽位与外部会话计算占用状态（`inUse` / `prunable`）。
+   */
+  async listWorktrees(workspaceId: string): Promise<Output<'worktree.list'>> {
+    const ws = this.workspaces.get(workspaceId, true);
+    const boundIds = await this.collectBoundWorktreeIds(ws.id, ws.root, {
+      includeArchived: false,
+    });
+    return {
+      items: this.worktrees.list(ws.root).map((rec) => {
+        const inUse = boundIds.has(rec.id);
+        return {
+          id: rec.id,
+          projectRoot: rec.projectRoot,
+          worktreePath: rec.worktreePath,
+          branch: rec.branch,
+          baseRef: rec.baseRef,
+          baseCommit: rec.baseCommit,
+          createdAt: rec.createdAt,
+          inUse,
+          prunable: !inUse,
+        };
+      }),
+    };
+  }
+
+  private async collectBoundWorktreeIds(
+    workspaceId: string,
+    workspaceRoot: string,
+    options?: { readonly includeArchived?: boolean },
+  ): Promise<Set<string>> {
+    const bound = new Set<string>();
+    for (const slot of this.sessions.values()) {
+      if (slot.scope.workspaceId !== workspaceId) continue;
+      const wtId = slot.handle.worktree()?.id;
+      if (wtId) bound.add(wtId);
+    }
+    const manager = this.workspaces.manager(workspaceId);
+    try {
+      let page = 1;
+      for (;;) {
+        const listed = await manager.list(page, {
+          pageSize: 100,
+          ...(options?.includeArchived ? { includeArchived: true } : {}),
+        });
+        for (const item of listed.items) {
+          if (item.worktree?.id) bound.add(item.worktree.id);
+        }
+        if (page >= listed.pages) break;
+        page += 1;
+      }
+    } finally {
+      await manager.close();
+    }
+    try {
+      for (const ext of this.external.listSessions(workspaceRoot)) {
+        if (ext.worktree?.id) bound.add(ext.worktree.id);
+      }
+    } catch {
+      // 外部会话目录不可读时不阻塞工作树列举。
+    }
+    return bound;
+  }
+
+  private async cleanupOrphanedWorktreeAfterSessionDelete(
+    workspaceId: string,
+    worktreeId: string,
+  ): Promise<void> {
+    try {
+      const ws = this.workspaces.get(workspaceId, true);
+      const rec = this.worktrees.get(worktreeId);
+      if (!rec || !isSamePath(rec.projectRoot, ws.root)) return;
+      const remainingRefs = await this.collectBoundWorktreeIds(ws.id, ws.root, {
+        includeArchived: true,
+      });
+      if (remainingRefs.has(worktreeId)) return;
+      await this.worktrees
+        .remove({
+          id: worktreeId,
+          force: false,
+          onBeforeRemove: async (targetRec) => {
+            await this.closeIdleResourcesInWorktree(ws.id, ws.root, targetRec.worktreePath);
+          },
+        })
+        .catch(() => {});
+    } catch {
+      // 会话删除已完成，工作树非强制回收失败（如存在未提交改动或未合并提交）静默保留目录。
+    }
+  }
+
+  private requireOwnedWorktree(id: string, projectRoot: string) {
+    const rec = this.worktrees.get(id);
+    if (!rec || !isSamePath(rec.projectRoot, projectRoot)) {
+      throw new WorktreeError(
+        'WORKTREE_NOT_FOUND',
+        `Worktree '${id}' does not belong to workspace`,
+      );
+    }
+    return rec;
+  }
+
+  private externalOwnerWorkspaceId(session: {
+    readonly workspaceRoot: string;
+    readonly worktree?: { readonly projectRoot: string };
+  }): string | undefined {
+    return this.workspaces.findIdByRoot(session.worktree?.projectRoot ?? session.workspaceRoot);
+  }
+
+  private async closeIdleResourcesInWorktree(
+    workspaceId: string,
+    workspaceRoot: string,
+    worktreePath: string,
+  ): Promise<void> {
+    const idleSlots = [...this.sessions.values()].filter((slot) => {
+      if (slot.scope.workspaceId !== workspaceId || slot.closing) return false;
+      this.settleIfDone(slot);
+      if (slot.run && slot.run.phase !== 'idle') return false;
+      const wt = slot.handle.worktree();
+      return Boolean(wt && isSamePath(wt.worktreePath, worktreePath));
+    });
+    for (const slot of idleSlots) {
+      await this.close(slot);
+    }
+    const idleExternals = this.external
+      .listSessions(workspaceRoot)
+      .filter(
+        (ext) =>
+          ext.status === 'idle' &&
+          ext.worktree &&
+          isSamePath(ext.worktree.worktreePath, worktreePath),
+      );
+    for (const ext of idleExternals) {
+      await this.terminals.closeBySession(`external:${ext.id}`);
+      await this.external.closeSession(ext.id, workspaceRoot).catch(() => {});
+    }
+    await this.terminals.closeByCwd(worktreePath);
+  }
+
+  /**
+   * 严格在宿主侧校验 `sessionKey` 归属并反解受信任终端工作目录（`worktreePath ?? workspace.root`），
+   * 杜绝渲染进程传入任意文件系统路径越界启动交互式 Shell。
+   */
+  private async resolveTerminalTarget(
+    workspaceId: string,
+    sessionKey: string,
+  ): Promise<{ readonly cwd: string; readonly cwdLabel: string }> {
+    const ws = this.workspaces.get(workspaceId, true);
+    if (sessionKey.startsWith('native:')) {
+      const rest = sessionKey.slice('native:'.length);
+      const colonIdx = rest.indexOf(':');
+      if (colonIdx <= 0) throw new Error('FORBIDDEN');
+      const keyWsId = rest.slice(0, colonIdx);
+      const convId = rest.slice(colonIdx + 1);
+      if (keyWsId !== workspaceId || !convId) throw new Error('FORBIDDEN');
+      const openSlot = this.findSlot(workspaceId, convId);
+      if (openSlot) {
+        const wt = openSlot.handle.worktree();
+        if (
+          wt &&
+          fs.existsSync(wt.worktreePath) &&
+          this.worktrees.verifyLink(ws.root, wt.worktreePath)
+        ) {
+          return {
+            cwd: toNativePhysicalPath(wt.worktreePath),
+            cwdLabel: wt.branch || path.basename(wt.worktreePath),
+          };
+        }
+        return { cwd: ws.root, cwdLabel: path.basename(ws.root) || ws.name };
+      }
+      const { executionRoot } = await this.resolveClosedConversationTarget(
+        workspaceId,
+        ws.root,
+        convId,
+        'fallback_root',
+      );
+      return { cwd: executionRoot, cwdLabel: path.basename(executionRoot) || ws.name };
+    }
+    if (sessionKey.startsWith('external:')) {
+      const extId = sessionKey.slice('external:'.length);
+      if (!extId) throw new Error('FORBIDDEN');
+      const snap = this.external.getSnapshot(extId, ws.root);
+      if (this.externalOwnerWorkspaceId(snap.session) !== ws.id) {
+        throw new Error('FORBIDDEN');
+      }
+      const wt = snap.worktree;
+      if (
+        wt &&
+        fs.existsSync(wt.worktreePath) &&
+        this.worktrees.verifyLink(ws.root, wt.worktreePath)
+      ) {
+        return {
+          cwd: toNativePhysicalPath(wt.worktreePath),
+          cwdLabel: wt.branch || path.basename(wt.worktreePath),
+        };
+      }
+      return {
+        cwd: snap.session.workspaceRoot,
+        cwdLabel: path.basename(snap.session.workspaceRoot) || ws.name,
+      };
+    }
+    throw new Error('FORBIDDEN');
+  }
+
+  private async resolveClosedConversationTarget(
+    workspaceId: string,
+    workspaceRoot: string,
+    conversationId: string,
+    mode: 'strict_link' | 'fallback_root' = 'strict_link',
+  ): Promise<{ readonly executionRoot: string }> {
+    const manager = this.workspaces.manager(workspaceId);
+    try {
+      const openedHandle = await manager.open(conversationId, { autoUpgradeLegacy: false });
+      try {
+        const persistedWt: SessionWorktreeBinding | undefined = openedHandle.header?.worktree;
+        if (!persistedWt) {
+          return { executionRoot: workspaceRoot };
+        }
+        if (fs.existsSync(persistedWt.worktreePath)) {
+          if (this.worktrees.verifyLink(workspaceRoot, persistedWt.worktreePath)) {
+            return { executionRoot: toNativePhysicalPath(persistedWt.worktreePath) };
+          }
+          if (mode === 'fallback_root') {
+            return { executionRoot: workspaceRoot };
+          }
+          throw new WorktreeError(
+            'WORKTREE_LINK_INVALID',
+            `Managed worktree link verification failed: ${persistedWt.worktreePath}`,
+          );
+        }
+        return {
+          executionRoot: mode === 'fallback_root' ? workspaceRoot : persistedWt.worktreePath,
+        };
+      } finally {
+        await openedHandle.release();
+      }
+    } finally {
+      await manager.close();
+    }
+  }
+
+  private resolveExternalIdIfMatch(
+    workspaceRoot: string,
+    p: {
+      readonly sessionId?: string;
+      readonly conversationId?: string;
+      readonly externalSessionId?: string;
+    },
+  ): string | undefined {
+    if (p.externalSessionId) {
+      return this.external.resolveSessionId(p.externalSessionId, workspaceRoot);
+    }
+    if (!p.conversationId && p.sessionId && !this.sessions.has(p.sessionId)) {
+      try {
+        return this.external.resolveSessionId(p.sessionId, workspaceRoot);
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  private async listCheckpointsRpc(
+    p: Output<'checkpoint.list'> extends never
+      ? never
+      : import('../shared/contracts.js').Params<'checkpoint.list'>,
+  ): Promise<Output<'checkpoint.list'>> {
+    const ws = this.workspaces.get(p.workspaceId, true);
+    const extId = this.resolveExternalIdIfMatch(ws.root, p);
+    if (extId) {
+      return { items: await this.external.listSessionCheckpoints(extId, ws.root) };
+    }
+    const openSlot = p.sessionId
+      ? this.slot({ workspaceId: p.workspaceId, sessionId: p.sessionId })
+      : p.conversationId
+        ? this.findSlot(p.workspaceId, p.conversationId)
+        : undefined;
+    if (openSlot) {
+      return { items: await openSlot.handle.checkpoints() };
+    }
+    if (!p.conversationId) throw new Error('INVALID_REQUEST');
+    const { executionRoot } = await this.resolveClosedConversationTarget(
+      p.workspaceId,
+      ws.root,
+      p.conversationId,
+    );
+    if (!fs.existsSync(executionRoot)) return { items: [] };
+    const redact = this.settings.captureRedactor(p.workspaceId);
+    const records = await this.checkpoints.listCheckpoints({
+      projectRoot: ws.root,
+      executionRoot,
+      sessionId: p.conversationId,
+    });
+    return {
+      items: records.map((rec) => ({
+        ordinal: rec.ordinal,
+        createdAt: rec.createdAt,
+        startTree: rec.startTree,
+        endTree: rec.endTree,
+        additions: rec.additions,
+        deletions: rec.deletions,
+        changedFilesCount: rec.changedFiles.length,
+        ...(rec.label ? { label: sanitizeDisplayText(redact(rec.label), 120) } : {}),
+      })),
+    };
+  }
+
+  private async diffCheckpointsRpc(
+    p: import('../shared/contracts.js').Params<'checkpoint.diff'>,
+  ): Promise<Output<'checkpoint.diff'>> {
+    const ws = this.workspaces.get(p.workspaceId, true);
+    const extId = this.resolveExternalIdIfMatch(ws.root, p);
+    if (extId) {
+      const diff = await this.external.diffSessionCheckpoints({
+        sessionId: extId,
+        expectedWorkspaceRoot: ws.root,
+        ...(p.ordinal !== undefined ? { ordinal: p.ordinal } : {}),
+        ...(p.fromOrdinal !== undefined ? { fromOrdinal: p.fromOrdinal } : {}),
+        ...(p.toOrdinal !== undefined ? { toOrdinal: p.toOrdinal } : {}),
+        ...(p.includeLiveWorktree !== undefined
+          ? { includeLiveWorktree: p.includeLiveWorktree }
+          : {}),
+      });
+      const clamped = clampDesktopDiffFiles(diff.files);
+      return {
+        available: diff.available,
+        additions: diff.additions,
+        deletions: diff.deletions,
+        truncated: diff.truncated || clamped.truncated,
+        files: clamped.files,
+      };
+    }
+    const openSlot = p.sessionId
+      ? this.slot({ workspaceId: p.workspaceId, sessionId: p.sessionId })
+      : p.conversationId
+        ? this.findSlot(p.workspaceId, p.conversationId)
+        : undefined;
+    if (openSlot) {
+      const diff = await openSlot.handle.checkpointDiff({
+        ...(p.ordinal !== undefined ? { ordinal: p.ordinal } : {}),
+        ...(p.fromOrdinal !== undefined ? { fromOrdinal: p.fromOrdinal } : {}),
+        ...(p.toOrdinal !== undefined ? { toOrdinal: p.toOrdinal } : {}),
+        ...(p.includeLiveWorktree !== undefined
+          ? { includeLiveWorktree: p.includeLiveWorktree }
+          : {}),
+      });
+      const clamped = clampDesktopDiffFiles(diff.files);
+      return {
+        available: diff.available,
+        additions: diff.additions,
+        deletions: diff.deletions,
+        truncated: diff.truncated || clamped.truncated,
+        files: clamped.files,
+      };
+    }
+    if (!p.conversationId) throw new Error('INVALID_REQUEST');
+    const { executionRoot } = await this.resolveClosedConversationTarget(
+      p.workspaceId,
+      ws.root,
+      p.conversationId,
+    );
+    if (!fs.existsSync(executionRoot)) {
+      return { available: false, additions: 0, deletions: 0, truncated: false, files: [] };
+    }
+    const redact = this.settings.captureRedactor(p.workspaceId);
+    const diff = await this.checkpoints.diff({
+      projectRoot: ws.root,
+      executionRoot,
+      sessionId: p.conversationId,
+      ...(p.ordinal !== undefined ? { ordinal: p.ordinal } : {}),
+      ...(p.fromOrdinal !== undefined ? { fromOrdinal: p.fromOrdinal } : {}),
+      ...(p.toOrdinal !== undefined ? { toOrdinal: p.toOrdinal } : {}),
+      ...(p.includeLiveWorktree !== undefined
+        ? { includeLiveWorktree: p.includeLiveWorktree }
+        : {}),
+    });
+    const mapped: ViewFileDiff[] = diff.files.map((f) => ({
+      path: redact(f.path),
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+      binary: f.binary,
+      patch: redact(f.patch),
+      truncated: f.truncated,
+    }));
+    const clamped = clampDesktopDiffFiles(mapped);
+    return {
+      available: diff.available,
+      additions: diff.additions,
+      deletions: diff.deletions,
+      truncated: diff.truncated || clamped.truncated,
+      files: clamped.files,
+    };
+  }
+
+  private async restoreCheckpointRpc(
+    p: import('../shared/contracts.js').Params<'checkpoint.restore'>,
+  ): Promise<Output<'checkpoint.restore'>> {
+    const ws = this.workspaces.get(p.workspaceId, true);
+    const extId = this.resolveExternalIdIfMatch(ws.root, p);
+    if (extId) {
+      const outcome = await this.external.restoreSessionCheckpoint({
+        sessionId: extId,
+        targetOrdinal: p.targetOrdinal,
+        ...(p.force !== undefined ? { force: p.force } : {}),
+        expectedWorkspaceRoot: ws.root,
+      });
+      if (outcome.status === 'conflict') {
+        return {
+          status: 'conflict',
+          restoredFiles: [],
+          deletedFiles: [],
+          conflicts: [...outcome.conflicts],
+        };
+      }
+      return {
+        status: outcome.status,
+        restoredFiles: [...outcome.restoredFiles],
+        deletedFiles: [...outcome.deletedFiles],
+        conflicts: [],
+      };
+    }
+    const openSlot = p.sessionId
+      ? this.slot({ workspaceId: p.workspaceId, sessionId: p.sessionId })
+      : p.conversationId
+        ? this.findSlot(p.workspaceId, p.conversationId)
+        : undefined;
+    if (openSlot) {
+      this.settleIfDone(openSlot);
+      if (
+        openSlot.cleanupFailed ||
+        openSlot.closing ||
+        openSlot.handle.isBusy() ||
+        (openSlot.run && openSlot.run.phase !== 'idle')
+      ) {
+        throw new Error('SESSION_BUSY');
+      }
+      const outcome = await openSlot.handle.restoreCheckpoint(p.targetOrdinal, p.force);
+      if (outcome.status === 'conflict') {
+        return {
+          status: 'conflict',
+          restoredFiles: [],
+          deletedFiles: [],
+          conflicts: [...outcome.conflicts],
+        };
+      }
+      return {
+        status: outcome.status,
+        restoredFiles: [...outcome.restoredFiles],
+        deletedFiles: [...outcome.deletedFiles],
+        conflicts: [],
+      };
+    }
+    if (!p.conversationId) throw new Error('INVALID_REQUEST');
+    const { executionRoot } = await this.resolveClosedConversationTarget(
+      p.workspaceId,
+      ws.root,
+      p.conversationId,
+    );
+    if (!fs.existsSync(executionRoot)) {
+      throw new WorktreeError(
+        'WORKTREE_NOT_FOUND',
+        `Execution root does not exist: '${executionRoot}'`,
+      );
+    }
+    if (!isSamePath(executionRoot, ws.root) && !this.worktrees.verifyLink(ws.root, executionRoot)) {
+      throw new WorktreeError(
+        'WORKTREE_LINK_INVALID',
+        `Execution root link invalid: '${executionRoot}'`,
+      );
+    }
+    this.executionCoordinator.assertNotFenced(executionRoot);
+    const outcome = await this.checkpoints.restore({
+      projectRoot: ws.root,
+      executionRoot,
+      sessionId: p.conversationId,
+      targetOrdinal: p.targetOrdinal,
+      ...(p.force !== undefined ? { force: p.force } : {}),
+    });
+    if (outcome.status === 'conflict') {
+      return {
+        status: 'conflict',
+        restoredFiles: [],
+        deletedFiles: [],
+        conflicts: [...outcome.conflicts],
+      };
+    }
+    return {
+      status: outcome.status,
+      restoredFiles: [...outcome.restoredFiles],
+      deletedFiles: [...outcome.deletedFiles],
+      conflicts: [],
+    };
+  }
+
+  private async branchConversationWithSummary(
+    workspaceId: string,
+    conversationId: string,
+    branchName?: string,
+    baseRecordId?: string,
+  ): Promise<Output<'session.branchWithSummary'>> {
+    const ws = this.workspaces.get(workspaceId, true);
+    const targetBranchId =
+      branchName && /^[a-zA-Z0-9_-]+$/.test(branchName)
+        ? branchName
+        : `branch-${Date.now().toString(36)}`;
+    const openSlot = this.findSlot(workspaceId, conversationId);
+    if (openSlot) {
+      this.settleIfDone(openSlot);
+      if (openSlot.cleanupFailed) throw new Error('SESSION_CLEANUP_FAILED');
+      if (
+        openSlot.closing ||
+        openSlot.handle.isBusy() ||
+        (openSlot.run && openSlot.run.phase !== 'idle')
+      ) {
+        throw new Error('SESSION_BUSY');
+      }
+      return await openSlot.handle.createBranchWithSummary(targetBranchId, {
+        ...(baseRecordId ? { baseRecordId } : {}),
+      });
+    }
+    const tempHandle = await this.assemble({
+      projectRoot: ws.root,
+      workspaceRoot: ws.root,
+      checkpoints: this.checkpoints,
+      worktrees: this.worktrees,
+      executionCoordinator: this.executionCoordinator,
+      homeDirectory: this.workspaces.home,
+      conversationId,
+      approvalChannel: { requestApproval: async () => 'deny_once' },
+      leaseCoordinator: this.leases,
+      maxReadBytes: LIMITS.history,
+    });
+    try {
+      return await tempHandle.createBranchWithSummary(targetBranchId, {
+        ...(baseRecordId ? { baseRecordId } : {}),
+      });
+    } finally {
+      await tempHandle.dispose();
+    }
   }
 
   /** 斜杠命令执行：与 CLI 同一分发器；输出收集为 feedback，交互经对话框往返。 */
@@ -1285,6 +2582,22 @@ export class DesktopHost {
       },
       dispatcher: this.commands,
       external: this.external,
+      checkpoints: this.checkpoints,
+      worktrees: this.worktrees,
+      executionRoot: (() => {
+        const slotWt = slot.handle.worktree();
+        return slotWt &&
+          fs.existsSync(slotWt.worktreePath) &&
+          this.worktrees.verifyLink(workspace.root, slotWt.worktreePath)
+          ? toNativePhysicalPath(slotWt.worktreePath)
+          : workspace.root;
+      })(),
+      onCheckpointRestored: () => {
+        this.inspectionChanged(slot);
+      },
+      onBeforeRemoveWorktree: async (rec) => {
+        await this.closeIdleResourcesInWorktree(workspace.id, workspace.root, rec.worktreePath);
+      },
       runSkill: async (name, task) => {
         // 显式技能走与 run.start 相同的收据管线：忙碌反映、事件流、取消语义保持一致。
         // 必须 await：start 的同步门禁（忙碌/展示未就绪/限额）拒绝时要把失败
@@ -1303,6 +2616,57 @@ export class DesktopHost {
     };
   }
 
+  private async preRestoreBeforeRegenerate(slot: Slot, force?: boolean): Promise<void> {
+    this.settleIfDone(slot);
+    if (slot.cleanupFailed) throw new Error('SESSION_CLEANUP_FAILED');
+    if (slot.closing || slot.handle.isBusy() || (slot.run && slot.run.phase !== 'idle')) {
+      throw new Error('SESSION_BUSY');
+    }
+    if (!slot.view?.installed || !slot.view.valid) throw new Error('PRESENTATION_STALE');
+    const items = await slot.handle.checkpoints();
+    if (items.length === 0) return;
+    const lastOrdinal = items[items.length - 1]!.ordinal;
+    const restoreRes = await slot.handle.restoreCheckpoint(lastOrdinal - 1, force);
+    if (restoreRes.status === 'conflict') {
+      throw new KapibalaError(
+        `Checkpoint restore conflict on files: ${restoreRes.conflicts.join(', ')}`,
+        {
+          code: 'CHECKPOINT_RESTORE_CONFLICT',
+          retryPolicy: 'after_user_action',
+          safeMessage: `部分文件在检查点后被手动修改：${restoreRes.conflicts.join(', ')}`,
+        },
+      );
+    }
+  }
+
+  private async startWithOptionalRestore(
+    p: import('../shared/contracts.js').Params<'run.start'>,
+  ): Promise<RunReceipt> {
+    this.workspaces.get(p.workspaceId, true);
+    if (p.regenerate && p.restoreFiles) {
+      const slot = this.slot(p);
+      await this.preRestoreBeforeRegenerate(slot, p.force);
+    }
+    return this.start(p);
+  }
+
+  private async regenerate(
+    p: import('../shared/contracts.js').Params<'run.regenerate'>,
+  ): Promise<RunReceipt> {
+    this.workspaces.get(p.workspaceId, true);
+    const slot = this.slot(p);
+    if (p.restoreFiles) {
+      await this.preRestoreBeforeRegenerate(slot, p.force);
+    }
+    return this.start({
+      workspaceId: p.workspaceId,
+      sessionId: p.sessionId,
+      operationId: p.operationId ?? randomUUID(),
+      input: p.input?.trim() || '<regenerate>',
+      regenerate: true,
+    });
+  }
+
   private start(
     p: {
       workspaceId: string;
@@ -1311,8 +2675,16 @@ export class DesktopHost {
       input: string;
       /** 重试：托管层先回退上一轮再重跑，失败按普通运行错误回执。 */
       regenerate?: boolean;
+      restoreFiles?: boolean;
+      force?: boolean;
       /** 跨代理接力上下文。 */
       handoff?: { readonly fromTitle: string; readonly context: string };
+      /** 跨会话引用身份选择。 */
+      references?: readonly {
+        readonly sessionId: string;
+        readonly recordId?: string;
+        readonly branchId?: string;
+      }[];
     },
     execute?: (handle: ManagedHostSession) => Promise<void>,
   ): RunReceipt {
@@ -1349,10 +2721,19 @@ export class DesktopHost {
     slot.running = (
       execute
         ? execute(slot.handle)
-        : slot.handle.run(p.input, undefined, {
-            regenerate: p.regenerate,
-            ...(p.handoff ? { handoff: p.handoff } : {}),
-          })
+        : p.references && p.references.length > 0 && !p.regenerate
+          ? slot.handle.runWithReferences(
+              p.input,
+              p.references.map((ref) => ({
+                sessionId: ref.sessionId,
+                ...(ref.recordId !== undefined ? { recordIds: [ref.recordId] } : {}),
+                ...(ref.branchId !== undefined ? { branchId: ref.branchId } : {}),
+              })),
+            )
+          : slot.handle.run(p.input, undefined, {
+              regenerate: p.regenerate,
+              ...(p.handoff ? { handoff: p.handoff } : {}),
+            })
     )
       .then(
         () => {
@@ -1450,10 +2831,35 @@ export class DesktopHost {
     request: ApprovalRequest,
     signal?: AbortSignal,
   ): Promise<ApprovalChoice> {
-    if (this.dead || !slot.run || signal?.aborted || this.approvals.size >= LIMITS.approvals)
+    this.settleIfDone(slot);
+    if (
+      this.dead ||
+      slot.closing ||
+      !this.sessions.has(slot.scope.sessionId) ||
+      signal?.aborted ||
+      this.approvals.size >= LIMITS.approvals
+    )
       return Promise.resolve('deny_once');
     const approvalId = randomUUID();
-    const runId = slot.run.runId;
+    const runId =
+      slot.run && slot.run.phase !== 'idle'
+        ? slot.run.runId
+        : request.subagentOrigin
+          ? `subagent:${request.subagentOrigin.agentId}`
+          : 'background';
+    const subagentOrigin = request.subagentOrigin
+      ? {
+          agentId: request.subagentOrigin.agentId,
+          role: request.subagentOrigin.role,
+          description:
+            sanitizeDisplayText(slot.redact(request.subagentOrigin.description), 400) ||
+            request.subagentOrigin.role,
+          ...(request.subagentOrigin.childSessionId
+            ? { childSessionId: request.subagentOrigin.childSessionId }
+            : {}),
+          parentSessionId: request.subagentOrigin.parentSessionId,
+        }
+      : undefined;
     return new Promise((resolve) => {
       const finish = (choice: ApprovalChoice, reason: 'resolved' | 'timeout' | 'aborted') => {
         if (!this.approvals.delete(approvalId)) return;
@@ -1491,6 +2897,7 @@ export class DesktopHost {
           description: slot.redact(JSON.stringify(request.input ?? {})).slice(0, 10_000),
           sessionAllowed: request.sessionAllowed === true,
           expiresAt: Date.now() + LIMITS.approvalTimeout,
+          ...(subagentOrigin ? { subagentOrigin } : {}),
         },
         'control',
       ).catch(abort);

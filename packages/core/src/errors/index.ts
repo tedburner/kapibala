@@ -20,6 +20,10 @@ export type ModelErrorCategory =
 export interface ModelErrorOptions {
   status?: number;
   retryable?: boolean;
+  /** 服务端 Retry-After / retry-after-ms 解析出的建议等待毫秒数（非负整数）。 */
+  retryAfterMs?: number;
+  /** 仅供分类器识别配额或限流特征的服务端消息文本，不覆盖对外展示文案。 */
+  providerMessage?: string;
   code?: string;
   transportCode?: string;
   providerCode?: string;
@@ -84,8 +88,28 @@ function safeErrorIdentifier(value?: string): string | undefined {
     : undefined;
 }
 
-/** 按协议状态和明确错误码分类，不根据自然语言猜测根因。 */
-function classifyModelError(options: ModelErrorOptions): ModelErrorCategory {
+/** 识别不可自动退避恢复的账户余额或套餐配额耗尽特征；保留 token_quota_exceeded 作为瞬态限流。 */
+function isQuotaExhausted(options: ModelErrorOptions, message: string): boolean {
+  if (options.status === 402) return true;
+  const codes = [options.providerCode, options.providerType, options.code];
+  if (codes.some((c) => c !== undefined && ['1304', '1308'].includes(c.trim()))) {
+    return true;
+  }
+  const candidates = [...codes, options.providerMessage, message].filter(
+    (item): item is string => typeof item === 'string' && item.length > 0,
+  );
+  return candidates.some(
+    (text) =>
+      /\b(?:insufficient_quota|insufficient_balance|billing_hard_limit_reached|credit_balance_exhausted|billing_error|usage_limit_reached|usage_not_included|exceeded_current_quota)\b/i.test(
+        text,
+      ) ||
+      /out\s+of\s+budget/i.test(text) ||
+      /(?<!token[_ -])quota[_ ]exceeded/i.test(text),
+  );
+}
+
+/** 按协议状态和明确错误码分类，在通用 429 限流前优先剥离配额与账单耗尽。 */
+function classifyModelError(options: ModelErrorOptions, message = ''): ModelErrorCategory {
   const codes = [options.providerCode, options.providerType, options.code];
   if (
     codes.some((c) =>
@@ -100,34 +124,32 @@ function classifyModelError(options: ModelErrorOptions): ModelErrorCategory {
     return 'context';
   if (
     codes.some((c) =>
-      [
-        'insufficient_quota',
-        'insufficient_balance',
-        'quota_exceeded',
-        'billing_hard_limit_reached',
-      ].includes(c ?? ''),
-    ) ||
-    options.status === 402
-  )
-    return 'quota';
-  if (
-    codes.some((c) =>
       ['invalid_api_key', 'authentication_error', 'permission_error'].includes(c ?? ''),
     ) ||
     options.status === 401 ||
     options.status === 403
   )
     return 'authentication';
+  if (isQuotaExhausted(options, message)) return 'quota';
   if (
-    codes.some((c) => ['rate_limit_exceeded', 'rate_limit_error'].includes(c ?? '')) ||
+    codes.some((c) =>
+      ['rate_limit_exceeded', 'rate_limit_error', 'token_quota_exceeded'].includes(
+        (c ?? '').toLowerCase(),
+      ),
+    ) ||
     options.status === 429
   )
     return 'rate_limit';
-  if (options.status === 408 || /TIMEOUT|ETIMEDOUT/.test(options.transportCode ?? ''))
+  if (
+    options.status === 408 ||
+    options.code === 'MODEL_STREAM_IDLE_TIMEOUT' ||
+    /TIMEOUT|ETIMEDOUT/.test(options.transportCode ?? '')
+  )
     return 'timeout';
   if (
     options.transportCode ||
     options.code === 'MODEL_STREAM_INTERRUPTED' ||
+    (options.code === 'MODEL_STREAM_INCOMPLETE' && options.retryable !== false) ||
     options.stage === 'connect'
   )
     return 'network';
@@ -159,11 +181,22 @@ const MODEL_ERROR_ADVICE: Record<ModelErrorCategory, string> = {
   unknown: '原因未确认，请结合错误码和运行日志检查。',
 };
 
-/** 生成统一脱敏说明；上下文补充调用场景，不携带原始异常、请求正文或密钥。 */
+/** 生成统一脱敏说明；上下文补充调用场景，限流与服务异常携带服务端建议等待秒数，不携带原始异常、请求正文或密钥。 */
 export function describeModelError(
   error: ModelError,
   context: Pick<ModelErrorInfo, 'modelId' | 'provider' | 'operation' | 'modelRole'> = {},
 ): ModelErrorInfo {
+  const waitSeconds =
+    (error.category === 'rate_limit' || error.category === 'service') &&
+    error.retryAfterMs !== undefined &&
+    error.retryAfterMs > 0
+      ? Math.ceil(error.retryAfterMs / 1000)
+      : undefined;
+  const baseSuggestion = MODEL_ERROR_ADVICE[error.category];
+  const suggestion =
+    waitSeconds !== undefined
+      ? `服务端建议等待约 ${waitSeconds} 秒后再试；${baseSuggestion}`
+      : baseSuggestion;
   return {
     category: error.category,
     code: error.code,
@@ -174,7 +207,7 @@ export function describeModelError(
     transportCode: error.transportCode,
     stage: error.stage,
     retryPolicy: error.retryPolicy,
-    suggestion: MODEL_ERROR_ADVICE[error.category],
+    suggestion,
     modelId: context.modelId ? sanitizeModelErrorMessage(context.modelId) : undefined,
     provider: context.provider ? sanitizeModelErrorMessage(context.provider) : undefined,
     operation: context.operation,
@@ -313,6 +346,8 @@ export class ModelError extends KapibalaError {
   readonly status?: number;
   /** 属于可退避重试的瞬态类别（限流/服务/超时/网络）；不等于自动重试授权。 */
   readonly retryable: boolean;
+  /** 服务端响应头给出的建议退避等待毫秒数（非负整数）；未提供或非法时缺省。 */
+  readonly retryAfterMs?: number;
   /** 可选的受控底层连接错误码，不包含原始传输异常文本。 */
   readonly transportCode?: string;
   readonly providerCode?: string;
@@ -322,12 +357,18 @@ export class ModelError extends KapibalaError {
 
   /** 构建模型错误，清理服务端原因并按明确状态/错误码分类；重试策略仅为建议，不授权重放。 */
   constructor(message: string, options: ModelErrorOptions = {}) {
-    const category = classifyModelError(options);
-    const actionRequired = ['authentication', 'quota', 'context', 'invalid_request'].includes(
-      category,
-    );
+    const category = classifyModelError(options, message);
     const retryable =
       options.retryable ?? ['rate_limit', 'service', 'timeout', 'network'].includes(category);
+    const actionRequired =
+      ['authentication', 'quota', 'context'].includes(category) ||
+      (category === 'invalid_request' && !retryable);
+    const retryAfterMs =
+      options.retryAfterMs !== undefined &&
+      Number.isFinite(options.retryAfterMs) &&
+      options.retryAfterMs >= 0
+        ? Math.ceil(options.retryAfterMs)
+        : undefined;
     super(sanitizeModelErrorMessage(message), {
       code:
         safeErrorIdentifier(options.code) ??
@@ -343,6 +384,7 @@ export class ModelError extends KapibalaError {
     this.stage = options.stage;
     this.category = category;
     this.retryable = retryable;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 

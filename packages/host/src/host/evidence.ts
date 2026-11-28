@@ -14,6 +14,7 @@ import type {
   ViewEvidenceReference,
   ViewEvidenceSummary,
 } from '../view-model/index.js';
+import type { CheckpointRecord } from './checkpoint/index.js';
 import type { DelegationSessionSummary } from './delegations.js';
 import type { PublicTextRedactor } from './public-projection.js';
 import { sanitizeUntrustedOutput } from './ui/text-safety.js';
@@ -33,9 +34,15 @@ export interface SessionEvidenceInput {
    * （父会话收尾），而不是报告一个用户已经无法观察的 running。
    */
   readonly parentActive?: boolean;
+  /**
+   * 可选 Shadow Git 检查点记录列表；存在非空记录时优先采用检查点捕获的真实磁盘变更
+   * （覆盖 `run_command` 及脚本写入），为空或缺省时无损回退至 `execution.facts.diff`。
+   */
+  readonly checkpoints?: readonly CheckpointRecord[];
 }
 
 const CHANGE_TOOLS = new Set(['write_file', 'edit_file']);
+const CHECKPOINT_CALL_TOOLS = new Set(['write_file', 'edit_file', 'run_command']);
 const DELEGATION_ORDER: Readonly<Record<ViewEvidenceDelegationState, number>> = {
   running: 0,
   ended: 1,
@@ -45,13 +52,14 @@ const DELEGATION_ORDER: Readonly<Record<ViewEvidenceDelegationState, number>> = 
 };
 
 /**
- * 从 canonical 历史聚合会话看板的四分区。
+ * 从 canonical 历史与可选轮次检查点聚合会话看板的四分区。
  *
  * 约束与边界：
  * - 纯函数，只读入参；不取锁、不写盘、不发起网络请求；
- * - 行数只读工具执行时持久化的 `execution.facts.diff`，缺失记 `missing`，截断记 `truncated`，
- *   绝不从入参或结果正文重算；
- * - 只统计成功（结果非错误）的 write/edit；失败调用不产生变更证据；
+ * - 按用户发言轮次（0-based）逐轮对齐变更来源：已被 `turn` 检查点覆盖的轮次采用检查点捕获的真实磁盘增删改（涵盖 `run_command` 间接改写），
+ *   未被检查点覆盖的轮次（如未注入检查点、该轮超时/熔断跳过、或正在运行尚未结算后置快照）无损回退读取成功 `write_file`/`edit_file`
+ *   结果中的 `execution.facts.diff`（缺失记 `missing`，截断记 `truncated`），绝不从入参或结果正文重算；
+ * - 失败或未闭合的工具调用不产生变更证据；
  * - 引用按（源会话, recordId）去重；MCP 只按 `mcp__<server>__<tool>` 前缀归组，不解析结果正文；
  * - 空历史返回四个空分区与零摘要，不省略字段。
  */
@@ -60,11 +68,23 @@ export function buildSessionEvidence(
   redact: PublicTextRedactor = (text) => text,
 ): ViewEvidence {
   const calls: ToolUseBlock[] = [];
+  const callsByTurn = new Map<number, ToolUseBlock[]>();
   const results = new Map<string, ToolResultBlock>();
+  let currentTurn = -1;
   for (const message of input.history) {
+    if (message.role === 'user') {
+      currentTurn += 1;
+      continue;
+    }
     for (const block of message.content) {
-      if (block.type === 'tool_use') calls.push(block);
-      else if (block.type === 'tool_result') results.set(block.toolUseId, block);
+      if (block.type === 'tool_use') {
+        calls.push(block);
+        const bucket = callsByTurn.get(currentTurn) ?? [];
+        bucket.push(block);
+        callsByTurn.set(currentTurn, bucket);
+      } else if (block.type === 'tool_result') {
+        results.set(block.toolUseId, block);
+      }
     }
   }
 
@@ -73,44 +93,90 @@ export function buildSessionEvidence(
   let deletions = 0;
   const truncatedPaths = new Set<string>();
   const missingPaths = new Set<string>();
-  for (const call of calls) {
-    if (!CHANGE_TOOLS.has(call.name)) continue;
-    const result = results.get(call.id);
-    // 失败或尚未闭合的写入不产生变更；不把未完成的事实算进摘要。
-    if (!result || result.isError) continue;
-    const path = redact(sanitizeUntrustedOutput(readPath(call.input)));
-    const diff = result.execution?.facts?.diff;
-    if (!diff) {
+
+  const appendFactsChangesForCalls = (turnCalls: readonly ToolUseBlock[]) => {
+    for (const call of turnCalls) {
+      if (!CHANGE_TOOLS.has(call.name)) continue;
+      const result = results.get(call.id);
+      // 失败或尚未闭合的写入不产生变更；不把未完成的事实算进摘要。
+      if (!result || result.isError) continue;
+      const path = redact(sanitizeUntrustedOutput(readPath(call.input)));
+      const diff = result.execution?.facts?.diff;
+      if (!diff) {
+        changes.push({
+          path,
+          callId: call.id,
+          status: 'missing',
+          additions: null,
+          deletions: null,
+        });
+        missingPaths.add(path);
+        continue;
+      }
+      if ('truncated' in diff) {
+        changes.push({
+          path,
+          callId: call.id,
+          status: 'truncated',
+          additions: null,
+          deletions: null,
+        });
+        truncatedPaths.add(path);
+        continue;
+      }
       changes.push({
         path,
         callId: call.id,
-        status: 'missing',
-        additions: null,
-        deletions: null,
+        status: 'recorded',
+        additions: diff.additions,
+        deletions: diff.deletions,
       });
-      missingPaths.add(path);
-      continue;
+      additions += diff.additions;
+      deletions += diff.deletions;
     }
-    if ('truncated' in diff) {
-      changes.push({
-        path,
-        callId: call.id,
-        status: 'truncated',
-        additions: null,
-        deletions: null,
-      });
-      truncatedPaths.add(path);
-      continue;
+  };
+
+  const turnCheckpoints = new Map<number, CheckpointRecord>();
+  for (const cp of input.checkpoints ?? []) {
+    if (cp.kind === 'turn') {
+      turnCheckpoints.set(cp.ordinal, cp);
     }
-    changes.push({
-      path,
-      callId: call.id,
-      status: 'recorded',
-      additions: diff.additions,
-      deletions: diff.deletions,
-    });
-    additions += diff.additions;
-    deletions += diff.deletions;
+  }
+
+  if (turnCheckpoints.size > 0) {
+    const turnToolCalls = groupToolCallsByUserTurn(input.history, results);
+    const preUserCalls = callsByTurn.get(-1);
+    if (preUserCalls) {
+      appendFactsChangesForCalls(preUserCalls);
+    }
+    const maxCheckpointOrd = Math.max(...turnCheckpoints.keys());
+    const maxOrdinal = Math.max(currentTurn, maxCheckpointOrd);
+    for (let ord = 0; ord <= maxOrdinal; ord++) {
+      const capturedTurn = turnCheckpoints.get(ord);
+      if (capturedTurn) {
+        const callsInTurn = turnToolCalls.get(ord) ?? [];
+        for (const file of capturedTurn.changedFiles) {
+          const cleanPath = redact(sanitizeUntrustedOutput(file.path));
+          const matchedCall = findMatchingCallForPath(callsInTurn, file.path);
+          changes.push({
+            path: cleanPath,
+            callId: matchedCall?.id ?? `checkpoint:turn-${ord}`,
+            status: 'recorded',
+            additions: file.additions,
+            deletions: file.deletions,
+          });
+          additions += file.additions;
+          deletions += file.deletions;
+        }
+      } else {
+        const uncoveredCalls = callsByTurn.get(ord);
+        if (uncoveredCalls) {
+          appendFactsChangesForCalls(uncoveredCalls);
+        }
+      }
+    }
+  } else {
+    appendFactsChangesForCalls(calls);
   }
 
   const references = collectReferences(input.history, redact);
@@ -143,6 +209,51 @@ export function buildSessionEvidence(
 /** 工具入参里的路径只作展示；缺失或非字符串时给出显式占位，不伪造文件名。 */
 function readPath(input: Record<string, unknown>): string {
   return typeof input.path === 'string' && input.path ? input.path : '(未记录路径)';
+}
+
+/** 按用户发言轮次（0-based）分组本轮成功闭合的变更/命令类工具调用，便于检查点文件关联跳转 `callId`。 */
+function groupToolCallsByUserTurn(
+  history: readonly CanonicalMessage[],
+  results: ReadonlyMap<string, ToolResultBlock>,
+): Map<number, ToolUseBlock[]> {
+  const byTurn = new Map<number, ToolUseBlock[]>();
+  let currentTurn = -1;
+  for (const message of history) {
+    if (message.role === 'user') {
+      currentTurn += 1;
+      continue;
+    }
+    if (currentTurn < 0) continue;
+    for (const block of message.content) {
+      if (block.type !== 'tool_use' || !CHECKPOINT_CALL_TOOLS.has(block.name)) continue;
+      const res = results.get(block.id);
+      if (!res || res.isError) continue;
+      const list = byTurn.get(currentTurn) ?? [];
+      list.push(block);
+      byTurn.set(currentTurn, list);
+    }
+  }
+  return byTurn;
+}
+
+/** 优先匹配显式操作同一路径的 `write_file`/`edit_file`，否则退回本轮执行过的 `run_command` 调用。 */
+function findMatchingCallForPath(
+  calls: readonly ToolUseBlock[],
+  relPath: string,
+): ToolUseBlock | undefined {
+  const normalizedTarget = relPath.replaceAll('\\', '/');
+  for (const call of calls) {
+    if (!CHANGE_TOOLS.has(call.name)) continue;
+    const raw = typeof call.input.path === 'string' ? call.input.path.replaceAll('\\', '/') : '';
+    if (
+      raw === normalizedTarget ||
+      raw.endsWith(`/${normalizedTarget}`) ||
+      normalizedTarget.endsWith(`/${raw}`)
+    ) {
+      return call;
+    }
+  }
+  return calls.find((call) => call.name === 'run_command');
 }
 
 /** 收集跨会话引用；同一源记录在同一会话内可能出现多次，只保留第一条。 */

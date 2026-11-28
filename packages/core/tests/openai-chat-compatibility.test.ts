@@ -45,8 +45,26 @@ afterEach(() => vi.unstubAllGlobals());
 describe('Chat completion contract', () => {
   it.each([
     ['finish reason without DONE', [delta({ tool_calls: [tool()] }, 'tool_calls')]],
-    ['DONE without finish reason', [delta({ tool_calls: [tool()] }), 'data: [DONE]\n\n']],
     ['ordinary EOF', [delta({ content: 'partial' })]],
+  ])(
+    'marks premature %s as retryable stream interruption before any executable success event',
+    async (_label, chunks) => {
+      const events: ModelEvent[] = [];
+      await expect(collect(chunks, {}, events)).rejects.toMatchObject({
+        name: 'ModelError',
+        code: 'MODEL_STREAM_INCOMPLETE',
+        category: 'network',
+        stage: 'stream',
+        retryable: true,
+      });
+      expect(
+        events.some((event) => event.type === 'tool_call_finish' || event.type === 'message_stop'),
+      ).toBe(false);
+    },
+  );
+
+  it.each([
+    ['DONE without finish reason', [delta({ tool_calls: [tool()] }), 'data: [DONE]\n\n']],
     ['filtered output', [delta({ tool_calls: [tool()] }, 'content_filter'), 'data: [DONE]\n\n']],
     ['unknown termination', [delta({ tool_calls: [tool()] }, 'future_reason'), 'data: [DONE]\n\n']],
     ['wrong tool termination', [delta({ tool_calls: [tool()] }, 'stop'), 'data: [DONE]\n\n']],

@@ -128,6 +128,160 @@ export function assertPortableTree(directory: string): void {
     }
   closure(root);
 }
+const PNPM_ROOT_STATE_FILES = [
+  'node_modules/.modules.yaml',
+  'node_modules/.pnpm-workspace-state-v1.json',
+] as const;
+
+/**
+ * 快照并在动作结束后无条件还原仓库根 `node_modules` 的 pnpm 状态元数据：
+ * `pnpm --filter ... deploy --legacy --prod` 会改写根 `.modules.yaml` 与 `.pnpm-workspace-state-v1.json`，
+ * 若不还原将导致后续 `pnpm` 命令把根工作区视为纯 prod 安装而剥离 `tsx`、`vitest` 等开发工具。
+ */
+export function withPreservedRootPnpmState<T>(repoRoot: string, action: () => T): T {
+  const snapshots = PNPM_ROOT_STATE_FILES.map((relPath) => {
+    const target = path.join(repoRoot, relPath);
+    const exists = fs.existsSync(target);
+    return {
+      target,
+      exists,
+      content: exists ? fs.readFileSync(target) : undefined,
+    };
+  });
+  const restore = (): void => {
+    for (const snap of snapshots) {
+      if (snap.exists && snap.content !== undefined) {
+        fs.mkdirSync(path.dirname(snap.target), { recursive: true });
+        fs.writeFileSync(snap.target, snap.content);
+      } else if (!snap.exists && fs.existsSync(snap.target)) {
+        fs.rmSync(snap.target, { force: true });
+      }
+    }
+  };
+  try {
+    const result = action();
+    if (result instanceof Promise) {
+      return result.finally(restore) as T;
+    }
+    restore();
+    return result;
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+export interface StageNodePtyResult {
+  readonly found: boolean;
+  readonly hasNativeBinary: boolean;
+  readonly npmRebuild: boolean;
+}
+
+/**
+ * 裁剪部署树内 `node-pty` 冗余源码与异构平台预编译产物，并在 Linux 缺少预编译 `pty.node` 时按需触发原生重编或启用 `electron-builder` `npmRebuild`：
+ * - 常规裁剪仅保留 `package.json`、`LICENSE*`/`COPYING*`/`NOTICE*`、`lib/**`、`build/Release/**`（若存在）及当前 `${platform}-${arch}` 预编译目录；
+ * - Linux 若既无 `prebuilds/linux-${arch}/pty.node` 也无 `build/Release/pty.node`，优先尝试本机 `node-gyp` 针对目标 Electron 版本编译；
+ *   若本机未就绪则保留 `binding.gyp`/`src`/`deps` 并返回 `npmRebuild: true` 交由 `electron-builder` 构建。
+ */
+export function prepareStageNodePty(
+  stage: string,
+  options: {
+    readonly platform?: NodeJS.Platform;
+    readonly arch?: string;
+    readonly electronVersion?: string;
+    readonly env?: Record<string, string | undefined>;
+    readonly tryNodeGyp?: (nodePtyDir: string) => boolean;
+  } = {},
+): StageNodePtyResult {
+  const stageRoot = fs.realpathSync.native(stage);
+  const nodePtyDir = resolveDependency(stageRoot, 'node-pty', stageRoot);
+  if (!nodePtyDir || !inside(stageRoot, nodePtyDir)) {
+    return { found: false, hasNativeBinary: false, npmRebuild: false };
+  }
+
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  const targetPrebuildName = `${platform}-${arch}`;
+  const prebuildBinary = path.join(nodePtyDir, 'prebuilds', targetPrebuildName, 'pty.node');
+  const releaseBinary = path.join(nodePtyDir, 'build', 'Release', 'pty.node');
+
+  let hasNativeBinary = fs.existsSync(prebuildBinary) || fs.existsSync(releaseBinary);
+  let npmRebuild = false;
+
+  if (!hasNativeBinary && platform === 'linux') {
+    const rebuilt = options.tryNodeGyp
+      ? options.tryNodeGyp(nodePtyDir)
+      : (() => {
+          if (!options.electronVersion) return false;
+          const gypBin = process.platform === 'win32' ? 'node-gyp.cmd' : 'node-gyp';
+          const res = spawnSync(
+            gypBin,
+            [
+              'rebuild',
+              `--target=${options.electronVersion}`,
+              '--runtime=electron',
+              '--dist-url=https://electronjs.org/headers',
+              `--arch=${arch}`,
+            ],
+            {
+              cwd: nodePtyDir,
+              env: packagingEnvironment(options.env ?? process.env),
+              encoding: 'utf8',
+            },
+          );
+          return res.status === 0 && fs.existsSync(releaseBinary);
+        })();
+    hasNativeBinary = rebuilt || fs.existsSync(prebuildBinary) || fs.existsSync(releaseBinary);
+    if (!hasNativeBinary) {
+      npmRebuild = true;
+    }
+  }
+
+  // 清理异构平台的 prebuilds/*
+  const prebuildsDir = path.join(nodePtyDir, 'prebuilds');
+  if (fs.existsSync(prebuildsDir) && fs.statSync(prebuildsDir).isDirectory()) {
+    for (const entry of fs.readdirSync(prebuildsDir)) {
+      if (entry !== targetPrebuildName) {
+        fs.rmSync(path.join(prebuildsDir, entry), { recursive: true, force: true });
+      }
+    }
+    if (fs.readdirSync(prebuildsDir).length === 0) {
+      fs.rmSync(prebuildsDir, { recursive: true, force: true });
+    }
+  }
+
+  // 若无需交由 electron-builder 二次编译，剥离 C/C++ 源码、deps、binding.gyp 与非 Release 中间产物
+  if (!npmRebuild) {
+    const buildDir = path.join(nodePtyDir, 'build');
+    if (fs.existsSync(buildDir) && fs.statSync(buildDir).isDirectory()) {
+      const hasRelease = fs.existsSync(path.join(buildDir, 'Release'));
+      if (!hasRelease) {
+        fs.rmSync(buildDir, { recursive: true, force: true });
+      } else {
+        for (const entry of fs.readdirSync(buildDir)) {
+          if (entry !== 'Release') {
+            fs.rmSync(path.join(buildDir, entry), { recursive: true, force: true });
+          }
+        }
+      }
+    }
+
+    for (const entry of fs.readdirSync(nodePtyDir)) {
+      const keep =
+        entry === 'package.json' ||
+        entry === 'lib' ||
+        entry === 'prebuilds' ||
+        entry === 'build' ||
+        /^(?:licen[cs]e|copying|notice)(?:[.-].*)?$/i.test(entry);
+      if (!keep) {
+        fs.rmSync(path.join(nodePtyDir, entry), { recursive: true, force: true });
+      }
+    }
+  }
+
+  return { found: true, hasNativeBinary, npmRebuild };
+}
+
 /** 正式候选要求签名凭证与受控 CI 来源，不能通过测试构建参数降级。 */
 export function candidatePreflight(
   env: Record<string, string | undefined>,
@@ -135,7 +289,7 @@ export function candidatePreflight(
 ) {
   return candidatePolicy(env, platform);
 }
-/** 只配置原生当前平台的测试安装器；显式禁用发布与依赖重建，不碰共享用户数据。 */
+/** 只配置原生当前平台的测试安装器；默认禁用发布与依赖重建，仅在 Linux 缺少预编译原生模块时按需启用 `npmRebuild`。 */
 export function desktopPackageConfig(input: {
   stage: string;
   output: string;
@@ -143,6 +297,7 @@ export function desktopPackageConfig(input: {
   electronVersion: string;
   candidate?: boolean;
   signingIdentity?: string;
+  npmRebuild?: boolean;
 }) {
   return {
     appId: input.candidate ? 'dev.kapibala.desktop' : 'dev.kapibala.desktop.test',
@@ -152,7 +307,8 @@ export function desktopPackageConfig(input: {
     electronDist: input.electronDist,
     electronVersion: input.electronVersion,
     asar: true,
-    npmRebuild: false,
+    asarUnpack: ['**/node-pty/**'],
+    npmRebuild: Boolean(input.npmRebuild),
     nodeGypRebuild: false,
     allowMissingDependencies: false,
     publish: null,
@@ -164,6 +320,7 @@ export function desktopPackageConfig(input: {
       'THIRD-PARTY-NOTICES.md',
       'dependency-licenses.json',
       'licenses/**/*',
+      '!**/*.pdb',
     ],
     artifactName: input.candidate
       ? 'Kapibala-${version}-${os}-${arch}.${ext}'
@@ -435,17 +592,19 @@ export async function packDesktop(args: string[]): Promise<void> {
   // legacy deploy 按共享 lockfile 重放依赖树，仍需读取 registry 元数据；CI 的元数据缓存不完整，
   // --offline 会在任何干净机器上解析失败（本机能过只是缓存恰好齐全）。改为 prefer-offline：
   // 有缓存用缓存、缺失时联网补齐，并用 --frozen-lockfile 把解析钉死在共享 lockfile 上防版本漂移。
-  pnpm([
-    '--filter',
-    '@kiturone/kapibala-desktop',
-    'deploy',
-    '--legacy',
-    '--prod',
-    '--prefer-offline',
-    '--frozen-lockfile',
-    '--ignore-scripts',
-    stage,
-  ]);
+  withPreservedRootPnpmState(repository, () =>
+    pnpm([
+      '--filter',
+      '@kiturone/kapibala-desktop',
+      'deploy',
+      '--legacy',
+      '--prod',
+      '--prefer-offline',
+      '--frozen-lockfile',
+      '--ignore-scripts',
+      stage,
+    ]),
+  );
   fs.copyFileSync(path.join(repository, 'LICENSE'), path.join(stage, 'LICENSE'));
   const manifest = json(path.join(stage, 'package.json'));
   manifest.kapibalaBuild = build;
@@ -455,12 +614,18 @@ export async function packDesktop(args: string[]): Promise<void> {
   removeDeploymentSelfLink(stage, desktop);
   normalizeWorkspaceRanges(stage, version, workspacePackageNames(repository));
   assertPortableTree(stage);
+  const electronDist = path.join(desktop, 'node_modules/electron/dist');
+  const electronVersion = json(path.join(desktop, 'node_modules/electron/package.json')).version;
+  const nodePtyPrep = prepareStageNodePty(stage, {
+    platform: process.platform,
+    arch: process.arch,
+    electronVersion,
+    env: process.env,
+  });
   const licenses = writeNotices(stage, stage);
   fs.mkdirSync(artifacts, { recursive: true });
   for (const file of ['THIRD-PARTY-NOTICES.md', 'dependency-licenses.json'])
     fs.copyFileSync(path.join(stage, file), path.join(artifacts, file));
-  const electronDist = path.join(desktop, 'node_modules/electron/dist');
-  const electronVersion = json(path.join(desktop, 'node_modules/electron/package.json')).version;
   for (const destination of [stage, artifacts]) {
     const notices = path.join(destination, 'licenses/electron');
     fs.mkdirSync(notices, { recursive: true });
@@ -478,6 +643,7 @@ export async function packDesktop(args: string[]): Promise<void> {
     electronVersion,
     candidate,
     signingIdentity: process.env.CSC_NAME,
+    npmRebuild: nodePtyPrep.npmRebuild,
   });
   const buildEnvironment = packagingEnvironment(process.env);
   if (candidate) {

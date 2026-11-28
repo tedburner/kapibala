@@ -49,3 +49,39 @@ export {
 
 export type { ManagedInspection } from './inspection.js';
 export type { ReferenceSelection } from './reference-blocks.js';
+export { CheckpointError, CheckpointService } from './checkpoint/index.js';
+export type {
+  CheckpointAvailability,
+  CheckpointChangedFile,
+  CheckpointDiffInput,
+  CheckpointDiffResult,
+  CheckpointErrorCode,
+  CheckpointFileDiff,
+  CheckpointRecord,
+  CheckpointServiceOptions,
+  RestoreCheckpointInput,
+  RestoreCheckpointResult,
+} from './checkpoint/index.js';
+export {
+  ExecutionRootCoordinator,
+  WorktreeError,
+  WorktreeService,
+  verifyManagedWorktreeLink,
+} from './worktree/index.js';
+export type {
+  ApplyWorktreeMergeOptions,
+  ApplyWorktreeMergeResult,
+  CreateWorktreeOptions,
+  CreatedWorktree,
+  RemoveWorktreeOptions,
+  RemoveWorktreeResult,
+  SessionWorktreeBinding,
+  WorktreeChangedFile,
+  WorktreeDiffResult,
+  WorktreeErrorCode,
+  WorktreeFileDiff,
+  WorktreeMergePreview,
+  WorktreeRecord,
+  WorktreeServiceOptions,
+  WorktreeStatus,
+} from './worktree/index.js';

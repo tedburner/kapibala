@@ -3,7 +3,12 @@ import { AbortError } from '../errors/index.js';
 import { summarySafeMessage } from '../models/protocol-state.js';
 import type { ModelRouter } from '../models/router.js';
 import { createMessageId } from '../types/identity.js';
-import type { CanonicalMessage, ModelRequest, Usage } from '../types/index.js';
+import type {
+  CanonicalMessage,
+  ModelRequest,
+  ReferenceContentSource,
+  Usage,
+} from '../types/index.js';
 import {
   type TokenEstimator,
   UnicodeTokenEstimator,
@@ -52,6 +57,42 @@ export function truncateToolOutput(text: string, maximum = 2000): string {
   if (points.length <= maximum) return text;
   const head = Math.ceil(maximum / 2);
   return `${points.slice(0, head).join('')}\n[omitted ${points.length - maximum} Unicode code points]\n${points.slice(-(maximum - head)).join('')}`;
+}
+
+/**
+ * 将携带跨会话引用溯源的文本块降级为紧凑来源存根，避免在压缩摘要前向摘要模型喂入最高 32KB 的原始引用快照正文。
+ *
+ * 约束：只保留源会话 ID、记录 ID 与可选标题，剥离被引用历史正文与底层 `referenceSource` 元数据，
+ * 防止大段引用挤爆摘要输入预算或诱导摘要模型混淆历史讨论与当前授权。
+ */
+export function formatReferenceSummaryStub(source: ReferenceContentSource): string {
+  return `[已引用历史会话 ${source.sessionId} 记录 ${source.recordId}${source.title ? ` (${source.title})` : ''}]`;
+}
+
+/**
+ * 将通过结构校验的 `ContextSummary` 格式化为紧凑、有界的多行可读分支背景摘要文本。
+ *
+ * 约束：仅输出非空事实段落并裁剪在 4000 码点以内，供 `branch_summary` 记录作为非受信历史参考背景注入新分支，
+ * 不包含内部原消息 ID 列表以免跨分支悬空。
+ */
+export function formatContextSummaryAsText(summary: ContextSummary): string {
+  const lines: string[] = [`目标：${summary.goal.trim()}`];
+  if (summary.constraints.length > 0) {
+    lines.push(`约束：${summary.constraints.join('；')}`);
+  }
+  if (summary.decisions.length > 0) {
+    lines.push(`关键结论：${summary.decisions.join('；')}`);
+  }
+  if (summary.completedWork.length > 0) {
+    lines.push(`已完成：${summary.completedWork.join('；')}`);
+  }
+  if (summary.pendingWork.length > 0) {
+    lines.push(`待推进：${summary.pendingWork.join('；')}`);
+  }
+  if (summary.unknownEffects.length > 0) {
+    lines.push(`待确认副作用：${summary.unknownEffects.join('；')}`);
+  }
+  return truncateToolOutput(lines.join('\n'), 4000);
 }
 
 /**
@@ -281,7 +322,13 @@ export class SummaryService {
             (!message.interactionId || message.interactionId !== units.at(-1)![0].interactionId))
         )
           units.push([]);
-        units.at(-1)!.push(summarySafeMessage(message));
+        const sanitized = summarySafeMessage(message);
+        sanitized.content = sanitized.content.map((block) =>
+          block.type === 'text' && block.referenceSource
+            ? { type: 'text', text: formatReferenceSummaryStub(block.referenceSource) }
+            : block,
+        );
+        units.at(-1)!.push(sanitized);
       }
       let rolling = previous?.summary;
       let calls = 0;

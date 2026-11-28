@@ -1,5 +1,16 @@
 {
-  "capabilities": ["sessions", "approval", "cancel", "watch", "evidence", "external-session"],
+  "capabilities": [
+    "sessions",
+    "approval",
+    "cancel",
+    "watch",
+    "evidence",
+    "external-session",
+    "references",
+    "retry",
+    "checkpoint",
+    "worktree"
+  ],
   "errors": [
     "PROTOCOL_MISMATCH",
     "UNAUTHORIZED",
@@ -54,6 +65,55 @@
       "required": ["code", "message"],
       "type": "object"
     },
+    "retry_scheduled": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "category": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "delayMs": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxRetries": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "message": {
+          "maxLength": 16384,
+          "type": "string"
+        },
+        "nextRetryAt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "step": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "step",
+        "attempt",
+        "maxRetries",
+        "delayMs",
+        "nextRetryAt",
+        "category",
+        "message"
+      ],
+      "type": "object"
+    },
     "run_settled": {
       "additionalProperties": false,
       "properties": {
@@ -75,6 +135,23 @@
         }
       },
       "required": ["clientOperationId"],
+      "type": "object"
+    },
+    "stream_reset": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "step": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["step", "attempt"],
       "type": "object"
     },
     "text_delta": {
@@ -191,6 +268,9 @@
   },
   "methods": [
     "approval/request",
+    "checkpoint/diff",
+    "checkpoint/list",
+    "checkpoint/restore",
     "evidence/read",
     "external/approve",
     "external/attach",
@@ -211,6 +291,9 @@
     "host/shutdown",
     "initialize",
     "ping",
+    "reference/candidates",
+    "reference/read",
+    "reference/search",
     "run/cancel",
     "run/start",
     "session/attach",
@@ -221,7 +304,14 @@
     "session/open",
     "session/snapshot",
     "watch/cancel",
-    "watch/list"
+    "watch/list",
+    "worktree/applyMerge",
+    "worktree/create",
+    "worktree/diff",
+    "worktree/list",
+    "worktree/previewMerge",
+    "worktree/remove",
+    "worktree/status"
   ],
   "protocol": 2,
   "requests": {
@@ -261,6 +351,38 @@
           "minLength": 1,
           "type": "string"
         },
+        "subagentOrigin": {
+          "additionalProperties": false,
+          "properties": {
+            "agentId": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "childSessionId": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "description": {
+              "maxLength": 1048576,
+              "minLength": 1,
+              "type": "string"
+            },
+            "parentSessionId": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "role": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": ["agentId", "role", "description", "parentSessionId"],
+          "type": "object"
+        },
         "target": {
           "maxLength": 1048576,
           "minLength": 1,
@@ -283,6 +405,77 @@
         "sessionAllowed",
         "expiresAt"
       ],
+      "type": "object"
+    },
+    "checkpoint/diff": {
+      "additionalProperties": false,
+      "properties": {
+        "external": {
+          "type": "boolean"
+        },
+        "fromOrdinal": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "includeLiveWorktree": {
+          "type": "boolean"
+        },
+        "ordinal": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "toOrdinal": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["sessionId"],
+      "type": "object"
+    },
+    "checkpoint/list": {
+      "additionalProperties": false,
+      "properties": {
+        "external": {
+          "type": "boolean"
+        },
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"],
+      "type": "object"
+    },
+    "checkpoint/restore": {
+      "additionalProperties": false,
+      "properties": {
+        "external": {
+          "type": "boolean"
+        },
+        "force": {
+          "type": "boolean"
+        },
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetOrdinal": {
+          "maximum": 9007199254740991,
+          "minimum": -1,
+          "type": "integer"
+        }
+      },
+      "required": ["sessionId", "targetOrdinal"],
       "type": "object"
     },
     "evidence/read": {
@@ -522,6 +715,26 @@
           "maxLength": 1048576,
           "minLength": 1,
           "type": "string"
+        },
+        "worktree": {
+          "additionalProperties": false,
+          "properties": {
+            "baseRef": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "branch": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": ["enabled"],
+          "type": "object"
         }
       },
       "required": ["workspaceRoot", "harnessId"],
@@ -599,6 +812,80 @@
       "required": [],
       "type": "object"
     },
+    "reference/candidates": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot"],
+      "type": "object"
+    },
+    "reference/read": {
+      "additionalProperties": false,
+      "properties": {
+        "branchId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 12,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "recordIds": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot", "sessionId"],
+      "type": "object"
+    },
+    "reference/search": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot", "query"],
+      "type": "object"
+    },
     "run/cancel": {
       "additionalProperties": false,
       "properties": {
@@ -643,6 +930,32 @@
           "maxLength": 1048576,
           "minLength": 1,
           "type": "string"
+        },
+        "references": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "branchId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "recordId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "sessionId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": ["sessionId"],
+            "type": "object"
+          },
+          "maxItems": 8,
+          "type": "array"
         },
         "sessionId": {
           "maxLength": 256,
@@ -708,6 +1021,26 @@
           "maxLength": 1048576,
           "minLength": 1,
           "type": "string"
+        },
+        "worktree": {
+          "additionalProperties": false,
+          "properties": {
+            "baseRef": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "branch": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": ["enabled"],
+          "type": "object"
         }
       },
       "required": ["workspaceRoot"],
@@ -819,10 +1152,150 @@
       },
       "required": ["sessionId"],
       "type": "object"
+    },
+    "worktree/applyMerge": {
+      "additionalProperties": false,
+      "properties": {
+        "commitMessage": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "previewToken": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot", "id", "previewToken"],
+      "type": "object"
+    },
+    "worktree/create": {
+      "additionalProperties": false,
+      "properties": {
+        "baseRef": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "branch": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot"],
+      "type": "object"
+    },
+    "worktree/diff": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot", "id"],
+      "type": "object"
+    },
+    "worktree/list": {
+      "additionalProperties": false,
+      "properties": {
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot"],
+      "type": "object"
+    },
+    "worktree/previewMerge": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot", "id"],
+      "type": "object"
+    },
+    "worktree/remove": {
+      "additionalProperties": false,
+      "properties": {
+        "force": {
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot", "id"],
+      "type": "object"
+    },
+    "worktree/status": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspaceRoot": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": ["workspaceRoot", "id"],
+      "type": "object"
     }
   },
   "resultSelections": {
     "approval/request": ["approval/request"],
+    "checkpoint/diff": ["checkpoint/diff"],
+    "checkpoint/list": ["checkpoint/list"],
+    "checkpoint/restore": ["checkpoint/restore"],
     "evidence/read": ["evidence/read"],
     "external/approve": ["external/approve"],
     "external/attach": ["external/snapshot"],
@@ -843,6 +1316,9 @@
     "host/shutdown": ["host/shutdown"],
     "initialize": ["initialize"],
     "ping": ["ping"],
+    "reference/candidates": ["reference/candidates"],
+    "reference/read": ["reference/read"],
+    "reference/search": ["reference/search"],
     "run/cancel": ["run/cancel"],
     "run/start": ["run/start"],
     "session/attach": ["snapshot:first"],
@@ -853,7 +1329,14 @@
     "session/open": ["session/open"],
     "session/snapshot": ["snapshot:first", "snapshot:page"],
     "watch/cancel": ["watch/cancel"],
-    "watch/list": ["watch/list"]
+    "watch/list": ["watch/list"],
+    "worktree/applyMerge": ["worktree/applyMerge"],
+    "worktree/create": ["worktree/create"],
+    "worktree/diff": ["worktree/diff"],
+    "worktree/list": ["worktree/list"],
+    "worktree/previewMerge": ["worktree/previewMerge"],
+    "worktree/remove": ["worktree/remove"],
+    "worktree/status": ["worktree/status"]
   },
   "results": {
     "approval/request": {
@@ -865,6 +1348,189 @@
         }
       },
       "required": ["choice"],
+      "type": "object"
+    },
+    "checkpoint/diff": {
+      "additionalProperties": false,
+      "properties": {
+        "additions": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "deletions": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "additions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "binary": {
+                "type": "boolean"
+              },
+              "deletions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "originalPath": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "patch": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "enum": ["added", "modified", "deleted", "renamed"],
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "originalPath",
+              "additions",
+              "deletions",
+              "binary",
+              "patch",
+              "truncated"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": ["available", "additions", "deletions", "truncated", "files"],
+      "type": "object"
+    },
+    "checkpoint/list": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "additions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "changedFilesCount": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "createdAt": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "deletions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "endTree": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "ordinal": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "startTree": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "ordinal",
+              "createdAt",
+              "startTree",
+              "endTree",
+              "additions",
+              "deletions",
+              "changedFilesCount",
+              "label"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        }
+      },
+      "required": ["items"],
+      "type": "object"
+    },
+    "checkpoint/restore": {
+      "additionalProperties": false,
+      "properties": {
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "deletedFiles": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "restoredFiles": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "status": {
+          "enum": ["restored", "conflict", "noop"],
+          "type": "string"
+        }
+      },
+      "required": ["status", "restoredFiles", "deletedFiles", "conflicts"],
       "type": "object"
     },
     "evidence/read": {
@@ -1652,6 +2318,23 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "diffSummary": {
+                "additionalProperties": false,
+                "properties": {
+                  "additions": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "deletions": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["additions", "deletions"],
+                "type": "object"
+              },
               "harnessId": {
                 "maxLength": 256,
                 "minLength": 1,
@@ -1732,6 +2415,48 @@
               },
               "workspaceRoot": {
                 "type": "string"
+              },
+              "worktree": {
+                "additionalProperties": false,
+                "properties": {
+                  "baseCommit": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "baseRef": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "id": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "projectRoot": {
+                    "type": "string"
+                  },
+                  "worktreePath": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "projectRoot",
+                  "worktreePath",
+                  "branch",
+                  "baseRef",
+                  "baseCommit",
+                  "createdAt"
+                ],
+                "type": "object"
               }
             },
             "required": [
@@ -1848,6 +2573,23 @@
           },
           "maxItems": 100000,
           "type": "array"
+        },
+        "diffSummary": {
+          "additionalProperties": false,
+          "properties": {
+            "additions": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "deletions": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["additions", "deletions"],
+          "type": "object"
         },
         "messages": {
           "items": {
@@ -2101,6 +2843,23 @@
               "minimum": 0,
               "type": "integer"
             },
+            "diffSummary": {
+              "additionalProperties": false,
+              "properties": {
+                "additions": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "deletions": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": ["additions", "deletions"],
+              "type": "object"
+            },
             "harnessId": {
               "maxLength": 256,
               "minLength": 1,
@@ -2181,6 +2940,48 @@
             },
             "workspaceRoot": {
               "type": "string"
+            },
+            "worktree": {
+              "additionalProperties": false,
+              "properties": {
+                "baseCommit": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "baseRef": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "id": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "projectRoot": {
+                  "type": "string"
+                },
+                "worktreePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "projectRoot",
+                "worktreePath",
+                "branch",
+                "baseRef",
+                "baseCommit",
+                "createdAt"
+              ],
+              "type": "object"
             }
           },
           "required": [
@@ -2205,6 +3006,48 @@
         },
         "truncatedArchive": {
           "type": "boolean"
+        },
+        "worktree": {
+          "additionalProperties": false,
+          "properties": {
+            "baseCommit": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "baseRef": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "createdAt": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "projectRoot": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "projectRoot",
+            "worktreePath",
+            "branch",
+            "baseRef",
+            "baseCommit",
+            "createdAt"
+          ],
+          "type": "object"
         }
       },
       "required": [
@@ -2350,6 +3193,160 @@
       "required": ["alive", "serverInstanceId"],
       "type": "object"
     },
+    "reference/candidates": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "isDelegation": {
+                "type": "boolean"
+              },
+              "lastActivityAt": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "messageCount": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "sessionId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["sessionId", "title", "lastActivityAt", "messageCount"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        }
+      },
+      "required": ["items"],
+      "type": "object"
+    },
+    "reference/read": {
+      "additionalProperties": false,
+      "properties": {
+        "branchId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "partial": {
+          "type": "string"
+        },
+        "records": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "branchId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "recordId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "role": {
+                "enum": ["user", "assistant", "branch_summary"],
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "timestamp": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": ["recordId", "role", "branchId", "timestamp", "text", "truncated"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "branchId", "records"],
+      "type": "object"
+    },
+    "reference/search": {
+      "additionalProperties": false,
+      "properties": {
+        "hits": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "branchId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "recordId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "role": {
+                "enum": ["user", "assistant", "branch_summary"],
+                "type": "string"
+              },
+              "sessionId": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string"
+              },
+              "timestamp": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sessionId",
+              "title",
+              "recordId",
+              "branchId",
+              "role",
+              "snippet",
+              "timestamp"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        }
+      },
+      "required": ["hits"],
+      "type": "object"
+    },
     "run/cancel": {
       "additionalProperties": false,
       "properties": {
@@ -2400,6 +3397,48 @@
           "maxLength": 256,
           "minLength": 1,
           "type": "string"
+        },
+        "worktree": {
+          "additionalProperties": false,
+          "properties": {
+            "baseCommit": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "baseRef": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "createdAt": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "projectRoot": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "projectRoot",
+            "worktreePath",
+            "branch",
+            "baseRef",
+            "baseCommit",
+            "createdAt"
+          ],
+          "type": "object"
         }
       },
       "required": ["sessionId", "conversationId"],
@@ -2440,6 +3479,24 @@
                 "minLength": 1,
                 "type": "string"
               },
+              "delegation": {
+                "additionalProperties": false,
+                "properties": {
+                  "parentSessionId": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "parentTitle": {
+                    "type": "string"
+                  },
+                  "taskName": {
+                    "type": "string"
+                  }
+                },
+                "required": ["parentSessionId", "taskName"],
+                "type": "object"
+              },
               "title": {
                 "type": "string"
               }
@@ -2466,6 +3523,48 @@
           "maxLength": 256,
           "minLength": 1,
           "type": "string"
+        },
+        "worktree": {
+          "additionalProperties": false,
+          "properties": {
+            "baseCommit": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "baseRef": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "createdAt": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "projectRoot": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "projectRoot",
+            "worktreePath",
+            "branch",
+            "baseRef",
+            "baseCommit",
+            "createdAt"
+          ],
+          "type": "object"
         }
       },
       "required": ["sessionId", "conversationId"],
@@ -2692,6 +3791,509 @@
         }
       },
       "required": ["items"],
+      "type": "object"
+    },
+    "worktree/applyMerge": {
+      "additionalProperties": false,
+      "properties": {
+        "conflictedFiles": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "mergedCommit": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": ["merged", "conflict"],
+          "type": "string"
+        },
+        "targetBranch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["status", "mergedCommit", "targetBranch", "conflictedFiles"],
+      "type": "object"
+    },
+    "worktree/create": {
+      "additionalProperties": false,
+      "properties": {
+        "baseCommit": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "baseRef": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "createdAt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "projectRoot": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "projectRoot",
+        "worktreePath",
+        "branch",
+        "baseRef",
+        "baseCommit",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "worktree/diff": {
+      "additionalProperties": false,
+      "properties": {
+        "additions": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseCommit": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "deletions": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "additions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "binary": {
+                "type": "boolean"
+              },
+              "deletions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "originalPath": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "patch": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "enum": ["added", "modified", "deleted", "renamed"],
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "originalPath",
+              "additions",
+              "deletions",
+              "binary",
+              "patch",
+              "truncated"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "headCommit": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "branch",
+        "baseCommit",
+        "headCommit",
+        "additions",
+        "deletions",
+        "truncated",
+        "files"
+      ],
+      "type": "object"
+    },
+    "worktree/list": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "baseCommit": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "baseRef": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "createdAt": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "projectRoot": {
+                "type": "string"
+              },
+              "worktreePath": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "projectRoot",
+              "worktreePath",
+              "branch",
+              "baseRef",
+              "baseCommit",
+              "createdAt"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        }
+      },
+      "required": ["items"],
+      "type": "object"
+    },
+    "worktree/previewMerge": {
+      "additionalProperties": false,
+      "properties": {
+        "additions": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "aheadCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseRef": {
+          "type": "string"
+        },
+        "behindCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "blockingReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "branch": {
+          "type": "string"
+        },
+        "canApply": {
+          "type": "boolean"
+        },
+        "changedFiles": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "additions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "deletions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "enum": ["added", "modified", "deleted", "renamed"],
+                "type": "string"
+              }
+            },
+            "required": ["path", "status", "additions", "deletions"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "deletions": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mainDirty": {
+          "type": "boolean"
+        },
+        "previewToken": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "worktreeDirty": {
+          "type": "boolean"
+        },
+        "worktreeId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "worktreeId",
+        "branch",
+        "baseRef",
+        "aheadCount",
+        "behindCount",
+        "worktreeDirty",
+        "mainDirty",
+        "canApply",
+        "blockingReason",
+        "additions",
+        "deletions",
+        "previewToken",
+        "changedFiles"
+      ],
+      "type": "object"
+    },
+    "worktree/remove": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": ["dirty", "unmerged_commits", "at_risk_ignored_files"],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "removed": {
+          "type": "boolean"
+        }
+      },
+      "required": ["removed", "reason", "details"],
+      "type": "object"
+    },
+    "worktree/status": {
+      "additionalProperties": false,
+      "properties": {
+        "additions": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "aheadCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "baseCommit": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "baseRef": {
+          "type": "string"
+        },
+        "behindCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "changedFiles": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "additions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "binary": {
+                "type": "boolean"
+              },
+              "deletions": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "oldPath": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "enum": ["added", "modified", "deleted", "renamed"],
+                "type": "string"
+              }
+            },
+            "required": ["path", "status", "oldPath", "additions", "deletions", "binary"],
+            "type": "object"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "deletions": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "headCommit": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "linkVerified": {
+          "type": "boolean"
+        },
+        "projectRoot": {
+          "type": "string"
+        },
+        "untrackedCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "worktreePath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "projectRoot",
+        "worktreePath",
+        "branch",
+        "baseRef",
+        "baseCommit",
+        "headCommit",
+        "exists",
+        "linkVerified",
+        "dirty",
+        "untrackedCount",
+        "aheadCount",
+        "behindCount",
+        "additions",
+        "deletions",
+        "changedFiles"
+      ],
       "type": "object"
     }
   },

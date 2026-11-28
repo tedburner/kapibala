@@ -25,6 +25,8 @@ export interface AnthropicProviderOptions {
   apiKey: string;
   modelName: string;
   connectTimeoutMs?: number;
+  /** SSE 分块读取最大空闲等待毫秒数；缺省 90 秒。 */
+  streamIdleTimeoutMs?: number;
   workspaceId?: string;
 }
 
@@ -69,6 +71,7 @@ export class AnthropicProvider implements ModelProvider {
   readonly modelName: string;
   readonly workspaceId?: string;
   readonly connectTimeoutMs: number;
+  readonly streamIdleTimeoutMs?: number;
   private readonly apiKey: string;
   /** 表明该适配器已装载非空凭据，不暴露凭据内容。 */
   get credentialsReady(): boolean {
@@ -119,6 +122,7 @@ export class AnthropicProvider implements ModelProvider {
     this.apiKey = options.apiKey;
     this.workspaceId = options.workspaceId;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 60_000;
+    this.streamIdleTimeoutMs = options.streamIdleTimeoutMs;
   }
 
   /** 装配统一 tool 历史；Messages 的 user/tool_result 转换只作用于请求视图。 */
@@ -187,7 +191,10 @@ export class AnthropicProvider implements ModelProvider {
     };
 
     try {
-      for await (const frame of parseSSEFrames(opened.response.body!)) {
+      for await (const frame of parseSSEFrames(opened.response.body!, {
+        idleTimeoutMs: req.streamIdleTimeoutMs ?? this.streamIdleTimeoutMs,
+        signal: req.signal,
+      })) {
         if (req.signal?.aborted) throw new AbortError();
         const value = parseWireEvent(frame.data);
         if (typeof value.type !== 'string' || !value.type) invalidResponse();
@@ -197,8 +204,12 @@ export class AnthropicProvider implements ModelProvider {
           const detail = value.error;
           const options = {
             stage: 'stream' as const,
-            providerCode: typeof detail?.code === 'string' ? detail.code : undefined,
+            providerCode:
+              typeof detail?.code === 'string' || typeof detail?.code === 'number'
+                ? String(detail.code)
+                : undefined,
             providerType: typeof detail?.type === 'string' ? detail.type : undefined,
+            providerMessage: typeof detail?.message === 'string' ? detail.message : undefined,
           };
           if (isContextOverflow(detail, 'anthropic'))
             throw new ContextOverflowError(undefined, options);
@@ -395,7 +406,6 @@ export class AnthropicProvider implements ModelProvider {
         throw new ModelError('Anthropic stream ended before message_stop', {
           code: 'MODEL_STREAM_INCOMPLETE',
           stage: 'stream',
-          retryable: false,
         });
       let usage: Usage | undefined;
       if (counters.input_tokens !== undefined && counters.output_tokens !== undefined) {

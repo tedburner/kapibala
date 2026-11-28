@@ -1,4 +1,4 @@
-import { ContextOverflowError, ModelError } from '../../errors/index.js';
+import { AbortError, ContextOverflowError, ModelError } from '../../errors/index.js';
 import type {
   CanonicalMessage,
   ModelEvent,
@@ -8,7 +8,12 @@ import type {
 } from '../../types/index.js';
 import { type ModelProvider, assembleCanonicalToolResults } from '../index.js';
 import type { ChatCapabilities } from '../router.js';
-import { isContextOverflow, parseToolArguments, safeTransportCode } from '../transport/http.js';
+import {
+  isContextOverflow,
+  openModelResponse,
+  parseToolArguments,
+  safeTransportCode,
+} from '../transport/http.js';
 import { parseSSEFrames } from '../transport/sse.js';
 
 /** Chat 端点配置；能力覆盖只改变请求字段和完成边界，不改变协议身份。 */
@@ -23,6 +28,8 @@ export interface OpenAIProviderOptions {
   chatCapabilities?: ChatCapabilities;
   /** 建立 HTTP 连接(收到响应头)的超时毫秒数；仅约束建连阶段，不限制流式读取总时长 */
   connectTimeoutMs?: number;
+  /** SSE 分块读取最大空闲等待毫秒数；缺省 90 秒。 */
+  streamIdleTimeoutMs?: number;
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
@@ -66,6 +73,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   readonly supportsThinking: boolean;
   readonly replayReasoningContent: boolean;
   readonly connectTimeoutMs: number;
+  readonly streamIdleTimeoutMs?: number;
   readonly chatCapabilities: Readonly<ChatCapabilities>;
 
   /** 暴露实际请求目标供原子绑定校验，不包含凭据。 */
@@ -92,6 +100,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       options.replayReasoningContent ??
       new URL(this.baseURL).hostname === 'api.deepseek.com';
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this.streamIdleTimeoutMs = options.streamIdleTimeoutMs;
   }
 
   /**
@@ -134,81 +143,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
       payload[this.chatCapabilities.maxTokensField ?? 'max_tokens'] = req.maxTokens;
     }
 
-    let response: Response;
-    // 建连超时护栏：服务端无响应时不能永久挂起(流式读取阶段不受此限制)。
-    // 手动组合外层 signal 与超时 signal，避免依赖 Node 20.3+ 的 AbortSignal.any。
-    const timeoutController = new AbortController();
-    const timeoutTimer = setTimeout(() => timeoutController.abort(), this.connectTimeoutMs);
-    const onOuterAbort = () => timeoutController.abort();
-    if (req.signal?.aborted) {
-      timeoutController.abort();
-    } else {
-      req.signal?.addEventListener('abort', onOuterAbort, { once: true });
-    }
+    const opened = await openModelResponse({
+      protocol: 'openai-compatible',
+      url,
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      payload,
+      signal: req.signal,
+      connectTimeoutMs: this.connectTimeoutMs,
+      preserveErrorMessage: true,
+    });
 
     try {
-      try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.apiKey}`,
-          },
-          body: JSON.stringify(payload),
-          signal: timeoutController.signal,
-        });
-      } catch (err: unknown) {
-        if (req.signal?.aborted) {
-          throw err;
-        }
-        if (timeoutController.signal.aborted) {
-          throw new ModelError(`Connection to ${url} timed out after ${this.connectTimeoutMs}ms`, {
-            status: 408,
-            retryable: true,
-            stage: 'connect',
-          });
-        }
-        throw new ModelError(`Failed to connect to ${url}: ${(err as Error).message}`, {
-          transportCode: safeTransportCode(err),
-          stage: 'connect',
-        });
-      } finally {
-        // 只停止建连计时；外层 signal 的联动必须保留到响应流消费结束。
-        clearTimeout(timeoutTimer);
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorDetails: unknown;
-        let errorMsg = `API request failed with status ${response.status}: ${response.statusText}`;
-        try {
-          const errorJson = JSON.parse(errorText);
-          errorDetails = errorJson.error;
-          if (typeof errorJson.error?.message === 'string') {
-            errorMsg = errorJson.error.message;
-          }
-        } catch {
-          if (errorText) errorMsg += ` - ${errorText.slice(0, 300)}`;
-        }
-        const details = errorDetails as { code?: unknown; type?: unknown } | undefined;
-        const options = {
-          status: response.status,
-          providerCode: typeof details?.code === 'string' ? details.code : undefined,
-          providerType: typeof details?.type === 'string' ? details.type : undefined,
-          stage: 'response' as const,
-        };
-        if ([400, 413, 422].includes(response.status) && isContextOverflow(errorDetails))
-          throw new ContextOverflowError(response.status, { ...options, message: errorMsg });
-        throw new ModelError(errorMsg, options);
-      }
-
-      if (!response.body) {
-        throw new ModelError('Response body is null', {
-          code: 'MODEL_INVALID_RESPONSE',
-          stage: 'response',
-        });
-      }
-
       // 状态机收集分片 tool_calls
       const pendingToolCalls = new Map<
         number,
@@ -226,8 +173,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
       const requestStartTime = Date.now();
       let ttftMs: number | undefined;
 
-      for await (const frame of parseSSEFrames(response.body)) {
-        if (req.signal?.aborted) return;
+      for await (const frame of parseSSEFrames(opened.response.body!, {
+        idleTimeoutMs: req.streamIdleTimeoutMs ?? this.streamIdleTimeoutMs,
+        signal: req.signal,
+      })) {
+        if (req.signal?.aborted) throw new AbortError();
         const chunk = frame.data;
         if (chunk.trim() === '[DONE]') {
           streamDone = true;
@@ -257,11 +207,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
           const message =
             typeof wireError.message === 'string' ? wireError.message : 'Model API stream error';
           const details = [wireError.type, wireError.code]
-            .filter((value) => typeof value === 'string' && value.length > 0)
+            .filter(
+              (value) =>
+                (typeof value === 'string' && value.length > 0) || typeof value === 'number',
+            )
+            .map((value) => String(value))
             .join(', ');
           const options = {
-            providerCode: typeof wireError.code === 'string' ? wireError.code : undefined,
+            providerCode:
+              typeof wireError.code === 'string' || typeof wireError.code === 'number'
+                ? String(wireError.code)
+                : undefined,
             providerType: typeof wireError.type === 'string' ? wireError.type : undefined,
+            providerMessage: typeof wireError.message === 'string' ? wireError.message : undefined,
             stage: 'stream' as const,
           };
           if (isContextOverflow(wireError))
@@ -389,13 +347,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
         }
       }
 
-      if (req.signal?.aborted) return;
-      if (
-        finishReason === undefined ||
-        (!streamDone && this.chatCapabilities.requiresDone !== false)
-      )
+      if (req.signal?.aborted) throw new AbortError();
+      if (!streamDone && this.chatCapabilities.requiresDone !== false)
         throw new ModelError('Model response stream ended without a completion marker', {
-          retryable: false,
+          code: 'MODEL_STREAM_INCOMPLETE',
+          stage: 'stream',
+        });
+      if (finishReason === undefined)
+        throw new ModelError('Model response stream ended without a completion marker', {
+          // 已收到显式 [DONE] 却缺失 finish_reason 属于协议格式违规；requiresDone: false 下无 finish_reason 的裸 EOF 属断流。
+          retryable: !streamDone,
           code: 'MODEL_STREAM_INCOMPLETE',
           stage: 'stream',
         });
@@ -438,20 +399,21 @@ export class OpenAICompatibleProvider implements ModelProvider {
       const durationMs = Date.now() - requestStartTime;
       yield { type: 'message_stop', usage, ttftMs, durationMs, finishReason };
     } catch (error) {
-      if (error instanceof ModelError || req.signal?.aborted) throw error;
+      if (req.signal?.aborted) {
+        throw error instanceof AbortError ? error : new AbortError();
+      }
+      if (error instanceof ModelError || error instanceof AbortError) throw error;
       const transportCode = safeTransportCode(error);
       throw new ModelError(
         `Model response stream failed${transportCode ? ` (${transportCode})` : ''}`,
         {
-          retryable: false,
           code: 'MODEL_STREAM_INTERRUPTED',
           transportCode,
           stage: 'stream',
         },
       );
     } finally {
-      req.signal?.removeEventListener('abort', onOuterAbort);
-      timeoutController.abort();
+      opened.close();
     }
   }
 

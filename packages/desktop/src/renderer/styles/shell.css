@@ -1,0 +1,520 @@
+/* 017 §2, §6.1, §6.6, §6.8 · 应用壳、左栏导航、层级会话树、命令面板与居中启动台样式。
+ * 全部消费 --kpbl-* 语义令牌与显式有界过渡属性。 */
+@layer workbench {
+  /* ---------- AppShell 顶层响应式骨架 ---------- */
+  .kpbl-app-shell {
+    position: relative;
+    display: flex;
+    width: 100vw;
+    height: 100dvh;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background-color: var(--kpbl-bg-surface);
+    color: var(--kpbl-ink-default);
+    font-family: var(--kpbl-font-sans);
+  }
+
+  .kpbl-shell-main {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    overflow: hidden;
+    background-color: var(--kpbl-bg-surface);
+  }
+
+  .kpbl-drawer-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 28;
+    border: 0;
+    padding: 0;
+    background-color: var(--kpbl-overlay-scrim);
+    cursor: pointer;
+  }
+
+  /* ---------- NavigationRail（248px 展开轨 / 52px 图标轨 / 窄屏覆盖抽屉） ---------- */
+  .kpbl-nav-rail {
+    position: relative;
+    z-index: 20;
+    display: flex;
+    width: var(--kpbl-rail-width);
+    flex: 0 0 var(--kpbl-rail-width);
+    min-height: 0;
+    flex-direction: column;
+    border-right: 1px solid var(--kpbl-line-subtle);
+    background-color: var(--kpbl-bg-rail);
+    color: var(--kpbl-ink-default);
+    transition-property: width, flex-basis;
+    transition-duration: var(--kpbl-duration-panel);
+    transition-timing-function: var(--kpbl-ease-standard);
+  }
+
+  .kpbl-nav-rail[data-collapsed="true"] {
+    width: var(--kpbl-rail-collapsed-width);
+    flex-basis: var(--kpbl-rail-collapsed-width);
+    align-items: center;
+  }
+
+  .kpbl-nav-rail[data-drawer="true"] {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    width: var(--kpbl-rail-width);
+    flex-basis: var(--kpbl-rail-width);
+    border-right: 1px solid var(--kpbl-line-default);
+    box-shadow: var(--kpbl-shadow-dialog);
+  }
+
+  .kpbl-rail-topbar {
+    display: flex;
+    height: var(--kpbl-header-height);
+    flex: 0 0 var(--kpbl-header-height);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--kpbl-space-2);
+    padding: 0 var(--kpbl-space-2) 0 var(--kpbl-space-3);
+  }
+
+  /* macOS hiddenInset 红绿灯安全让位；Windows/Linux 无额外左偏移（017 §6.1）。 */
+  .kpbl-rail-topbar[data-macos-inset="true"] {
+    padding-left: 76px;
+  }
+
+  .kpbl-nav-rail[data-collapsed="true"] .kpbl-rail-topbar {
+    width: 100%;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .kpbl-rail-brand {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    gap: var(--kpbl-space-2);
+  }
+
+  .kpbl-rail-wordmark {
+    color: var(--kpbl-ink-strong);
+    font-size: var(--kpbl-text-base);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+  }
+
+  .kpbl-rail-actions {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .kpbl-rail-search-wrap {
+    padding: 0 var(--kpbl-space-2) var(--kpbl-space-2);
+  }
+
+  .kpbl-rail-cmd-trigger {
+    display: flex;
+    width: 100%;
+    height: var(--kpbl-control-sm);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--kpbl-space-2);
+    padding: 0 var(--kpbl-space-2);
+    border: 1px solid var(--kpbl-line-default);
+    border-radius: var(--kpbl-r-sm);
+    background-color: var(--kpbl-bg-surface);
+    color: var(--kpbl-ink-subtle);
+    font-size: var(--kpbl-text-sm);
+    cursor: pointer;
+    transition-property: border-color, background-color, color;
+    transition-duration: var(--kpbl-duration-fast);
+    transition-timing-function: var(--kpbl-ease-standard);
+  }
+
+  .kpbl-rail-cmd-trigger:hover {
+    border-color: var(--kpbl-line-strong);
+    color: var(--kpbl-ink-strong);
+  }
+
+  .kpbl-rail-scroll {
+    display: flex;
+    min-height: 0;
+    width: 100%;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--kpbl-space-3);
+    padding: var(--kpbl-space-1) var(--kpbl-space-2) var(--kpbl-space-3);
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .kpbl-rail-collapsed-stack {
+    display: flex;
+    width: 100%;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--kpbl-space-1);
+    padding: var(--kpbl-space-1) 0 var(--kpbl-space-2);
+  }
+
+  .kpbl-rail-footer {
+    width: 100%;
+    padding: var(--kpbl-space-2);
+    border-top: 1px solid var(--kpbl-line-subtle);
+  }
+
+  .kpbl-nav-rail[data-collapsed="true"] .kpbl-rail-footer {
+    display: flex;
+    justify-content: center;
+    padding: var(--kpbl-space-2) 0;
+  }
+
+  .kpbl-rail-footer-btn {
+    display: flex;
+    width: 100%;
+    height: var(--kpbl-control-md);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--kpbl-space-2);
+    padding: 0 var(--kpbl-space-2);
+    border: 0;
+    border-radius: var(--kpbl-r-sm);
+    background-color: transparent;
+    color: var(--kpbl-ink-default);
+    font-size: var(--kpbl-text-md);
+    font-weight: 500;
+    cursor: pointer;
+    transition-property: background-color, color;
+    transition-duration: var(--kpbl-duration-fast);
+    transition-timing-function: var(--kpbl-ease-standard);
+  }
+
+  .kpbl-rail-footer-btn:hover,
+  .kpbl-rail-footer-btn[data-active="true"] {
+    background-color: var(--kpbl-bg-active);
+    color: var(--kpbl-ink-strong);
+  }
+
+  /* ---------- InboxSection（动态运行收件箱） ---------- */
+  .kpbl-inbox-section {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-bottom: var(--kpbl-space-2);
+    border-bottom: 1px solid var(--kpbl-line-subtle);
+  }
+
+  .kpbl-section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 6px 4px;
+    color: var(--kpbl-ink-faint);
+    font-size: var(--kpbl-text-xs);
+    font-weight: 600;
+    user-select: none;
+  }
+
+  .kpbl-inbox-item {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    height: var(--kpbl-control-md);
+    padding: 0 6px;
+    border: 0;
+    border-radius: var(--kpbl-r-sm);
+    background-color: transparent;
+    color: var(--kpbl-ink-default);
+    font-size: var(--kpbl-text-md);
+    text-align: left;
+    cursor: pointer;
+    transition-property: background-color, color;
+    transition-duration: var(--kpbl-duration-fast);
+    transition-timing-function: var(--kpbl-ease-standard);
+  }
+
+  .kpbl-inbox-item:hover {
+    background-color: var(--kpbl-bg-subtle);
+    color: var(--kpbl-ink-strong);
+  }
+
+  .kpbl-inbox-item[data-active="true"] {
+    background-color: var(--kpbl-bg-active);
+    color: var(--kpbl-ink-strong);
+    font-weight: 500;
+  }
+
+  /* ---------- WorkspaceTree（严格三列网格 + 单尾槽切换） ---------- */
+  .kpbl-workspace-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .kpbl-space-header {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px;
+    height: var(--kpbl-control-sm);
+    padding: 0 4px;
+    border-radius: var(--kpbl-r-sm);
+  }
+
+  .kpbl-space-header:hover {
+    background-color: var(--kpbl-bg-subtle);
+  }
+
+  .kpbl-space-toggle {
+    display: contents;
+    border: 0;
+    background: transparent;
+    color: var(--kpbl-ink-strong);
+    font-size: var(--kpbl-text-md);
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .kpbl-tree-node {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 017 §6.1 硬契约：固定 16px 图标列 + 弹性标题列 + 单一尾槽，根绝标题挤压成单字母。 */
+  .kpbl-tree-row {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-height: var(--kpbl-control-md);
+    padding: 0 6px;
+    border-radius: var(--kpbl-r-sm);
+    color: var(--kpbl-ink-default);
+    font-size: var(--kpbl-text-md);
+    transition-property: background-color, color;
+    transition-duration: var(--kpbl-duration-fast);
+    transition-timing-function: var(--kpbl-ease-standard);
+  }
+
+  .kpbl-tree-row:hover,
+  .kpbl-tree-row:focus-within {
+    background-color: var(--kpbl-bg-subtle);
+    color: var(--kpbl-ink-strong);
+  }
+
+  .kpbl-tree-row[data-active="true"] {
+    background-color: var(--kpbl-bg-active);
+    color: var(--kpbl-ink-strong);
+    font-weight: 500;
+  }
+
+  .kpbl-tree-row[data-child="true"] {
+    min-height: var(--kpbl-control-sm);
+    padding-left: 20px;
+    font-size: var(--kpbl-text-sm);
+    color: var(--kpbl-ink-subtle);
+  }
+
+  .kpbl-tree-select-btn {
+    min-width: 0;
+    overflow: hidden;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .kpbl-tree-tail {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .kpbl-tree-tail-meta {
+    color: var(--kpbl-ink-faint);
+    font-size: var(--kpbl-text-xs);
+    white-space: nowrap;
+  }
+
+  .kpbl-tree-tail-menu {
+    display: none;
+  }
+
+  .kpbl-tree-row:hover .kpbl-tree-tail-meta,
+  .kpbl-tree-row:focus-within .kpbl-tree-tail-meta,
+  .kpbl-tree-row[data-menu-open="true"] .kpbl-tree-tail-meta {
+    display: none;
+  }
+
+  .kpbl-tree-row:hover .kpbl-tree-tail-menu,
+  .kpbl-tree-row:focus-within .kpbl-tree-tail-menu,
+  .kpbl-tree-row[data-menu-open="true"] .kpbl-tree-tail-menu {
+    display: inline-flex;
+  }
+
+  .kpbl-tree-subrow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 6px 4px 28px;
+    color: var(--kpbl-ink-subtle);
+    font-family: var(--kpbl-font-mono);
+    font-size: var(--kpbl-text-xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- CommandPalette（⌘K 命令面板） ---------- */
+  .kpbl-palette-results {
+    display: flex;
+    max-height: 360px;
+    flex-direction: column;
+    gap: var(--kpbl-space-2);
+    margin-top: var(--kpbl-space-3);
+    overflow-y: auto;
+  }
+
+  .kpbl-palette-item {
+    display: flex;
+    width: 100%;
+    min-height: var(--kpbl-control-md);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--kpbl-space-3);
+    padding: 6px 10px;
+    border: 0;
+    border-radius: var(--kpbl-r-sm);
+    background-color: transparent;
+    color: var(--kpbl-ink-default);
+    font-size: var(--kpbl-text-md);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .kpbl-palette-item:hover,
+  .kpbl-palette-item[data-highlighted="true"] {
+    background-color: var(--kpbl-bg-active);
+    color: var(--kpbl-ink-strong);
+  }
+
+  /* ---------- LaunchpadView（黄金比例居中启动台，零空白断层） ---------- */
+  .kpbl-launchpad {
+    display: flex;
+    min-height: 0;
+    width: 100%;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--kpbl-space-6) var(--kpbl-space-5) clamp(24px, 7vh, 64px);
+    overflow-y: auto;
+  }
+
+  .kpbl-launchpad-cluster {
+    display: flex;
+    width: min(100%, var(--kpbl-reading-max-width));
+    flex-direction: column;
+    gap: var(--kpbl-space-5);
+  }
+
+  .kpbl-launchpad-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--kpbl-space-3);
+    text-align: center;
+  }
+
+  .kapibala-home-mascot {
+    display: inline-flex;
+    width: 52px;
+    height: 52px;
+    color: var(--kpbl-ink-strong);
+    cursor: pointer;
+    transition-property: transform;
+    transition-duration: var(--kpbl-duration-fast);
+    transition-timing-function: var(--kpbl-ease-standard);
+  }
+
+  .kapibala-home-mascot[data-typing="true"] {
+    transform: translateY(-2px) rotate(1.5deg);
+  }
+
+  .kapibala-home-mascot[data-hop="true"] {
+    transform: translateY(-6px);
+  }
+
+  .kapibala-mascot-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .kpbl-launchpad-title {
+    margin: 0;
+    color: var(--kpbl-ink-strong);
+    font-size: var(--kpbl-text-hero);
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: -0.015em;
+  }
+
+  .kpbl-launchpad-composer-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--kpbl-space-2);
+    padding: var(--kpbl-space-3);
+    border: 1px solid var(--kpbl-line-default);
+    border-radius: var(--kpbl-r-lg);
+    background-color: var(--kpbl-bg-elevated);
+  }
+
+  .kpbl-launchpad-starters {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--kpbl-space-2);
+  }
+
+  @media (max-width: 899.98px) {
+    .kpbl-launchpad-starters {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .kpbl-starter-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 10px var(--kpbl-space-3);
+    border: 1px solid var(--kpbl-line-default);
+    border-radius: var(--kpbl-r-md);
+    background-color: var(--kpbl-bg-surface);
+    color: var(--kpbl-ink-default);
+    text-align: left;
+    cursor: pointer;
+    transition-property: border-color, background-color;
+    transition-duration: var(--kpbl-duration-fast);
+    transition-timing-function: var(--kpbl-ease-standard);
+  }
+
+  .kpbl-starter-card:hover {
+    border-color: var(--kpbl-line-strong);
+    background-color: var(--kpbl-bg-subtle);
+  }
+}

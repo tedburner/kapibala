@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { FaultProbe, RendererErrorBoundary } from './error-boundary.js';
-import './index.css';
+import './styles/index.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Missing application root');

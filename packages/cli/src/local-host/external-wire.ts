@@ -59,8 +59,21 @@ export function toExternalTemplateWire(item: ViewExternalTemplate): ExternalTemp
   };
 }
 
-/** 将外部会话摘要映射为协议层 wire 条目。 */
-export function toExternalSessionWire(item: ViewExternalSession): ExternalSessionWireItem {
+/** 按客户端协商能力控制外部会话 wire 投影中 v0.1.6 新增可选字段的下发开关。 */
+export interface ExternalWireProjectionOptions {
+  /** 仅当连接协商了 `'worktree'` 能力时包含 `worktree` 摘要；缺省为 `true`。 */
+  readonly includeWorktree?: boolean;
+  /** 仅当连接协商了 `'checkpoint'` 能力时包含 `diffSummary` 统计；缺省为 `true`。 */
+  readonly includeDiffSummary?: boolean;
+}
+
+/** 将外部会话摘要映射为协议层 wire 条目，并按对端能力裁剪未协商扩展字段以保持向后兼容。 */
+export function toExternalSessionWire(
+  item: ViewExternalSession,
+  options?: ExternalWireProjectionOptions,
+): ExternalSessionWireItem {
+  const includeWorktree = options?.includeWorktree ?? true;
+  const includeDiffSummary = options?.includeDiffSummary ?? true;
   return {
     id: item.id,
     harnessId: item.harnessId,
@@ -78,13 +91,27 @@ export function toExternalSessionWire(item: ViewExternalSession): ExternalSessio
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     lastError: item.lastError ?? null,
+    ...(includeWorktree && item.worktree ? { worktree: { ...item.worktree } } : {}),
+    ...(includeDiffSummary && item.diffSummary
+      ? {
+          diffSummary: {
+            additions: item.diffSummary.additions,
+            deletions: item.diffSummary.deletions,
+          },
+        }
+      : {}),
   };
 }
 
-/** 将外部会话完整快照映射为协议层 wire 形状。 */
-export function toExternalSnapshotWire(snap: ViewExternalSnapshot): ExternalSnapshotWire {
+/** 将外部会话完整快照映射为协议层 wire 形状，并按对端能力裁剪未协商扩展字段。 */
+export function toExternalSnapshotWire(
+  snap: ViewExternalSnapshot,
+  options?: ExternalWireProjectionOptions,
+): ExternalSnapshotWire {
+  const includeWorktree = options?.includeWorktree ?? true;
+  const includeDiffSummary = options?.includeDiffSummary ?? true;
   return {
-    session: toExternalSessionWire(snap.session),
+    session: toExternalSessionWire(snap.session, options),
     sequence: snap.sequence,
     truncatedArchive: Boolean(snap.truncatedArchive),
     messages: snap.messages.map((msg) => ({
@@ -151,5 +178,14 @@ export function toExternalSnapshotWire(snap: ViewExternalSnapshot): ExternalSnap
       level: n.level,
       text: n.text,
     })),
+    ...(includeWorktree && snap.worktree ? { worktree: { ...snap.worktree } } : {}),
+    ...(includeDiffSummary && snap.diffSummary
+      ? {
+          diffSummary: {
+            additions: snap.diffSummary.additions,
+            deletions: snap.diffSummary.deletions,
+          },
+        }
+      : {}),
   };
 }

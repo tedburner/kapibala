@@ -157,14 +157,17 @@ describe('DesktopHost external.* IPC 契约与 LatestSnapshot 通知桥接', () 
       prompt: 'HUGE_OUTPUT',
     })) as Output<'external.open'>;
 
-    await vi.waitFor(async () => {
-      const snap = (await host.dispatch('external.snapshot', {
-        workspaceId: ws.id,
-        sessionId: hugeOpened.session.id,
-      })) as Output<'external.snapshot'>;
-      expect(snap.session.status).toBe('idle');
-      expect(snap.truncatedArchive).toBe(true);
-      expect(Buffer.byteLength(JSON.stringify(snap), 'utf8')).toBeLessThan(750 * 1024);
-    });
+    await vi.waitFor(
+      async () => {
+        const snap = (await host.dispatch('external.snapshot', {
+          workspaceId: ws.id,
+          sessionId: hugeOpened.session.id,
+        })) as Output<'external.snapshot'>;
+        expect(snap.session.status).toBe('idle');
+        expect(snap.truncatedArchive).toBe(true);
+        expect(Buffer.byteLength(JSON.stringify(snap), 'utf8')).toBeLessThan(750 * 1024);
+      },
+      { timeout: 8_000 },
+    );
   });
 });

@@ -239,143 +239,154 @@ export const modelCommand: CommandHandler = async (args, ctx) => {
   // 分组来自配置现状：内置厂商 + 用户填过厂商名的自建端点 + 通用自定义桶。
   // 分组只统计启用的模型：整组都停用时该厂商不出现在菜单里。
   const providerMetas = listProviderMetas(ctx.settings.profiles.filter(isAvailable));
+  const selectMenu = ctx.select;
 
-  while (true) {
-    // -------------------------------------------------------------
-    // 第一步：选择模型提供商 (Provider)
-    // -------------------------------------------------------------
-    const providerOptions: SelectOption<string>[] = [];
+  const runMenu = async (): Promise<void> => {
+    while (true) {
+      // -------------------------------------------------------------
+      // 第一步：选择模型提供商 (Provider)
+      // -------------------------------------------------------------
+      const providerOptions: SelectOption<string>[] = [];
 
-    for (const meta of providerMetas) {
-      const models = ctx.settings.profiles.filter(
-        (p) => providerCategory(p) === meta.key && isAvailable(p),
+      for (const meta of providerMetas) {
+        const models = ctx.settings.profiles.filter(
+          (p) => providerCategory(p) === meta.key && isAvailable(p),
+        );
+        if (models.length > 0) {
+          const isCurrent = meta.key === currentProviderKey;
+          providerOptions.push({
+            label: meta.name,
+            value: meta.key,
+            badge: isCurrent ? '当前提供商' : undefined,
+            description: `${meta.desc} · ${models.length}个模型 · ${describeKeyStatus(models, ctx.settings)}`,
+          });
+        }
+      }
+
+      // 快捷操作选项
+      providerOptions.push({
+        label: '⚙️ 运行配置向导添加/配置新模型 (/model setup)',
+        value: '__action_setup__',
+      });
+
+      providerOptions.push({
+        label: `🔑 更新当前模型 [${active.name}] 的 API Key`,
+        value: '__action_update_key__',
+      });
+
+      providerOptions.push({
+        label: `⭐️ 将当前模型 [${active.name}] 设为全局默认`,
+        value: '__action_set_default__',
+      });
+
+      const defaultProviderIdx = providerOptions.findIndex((o) => o.value === currentProviderKey);
+
+      const chosenProvider = await selectMenu({
+        message: '第一步：请选择模型提供商 (Provider)',
+        options: providerOptions,
+        defaultIndex: defaultProviderIdx >= 0 ? defaultProviderIdx : 0,
+      });
+
+      if (!chosenProvider) {
+        // 用户按 Esc / Ctrl+C 取消
+        return;
+      }
+
+      if (chosenProvider === '__action_setup__') {
+        await settingsCommand(['setup'], ctx);
+        return;
+      }
+
+      if (chosenProvider === '__action_set_default__') {
+        persistDefaultModel(active, ctx.settings, { homeDir: ctx.homeDir });
+        resolveCommandOutput(ctx).log(
+          `\x1b[32m✔ 已将 '${active.name}' 保存为全局默认模型。\x1b[0m`,
+        );
+        return;
+      }
+
+      if (chosenProvider === '__action_update_key__') {
+        if (active.apiKeyEnv === API_KEY_ENV_NONE) {
+          resolveCommandOutput(ctx).log(`\x1b[90m模型 '${active.name}' 不需要 API Key。\x1b[0m`);
+        } else {
+          await updateModelApiKey(active, ctx);
+        }
+        return;
+      }
+
+      // -------------------------------------------------------------
+      // 第二步：选择该提供商下的具体模型
+      // -------------------------------------------------------------
+      const providerMeta = providerMetas.find((m) => m.key === chosenProvider);
+      const providerName = providerMeta ? providerMeta.name : chosenProvider;
+      const modelsUnderProvider = ctx.settings.profiles.filter(
+        (p) => providerCategory(p) === chosenProvider && isAvailable(p),
       );
-      if (models.length > 0) {
-        const isCurrent = meta.key === currentProviderKey;
-        providerOptions.push({
-          label: meta.name,
-          value: meta.key,
-          badge: isCurrent ? '当前提供商' : undefined,
-          description: `${meta.desc} · ${models.length}个模型 · ${describeKeyStatus(models, ctx.settings)}`,
-        });
-      }
-    }
 
-    // 快捷操作选项
-    providerOptions.push({
-      label: '⚙️ 运行配置向导添加/配置新模型 (/model setup)',
-      value: '__action_setup__',
-    });
+      const modelOptions: SelectOption<string>[] = modelsUnderProvider.map((p) => {
+        let badge: string | undefined;
+        if (p.id === active.id) {
+          badge = '当前使用';
+        } else if (p.id === ctx.settings.defaultModel) {
+          badge = '默认';
+        }
 
-    providerOptions.push({
-      label: `🔑 更新当前模型 [${active.name}] 的 API Key`,
-      value: '__action_update_key__',
-    });
+        const contextWindow = resolveContextWindow(p.contextWindow);
+        const contextTag = ` | ${contextWindow.estimated ? '≈' : ''}${formatTokenCount(contextWindow.tokens)}`;
 
-    providerOptions.push({
-      label: `⭐️ 将当前模型 [${active.name}] 设为全局默认`,
-      value: '__action_set_default__',
-    });
+        return {
+          label: p.name,
+          value: p.id,
+          badge,
+          description: `${p.modelName}${contextTag} · ${describeKeyStatus([p], ctx.settings)}`,
+        };
+      });
 
-    const defaultProviderIdx = providerOptions.findIndex((o) => o.value === currentProviderKey);
+      // 增加返回上一级选项
+      modelOptions.push({
+        label: '⬅️ 返回上一级 (重新选择提供商)',
+        value: '__back__',
+      });
 
-    const chosenProvider = await ctx.select({
-      message: '第一步：请选择模型提供商 (Provider)',
-      options: providerOptions,
-      defaultIndex: defaultProviderIdx >= 0 ? defaultProviderIdx : 0,
-    });
+      const activeModelIdx = modelsUnderProvider.findIndex((p) => p.id === active.id);
 
-    if (!chosenProvider) {
-      // 用户按 Esc / Ctrl+C 取消
-      return;
-    }
+      const chosenModel = await selectMenu({
+        message: `第二步：请选择【${providerName}】的具体模型`,
+        options: modelOptions,
+        defaultIndex: activeModelIdx >= 0 ? activeModelIdx : 0,
+      });
 
-    if (chosenProvider === '__action_setup__') {
-      await settingsCommand(['setup'], ctx);
-      return;
-    }
-
-    if (chosenProvider === '__action_set_default__') {
-      persistDefaultModel(active, ctx.settings, { homeDir: ctx.homeDir });
-      resolveCommandOutput(ctx).log(`\x1b[32m✔ 已将 '${active.name}' 保存为全局默认模型。\x1b[0m`);
-      return;
-    }
-
-    if (chosenProvider === '__action_update_key__') {
-      if (active.apiKeyEnv === API_KEY_ENV_NONE) {
-        resolveCommandOutput(ctx).log(`\x1b[90m模型 '${active.name}' 不需要 API Key。\x1b[0m`);
-      } else {
-        await updateModelApiKey(active, ctx);
-      }
-      return;
-    }
-
-    // -------------------------------------------------------------
-    // 第二步：选择该提供商下的具体模型
-    // -------------------------------------------------------------
-    const providerMeta = providerMetas.find((m) => m.key === chosenProvider);
-    const providerName = providerMeta ? providerMeta.name : chosenProvider;
-    const modelsUnderProvider = ctx.settings.profiles.filter(
-      (p) => providerCategory(p) === chosenProvider && isAvailable(p),
-    );
-
-    const modelOptions: SelectOption<string>[] = modelsUnderProvider.map((p) => {
-      let badge: string | undefined;
-      if (p.id === active.id) {
-        badge = '当前使用';
-      } else if (p.id === ctx.settings.defaultModel) {
-        badge = '默认';
+      if (!chosenModel) {
+        // 用户取消
+        return;
       }
 
-      const contextWindow = resolveContextWindow(p.contextWindow);
-      const contextTag = ` | ${contextWindow.estimated ? '≈' : ''}${formatTokenCount(contextWindow.tokens)}`;
+      if (chosenModel === '__back__') {
+        // 返回第一步重新选择提供商
+        continue;
+      }
 
-      return {
-        label: p.name,
-        value: p.id,
-        badge,
-        description: `${p.modelName}${contextTag} · ${describeKeyStatus([p], ctx.settings)}`,
-      };
-    });
+      if (chosenModel === active.id && (ctx.session.getModelRole?.() ?? 'default') === 'default') {
+        resolveCommandOutput(ctx).log(`\x1b[90m当前已在使用模型 '${active.name}'。\x1b[0m`);
+        return;
+      }
 
-    // 增加返回上一级选项
-    modelOptions.push({
-      label: '⬅️ 返回上一级 (重新选择提供商)',
-      value: '__back__',
-    });
-
-    const activeModelIdx = modelsUnderProvider.findIndex((p) => p.id === active.id);
-
-    const chosenModel = await ctx.select({
-      message: `第二步：请选择【${providerName}】的具体模型`,
-      options: modelOptions,
-      defaultIndex: activeModelIdx >= 0 ? activeModelIdx : 0,
-    });
-
-    if (!chosenModel) {
-      // 用户取消
+      // 成功选择具体模型，进行切换
+      const targetProfile = ctx.settings.profiles.find((p) => p.id === chosenModel);
+      if (targetProfile) {
+        if (!(await ensureApiKey(targetProfile, ctx))) return;
+        ctx.onModelSwitched(targetProfile.id);
+        resolveCommandOutput(ctx).log(
+          `\x1b[32m✔ 已切换至模型: ${targetProfile.name} (${targetProfile.modelName})\x1b[0m`,
+        );
+      }
       return;
     }
+  };
 
-    if (chosenModel === '__back__') {
-      // 返回第一步重新选择提供商
-      continue;
-    }
-
-    if (chosenModel === active.id && (ctx.session.getModelRole?.() ?? 'default') === 'default') {
-      resolveCommandOutput(ctx).log(`\x1b[90m当前已在使用模型 '${active.name}'。\x1b[0m`);
-      return;
-    }
-
-    // 成功选择具体模型，进行切换
-    const targetProfile = ctx.settings.profiles.find((p) => p.id === chosenModel);
-    if (targetProfile) {
-      if (!(await ensureApiKey(targetProfile, ctx))) return;
-      ctx.onModelSwitched(targetProfile.id);
-      resolveCommandOutput(ctx).log(
-        `\x1b[32m✔ 已切换至模型: ${targetProfile.name} (${targetProfile.modelName})\x1b[0m`,
-      );
-    }
+  if (ctx.withCommandSession) {
+    await ctx.withCommandSession(runMenu);
     return;
   }
+  await runMenu();
 };

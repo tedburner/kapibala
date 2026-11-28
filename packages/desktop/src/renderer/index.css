@@ -1,7 +1,0 @@
-@import "@cloudflare/kumo/styles";
-@import "tailwindcss";
-@import "katex/dist/katex.min.css";
-@import "./theme-kapibala.css";
-@custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
-@source '../../node_modules/@cloudflare/kumo/dist';
-@source '../../node_modules/streamdown/dist';

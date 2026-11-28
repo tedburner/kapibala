@@ -1,10 +1,12 @@
 import { AbortError, type AgentSession, type SessionEvent } from '@kiturone/kapibala';
 import type { ActiveSessionController } from './active-session.js';
 import type { CommandContext, CommandDispatcher } from './commands/dispatcher.js';
+import { getCurrentGitBranch } from './git.js';
 import { CliInputCoordinator } from './input-coordinator.js';
 import { QuoteDraft, prepareReferenceTask } from './quote-draft.js';
 import type { CliApprovalChannel } from './ui/approval.js';
 import { type EventRenderer, type OutputDetail, createEventRenderer } from './ui/events.js';
+import { writeInteractiveWelcome } from './ui/welcome.js';
 import { CLI_VERSION } from './version.js';
 import { setActiveWatchService, setWatchResumeHook } from './watch-context.js';
 
@@ -57,8 +59,13 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     context.readSecret = (prompt) => input.readSecret(prompt);
     context.confirm = (prompt) => input.confirm(prompt);
     context.select = (config) => input.select(config);
+    context.withCommandSession = (action) => input.withCommandSession(action);
   }
-  options.approvalChannel?.bind((request, signal) => input.approve(request, signal));
+  options.approvalChannel?.bind(async (request, signal) => {
+    const choice = await input.approve(request, signal);
+    if (!exiting && !busy() && !input.isBusy()) prompt();
+    return choice;
+  });
   const statusRenderer = createEventRenderer({
     debug,
     outputDetail: options.outputDetail,
@@ -110,12 +117,70 @@ export async function startREPL(options: REPLOptions): Promise<void> {
     activeRenderer = renderer;
     const unbindToggle = input.onDetailToggle(() => renderer.toggleDetail());
     const unbindInteraction = input.onInteraction(() => renderer.invalidateAnchor());
+    const targetSession = session();
+    const projectRoot =
+      context.projectRoot ??
+      options.controller?.manager.project.projectRoot ??
+      targetSession.workspaceRoot;
+    const executionRoot = targetSession.workspaceRoot;
+    let turnOrdinal = targetSession.getHistory().filter((m) => m.role === 'user').length;
+    let preTurnStartTree: string | undefined;
+    let preTurnCommitOid: string | undefined;
+    let execRunHandle:
+      | ReturnType<NonNullable<CommandContext['executionCoordinator']>['trackActiveRun']>
+      | undefined;
     try {
+      if (context.executionCoordinator) {
+        context.executionCoordinator.assertNotFenced(executionRoot);
+        execRunHandle = context.executionCoordinator.trackActiveRun({
+          executionRoot,
+          ownerId: targetSession.conversationId,
+          kind: 'native',
+        });
+      }
+      if (context.checkpoints) {
+        const existing = await context.checkpoints
+          .listCheckpoints({
+            projectRoot,
+            executionRoot,
+            sessionId: targetSession.conversationId,
+          })
+          .catch(() => []);
+        if (existing.length > 0) {
+          turnOrdinal = Math.max(turnOrdinal, Math.max(...existing.map((c) => c.ordinal)) + 1);
+        }
+        const pre = await context.checkpoints
+          .capturePreTurn({
+            projectRoot,
+            executionRoot,
+            sessionId: targetSession.conversationId,
+            ordinal: turnOrdinal,
+            signal: combinedSignal,
+          })
+          .catch(() => undefined);
+        if (pre?.captured) {
+          preTurnStartTree = pre.startTree;
+          preTurnCommitOid = pre.commitOid;
+        }
+      }
       for await (const event of operation(combinedSignal)) renderer.render(event);
     } catch (error) {
       if (!(error instanceof AbortError) && !combinedSignal.aborted)
         console.error(`执行失败: ${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
+      if (context.checkpoints && preTurnStartTree) {
+        await context.checkpoints
+          .capturePostTurn({
+            projectRoot,
+            executionRoot,
+            sessionId: targetSession.conversationId,
+            ordinal: turnOrdinal,
+            startTree: preTurnStartTree,
+            ...(preTurnCommitOid ? { startCommitOid: preTurnCommitOid } : {}),
+          })
+          .catch(() => {});
+      }
+      execRunHandle?.release();
       unbindToggle();
       unbindInteraction();
       renderer.finish();
@@ -177,10 +242,23 @@ export async function startREPL(options: REPLOptions): Promise<void> {
       prompt();
     }
   });
-  if (input.interactive)
-    console.log(
-      `\n🐾 Kapibala (kpbl) v${CLI_VERSION}\n会话: ${session().conversationId}\n/new 新建 | /resume 续答 | /context 预算 | /help 命令\n`,
-    );
+  if (input.interactive) {
+    const active = session();
+    const skillCount = active
+      .getSkills()
+      .skills.filter((skill) => skill.available && !skill.disabled).length;
+    await writeInteractiveWelcome(process.stdout, {
+      version: CLI_VERSION,
+      modelId: active.getActiveProfile().id,
+      role: active.getModelRole(),
+      mode: active.getMode(),
+      skillCount,
+      workspacePath: active.workspaceRoot,
+      homeDir: context.homeDir,
+      gitBranch: getCurrentGitBranch(active.workspaceRoot),
+      conversationId: active.conversationId,
+    });
+  }
   prompt();
   input.onLine((raw) => {
     activeRenderer?.invalidateAnchor();
@@ -189,26 +267,38 @@ export async function startREPL(options: REPLOptions): Promise<void> {
       return;
     }
     const operation = (async () => {
-      const handled = await dispatcher.dispatch(raw, context);
+      const cmdMatch = raw.trimStart().match(/^\/(\S+)/);
+      const cmdDef = cmdMatch?.[1] ? dispatcher.getDefinition(cmdMatch[1]) : undefined;
+      const needsInteractiveLock = Boolean(
+        input.interactive && cmdDef?.interactionLevel && cmdDef.interactionLevel !== 'none',
+      );
+      const handled = needsInteractiveLock
+        ? await input.withCommandSession(() => dispatcher.dispatch(raw, context))
+        : await dispatcher.dispatch(raw, context);
       if (handled) return;
       if (busy()) {
         console.log('会话忙，请等待执行与清理完成；只读命令仍可查询。');
         return;
       }
-      const references = quoteDraft.take();
+      const references = quoteDraft.list();
       if (references.length) {
-        // 引用在运行锁内读取与校验；失败由 runTask 统一报告，草稿按「已发送」清空。
-        const projectRoot = session().workspaceRoot;
+        // 引用统一基于主仓库 projectRoot 读取与校验；仅在校验解析全部通过后清空 quoteDraft，失败保留草稿供重试或删减。
+        const target = session();
+        const projectRoot =
+          context.projectRoot ??
+          options.controller?.manager.project.projectRoot ??
+          target.workspaceRoot;
         const home = context.homeDir;
         const host = { projectRoot, ...(home ? { homeDirectory: home } : {}) };
+        const prepareResolvedReferences = async () => {
+          const prepared = await prepareReferenceTask(references, host);
+          quoteDraft.clear();
+          return prepared;
+        };
         await runTask((signal) =>
           options.controller
-            ? options.controller.runPreparedTask(
-                raw.trim(),
-                () => prepareReferenceTask(references, host),
-                { signal },
-              )
-            : session().runPreparedTask(raw.trim(), () => prepareReferenceTask(references, host), {
+            ? options.controller.runPreparedTask(raw.trim(), prepareResolvedReferences, { signal })
+            : target.runPreparedTask(raw.trim(), prepareResolvedReferences, {
                 signal,
               }),
         );

@@ -1,0 +1,117 @@
+/* 017 §3.2 · 双主题代码高亮语法令牌（唯一允许定义代码色值处，与 tokens.css 同级受检）。
+ * 统一绑定 @streamdown/code 与工作台 Files / Diff 视图，并强制禁用注释斜体以保障中文清晰度。 */
+@layer shiki {
+  :root,
+  :root[data-mode="light"] {
+    --kpbl-code-fg: #262523;
+    --kpbl-code-keyword: #9e2a8b;
+    --kpbl-code-function: #235a9f;
+    --kpbl-code-string: #156e43;
+    --kpbl-code-type: #9a5612;
+    --kpbl-code-number: #1e6b7b;
+    --kpbl-code-comment: #7a776e;
+  }
+
+  :root[data-mode="dark"] {
+    --kpbl-code-fg: #e2e0da;
+    --kpbl-code-keyword: #d2a8ff;
+    --kpbl-code-function: #79c0ff;
+    --kpbl-code-string: #7ee787;
+    --kpbl-code-type: #ffa657;
+    --kpbl-code-number: #a5d6ff;
+    --kpbl-code-comment: #8b8982;
+  }
+
+  /* Shiki CSS-variables 主题桥接：任意接入 createCssVariablesTheme() 的代码块自动继承双主题高对比度色阶。 */
+  :root {
+    --shiki-foreground: var(--kpbl-code-fg);
+    --shiki-color-text: var(--kpbl-code-fg);
+    --shiki-background: transparent;
+    --shiki-color-background: transparent;
+    --shiki-token-keyword: var(--kpbl-code-keyword);
+    --shiki-token-function: var(--kpbl-code-function);
+    --shiki-token-string: var(--kpbl-code-string);
+    --shiki-token-string-expression: var(--kpbl-code-string);
+    --shiki-token-parameter: var(--kpbl-code-type);
+    --shiki-token-constant: var(--kpbl-code-number);
+    --shiki-token-comment: var(--kpbl-code-comment);
+    --shiki-token-punctuation: var(--kpbl-code-fg);
+    --shiki-token-link: var(--kpbl-code-function);
+  }
+
+  /* 根治深色模式下默认标识符与深色底同色缺陷，并全局禁用代码注释斜体。 */
+  [data-streamdown="code-block-body"] pre,
+  [data-streamdown="raw-code-block"],
+  .shiki,
+  .kpbl-code-surface {
+    margin: 0;
+    background-color: transparent;
+    color: var(--kpbl-code-fg);
+    font-family: var(--kpbl-font-mono);
+    font-size: var(--kpbl-text-code, var(--kpbl-text-md));
+    font-variant-ligatures: none;
+    line-height: 1.6;
+  }
+
+  :root[data-code-ligatures="true"] [data-streamdown="code-block-body"] pre,
+  :root[data-code-ligatures="true"] [data-streamdown="raw-code-block"],
+  :root[data-code-ligatures="true"] .shiki,
+  :root[data-code-ligatures="true"] .kpbl-code-surface,
+  :root[data-code-ligatures="true"] .kpbl-code-content,
+  :root[data-code-ligatures="true"] .kpbl-diff-code {
+    font-variant-ligatures: contextual common-ligatures;
+  }
+
+  [data-streamdown="code-block-body"] span,
+  .shiki span,
+  .kpbl-code-surface span {
+    font-style: normal;
+  }
+
+  /* 当系统浅色但应用处于 data-mode="dark" 时，强制消费 Shiki 深色变量或高对比度默认前景色。 */
+  :root[data-mode="dark"] [data-streamdown="code-block-body"] span[style*="--shiki-dark"],
+  :root[data-mode="dark"] .shiki span[style*="--shiki-dark"] {
+    color: var(--shiki-dark, var(--kpbl-code-fg));
+  }
+
+  /* 代码行号固定次弱墨色与等宽数字。 */
+  [data-streamdown="code-block-body"] code > span::before,
+  .kpbl-code-line-number {
+    color: var(--kpbl-ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 工作台 Files / Diff 轻量分词与变更行语义类。 */
+  .kpbl-tok-fg {
+    color: var(--kpbl-code-fg);
+  }
+  .kpbl-tok-keyword {
+    color: var(--kpbl-code-keyword);
+  }
+  .kpbl-tok-function {
+    color: var(--kpbl-code-function);
+  }
+  .kpbl-tok-string {
+    color: var(--kpbl-code-string);
+  }
+  .kpbl-tok-type {
+    color: var(--kpbl-code-type);
+  }
+  .kpbl-tok-number {
+    color: var(--kpbl-code-number);
+  }
+  .kpbl-tok-comment {
+    color: var(--kpbl-code-comment);
+    font-style: normal;
+  }
+
+  .kpbl-diff-add {
+    background-color: var(--kpbl-status-success-soft);
+    color: var(--kpbl-status-success);
+  }
+
+  .kpbl-diff-del {
+    background-color: var(--kpbl-status-danger-soft);
+    color: var(--kpbl-status-danger);
+  }
+}

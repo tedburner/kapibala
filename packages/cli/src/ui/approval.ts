@@ -42,6 +42,9 @@ export async function askWithReadline(
 ): Promise<ApprovalChoice> {
   if (!interactive) return 'deny_once';
   if (signal?.aborted) return 'cancel';
+  const originPrefix = request.subagentOrigin
+    ? `[子代理: ${escapeApprovalText(request.subagentOrigin.description)}] `
+    : '';
   const target = request.shell
     ? `\n解释器: ${escapeApprovalText(request.shell.executablePath ?? request.shell.interpreter)}\n工作目录: ${escapeApprovalText(request.shell.cwd)}\n完整命令: ${escapeApprovalText(request.shell.command)}`
     : `\n工具: ${escapeApprovalText(request.toolName)}\n参数: ${escapeApprovalText(JSON.stringify(request.input))}`;
@@ -55,7 +58,7 @@ export async function askWithReadline(
       resolve(value);
     };
     signal?.addEventListener('abort', onAbort, { once: true });
-    rl.question(`\n工具审批 ${target}\n${choices}\n选择: `, { signal }, finish);
+    rl.question(`\n${originPrefix}工具审批 ${target}\n${choices}\n选择: `, { signal }, finish);
   });
   if (signal?.aborted || answer === 'cancel') return 'cancel';
   if (answer.trim() === '1') return 'allow_once';

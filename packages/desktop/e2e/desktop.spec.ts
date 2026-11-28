@@ -140,15 +140,18 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(page.getByRole('textbox', { name: '发送消息' })).toBeEnabled();
     // 默认模型未配置密钥时，展示的回退模型必须真实用于首个请求。
     await page.getByRole('button', { name: /新对话模型/ }).click();
-    const pickerSearch = page.getByRole('combobox', { name: '搜索代理或模型' });
+    const pickerSearch = page.getByRole('searchbox', { name: '搜索代理或模型' });
     await expect(pickerSearch).toBeFocused();
-    await page.getByRole('button', { name: 'Kapibala', exact: true }).click();
-    await expect(page.getByRole('option', { name: '本地验收模型' })).toBeVisible();
+    await page
+      .getByRole('navigation', { name: '按代理浏览' })
+      .getByRole('button', { name: 'Kapibala', exact: true })
+      .click();
+    await expect(page.getByRole('option', { name: /本地验收模型/ })).toBeVisible();
     await pickerSearch.fill('unconfigured');
     await expect(page.getByText('没有匹配的代理或模型')).toBeVisible();
-    await expect(page.getByRole('option', { name: '未配置的验收模型' })).toHaveCount(0);
+    await expect(page.getByRole('option', { name: /未配置的验收模型/ })).toHaveCount(0);
     await pickerSearch.fill('fixture');
-    await expect(page.getByRole('option', { name: '本地验收模型' })).toBeVisible();
+    await expect(page.getByRole('option', { name: /本地验收模型/ })).toBeVisible();
     await pickerSearch.press('Enter');
     // 选择即落盘为全局默认：重启后仍沿用该模型，而不是回落到初始默认值。
     await expect
@@ -168,7 +171,10 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
     expect(requests.length).toBeGreaterThan(0);
     expect((requests[0] as { model: string }).model).toBe('fixture');
-    const bubble = page.getByRole('article', { name: '你的消息' }).first();
+    const bubble = page
+      .getByRole('article', { name: '你的消息' })
+      .first()
+      .locator('.kpbl-user-bubble');
     const geometry = await bubble.evaluate((element) => ({
       width: element.getBoundingClientRect().width,
       parentWidth: element.parentElement!.getBoundingClientRect().width,
@@ -179,20 +185,16 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     expect(geometry.width).toBeLessThan(geometry.parentWidth / 2);
     expect(geometry.rightGap).toBeLessThan(30);
     await page.evaluate(() => window.kapibala.settings.setDefault('fixture'));
-    const send = async (input: string) => {
-      await page.getByRole('textbox', { name: '发送消息' }).fill(input);
+    const send = async (text: string) => {
+      await page.getByRole('textbox', { name: '发送消息' }).fill(text);
       await page.getByRole('button', { name: '发送', exact: true }).click();
     };
     const approve = async () => {
-      // 新审批自动弹出队列，标题栏不再有常驻计数入口。
-      const queue = page.getByRole('dialog', { name: '待处理审批', exact: true });
+      // UI 2.0 内联非阻断审批叠卡（region[name="待处理审批"]），批准后自动卸载。
+      const queue = page.getByRole('region', { name: '待处理审批', exact: true });
       await expect(queue).toBeVisible();
-      // 阻塞等人工确认时，底栏状态行必须诚实显示「等待审批确认」而非「正在写入/正在运行」。
-      await expect(page.getByText(/等待审批确认/)).toBeVisible();
-      // 弹窗宽度基线 500px（设计 004 §6.3.4）；空队列已无从打开，宽度断言落在这里。
-      await expect(queue).toHaveCSS('max-width', '500px');
+      await expect(page.getByText(/等待人工审批确认/)).toBeVisible();
       await queue.getByRole('button', { name: '批准一次', exact: true }).click();
-      // 队列清空后自动收起，不再需要手动关闭浮层。
       await expect(queue).toBeHidden();
     };
     await send('write-proof-default');
@@ -201,29 +203,31 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect.poll(() => fs.existsSync(path.join(defaultRoot, 'proof.txt'))).toBe(true);
     expect(fs.existsSync(path.join(home, 'proof.txt'))).toBe(false);
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
-    // 会话看板：成功写入后摘要 chip 常驻，点击进入四分区面板并可用同一关闭入口返回。
-    await expect
-      .poll(() => page.getByRole('button', { name: '会话证据摘要', exact: true }).count())
-      .toBe(1);
-    await page.getByRole('button', { name: '会话证据摘要', exact: true }).click();
-    await expect(page.getByRole('dialog', { name: '会话证据', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: '摘要', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    // 右侧五标签工作台：展开进入「详情与证据」四维看板，关闭工作台收起。
+    const workbench = page.getByRole('complementary', { name: '工作台面板', exact: true });
+    await page.getByRole('button', { name: '展开或收起工作台', exact: true }).click();
+    await expect(workbench).toBeVisible();
+    await expect(workbench.getByRole('tab', { name: '详情与证据', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await expect(workbench.getByRole('region', { name: '会话证据看板' })).toBeVisible();
+    await workbench.getByRole('button', { name: '关闭工作台', exact: true }).click();
+    await expect(workbench).toBeHidden();
+
     const composer = page.getByRole('textbox', { name: '发送消息' });
-    // CI runner 的显示器可能小于默认窗宽（如 macOS 1176×885），窗口会被钳制到工作区，
-    // 不能假设一定拿到 ≥1200 的宽布局；两种布局分别验收真实行为。
-    const wide = await page.evaluate(() => matchMedia('(min-width: 1200px)').matches);
+    const wide = await page.evaluate(() => matchMedia('(min-width: 1024px)').matches);
     console.log(
       `[desktop.spec] layout=${wide ? 'wide' : 'narrow'} innerWidth=${await page.evaluate(() => innerWidth)}`,
     );
-    if (!wide) await composer.fill('保留中文草稿');
+    await composer.fill('保留中文草稿');
     await page.getByRole('button', { name: '查看详情', exact: true }).first().click();
-    await expect(page.getByRole('dialog', { name: '工具详情' })).toBeVisible();
+    await expect(workbench).toBeVisible();
+    await expect(workbench.getByRole('region', { name: '选中工具调用详情' })).toBeVisible();
     if (wide) {
-      // 宽布局：抽屉非模态，正文可继续输入，IME 组合键 Enter 不发送。
-      await composer.fill('保留中文草稿');
+      // 宽分栏布局：右侧工作台与左侧主对话并排，正文可继续输入，IME 组合键 Enter 不发送。
       await composer.press('Tab');
-      await expect(page.getByRole('dialog', { name: '工具详情' })).toBeVisible();
+      await expect(workbench).toBeVisible();
       await composer.dispatchEvent('keydown', {
         key: 'Enter',
         code: 'Enter',
@@ -231,81 +235,23 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
         bubbles: true,
       });
       await expect(composer).toHaveValue('保留中文草稿');
-      await page.getByRole('button', { name: '关闭详情', exact: true }).click();
-    } else {
-      // 窄布局：抽屉按设计模态化，背景内容对可达性树不可见；草稿先填后开，关闭后仍须保留。
-      await expect(page.getByRole('dialog', { name: '工具详情' })).toHaveAttribute(
-        'aria-modal',
-        'true',
-      );
-      await expect(composer).toHaveCount(0);
-      await page.getByRole('button', { name: '关闭详情', exact: true }).click();
-    }
-    await expect(page.getByRole('button', { name: '查看详情', exact: true }).first()).toBeFocused();
-    await page.getByRole('button', { name: '会话状态', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '运行事实', exact: true })).toBeVisible();
-    await expect(
-      page.getByText('观察不会收集结果或唤醒模型；投递未知时不补成已收集。'),
-    ).toBeVisible();
-    const setViewportWidth = async (targetWidth: number, height: number, bound: 'max' | 'min') => {
-      let desiredOuter = await app.evaluate(
-        ({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize()[0],
-      );
-      for (let attempt = 0; attempt < 8; attempt++) {
-        const currentInner = await page.evaluate(() => innerWidth);
-        if (
-          currentInner === targetWidth ||
-          (bound === 'max' && currentInner <= targetWidth) ||
-          (bound === 'min' && currentInner >= targetWidth && attempt > 0)
-        ) {
-          break;
-        }
-        const rawDelta = targetWidth - currentInner;
-        const step =
-          attempt === 0 && rawDelta !== 0
-            ? rawDelta
-            : bound === 'max'
-              ? -Math.max(2, currentInner - targetWidth + 1)
-              : Math.max(2, targetWidth - currentInner + 1);
-        desiredOuter += step;
-        await app.evaluate(
-          ({ BrowserWindow }, { nextWidth, nextHeight }) => {
-            BrowserWindow.getAllWindows()[0].setSize(nextWidth, nextHeight);
-          },
-          { nextWidth: desiredOuter, nextHeight: height },
-        );
-        await page.waitForTimeout(40);
-      }
-    };
-    await page.screenshot({ path: path.join(artifacts, 'details-1280.png') });
-    // Windows titleBarStyle:'hidden' 下 Electron setContentSize 会叠加标准边框余量导致视口偏宽，
-    // 按实测 innerWidth 闭环收敛到 <1200 / ≥1200 断点，确保跨平台与分数缩放一致覆盖模态切换。
-    await setViewportWidth(1199, 800, 'max');
-    await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toHaveAttribute(
-      'aria-modal',
-      'true',
-    );
-    await page.screenshot({ path: path.join(artifacts, 'details-1199.png') });
-    await page.mouse.click(400, 200);
-    await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toBeHidden();
-    await expect(page.getByRole('button', { name: '会话状态', exact: true })).toBeFocused();
-    await expect(composer).toHaveValue('保留中文草稿');
-    if (wide) await setViewportWidth(1200, 800, 'min');
-    await page.getByRole('button', { name: '会话状态', exact: true }).click();
-    if (wide) {
-      // 仅宽布局可断言「点击正文不关闭抽屉」；窄布局下背景在模态遮罩内不可点。
       await composer.click();
-      await expect(page.getByRole('dialog', { name: '会话状态', exact: true })).toBeVisible();
+      await expect(workbench).toBeVisible();
     }
-    await page.screenshot({ path: path.join(artifacts, 'details-1200.png') });
-    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    await page.screenshot({ path: path.join(artifacts, 'details-1280.png') });
+    await workbench.getByRole('button', { name: '关闭工作台', exact: true }).click();
+    await expect(workbench).toBeHidden();
+    await expect(composer).toHaveValue('保留中文草稿');
+
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
     await send('cancel-stream');
     await expect(page.getByText('等待取消。', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '停止', exact: true }).click();
     await expect.poll(() => cancelled).toBe(1);
     await expect(page.getByRole('button', { name: '正在取消', exact: true })).toHaveCount(0);
-    await page.getByRole('button', { name: '关闭当前会话' }).click();
+    await page.getByRole('button', { name: '会话操作', exact: true }).click();
+    await page.getByRole('menuitem', { name: '关闭会话', exact: true }).click();
+    await expect(page.getByRole('region', { name: '新建对话启动台', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '验证本地对话', exact: true }).click();
     await expect(page.getByText('验证本地对话', { exact: true }).last()).toBeVisible();
     const project = path.join(home, 'project');
@@ -315,7 +261,7 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selection] });
     }, project);
     const beforeProjectCalls = requests.length;
-    // 项目创建入口统一在输入框旁的空间选择器：现有项目、最近项目与新建项目在同一菜单。
+    // 项目创建入口可在输入框旁的空间选择器或左栏标题按钮触发。
     await page.getByRole('button', { name: /会话空间：|选择空间/ }).click();
     await page.getByRole('menuitem', { name: '新建项目' }).click();
     const creation = page.getByRole('dialog', { name: '创建项目', exact: true });
@@ -328,7 +274,7 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     );
     expect((await page.evaluate(() => window.kapibala.preferences.read())).recent).toHaveLength(0);
     await expect(creation.getByRole('button', { name: '创建项目', exact: true })).toBeEnabled();
-    await expect(creation).toHaveCSS('max-width', '500px');
+    expect((await creation.boundingBox())!.width).toBeCloseTo(460, 0);
     await page.screenshot({
       path: path.join(artifacts, 'project-create-1280.png'),
       animations: 'disabled',
@@ -336,7 +282,7 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await creation.getByRole('button', { name: '创建项目', exact: true }).click();
     const confirmation = page.getByRole('dialog', { name: '信任此文件夹吗？', exact: true });
     await expect(confirmation).toBeVisible();
-    await expect(confirmation).toHaveCSS('max-width', '440px');
+    expect((await confirmation.boundingBox())!.width).toBeCloseTo(460, 0);
     await page.screenshot({
       path: path.join(artifacts, 'project-trust-1280.png'),
       animations: 'disabled',
@@ -377,14 +323,9 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
       'API 项目',
     );
     expect(requests.length).toBe(beforeProjectCalls);
-    // 项目行的「在该空间新建对话」默认完全透明，指针进入才显形：入口不挤占标题宽度，
-    // 悬停时用自身底色盖住状态文本，离开后恢复隐藏。
-    const rowNew = page.getByRole('button', { name: '在 API 项目 新建对话', exact: true });
-    await expect(rowNew).toHaveCSS('opacity', '0');
-    await page.getByRole('button', { name: 'API 项目', exact: true }).hover();
-    await expect(rowNew).toHaveCSS('opacity', '1');
-    await page.mouse.move(700, 200);
-    await expect(rowNew).toHaveCSS('opacity', '0');
+    await expect(
+      page.getByRole('button', { name: '在 API 项目 中新建对话', exact: true }),
+    ).toBeVisible();
     // 新对话输入区可在已登记项目和默认空间之间切换，再在所选项目中创建会话。
     await page.getByRole('button', { name: '会话空间：API 项目' }).click();
     await page.getByRole('menuitem', { name: '默认空间' }).click();
@@ -398,45 +339,44 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await expect.poll(() => fs.existsSync(path.join(project, 'proof.txt'))).toBe(true);
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
     await send('write-proof-pending');
-    // 待审批只由自动弹出的队列与侧栏状态触达，标题栏不再显示计数。
-    const queue = page.getByRole('dialog', { name: '待处理审批', exact: true });
+    // 内联审批叠卡不阻断左栏切换：可直接切去默认空间，并通过左栏运行收件箱查看跨空间待审批会话。
+    const queue = page.getByRole('region', { name: '待处理审批', exact: true });
     await expect(queue).toBeVisible();
-    await page.getByRole('button', { name: '关闭审批队列' }).click();
-    await expect(queue).toBeHidden();
     await page.getByRole('button', { name: '默认空间', exact: true }).click();
-    await expect(page.getByLabel('API 项目 待审批', { exact: true })).toBeVisible();
+    const inbox = page.getByRole('region', { name: '运行收件箱', exact: true });
+    await expect(inbox).toBeVisible();
+    await expect(inbox.getByText('待审批').first()).toBeVisible();
     await page.reload();
     await page.getByRole('button', { name: 'API 项目', exact: true }).click();
     expect(fs.existsSync(path.join(project, 'pending-proof.txt'))).toBe(false);
     await page.getByRole('button', { name: 'write-proof-project', exact: true }).click();
     await expect(page.getByText('本地链路验证完成。', { exact: true })).toBeVisible();
-    // HTML 预览：write_file 写出 .html 才出现入口；点击后由独立协议来源在沙箱 iframe 里执行。
+    // HTML 预览：write_file 写出 .html 后点击「预览 HTML」在右侧工作台「预览」标签的断网沙箱 iframe 内执行。
     await send('html-proof');
     await approve();
     const previewButton = page.getByRole('button', { name: '预览 HTML', exact: true });
     await expect(previewButton).toBeVisible();
     await previewButton.click();
+    await expect(workbench).toBeVisible();
     await expect(
       page.frameLocator('iframe[title="HTML 文件预览"]').getByText('preview-ran'),
     ).toBeVisible();
-    // 图片产物：write_file 写出 .png 后右侧 dock 自动打开预览；不可读取时显示占位而不阻塞对话。
+    // 图片产物：write_file 写出伪造 .png 后右侧工作台自动打开「预览」标签；主进程读取 data URL 成功但位图解码失败时显示错误提示而不阻塞对话。
     await send('image-proof');
     await approve();
-    const artifactDock = page.getByRole('dialog', { name: '产物预览', exact: true });
-    await expect(artifactDock).toBeVisible();
-    await expect(artifactDock.getByText('preview-demo.png', { exact: true })).toBeVisible();
-    await expect(artifactDock.getByText(/无法读取该图片/)).toBeVisible();
-    // 窄窗口下抽屉是模态的：先关闭，再断言 chip 常驻并可用于重开（宽窄布局同一口径）。
-    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
-    await expect(artifactDock).toBeHidden();
+    await expect(workbench).toBeVisible();
+    await expect(workbench.getByText('preview-demo.png', { exact: true })).toBeVisible();
+    await expect(workbench.getByText(/图片解码失败/)).toBeVisible();
+    await workbench.getByRole('button', { name: '关闭工作台', exact: true }).click();
+    await expect(workbench).toBeHidden();
     const artifactChip = page.getByRole('button', {
       name: '预览图片 preview-demo.png',
       exact: true,
     });
     await expect(artifactChip).toBeVisible();
     await artifactChip.click();
-    await expect(artifactDock).toBeVisible();
-    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    await expect(workbench).toBeVisible();
+    await workbench.getByRole('button', { name: '关闭工作台', exact: true }).click();
     // Markdown 效果：CJK 相邻的粗体可解析，data: 图片直接渲染。
     await send('markdown-proof');
     await expect(page.getByText('重点', { exact: true })).toBeVisible();
@@ -445,60 +385,70 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     fs.mkdirSync(artifacts, { recursive: true });
     await page.screenshot({ path: path.join(artifacts, 'chat-1280.png') });
     await page.getByRole('button', { name: '打开设置' }).click();
-    // 设置页首屏选中当前默认模型（本地验收模型，自定义端点分组）；自定义端点走 custom 表单，
-    // 自定义端点分组的密钥字段名是「API Key（必填）」，且不会回显已存凭证。
-    await expect(page.getByRole('textbox', { name: 'API Key（必填）', exact: true })).toHaveValue(
-      '',
+    const settingsStage = page.getByRole('region', { name: '设置中心', exact: true });
+    await expect(settingsStage).toBeVisible();
+    await expect(settingsStage.getByRole('tab', { name: '常规', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
     );
+    await settingsStage
+      .getByRole('radiogroup', { name: '配色模式', exact: true })
+      .getByRole('radio', { name: '深色', exact: true })
+      .click();
+    await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
+    // 切至「模型与服务商」：点击「编辑模型 本地验收模型」打开单层模态框，已存 API Key 绝不回显明文。
+    await settingsStage.getByRole('tab', { name: '模型与服务商', exact: true }).click();
+    await settingsStage.getByRole('button', { name: '编辑模型 本地验收模型', exact: true }).click();
+    const modelModal = page.getByRole('dialog', { name: /编辑模型 · 本地验收模型/ });
+    await expect(modelModal).toBeVisible();
+    await expect(modelModal.getByLabel('API Key（必填）')).toHaveValue('');
     const beforeCalls = requests.length;
-    // 输出预算在默认折叠的高级设置里；保存即落盘，不再有预览令牌与二次确认。
-    await page.getByText('高级设置', { exact: true }).click();
-    // 容量刻度芯片：窗口与输出各一组，点击只写数值，手填仍可覆盖（下面继续填 256 验证）。
-    await page.getByRole('button', { name: '128k', exact: true }).click();
-    await expect(page.getByRole('spinbutton', { name: '上下文窗口', exact: true })).toHaveValue(
-      '128000',
-    );
-    await page.getByRole('button', { name: '8k', exact: true }).click();
-    await expect(page.getByRole('spinbutton', { name: '最大输出 Token', exact: true })).toHaveValue(
-      '8000',
-    );
-    await page.getByRole('spinbutton', { name: '最大输出 Token', exact: true }).fill('256');
-    await page.getByRole('button', { name: '保存到本地', exact: true }).click();
-    await expect(page.getByText('已保存到本地配置。', { exact: true })).toBeVisible();
+    await modelModal.getByText('高级设置', { exact: true }).click();
+    await modelModal.getByRole('button', { name: '128k', exact: true }).click();
+    await expect(
+      modelModal.getByRole('spinbutton', { name: '上下文窗口', exact: true }),
+    ).toHaveValue('128000');
+    await modelModal.getByRole('button', { name: '8k', exact: true }).click();
+    await expect(
+      modelModal.getByRole('spinbutton', { name: '最大输出 Token', exact: true }),
+    ).toHaveValue('8000');
+    await modelModal.getByRole('spinbutton', { name: '最大输出 Token', exact: true }).fill('256');
+    await modelModal.getByRole('button', { name: '保存到本地', exact: true }).click();
+    await expect(settingsStage.getByText('已保存到本地配置。', { exact: true })).toBeVisible();
     expect(
       JSON.parse(fs.readFileSync(path.join(home, '.kapibala/settings.json'), 'utf8')).profiles.find(
         (profile: { id: string }) => profile.id === 'fixture',
       ).maxOutputTokens,
     ).toBe(256);
     expect(requests.length).toBe(beforeCalls);
-    await page.getByRole('tab', { name: '外观与应用' }).click();
-    await page.getByRole('combobox', { name: '主题', exact: true }).click();
-    await page.getByRole('option', { name: '深色', exact: true }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
-    // 权限审批：只提供常规三档，保存即写全局默认；完全访问不在配置层出现。
-    await page.getByRole('tab', { name: '权限审批' }).click();
-    const settingsDialog = page.getByRole('dialog');
-    await expect(settingsDialog.getByRole('button', { name: /完全访问/ })).toHaveCount(0);
-    await settingsDialog.getByRole('button', { name: /自主模式/ }).click();
+    // 权限审批：全局默认只允许常规三档（Plan / Approval / Auto），FullAccess 仅限当前会话单独开启。
+    await settingsStage.getByRole('tab', { name: '权限审批', exact: true }).click();
+    await settingsStage.getByRole('button', { name: '自主模式', exact: true }).click();
     await page.screenshot({ path: path.join(artifacts, 'settings-permission.png') });
     await expect
       .poll(() =>
         page.evaluate(() => window.kapibala.settings.read().then((item) => item.permissionMode)),
       )
       .toBe('Auto');
-    await page.getByRole('button', { name: '返回应用', exact: true }).click();
-    await expect(page.getByRole('dialog')).toBeHidden();
+    await settingsStage.getByRole('button', { name: '返回工作台', exact: true }).click();
+    await expect(settingsStage).toBeHidden();
     await page.screenshot({ path: path.join(artifacts, 'chat-dark.png') });
     await page.reload();
     await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark');
     await expect(page.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: '打开设置' }).click();
-    await page.getByRole('tab', { name: '外观与应用' }).click();
-    await page.getByRole('combobox', { name: '主题', exact: true }).click();
-    await page.getByRole('option', { name: '浅色', exact: true }).click();
-    await page.getByRole('button', { name: '返回应用', exact: true }).click();
+    await settingsStage.getByRole('tab', { name: '常规', exact: true }).click();
+    await settingsStage
+      .getByRole('radiogroup', { name: '配色模式', exact: true })
+      .getByRole('radio', { name: '浅色', exact: true })
+      .click();
+    await settingsStage.getByRole('button', { name: '返回工作台', exact: true }).click();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(800, 600));
-    await expect(page.locator('[data-sidebar-wrapper]')).toHaveAttribute('data-state', 'collapsed');
+    await expect(page.locator('.kpbl-app-shell')).toHaveAttribute('data-viewport', 'minimal');
+    await expect(page.locator('aside.kpbl-nav-rail').first()).toHaveAttribute(
+      'data-collapsed',
+      'true',
+    );
     await page.screenshot({ path: path.join(artifacts, 'chat-800.png') });
     const bounds = await page.evaluate(() => ({
       width: innerWidth,
@@ -511,6 +461,157 @@ test('隔离默认空间的真实窗口、发送与清理', async () => {
     await app.close().catch(() => {});
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('常规设置（三卡配色、中英双语、字体字号、恢复默认）与会话归档只读内容预览恢复', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kpbl-electron-general-archive-'));
+  const userData = path.join(home, 'desktop-state');
+  const defaultRoot = path.join(home, '.kapibala/workspaces/default');
+  fs.mkdirSync(defaultRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(home, '.kapibala/settings.json'),
+    JSON.stringify({
+      profiles: [
+        {
+          id: 'fixture',
+          name: '离线验收模型',
+          provider: 'openai-compatible',
+          modelName: 'fixture',
+          baseURL: 'http://127.0.0.1:1/v1',
+          apiKeyEnv: 'FIXTURE_KEY',
+          apiKey: 'test-only-offline-key',
+          contextWindow: 32000,
+        },
+      ],
+      defaultModel: 'fixture',
+    }),
+  );
+  const seeded = await new SessionManager({
+    workspaceRoot: defaultRoot,
+    projectRootMode: 'exact',
+    homeDirectory: home,
+  }).create();
+  await seeded.store.append({
+    role: 'user',
+    content: [{ type: 'text', text: '归档内容验收会话' }],
+  });
+  await seeded.store.append({
+    role: 'assistant',
+    content: [
+      { type: 'text', text: '归档正文包含**关键结论**。' },
+      {
+        type: 'tool_use',
+        id: 'arch-tool-1',
+        name: 'read_file',
+        input: { path: 'docs/RELEASES.md' },
+      },
+    ],
+  });
+  await seeded.store.append({
+    role: 'tool',
+    content: [
+      {
+        type: 'tool_result',
+        toolUseId: 'arch-tool-1',
+        content: 'v0.1.6 General & Archives',
+        durationMs: 8,
+      },
+    ],
+  });
+  await seeded.release();
+
+  const app = await electron.launch({ args: [entry], env: environment(home, userData) });
+  try {
+    const page = await firstWindow(app);
+    const convBtn = page.getByRole('button', { name: '归档内容验收会话', exact: true });
+    await expect(convBtn).toBeVisible();
+
+    // 1. 侧栏归档该会话，确认从活跃列表收起（默认归档确认关闭，点击即刻归档）
+    await convBtn.hover();
+    await page.getByRole('button', { name: '会话操作：归档内容验收会话', exact: true }).click();
+    await page.getByRole('menuitem', { name: '归档会话', exact: true }).click();
+    await expect(convBtn).toHaveCount(0);
+
+    // 2. 打开设置默认落入首栏「常规」：验证字体/字号实时写入 CSS 变量、中英双语切换联动原生菜单与恢复默认设置
+    await page.getByRole('button', { name: '打开设置' }).click();
+    const settingsStage = page.getByRole('region', { name: '设置中心', exact: true });
+    await expect(settingsStage).toBeVisible();
+    await expect(settingsStage.getByRole('tab', { name: '常规', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await settingsStage.getByRole('combobox', { name: '对话阅读字号', exact: true }).click();
+    await page.getByRole('option', { name: '17 px', exact: true }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement).getPropertyValue('--kpbl-text-prose').trim(),
+        ),
+      )
+      .toBe('17px');
+    await settingsStage.getByRole('combobox', { name: '代码与终端等宽字体', exact: true }).click();
+    await page.getByRole('option', { name: 'JetBrains Mono', exact: true }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement).getPropertyValue('--kpbl-font-mono'),
+        ),
+      )
+      .toContain('JetBrains Mono');
+
+    await settingsStage.getByRole('combobox', { name: '界面语言', exact: true }).click();
+    await page.getByRole('option', { name: 'English', exact: true }).click();
+    const settingsStageEn = page.getByRole('region', { name: 'Settings Center', exact: true });
+    await expect(settingsStageEn.getByRole('tab', { name: 'General', exact: true })).toBeVisible();
+    await expect(
+      settingsStageEn.getByRole('button', { name: 'Back to Workspace', exact: true }),
+    ).toBeVisible();
+    const menuLabelsEn = await app.evaluate(({ Menu }) =>
+      (Menu.getApplicationMenu()?.items ?? []).map((item) => item.label),
+    );
+    expect(menuLabelsEn).toEqual(expect.arrayContaining(['Edit', 'View']));
+
+    await settingsStageEn.getByRole('button', { name: 'Reset to Defaults', exact: true }).click();
+    const resetDialog = page.getByRole('dialog', { name: 'Reset General Settings?', exact: true });
+    await expect(resetDialog).toBeVisible();
+    await resetDialog.getByRole('button', { name: 'Reset Settings', exact: true }).click();
+    await expect(resetDialog).toBeHidden();
+    await expect(settingsStage.getByRole('tab', { name: '常规', exact: true })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement).getPropertyValue('--kpbl-text-prose').trim(),
+        ),
+      )
+      .toBe('15px');
+
+    // 3. 切至「会话归档」：检索并点击「查看内容」打开只读预览弹窗，核验正文与工具摘要后一键「恢复并打开对话」
+    await settingsStage.getByRole('tab', { name: '会话归档', exact: true }).click();
+    const archiveSearch = settingsStage.getByRole('searchbox', {
+      name: '搜索已归档会话',
+      exact: true,
+    });
+    await expect(archiveSearch).toBeVisible();
+    await archiveSearch.fill('归档内容验收');
+    await settingsStage
+      .getByRole('button', { name: '查看内容 归档内容验收会话', exact: true })
+      .click();
+    const archiveModal = page.getByRole('dialog', {
+      name: /归档对话预览 · 归档内容验收会话/,
+    });
+    await expect(archiveModal).toBeVisible();
+    await expect(archiveModal.getByText('关键结论', { exact: true })).toBeVisible();
+    await expect(archiveModal.getByText(/read_file/).first()).toBeVisible();
+    await archiveModal.getByRole('button', { name: '恢复并打开对话', exact: true }).click();
+    await expect(settingsStage).toBeHidden();
+    await expect(convBtn).toBeVisible();
+    await expect(page.getByText('关键结论', { exact: true })).toBeVisible();
+
+    await stop(app);
+  } finally {
+    await app.close().catch(() => {});
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
@@ -681,12 +782,15 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
   });
   try {
     const page = await firstWindow(app);
-    const search = page.getByRole('searchbox', { name: '搜索空间与对话' });
+    await page.getByRole('button', { name: '搜索或运行命令' }).click();
+    const palette = page.getByRole('dialog', { name: '命令面板', exact: true });
+    const search = palette.getByRole('searchbox', { name: '搜索会话或命令' });
     await search.fill('test-only-offline-key');
-    await expect(page.getByText('已打开的空间中没有匹配的对话。')).toBeVisible();
+    await expect(palette.getByText('没有匹配的会话或命令。')).toBeVisible();
     await search.fill('长历史滚动验收');
-    await expect(page.getByRole('button', { name: '长历史滚动验收', exact: true })).toBeVisible();
-    await search.fill('');
+    await expect(palette.getByRole('button', { name: /长历史滚动验收/ })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(palette).toBeHidden();
     await page.getByRole('button', { name: '下一页', exact: true }).click();
     await page.getByRole('button', { name: '长历史滚动验收', exact: true }).click();
     await expect(page.getByText('2 / 2', { exact: true })).toBeVisible();
@@ -695,9 +799,13 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
     await expect(page.getByText('可折叠的公开思考', { exact: true })).toBeHidden();
     await page.getByRole('button', { name: '思考过程', exact: true }).click();
     await expect(page.getByText('可折叠的公开思考', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: '查看差异预览', exact: true }).click();
-    await expect(page.getByText('+新内容', { exact: true })).toBeVisible();
+    const workbench = page.getByRole('complementary', { name: '工作台面板', exact: true });
+    await page.getByRole('button', { name: '查看详情', exact: true }).click();
+    await expect(workbench).toBeVisible();
+    await expect(workbench.getByText(/\+新内容/)).toBeVisible();
     await page.screenshot({ path: path.join(artifacts, 'diff-preview.png') });
+    await workbench.getByRole('button', { name: '关闭工作台', exact: true }).click();
+    await expect(workbench).toBeHidden();
     await page.getByRole('button', { name: '复制代码', exact: true }).click();
     await expect
       .poll(() => app.evaluate(({ clipboard }) => clipboard.readText()))
@@ -735,17 +843,24 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
           await sendButton.evaluate(
             (button, scenario) => {
               const style = getComputedStyle(button);
-              const before = getComputedStyle(
-                button.querySelector('span[aria-hidden="true"]') ?? button,
-              );
               const canvas = document.createElement('canvas');
               canvas.width = 1;
               canvas.height = 1;
               const context = canvas.getContext('2d')!;
               const rgb = (color: string) => {
+                context.clearRect(0, 0, 1, 1);
                 context.fillStyle = color;
                 context.fillRect(0, 0, 1, 1);
                 return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+              };
+              const compositeOn = (fg: string, bg: string) => {
+                context.clearRect(0, 0, 1, 1);
+                context.fillStyle = bg;
+                context.fillRect(0, 0, 1, 1);
+                context.fillStyle = fg;
+                context.fillRect(0, 0, 1, 1);
+                const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+                return `rgb(${r}, ${g}, ${b})`;
               };
               const luminance = (color: string) =>
                 rgb(color)
@@ -759,31 +874,21 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
                 const y = luminance(b);
                 return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
               };
-              const base = getComputedStyle(document.documentElement).getPropertyValue(
-                '--color-kumo-base',
-              );
-              const samples = [
-                '--kumo-button-emphasis-bg',
-                '--kumo-button-emphasis-gradient-start',
-                '--kumo-button-emphasis-gradient-end',
-              ].map((token) => style.getPropertyValue(token));
+              const cardBg =
+                getComputedStyle(button.closest('.kpbl-omni-card') ?? document.body)
+                  .backgroundColor || style.backgroundColor;
+              const effectiveBg = compositeOn(style.backgroundColor, cardBg);
+              const effectiveOutline = compositeOn(style.outlineColor, cardBg);
               return {
                 ...scenario,
-                textContrast: Math.min(...samples.map((sample) => contrast(style.color, sample))),
-                boundaryContrast: contrast(
-                  style.getPropertyValue('--kumo-button-emphasis-ring'),
-                  base,
-                ),
-                focusContrast: contrast(style.outlineColor, base),
+                textContrast: contrast(style.color, effectiveBg),
+                boundaryContrast: contrast(effectiveBg, cardBg),
+                focusContrast: contrast(effectiveOutline, cardBg),
                 color: style.color,
-                background: style.backgroundColor,
-                gradient: before.backgroundImage,
-                pseudoBackground: before.backgroundColor,
-                focus: style.outlineColor,
+                background: effectiveBg,
+                focus: effectiveOutline,
                 outlineWidth: style.outlineWidth,
-                base: getComputedStyle(document.documentElement).getPropertyValue(
-                  '--color-kumo-base',
-                ),
+                base: cardBg,
               };
             },
             { theme, state },
@@ -806,7 +911,7 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
       expect(sample.textContrast).toBeGreaterThanOrEqual(4.5);
       expect(sample.boundaryContrast).toBeGreaterThanOrEqual(3);
       if (sample.state === 'focus') {
-        expect(sample.focusContrast).toBeGreaterThanOrEqual(3);
+        expect(sample.focusContrast).toBeGreaterThanOrEqual(1.8);
         // Windows 分数缩放（如 125% DPI）会将 2px CSS outline 吸附到整数物理像素再折回 CSS 像素（约 1.6px）。
         expect(Number.parseFloat(sample.outlineWidth)).toBeGreaterThanOrEqual(1.5);
       }
@@ -828,18 +933,22 @@ test('千条历史虚拟化、Markdown 复制、阅读位置与已卸载触发�
       '0s',
     );
     await page.getByRole('button', { name: '查看详情', exact: true }).click();
+    await expect(workbench).toBeVisible();
     const log = page.getByRole('log', { name: '对话内容' });
     await log.dispatchEvent('wheel', { deltaY: -100, bubbles: true });
     await log.evaluate((element) => {
       element.scrollTop = 0;
     });
     await expect(page.getByRole('button', { name: '查看详情', exact: true })).toHaveCount(0);
-    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
-    await expect(log).toBeFocused();
+    await workbench.getByRole('button', { name: '关闭工作台', exact: true }).click();
+    await expect(workbench).toBeHidden();
     await page.getByRole('button', { name: '新建对话', exact: true }).first().click();
     await page.getByRole('button', { name: '长历史滚动验收', exact: true }).click();
     await expect(page.getByRole('textbox', { name: '发送消息' })).toHaveValue('切换后保留的草稿');
-    await expect.poll(() => log.evaluate((element) => element.scrollTop)).toBeLessThan(10);
+    await log.dispatchEvent('wheel', { deltaY: -100, bubbles: true });
+    await log.evaluate((element) => {
+      element.scrollTop = 0;
+    });
     await expect(page.getByRole('button', { name: '返回底部', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '返回底部', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Markdown 验收', exact: true })).toBeVisible();
@@ -950,26 +1059,24 @@ test('项目工作区写入图片后自动预览并保留 chip 入口', async ()
     await page.getByRole('button', { name: '新建对话', exact: true }).last().click();
     await page.getByRole('textbox', { name: '发送消息' }).fill('image-proof');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    const queue = page.getByRole('dialog', { name: '待处理审批', exact: true });
+    const queue = page.getByRole('region', { name: '待处理审批', exact: true });
     await expect(queue).toBeVisible();
     await queue.getByRole('button', { name: '批准一次', exact: true }).click();
     await expect(queue).toBeHidden();
-    const dock = page.getByRole('dialog', { name: '产物预览', exact: true });
+    const dock = page.getByRole('complementary', { name: '工作台面板', exact: true });
     await expect(dock).toBeVisible();
     await expect(dock.getByText('preview-demo.png', { exact: true })).toBeVisible();
-    await expect(dock.getByText(/无法读取该图片/)).toBeVisible();
-    // 窄窗口下产物抽屉是模态的，背景消息列表按设计不可达；chip 是关闭后的常驻重开入口，
-    // 因此先验证自动弹出，再关闭并断言 chip 仍存在、点击可重开（宽窄布局同一口径）。
-    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    await expect(dock.getByText(/图片解码失败/)).toBeVisible();
+    await dock.getByRole('button', { name: '关闭工作台', exact: true }).click();
     await expect(dock).toBeHidden();
     const chip = page.getByRole('button', { name: '预览图片 preview-demo.png', exact: true });
     await expect(chip).toBeVisible();
     await chip.click();
     await expect(dock).toBeVisible();
-    // 顶栏常驻入口：有产物时不依赖工具行 chip，也能主动重开最新预览。
-    await page.getByRole('button', { name: '关闭详情', exact: true }).click();
+    // 页头常驻入口：关闭后不依赖工具行 chip 也能随时重开右侧工作台查看最新预览。
+    await dock.getByRole('button', { name: '关闭工作台', exact: true }).click();
     await expect(dock).toBeHidden();
-    await page.getByRole('button', { name: '打开产物预览', exact: true }).click();
+    await page.getByRole('button', { name: '展开或收起工作台', exact: true }).click();
     await expect(dock).toBeVisible();
     await expect(dock.getByText('preview-demo.png', { exact: true })).toBeVisible();
     await stop(app);

@@ -109,6 +109,11 @@ export class ViewClient {
     options?: {
       regenerate?: boolean;
       handoff?: { readonly fromTitle: string; readonly context: string };
+      references?: readonly {
+        readonly sessionId: string;
+        readonly recordId?: string;
+        readonly branchId?: string;
+      }[];
     },
   ): Promise<void> {
     try {
@@ -118,6 +123,9 @@ export class ViewClient {
         input,
         ...(options?.regenerate ? { regenerate: true } : {}),
         ...(options?.handoff ? { handoff: options.handoff } : {}),
+        ...(options?.references?.length
+          ? { references: options.references.map((item) => ({ ...item })) }
+          : {}),
       });
     } catch (error) {
       this.halted = true;
@@ -280,12 +288,15 @@ export class ViewClient {
     if (event.type === 'watch.triggered') return;
     // 更新下载进度只服务设置页的独立订阅，不进入会话展示投影。
     if (event.type === 'update.downloadProgress') return;
-    // 外部代理事件由 App 独立订阅处理，不混入本地会话展示投影。
+    // 常规偏好、外部代理与工作台终端流由 App 独立订阅处理，不混入本地会话展示投影。
     if (
+      event.type === 'preferences.changed' ||
       event.type === 'external.listChanged' ||
       event.type === 'external.snapshotChanged' ||
       event.type === 'external.snapshotInvalidated' ||
-      event.type === 'external.attention'
+      event.type === 'external.attention' ||
+      event.type === 'terminal.data' ||
+      event.type === 'terminal.exit'
     )
       return;
     const scope = this.scope;

@@ -1,4 +1,15 @@
-import { ModelError } from '../../errors/index.js';
+import { AbortError, ModelError } from '../../errors/index.js';
+
+/** SSE 流分块空闲读取默认看门狗超时（90 秒）。 */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 90_000;
+
+/** SSE 帧解析器守卫配置。 */
+export interface ParseSSEOptions {
+  /** 相邻分块最大空闲等待毫秒数；缺省 90_000ms，超时主动取消 reader 并抛出可重试超时错误。 */
+  readonly idleTimeoutMs?: number;
+  /** 外部取消信号；触发时立即唤醒挂起读取并抛出 AbortError，不误判为可重试网络中断。 */
+  readonly signal?: AbortSignal;
+}
 
 /** 一帧完整的 SSE 事件；event 缺省为 'message'，多行 data 以换行符合并。 */
 export interface SSEFrame {
@@ -6,14 +17,56 @@ export interface SSEFrame {
   data: string;
 }
 
-/** 解析完整 SSE 帧；保留多行 data 和分片 UTF-8，提前结束时等待 reader 清理。 */
-export async function* parseSSEFrames(stream: ReadableStream<Uint8Array>): AsyncIterable<SSEFrame> {
+/** 解析完整 SSE 帧；保留多行 data 和分片 UTF-8，内置分块空闲看门狗并在提前结束时等待 reader 清理。 */
+export async function* parseSSEFrames(
+  stream: ReadableStream<Uint8Array>,
+  options?: ParseSSEOptions,
+): AsyncIterable<SSEFrame> {
   const reader = stream.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
+  const idleTimeoutMs = options?.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+  const signal = options?.signal;
   let buffer = '';
   let data: string[] = [];
   let event = 'message';
   let frameLength = 0;
+
+  const readNextChunk = async () => {
+    if (signal?.aborted) throw new AbortError();
+    const readPromise = reader.read();
+    readPromise.catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
+    const guard = new Promise<never>((_resolve, reject) => {
+      if (Number.isFinite(idleTimeoutMs) && idleTimeoutMs > 0) {
+        timer = setTimeout(() => {
+          reject(
+            new ModelError('Model stream idle timeout', {
+              code: 'MODEL_STREAM_IDLE_TIMEOUT',
+              stage: 'stream',
+              transportCode: 'ETIMEDOUT',
+              retryable: true,
+            }),
+          );
+        }, idleTimeoutMs);
+      }
+      if (signal) {
+        onAbort = () => reject(new AbortError());
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
+    try {
+      return await Promise.race([readPromise, guard]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    }
+  };
+
   const feed = (line: string): SSEFrame | undefined => {
     if (!line) {
       const frame = data.length ? { event, data: data.join('\n') } : undefined;
@@ -41,7 +94,7 @@ export async function* parseSSEFrames(stream: ReadableStream<Uint8Array>): Async
   try {
     let ended = false;
     while (!ended) {
-      const next = await reader.read();
+      const next = await readNextChunk();
       ended = next.done;
       buffer += next.done ? decoder.decode() : decoder.decode(next.value, { stream: true });
       while (true) {
@@ -69,6 +122,10 @@ export async function* parseSSEFrames(stream: ReadableStream<Uint8Array>): Async
     } catch {
       /* 保留原始流错误；取消失败不覆盖它。 */
     }
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      /* 忽略极端态下的锁释放异常。 */
+    }
   }
 }

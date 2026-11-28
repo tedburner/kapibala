@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AgentRuntime, AgentSession, type ModelProfile, SessionManager } from '@kiturone/kapibala';
-import { listDelegationSessions } from '@kiturone/kapibala-host/internal';
+import { MAX_RETAINED_DELEGATIONS, listDelegationSessions } from '@kiturone/kapibala-host/internal';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActiveSessionController } from '../src/active-session.js';
 import { delegateCommand, parseDelegateInput } from '../src/commands/delegate.js';
@@ -96,6 +96,44 @@ describe('v0.1.3 /delegate and /delegations', () => {
       name: '网络 故障 排查',
       model: 'custom-model',
     });
+    expect(parseDelegateInput('整理文档 --worktree=wt/docs')).toEqual({
+      task: '整理文档',
+      worktree: true,
+      branch: 'wt/docs',
+    });
+  });
+
+  it('在检查保留上限前先自动回收过期委派会话（D4.2）', async () => {
+    const expiredTs = Date.now() - 40 * 24 * 60 * 60 * 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(expiredTs);
+    for (let i = 0; i < MAX_RETAINED_DELEGATIONS; i++) {
+      const stale = await manager.create({
+        delegation: {
+          kind: 'delegation',
+          parentSessionId: 'old-parent',
+          taskName: `stale-${i}`,
+          createdAt: expiredTs,
+        },
+      });
+      await stale.store.append({
+        id: `m-${i}`,
+        role: 'user',
+        timestamp: expiredTs,
+        content: [{ type: 'text', text: 'expired' }],
+      });
+      await stale.release();
+    }
+    nowSpy.mockRestore();
+
+    const runtime = new AgentRuntime({
+      runner: async () => ({ summary: 'ok' }),
+    });
+    const ctx = await createContext(runtime);
+    logSpy.mockClear();
+
+    await delegateCommand(['新委派任务'], ctx);
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('已派发委派任务'));
+    await runtime.close();
   });
 
   it('/delegate 派发 detached 会话，/delegations 列表、详情与删除可用', async () => {

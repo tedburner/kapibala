@@ -36,6 +36,8 @@ export * from './extensibility/hooks/registry.js';
 export * from './extensibility/plugin/index.js';
 export * from './runtime/executor/index.js';
 export * from './models/index.js';
+export { parseRetryHeaders } from './models/transport/http.js';
+export { DEFAULT_STREAM_IDLE_TIMEOUT_MS, type ParseSSEOptions } from './models/transport/sse.js';
 export * from './models/openai-compatible/index.js';
 export * from './models/anthropic/index.js';
 export * from './models/openai-responses/index.js';

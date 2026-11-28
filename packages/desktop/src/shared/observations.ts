@@ -4,6 +4,59 @@ const phase = z.enum(['idle', 'running', 'cancelling', 'settling']);
 const result = z.enum(['completed', 'failed', 'aborted']);
 const label = z.string().max(1024);
 const diagnostic = z.object({ code: label, message: label }).strict();
+const themePreference = z.enum(['light', 'dark', 'system']);
+const localePreference = z.enum(['system', 'zh-CN', 'en']);
+const resolvedLocale = z.enum(['zh-CN', 'en']);
+const preferredShell = z.enum([
+  'auto',
+  'pwsh',
+  'powershell',
+  'cmd',
+  'git-bash',
+  'zsh',
+  'bash',
+  'fish',
+  'sh',
+]);
+
+/** 桌面常规、外观、排版与交互确认偏好的只读快照契约（不含项目完整物理根路径，仅保留父目录摘要）。 */
+export const DesktopPreferencesSchema = z
+  .object({
+    theme: themePreference,
+    mode: z.enum(['light', 'dark']),
+    locale: localePreference,
+    resolvedLocale,
+    typography: z
+      .object({
+        uiFontFamily: z.string().min(1).max(120),
+        codeFontFamily: z.string().min(1).max(120),
+        chatFontSize: z.number().int().min(13).max(18),
+        terminalFontSize: z.number().int().min(11).max(18),
+        codeLigatures: z.boolean(),
+      })
+      .strict(),
+    general: z
+      .object({
+        timeFormat: z.enum(['system', 'relative', '24h', '12h']),
+        sendShortcut: z.enum(['enter', 'mod-enter']),
+        codeWordWrap: z.boolean(),
+        desktopNotifications: z.boolean(),
+        preferredShell,
+      })
+      .strict(),
+    confirmations: z
+      .object({
+        deleteSession: z.boolean(),
+        archiveSession: z.boolean(),
+        closeActiveTerminal: z.boolean(),
+      })
+      .strict(),
+    recent: z.array(z.object({ id, name: z.string(), parent: z.string() }).strict()).max(20),
+  })
+  .strict();
+
+/** 主进程向渲染层同步的桌面偏好快照类型（`preferences.read` 返回值与 `preferences.changed` 通知共用）。 */
+export type DesktopPreferences = z.infer<typeof DesktopPreferencesSchema>;
 /** 后台摘要只含最多八个已打开句柄的执行事实，不携带正文、参数、凭证或观察内容。 */
 export const RuntimeSnapshotSchema = z
   .object({
@@ -65,6 +118,7 @@ export const InspectionSchema = z
             z
               .object({
                 agentId: label,
+                sessionId: label.optional(),
                 description: label,
                 role: label,
                 status: z.enum([

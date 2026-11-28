@@ -1,0 +1,110 @@
+/* 017 §3 · 宿主根隔离、全局排版基线、键盘焦点环、滚动条与减少动效总闸。 */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  #root {
+    isolation: isolate;
+  }
+
+  body {
+    font-family: var(--kpbl-font-sans);
+    font-size: var(--kpbl-text-base);
+    line-height: 1.45;
+    background-color: var(--kpbl-bg-surface);
+    color: var(--kpbl-ink-default);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  :where(
+      button,
+      [role="button"],
+      [role="switch"],
+      [role="radio"],
+      [role="tab"],
+      [role="menuitem"],
+      [role="option"],
+      [role="combobox"],
+      [role="separator"],
+      a,
+      summary,
+      input,
+      textarea,
+      select
+    ):focus-visible {
+    outline: 2px solid var(--kpbl-line-strong);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--kpbl-bg-active);
+    color: var(--kpbl-ink-strong);
+  }
+
+  /* 细滚动条：仅使用语义线条色，不抢占对话与代码视线。 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--kpbl-line-default) transparent;
+  }
+
+  /* 所有数值统计列强制等宽数字对齐（017 §3.3）。 */
+  .kpbl-tabular,
+  [data-tabular="true"] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 屏幕阅读器专用无障碍文本：视觉隐藏但完整保留在可访问树中。 */
+  .kpbl-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .kpbl-drag {
+    -webkit-app-region: drag;
+  }
+
+  .kpbl-no-drag,
+  .kpbl-drag button,
+  .kpbl-drag input,
+  .kpbl-drag [role="button"] {
+    -webkit-app-region: no-drag;
+  }
+
+  /* 全渲染层唯一允许使用 !important 的系统级无障碍总闸（017 §0 铁律 5 & §3.3）。 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0s !important;
+      transition-duration: 0s !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

@@ -36,6 +36,7 @@ export type {
   ViewMessage,
   ViewNotice,
   ViewOperation,
+  ViewRetryStatus,
   ViewTodoItem,
   ViewTodoState,
   ViewTodoStatus,
@@ -43,6 +44,13 @@ export type {
   ViewTurnMeta,
   ViewUsage,
 } from './types.js';
+export type {
+  ViewCheckpointItem,
+  ViewDiffSummary,
+  ViewFileDiff,
+  ViewMergePreview,
+  ViewWorktreeSummary,
+} from './workbench.js';
 export type {
   ViewExternalApproval,
   ViewExternalConfigCategory,

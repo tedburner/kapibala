@@ -7,10 +7,13 @@ import type { PrimaryModelRole } from '../../models/router.js';
 import type {
   CanonicalMessage,
   ModelRequest,
+  ModelRetryOptions,
   RequestPreparation,
   Usage,
 } from '../../types/index.js';
 import type { ToolExecutor } from '../executor/index.js';
+
+export type { ModelRetryOptions } from '../../types/index.js';
 
 /** 循环宿主配置；请求投影与在途预算只操作临时视图，历史仍按完整工具事务追加。 */
 export interface AgentLoopOptions {
@@ -43,4 +46,6 @@ export interface AgentLoopOptions {
   /** 每轮开始时读取；工具可见性与权限模式可随宿主状态变化。 */
   getMode?: () => SessionMode;
   permissionRules?: readonly PermissionRule[];
+  /** 单步模型请求自动退避重试与断流恢复策略；缺省允许最多 2 次退避重试。 */
+  retry?: ModelRetryOptions;
 }

@@ -81,6 +81,13 @@ function interruptPending(messages: readonly ViewMessage[]): readonly ViewMessag
   }));
 }
 
+/** 清除当前退避重试提示而不残留 `retryStatus: undefined` 自有键，保持快照序列化与严格 Schema 洁净。 */
+function clearRetryStatus(state: PresentationState): PresentationState {
+  if (state.retryStatus === undefined) return state;
+  const { retryStatus: _dropped, ...rest } = state;
+  return rest;
+}
+
 /**
  * 按原顺序应用公开语义事件；旧视图、重复序号或旧操作均原样拒绝。
  * 只更新受影响的临时消息，历史在提交边界才更新；不触发 I/O、计时器或框架通知。
@@ -98,14 +105,20 @@ export function reducePresentation(
   if (change.type === 'operation_started') {
     if (!event.operationId || (state.operation && state.operation.phase !== 'idle')) return state;
     return {
-      ...state,
+      ...clearRetryStatus(state),
       sequence: event.sequence,
       operation: { id: event.operationId, phase: 'running' },
     };
   }
+  const idleHostSync =
+    !event.operationId &&
+    (!state.operation || state.operation.phase === 'idle') &&
+    (change.type === 'history_replaced' || change.type === 'todos_changed');
   const viewOnly =
     change.type === 'set_expanded' ||
     change.type === 'diagnostic' ||
+    change.type === 'diff_summary_changed' ||
+    idleHostSync ||
     (change.type === 'message_committed' && !event.operationId && !change.provisionalId);
   if (viewOnly && event.operationId && state.operation && event.operationId !== state.operation.id)
     return state;
@@ -115,17 +128,17 @@ export function reducePresentation(
   switch (change.type) {
     case 'cancellation_requested':
       return state.operation?.phase === 'running'
-        ? { ...next, operation: { ...state.operation, phase: 'cancelling' } }
-        : next;
+        ? { ...clearRetryStatus(next), operation: { ...state.operation, phase: 'cancelling' } }
+        : clearRetryStatus(next);
     case 'operation_result':
       return {
-        ...next,
+        ...clearRetryStatus(next),
         operation: { id: state.operation!.id, phase: 'settling', result: change.result },
         pendingMessages: interruptPending(state.pendingMessages),
       };
     case 'operation_settled':
       return {
-        ...next,
+        ...clearRetryStatus(next),
         operation: {
           id: state.operation!.id,
           phase: 'idle',
@@ -160,7 +173,7 @@ export function reducePresentation(
         blocks,
       };
       return {
-        ...next,
+        ...clearRetryStatus(next),
         pendingMessages: existing
           ? state.pendingMessages.map((item) => (item.id === message.id ? message : item))
           : [...state.pendingMessages, message],
@@ -186,7 +199,7 @@ export function reducePresentation(
         blocks,
       };
       return {
-        ...next,
+        ...clearRetryStatus(next),
         pendingMessages: existing
           ? state.pendingMessages.map((item) => (item.id === message.id ? message : item))
           : [...state.pendingMessages, message],
@@ -239,7 +252,7 @@ export function reducePresentation(
       ];
       const indexed = new Map(messages.map((item) => [item.id, item]));
       return {
-        ...next,
+        ...clearRetryStatus(next),
         messages: order.flatMap((id) => {
           const item = indexed.get(id);
           return item ? [item] : [];
@@ -253,18 +266,42 @@ export function reducePresentation(
     case 'history_replaced':
       // 历史被截断重建：旧消息与半成品片段一律丢弃，按新投影重建顺序；若切到新分支则同步视图分支身份。
       return {
-        ...next,
+        ...clearRetryStatus(next),
         ...(change.branchId ? { identity: { ...state.identity, branchId: change.branchId } } : {}),
         messages: change.messages,
         order: change.messages.map((message) => message.id),
         pendingMessages: [],
       };
+    case 'stream_reset': {
+      if (state.operation?.phase !== 'running' && state.operation?.phase !== 'cancelling')
+        return state;
+      return {
+        ...clearRetryStatus(next),
+        pendingMessages: state.pendingMessages.filter((item) => item.id !== change.messageId),
+        order: state.order.filter((id) => id !== change.messageId),
+      };
+    }
+    case 'retry_status_changed': {
+      if (change.retryStatus === undefined) {
+        return clearRetryStatus(next);
+      }
+      if (state.operation?.phase !== 'running' && state.operation?.phase !== 'cancelling')
+        return state;
+      return { ...next, retryStatus: { ...change.retryStatus } };
+    }
     case 'todos_changed': {
       if (change.todos === undefined) {
         const { todos: _dropped, ...rest } = next;
         return rest;
       }
       return { ...next, todos: change.todos };
+    }
+    case 'diff_summary_changed': {
+      if (change.diffSummary === undefined) {
+        const { diffSummary: _dropped, ...rest } = next;
+        return rest;
+      }
+      return { ...next, diffSummary: { ...change.diffSummary } };
     }
     case 'set_expanded':
       return { ...next, expanded: { ...state.expanded, [change.blockId]: change.expanded } };

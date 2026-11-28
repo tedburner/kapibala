@@ -17,6 +17,11 @@ export class ConnectedPresentation {
   private current: PresentationState;
   private sequence = 0;
   private wireSequence = 0;
+  private stepSequence = 0;
+  /** 当前模型步正在流式生成的助手临时消息 ID；收到 `stream_reset` 时仅清空该消息而不误删已闭合工具块。 */
+  private activeAssistant: string | undefined;
+  /** 当前连续工具调用组消息 ID；与 `activeAssistant` 分离以隔离流中断重置边界。 */
+  private activeToolGroup: string | undefined;
   constructor(
     private readonly sessionId: string,
     private readonly instance: string,
@@ -43,20 +48,29 @@ export class ConnectedPresentation {
     });
   }
 
-  /** 工具块按 runId/toolId 定位；进度与终态不能另建重复条目。 */
-  private toolBlock(messageId: string, blockId: string): ViewBlock | undefined {
-    return this.current.pendingMessages
-      .find((message) => message.id === messageId)
-      ?.blocks.find((block) => block.id === blockId);
+  /** 工具块按 toolId 跨临时消息定位；进度与终态不能另建重复条目。 */
+  private findToolBlock(toolId: string): { messageId: string; block: ViewBlock } | undefined {
+    for (const message of this.current.pendingMessages) {
+      const block = message.blocks.find(
+        (item) => item.kind === 'tool' && item.tool?.callId === toolId,
+      );
+      if (block) return { messageId: message.id, block };
+    }
+    return undefined;
   }
 
   /** 工具事件只映射公开事实；原始参数与未脱敏结果已在宿主侧剔除。 */
   private applyTool(
     event: Extract<WireEvent, { type: 'tool_start' | 'tool_progress' | 'tool_finish' }>,
   ): void {
-    const messageId = event.runId ?? 'pending';
-    const blockId = `${messageId}:tool:${event.payload.toolId}`;
-    const existing = this.toolBlock(messageId, blockId);
+    this.activeAssistant = undefined;
+    const found = this.findToolBlock(event.payload.toolId);
+    if (!found && !this.activeToolGroup) {
+      this.activeToolGroup = `${event.runId ?? 'pending'}:tools:${++this.stepSequence}`;
+    }
+    const messageId = found?.messageId ?? (this.activeToolGroup as string);
+    const blockId = found?.block.id ?? `${messageId}:tool:${event.payload.toolId}`;
+    const existing = found?.block;
     const fallbackName =
       event.type === 'tool_finish' ? event.payload.toolId : event.payload.toolName;
     const tool = existing?.tool ?? {
@@ -107,25 +121,41 @@ export class ConnectedPresentation {
     )
       return;
     this.wireSequence = event.seq;
-    if (event.type === 'run_started') this.apply({ type: 'operation_started' }, event.runId);
-    else if (event.type === 'text_delta' || event.type === 'thinking_delta')
+    if (event.type === 'run_started') {
+      this.activeAssistant = undefined;
+      this.activeToolGroup = undefined;
+      this.apply({ type: 'operation_started' }, event.runId);
+    } else if (event.type === 'text_delta' || event.type === 'thinking_delta') {
+      this.activeToolGroup = undefined;
+      if (!this.activeAssistant) {
+        this.activeAssistant = `${event.runId ?? 'pending'}:assistant:${++this.stepSequence}`;
+      }
+      const messageId = this.activeAssistant;
       this.apply(
         {
           type: 'append',
-          messageId: event.runId ?? 'pending',
-          blockId: `${event.runId}:${event.type}`,
+          messageId,
+          blockId: `${messageId}:${event.type}`,
           kind: event.type === 'text_delta' ? 'text' : 'thinking',
           text: event.payload.text,
         },
         event.runId,
       );
-    else if (
+    } else if (
       event.type === 'tool_start' ||
       event.type === 'tool_progress' ||
       event.type === 'tool_finish'
     )
       this.applyTool(event);
-    else if (event.type === 'run_settled')
+    else if (event.type === 'stream_reset') {
+      const resetMessageId = this.activeAssistant ?? '__no_active_assistant__';
+      this.activeAssistant = undefined;
+      this.apply({ type: 'stream_reset', messageId: resetMessageId }, event.runId);
+    } else if (event.type === 'retry_scheduled')
+      this.apply({ type: 'retry_status_changed', retryStatus: event.payload }, event.runId);
+    else if (event.type === 'run_settled') {
+      this.activeAssistant = undefined;
+      this.activeToolGroup = undefined;
       this.apply(
         {
           type: 'operation_settled',
@@ -133,7 +163,7 @@ export class ConnectedPresentation {
         },
         event.runId,
       );
-    else if (event.type === 'diagnostic')
+    } else if (event.type === 'diagnostic')
       this.apply(
         { type: 'diagnostic', id: `${event.seq}`, text: event.payload.message, level: 'error' },
         event.runId,
@@ -142,6 +172,8 @@ export class ConnectedPresentation {
 
   /** 重建公开历史白名单；私有字段或未知块不会被搬到展示状态。 */
   restore(history: JsonValue[]): void {
+    this.activeAssistant = undefined;
+    this.activeToolGroup = undefined;
     const messages: ViewMessage[] = [];
     for (const raw of history) {
       if (

@@ -177,6 +177,8 @@ describe('PathSandbox (硬禁区)', () => {
   const blocked = [
     '.git/hooks/pre-commit',
     '.git/config',
+    '.git/config.worktree',
+    'nested/.git/config.worktree',
     '.git/modules/dep/config',
     '.kapibala/permissions.json',
     '.kapibala/mcp.json',
@@ -237,7 +239,73 @@ describe('PathSandbox (硬禁区)', () => {
     expect(isProtectedWorkspacePath('.env.example')).toBe(false);
     expect(isProtectedWorkspacePath('.envrc')).toBe(true);
     expect(isProtectedWorkspacePath('nested/.envrc')).toBe(true);
+    expect(isProtectedWorkspacePath('.git')).toBe(true);
+    expect(isProtectedWorkspacePath('nested/.git')).toBe(true);
+    expect(isProtectedWorkspacePath('.GIT')).toBe(true);
+    expect(isProtectedWorkspacePath('.git/config.worktree')).toBe(true);
+    expect(isProtectedWorkspacePath('nested/.git/config.worktree')).toBe(true);
+    expect(isProtectedWorkspacePath('.git/worktrees/wt-1/config.worktree')).toBe(true);
+    expect(isProtectedWorkspacePath('.git/worktrees/wt-1/commondir')).toBe(true);
+    expect(isProtectedWorkspacePath('.git/info/attributes')).toBe(true);
+    expect(isProtectedWorkspacePath('.git/objects/info/alternates')).toBe(true);
+    expect(isProtectedWorkspacePath('.git/COMMIT_EDITMSG')).toBe(false);
     expect(isProtectedWorkspacePath('src/index.ts')).toBe(false);
+  });
+
+  it('blocks writes to linked-worktree .git pointer files even in FullAccess while keeping reads allowed', async () => {
+    const { ToolRegistry } = await import('../src/capabilities/tools/registry.js');
+    const { HookRegistry } = await import('../src/extensibility/hooks/registry.js');
+    const { ToolExecutor } = await import('../src/runtime/executor/index.js');
+
+    const gitFile = path.join(rootDir, '.git');
+    const nestedDir = path.join(rootDir, 'packages', 'sub');
+    fs.mkdirSync(nestedDir, { recursive: true });
+    const nestedGitFile = path.join(nestedDir, '.git');
+    fs.writeFileSync(gitFile, 'gitdir: /main/.git/worktrees/wt-1\n');
+    fs.writeFileSync(nestedGitFile, 'gitdir: /main/.git/modules/sub\n');
+
+    const sandbox = new PathSandbox({ workspaceRoot: rootDir });
+    expect(() => sandbox.resolveSafePath('.git')).toThrowError(
+      expect.objectContaining({ code: 'PERMISSION_DENIED' }),
+    );
+    expect(() => sandbox.resolveSafePath('packages/sub/.git')).toThrowError(
+      expect.objectContaining({ code: 'PERMISSION_DENIED' }),
+    );
+    expect(sandbox.resolveSafePath('.git', { mode: 'read' })).toBe(gitFile);
+    expect(sandbox.resolveSafePath('packages/sub/.git', { mode: 'read' })).toBe(nestedGitFile);
+
+    const tools = new ToolRegistry();
+    tools.register(writeFileTool);
+    const hooks = new HookRegistry();
+    const executor = new ToolExecutor({
+      tools,
+      hooks,
+      workspaceRoot: rootDir,
+      rootDir,
+      sandbox,
+      mode: 'FullAccess',
+    });
+
+    const [rootAttempt, nestedAttempt] = await executor.runAll([
+      {
+        type: 'tool_use',
+        id: 'w-root-git',
+        name: 'write_file',
+        input: { path: '.git', content: 'gitdir: /evil\n' },
+      },
+      {
+        type: 'tool_use',
+        id: 'w-nested-git',
+        name: 'write_file',
+        input: { path: 'packages/sub/.git', content: 'gitdir: /evil\n' },
+      },
+    ]);
+
+    expect(rootAttempt.isError).toBe(true);
+    expect(rootAttempt.errorCode).toBe('PERMISSION_DENIED');
+    expect(nestedAttempt.isError).toBe(true);
+    expect(fs.readFileSync(gitFile, 'utf8')).toBe('gitdir: /main/.git/worktrees/wt-1\n');
+    expect(fs.readFileSync(nestedGitFile, 'utf8')).toBe('gitdir: /main/.git/modules/sub\n');
   });
 
   it('rejects NTFS alternate/default data stream suffixes (::$DATA) on new files and escape paths', async () => {

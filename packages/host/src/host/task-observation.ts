@@ -80,6 +80,7 @@ export class TaskObservation {
       const branch = sanitizeUntrustedOutput(task.origin.originBranchId);
       return {
         agentId: task.agentId,
+        ...(task.sessionId ? { sessionId: sanitizeUntrustedOutput(task.sessionId) } : {}),
         description: sanitizeUntrustedOutput(task.description),
         role: task.role,
         status: task.status,

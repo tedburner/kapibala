@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { normalizeHistory } from '../../context/history.js';
-import { ContextOverflowError, ModelError } from '../../errors/index.js';
+import { AbortError, ContextOverflowError, ModelError } from '../../errors/index.js';
 import type {
   CanonicalMessage,
   ContentBlock,
@@ -32,6 +32,8 @@ export interface OpenAIResponsesProviderOptions {
   modelName: string;
   supportsThinking?: boolean;
   connectTimeoutMs?: number;
+  /** SSE 分块读取最大空闲等待毫秒数；缺省 90 秒。 */
+  streamIdleTimeoutMs?: number;
 }
 
 type WireItem = Record<string, any>;
@@ -396,7 +398,10 @@ export class OpenAIResponsesProvider implements ModelProvider {
       return item;
     };
     try {
-      for await (const frame of parseSSEFrames(response.body!)) {
+      for await (const frame of parseSSEFrames(response.body!, {
+        idleTimeoutMs: request.streamIdleTimeoutMs ?? this.options.streamIdleTimeoutMs,
+        signal: request.signal,
+      })) {
         if (frame.event === 'ping' && !frame.data.trim()) continue;
         const event = parseWireEvent(frame.data);
         if (
@@ -586,7 +591,6 @@ export class OpenAIResponsesProvider implements ModelProvider {
         throw new ModelError('Responses stream ended without completion', {
           code: 'MODEL_STREAM_INCOMPLETE',
           stage: 'stream',
-          retryable: false,
         });
       const final = toCanonical(terminal.output, origin);
       const usage = this.toUsage(terminal.usage);
@@ -649,11 +653,13 @@ export class OpenAIResponsesProvider implements ModelProvider {
         durationMs: Date.now() - started,
       };
     } catch (error) {
-      if (error instanceof ModelError || request.signal?.aborted) throw error;
+      if (request.signal?.aborted) {
+        throw error instanceof AbortError ? error : new AbortError();
+      }
+      if (error instanceof ModelError || error instanceof AbortError) throw error;
       throw new ModelError('Responses stream was interrupted', {
         code: 'MODEL_STREAM_INTERRUPTED',
         stage: 'stream',
-        retryable: false,
         transportCode: safeTransportCode(error),
       });
     } finally {
@@ -666,14 +672,17 @@ export class OpenAIResponsesProvider implements ModelProvider {
     return assembleCanonicalToolResults(results);
   }
 
-  /** 服务端错误仅保留明确标识，不回显请求、输出正文、签名或加密 reasoning。 */
+  /** 服务端错误仅保留明确标识并交由统一分类器判定重试属性，不回显请求、正文或加密 reasoning。 */
   private throwWireError(error: WireItem): never {
     const detail = {
       stage: 'stream' as const,
-      retryable: false,
-      providerCode: typeof error.code === 'string' ? error.code : undefined,
+      providerCode:
+        typeof error.code === 'string' || typeof error.code === 'number'
+          ? String(error.code)
+          : undefined,
       providerType:
         typeof error.type === 'string' && error.type !== 'error' ? error.type : undefined,
+      providerMessage: typeof error.message === 'string' ? error.message : undefined,
     };
     if (isContextOverflow(error)) throw new ContextOverflowError(400, detail);
     throw new ModelError('Responses API reported an error', detail);

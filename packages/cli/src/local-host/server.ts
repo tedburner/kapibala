@@ -1,7 +1,24 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { SessionManager } from '@kiturone/kapibala';
-import { ExternalSessionService } from '@kiturone/kapibala-host/internal';
+import {
+  CrossProjectSessionCatalog,
+  SessionManager,
+  SessionReferenceReader,
+  computeProjectKey,
+  isSamePath,
+} from '@kiturone/kapibala';
+import {
+  CheckpointService,
+  ExecutionRootCoordinator,
+  ExternalSessionService,
+  WorktreeError,
+  WorktreeService,
+  detectProjectRoot,
+  isProjectTrusted,
+  loadSettings,
+} from '@kiturone/kapibala-host/internal';
 import {
   DEFAULT_LIMITS,
   type JsonValue,
@@ -32,6 +49,8 @@ export interface LocalHostOptions extends ResourceFactory {
   token?: string;
   homeDir?: string;
   external?: ExternalSessionService;
+  checkpoints?: CheckpointService;
+  worktrees?: WorktreeService;
   onShutdown?(): void;
 }
 
@@ -40,11 +59,21 @@ function requireAbsolute(value: string): void {
   if (!path.isAbsolute(value)) throw new Error('INVALID_PARAMS');
 }
 
+/** 判定客户端是否声明了任一 v0.1.6 协议能力（用于对 v0.1.4/v0.1.5 客户端隐藏新增结构属性）。 */
+function hasV016Capability(caps: ReadonlySet<string>): boolean {
+  return (
+    caps.has('references') || caps.has('retry') || caps.has('worktree') || caps.has('checkpoint')
+  );
+}
+
 /** 双向服务入口；同一注册表服务多个连接，所有业务调用均先完成初始化。 */
 export class LocalHostServer {
   readonly registry: SessionRegistry;
   readonly external: ExternalSessionService;
+  readonly checkpoints: CheckpointService;
+  readonly worktrees: WorktreeService;
   private readonly peers = new Map<string, RpcPeer>();
+  private readonly peerCapabilities = new Map<string, ReadonlySet<string>>();
   private readonly approvals = new Map<string, RpcApprovalChannel>();
   /** 外部会话单控制者登记（sessionId -> clientId），防止非控制连接抢答审批或越权关闭。 */
   private readonly externalControllers = new Map<string, string>();
@@ -54,23 +83,39 @@ export class LocalHostServer {
   private shutdownTask?: Promise<void>;
 
   constructor(private readonly options: LocalHostOptions) {
-    this.external = options.external ?? new ExternalSessionService({ homeDir: options.homeDir });
+    const coordinator = options.worktrees?.coordinator ?? new ExecutionRootCoordinator();
+    this.checkpoints = options.checkpoints ?? new CheckpointService({ homeDir: options.homeDir });
+    this.worktrees =
+      options.worktrees ?? new WorktreeService({ homeDir: options.homeDir, coordinator });
+    this.external =
+      options.external ??
+      new ExternalSessionService({
+        homeDir: options.homeDir,
+        checkpoints: this.checkpoints,
+        worktrees: this.worktrees,
+        executionCoordinator: coordinator,
+      });
     this.registry = new SessionRegistry({
       create: options.create,
       approval: (entry) => {
         let channel = this.approvals.get(entry.sessionId);
         if (!channel) {
           channel = new RpcApprovalChannel({
-            identity: () =>
-              entry.controller && entry.active
+            identity: (request) =>
+              entry.controller
                 ? {
                     sessionId: entry.sessionId,
                     streamEpoch: entry.streamEpoch,
                     controlEpoch: entry.controller.epoch,
-                    runId: entry.active.id,
+                    runId: entry.active?.id ?? request?.subagentOrigin?.agentId ?? 'background',
                   }
                 : undefined,
             describe: (request) => describeApproval(request, entry.resources.redact),
+            includeSubagentOrigin: () => {
+              const controllerId = entry.controller?.clientId;
+              const caps = controllerId ? this.peerCapabilities.get(controllerId) : undefined;
+              return Boolean(caps && hasV016Capability(caps));
+            },
             closed: (approvalId) =>
               entry.feed.publish({
                 type: 'approval_closed',
@@ -107,6 +152,21 @@ export class LocalHostServer {
         throw new Error('PROTOCOL_MISMATCH');
       }
     };
+    const requireReferencesCapability = (): void => {
+      if (!negotiatedCapabilities.has('references')) {
+        throw new Error('PROTOCOL_MISMATCH');
+      }
+    };
+    const requireCheckpointCapability = (): void => {
+      if (!negotiatedCapabilities.has('checkpoint')) {
+        throw new Error('PROTOCOL_MISMATCH');
+      }
+    };
+    const requireWorktreeCapability = (): void => {
+      if (!negotiatedCapabilities.has('worktree')) {
+        throw new Error('PROTOCOL_MISMATCH');
+      }
+    };
 
     const timer = setTimeout(() => {
       void peer.close();
@@ -124,6 +184,7 @@ export class LocalHostServer {
         if (!protocol.ok) throw new Error('PROTOCOL_MISMATCH');
         initialized = true;
         for (const cap of protocol.value.capabilities) negotiatedCapabilities.add(cap);
+        this.peerCapabilities.set(clientId, negotiatedCapabilities);
         clearTimeout(timer);
         return {
           ...protocol.value,
@@ -138,12 +199,53 @@ export class LocalHostServer {
       switch (request.method) {
         case 'ping':
           return { alive: true, serverInstanceId: this.registry.serverInstanceId };
-        case 'session/create':
+        case 'session/create': {
           requireAbsolute(request.params.workspaceRoot);
-          return this.registry.open(request.params.workspaceRoot);
-        case 'session/open':
+          if (request.params.worktree !== undefined) {
+            requireWorktreeCapability();
+          }
+          if (request.params.worktree?.enabled) {
+            const { root } = this.resolveTrustedWorkspace(request.params.workspaceRoot);
+            const created = await this.worktrees.create({
+              projectRoot: root,
+              ...(request.params.worktree.branch ? { branch: request.params.worktree.branch } : {}),
+              ...(request.params.worktree.baseRef
+                ? { baseRef: request.params.worktree.baseRef }
+                : {}),
+            });
+            try {
+              const opened = await this.registry.open(root, undefined, {
+                worktree: created.binding,
+              });
+              if (!negotiatedCapabilities.has('worktree') && opened.worktree !== undefined) {
+                const { worktree: _omitted, ...legacy } = opened;
+                return legacy as unknown as JsonValue;
+              }
+              return opened as unknown as JsonValue;
+            } catch (openErr) {
+              await this.worktrees.remove({ id: created.record.id, force: true }).catch(() => {});
+              throw openErr;
+            }
+          }
+          const opened = await this.registry.open(request.params.workspaceRoot);
+          if (!negotiatedCapabilities.has('worktree') && opened.worktree !== undefined) {
+            const { worktree: _omitted, ...legacy } = opened;
+            return legacy as unknown as JsonValue;
+          }
+          return opened as unknown as JsonValue;
+        }
+        case 'session/open': {
           requireAbsolute(request.params.workspaceRoot);
-          return this.registry.open(request.params.workspaceRoot, request.params.conversationId);
+          const opened = await this.registry.open(
+            request.params.workspaceRoot,
+            request.params.conversationId,
+          );
+          if (!negotiatedCapabilities.has('worktree') && opened.worktree !== undefined) {
+            const { worktree: _omitted, ...legacy } = opened;
+            return legacy as unknown as JsonValue;
+          }
+          return opened as unknown as JsonValue;
+        }
         case 'session/list': {
           requireAbsolute(request.params.workspaceRoot);
           const cursor = request.params.cursor;
@@ -164,11 +266,28 @@ export class LocalHostServer {
           const result = await manager.list(page, { pageSize: limit });
           // 标题源自首条用户消息，与历史/审批共用同一套凭据替换与单行化规则。
           const secrets = loadCredentialSecrets(request.params.workspaceRoot, this.options.homeDir);
+          const includeDelegation = hasV016Capability(negotiatedCapabilities);
           return {
-            items: result.items.map((item) => ({
-              conversationId: item.conversationId,
-              title: sanitizeDisplayText(redactText(item.title, secrets), 200) ?? '',
-            })),
+            items: result.items.map((item) => {
+              const parentTitle = item.delegation?.parentTitle
+                ? sanitizeDisplayText(redactText(item.delegation.parentTitle, secrets), 200)
+                : undefined;
+              return {
+                conversationId: item.conversationId,
+                title: sanitizeDisplayText(redactText(item.title, secrets), 200) ?? '',
+                ...(includeDelegation && item.delegation
+                  ? {
+                      delegation: {
+                        parentSessionId: item.delegation.parentSessionId,
+                        ...(parentTitle ? { parentTitle } : {}),
+                        taskName:
+                          sanitizeDisplayText(redactText(item.delegation.taskName, secrets), 200) ??
+                          '',
+                      },
+                    }
+                  : {}),
+              };
+            }),
             cursor: page < result.pages ? String(page + 1) : null,
           };
         }
@@ -180,10 +299,13 @@ export class LocalHostServer {
             throw new Error('RESYNC_REQUIRED');
           const entry = this.registry.get(request.params.sessionId);
           if (entry.active && !entry.live?.complete) throw new Error('RESYNC_REQUIRED');
+          const includeRetry = negotiatedCapabilities.has('retry');
           // 先捕获唯一可能失败的快照，再授予控制权；任何失败都不能让会话被本次连接占住。
           const page = pager.capture(entry.sessionId, {
             history: entry.resources.history(),
-            live: entry.active ? (entry.live?.events ?? []) : [],
+            live: entry.active
+              ? ((includeRetry ? entry.live?.events : entry.live?.baseEvents) ?? [])
+              : [],
           });
           const newlyGranted = request.params.mode === 'control' && !entry.controller;
           try {
@@ -192,11 +314,12 @@ export class LocalHostServer {
               clientId,
               request.params.mode,
               this.pendingApprovals(entry.sessionId),
+              { includeRetry, capabilities: negotiatedCapabilities },
             );
             subscriptions.get(entry.sessionId)?.();
             subscriptions.set(
               entry.sessionId,
-              entry.feed.subscribe((event) => peer.notify(event)),
+              entry.feed.subscribe((event) => peer.notify(event), { includeRetry }),
             );
             return { ...snapshot, ...page };
           } catch (error) {
@@ -212,12 +335,17 @@ export class LocalHostServer {
             return { ...pager.read(request.params.sessionId, request.params.cursor) };
           const entry = this.registry.get(request.params.sessionId);
           if (entry.active && !entry.live?.complete) throw new Error('RESYNC_REQUIRED');
+          const includeRetry = negotiatedCapabilities.has('retry');
           const page = pager.capture(entry.sessionId, {
             history: entry.resources.history(),
-            live: entry.active ? (entry.live?.events ?? []) : [],
+            live: entry.active
+              ? ((includeRetry ? entry.live?.events : entry.live?.baseEvents) ?? [])
+              : [],
           });
           return {
-            ...this.registry.snapshot(entry, clientId, this.pendingApprovals(entry.sessionId)),
+            ...this.registry.snapshot(entry, clientId, this.pendingApprovals(entry.sessionId), {
+              includeRetry,
+            }),
             ...page,
           };
         }
@@ -239,15 +367,446 @@ export class LocalHostServer {
           return { closed: true };
         }
         case 'run/start':
+          if (request.params.references && request.params.references.length > 0) {
+            requireReferencesCapability();
+          }
           return this.registry.start(
             request.params,
             clientId,
             request.params.clientOperationId,
             request.params.input,
+            request.params.references,
           );
         case 'run/cancel':
           await this.registry.cancel(request.params, clientId, request.params.runId);
           return { cancellationRequested: true };
+        case 'reference/candidates': {
+          requireReferencesCapability();
+          const { root, home, secrets } = this.resolveTrustedWorkspace(
+            request.params.workspaceRoot,
+          );
+          const reader = new SessionReferenceReader({ homeDirectory: home });
+          const candidates = await reader.listCandidates({
+            projectRoot: root,
+            ...(request.params.limit !== undefined ? { limit: request.params.limit } : {}),
+          });
+          return {
+            items: candidates.map((item) => ({
+              sessionId: item.sessionId,
+              title: sanitizeDisplayText(redactText(item.title, secrets), 200) ?? '',
+              lastActivityAt: item.lastActivityAt,
+              messageCount: item.messageCount,
+              ...(item.delegation ? { isDelegation: true } : {}),
+            })),
+          };
+        }
+        case 'reference/search': {
+          requireReferencesCapability();
+          const { root, home, secrets } = this.resolveTrustedWorkspace(
+            request.params.workspaceRoot,
+          );
+          const rawQuery = request.params.query;
+          const sanitizedQuery = rawQuery.trim().startsWith('re:')
+            ? rawQuery
+            : rawQuery.replace(/\bproject:\S+/gi, '').trim();
+          if (!sanitizedQuery) return { hits: [] };
+          const catalog = new CrossProjectSessionCatalog({ homeDirectory: home });
+          const bucketKey = computeProjectKey(root);
+          const bucketEntries = await catalog.scanSessions({
+            projectKey: bucketKey,
+            projectRoot: root,
+          });
+          const titleBySession = new Map(
+            bucketEntries.map((entry) => [
+              entry.conversationId,
+              sanitizeDisplayText(redactText(entry.title, secrets), 200) ??
+                entry.conversationId.slice(0, 8),
+            ]),
+          );
+          const searchResult = await catalog.search(sanitizedQuery, {
+            project: root,
+            limit: request.params.limit ?? 20,
+          });
+          return {
+            hits: searchResult.hits
+              .filter((hit) => isSamePath(hit.projectRoot, root))
+              .map((hit) => ({
+                sessionId: hit.conversationId,
+                title: titleBySession.get(hit.conversationId) ?? hit.conversationId.slice(0, 8),
+                recordId: hit.recordId,
+                branchId: hit.branchId,
+                role: hit.role,
+                snippet: sanitizeDisplayText(redactText(hit.snippet, secrets), 400) ?? '',
+                timestamp: hit.timestamp,
+              })),
+          };
+        }
+        case 'reference/read': {
+          requireReferencesCapability();
+          const { root, home, secrets } = this.resolveTrustedWorkspace(
+            request.params.workspaceRoot,
+          );
+          const reader = new SessionReferenceReader({ homeDirectory: home });
+          const readResult = await reader.read({
+            projectRoot: root,
+            sessionId: request.params.sessionId,
+            ...(request.params.recordIds ? { recordIds: request.params.recordIds } : {}),
+            ...(request.params.branchId !== undefined ? { branchId: request.params.branchId } : {}),
+            ...(request.params.limit !== undefined ? { limit: request.params.limit } : {}),
+          });
+          const title = readResult.title
+            ? sanitizeDisplayText(redactText(readResult.title, secrets), 200)
+            : undefined;
+          return {
+            sessionId: readResult.sessionId,
+            ...(title ? { title } : {}),
+            branchId: readResult.branchId,
+            records: readResult.records.map((rec) => ({
+              recordId: rec.recordId,
+              role: rec.role,
+              branchId: rec.branchId,
+              timestamp: rec.timestamp,
+              text: redactText(rec.text, secrets),
+              truncated: rec.truncated,
+            })),
+            ...(readResult.partial ? { partial: readResult.partial } : {}),
+          };
+        }
+        case 'checkpoint/list': {
+          requireCheckpointCapability();
+          if (request.params.external) {
+            requireExternalCapability();
+            const items = await this.external.listSessionCheckpoints(request.params.sessionId);
+            return {
+              items: items.map((item) => ({
+                ordinal: item.ordinal,
+                createdAt: item.createdAt,
+                startTree: item.startTree,
+                endTree: item.endTree,
+                additions: item.additions,
+                deletions: item.deletions,
+                changedFilesCount: item.changedFilesCount,
+                label: item.label ?? null,
+              })),
+            };
+          }
+          if (!subscriptions.has(request.params.sessionId)) throw new Error('CONTROL_REQUIRED');
+          const entry = this.registry.get(request.params.sessionId);
+          if (!entry.resources.checkpoints) throw new LocalHostError('INVALID_REQUEST');
+          const items = await entry.resources.checkpoints();
+          return {
+            items: items.map((item) => ({
+              ordinal: item.ordinal,
+              createdAt: item.createdAt,
+              startTree: item.startTree,
+              endTree: item.endTree,
+              additions: item.additions,
+              deletions: item.deletions,
+              changedFilesCount: item.changedFilesCount,
+              label: item.label ?? null,
+            })),
+          };
+        }
+        case 'checkpoint/diff': {
+          requireCheckpointCapability();
+          const { ordinal, fromOrdinal, toOrdinal, includeLiveWorktree } = request.params;
+          if (request.params.external) {
+            requireExternalCapability();
+            const diff = await this.external.diffSessionCheckpoints({
+              sessionId: request.params.sessionId,
+              ...(ordinal !== undefined ? { ordinal } : {}),
+              ...(fromOrdinal !== undefined ? { fromOrdinal } : {}),
+              ...(toOrdinal !== undefined ? { toOrdinal } : {}),
+              ...(includeLiveWorktree !== undefined ? { includeLiveWorktree } : {}),
+            });
+            return {
+              available: diff.available,
+              additions: diff.additions,
+              deletions: diff.deletions,
+              truncated: diff.truncated,
+              files: diff.files.map((f) => ({
+                path: f.path,
+                status: f.status,
+                originalPath: f.originalPath ?? null,
+                additions: f.additions,
+                deletions: f.deletions,
+                binary: f.binary,
+                patch: f.patch,
+                truncated: f.truncated,
+              })),
+            };
+          }
+          if (!subscriptions.has(request.params.sessionId)) throw new Error('CONTROL_REQUIRED');
+          const entry = this.registry.get(request.params.sessionId);
+          if (!entry.resources.checkpointDiff) throw new LocalHostError('INVALID_REQUEST');
+          const diff = await entry.resources.checkpointDiff({
+            ...(ordinal !== undefined ? { ordinal } : {}),
+            ...(fromOrdinal !== undefined ? { fromOrdinal } : {}),
+            ...(toOrdinal !== undefined ? { toOrdinal } : {}),
+            ...(includeLiveWorktree !== undefined ? { includeLiveWorktree } : {}),
+          });
+          return {
+            available: diff.available,
+            additions: diff.additions,
+            deletions: diff.deletions,
+            truncated: diff.truncated,
+            files: diff.files.map((f) => ({
+              path: f.path,
+              status: f.status,
+              originalPath: f.originalPath ?? null,
+              additions: f.additions,
+              deletions: f.deletions,
+              binary: f.binary,
+              patch: f.patch,
+              truncated: f.truncated,
+            })),
+          };
+        }
+        case 'checkpoint/restore': {
+          requireCheckpointCapability();
+          if (request.params.external) {
+            requireExternalCapability();
+            const resolvedId = this.attachOrVerifyExternalController(
+              request.params.sessionId,
+              clientId,
+            );
+            const outcome = await this.external.restoreSessionCheckpoint({
+              sessionId: resolvedId,
+              targetOrdinal: request.params.targetOrdinal,
+              ...(request.params.force !== undefined ? { force: request.params.force } : {}),
+            });
+            if (outcome.status === 'conflict') {
+              return {
+                status: 'conflict',
+                restoredFiles: [],
+                deletedFiles: [],
+                conflicts: [...outcome.conflicts],
+              };
+            }
+            return {
+              status: outcome.status,
+              restoredFiles: [...outcome.restoredFiles],
+              deletedFiles: [...outcome.deletedFiles],
+              conflicts: [],
+            };
+          }
+          const entry = this.registry.get(request.params.sessionId);
+          if (!entry.controller || entry.controller.clientId !== clientId) {
+            throw new Error('CONTROL_REQUIRED');
+          }
+          const maybeEpochs = request.params as {
+            streamEpoch?: string;
+            controlEpoch?: string;
+          };
+          if (
+            entry.closing ||
+            !entry.streamEpoch ||
+            !entry.controller.epoch ||
+            !subscriptions.has(entry.sessionId) ||
+            (maybeEpochs.streamEpoch !== undefined &&
+              maybeEpochs.streamEpoch !== entry.streamEpoch) ||
+            (maybeEpochs.controlEpoch !== undefined &&
+              maybeEpochs.controlEpoch !== entry.controller.epoch)
+          ) {
+            throw new Error('STALE_CONTROL');
+          }
+          if (entry.active || entry.needsCleanup) throw new Error('SESSION_BUSY');
+          if (!entry.resources.restoreCheckpoint) throw new LocalHostError('INVALID_REQUEST');
+          const outcome = await entry.resources.restoreCheckpoint(
+            request.params.targetOrdinal,
+            request.params.force,
+          );
+          if (outcome.status === 'conflict') {
+            return {
+              status: 'conflict',
+              restoredFiles: [],
+              deletedFiles: [],
+              conflicts: [...outcome.conflicts],
+            };
+          }
+          return {
+            status: outcome.status,
+            restoredFiles: [...outcome.restoredFiles],
+            deletedFiles: [...outcome.deletedFiles],
+            conflicts: [],
+          };
+        }
+        case 'worktree/list': {
+          requireWorktreeCapability();
+          const { root } = this.resolveTrustedWorkspace(request.params.workspaceRoot);
+          const items = this.worktrees.list(root).map((rec) => ({
+            id: rec.id,
+            projectRoot: rec.projectRoot,
+            worktreePath: rec.worktreePath,
+            branch: rec.branch,
+            baseRef: rec.baseRef,
+            baseCommit: rec.baseCommit,
+            createdAt: rec.createdAt,
+          }));
+          return { items };
+        }
+        case 'worktree/create': {
+          requireWorktreeCapability();
+          const { root } = this.resolveTrustedWorkspace(request.params.workspaceRoot);
+          const created = await this.worktrees.create({
+            projectRoot: root,
+            ...(request.params.name ? { name: request.params.name } : {}),
+            ...(request.params.branch ? { branch: request.params.branch } : {}),
+            ...(request.params.baseRef ? { baseRef: request.params.baseRef } : {}),
+          });
+          return {
+            id: created.binding.id,
+            projectRoot: created.binding.projectRoot,
+            worktreePath: created.binding.worktreePath,
+            branch: created.binding.branch,
+            baseRef: created.binding.baseRef,
+            baseCommit: created.binding.baseCommit,
+            createdAt: created.binding.createdAt,
+          };
+        }
+        case 'worktree/status': {
+          requireWorktreeCapability();
+          const { root } = this.resolveTrustedWorkspace(request.params.workspaceRoot);
+          this.requireOwnedWorktree(request.params.id, root);
+          const status = await this.worktrees.status(request.params.id);
+          return {
+            id: status.id,
+            projectRoot: status.projectRoot,
+            worktreePath: status.worktreePath,
+            branch: status.branch,
+            baseRef: status.baseRef,
+            baseCommit: status.baseCommit,
+            headCommit: status.headCommit ?? null,
+            exists: status.exists,
+            linkVerified: status.linkVerified,
+            dirty: status.dirty,
+            untrackedCount: status.untrackedCount,
+            aheadCount: status.aheadCount,
+            behindCount: status.behindCount,
+            additions: status.additions,
+            deletions: status.deletions,
+            changedFiles: status.changedFiles.map((f) => ({
+              path: f.path,
+              status: f.status,
+              oldPath: f.oldPath ?? null,
+              additions: f.additions,
+              deletions: f.deletions,
+              binary: f.binary,
+            })),
+          };
+        }
+        case 'worktree/diff': {
+          requireWorktreeCapability();
+          const { root, secrets } = this.resolveTrustedWorkspace(request.params.workspaceRoot);
+          this.requireOwnedWorktree(request.params.id, root);
+          const diff = await this.worktrees.diff(request.params.id);
+          return {
+            id: diff.id,
+            branch: diff.branch,
+            baseCommit: diff.baseCommit,
+            headCommit: diff.headCommit,
+            additions: diff.additions,
+            deletions: diff.deletions,
+            truncated: diff.truncated,
+            files: diff.files.map((f) => ({
+              path: redactText(f.path, secrets),
+              status: f.status,
+              originalPath: f.oldPath ? redactText(f.oldPath, secrets) : null,
+              additions: f.additions,
+              deletions: f.deletions,
+              binary: f.binary,
+              patch: redactText(f.patch, secrets),
+              truncated: f.truncated,
+            })),
+          };
+        }
+        case 'worktree/previewMerge': {
+          requireWorktreeCapability();
+          const { root } = this.resolveTrustedWorkspace(request.params.workspaceRoot);
+          this.requireOwnedWorktree(request.params.id, root);
+          const preview = await this.worktrees.previewMerge(request.params.id);
+          return {
+            worktreeId: preview.id,
+            branch: preview.branch,
+            baseRef: preview.targetBranch,
+            aheadCount: preview.aheadCount,
+            behindCount: preview.behindCount,
+            worktreeDirty: preview.worktreeDirty,
+            mainDirty: preview.mainDirty,
+            canApply: preview.canApply,
+            blockingReason: preview.blockingReason ?? null,
+            additions: preview.additions,
+            deletions: preview.deletions,
+            previewToken: preview.previewToken,
+            changedFiles: preview.changedFiles.map((f) => ({
+              path: f.path,
+              status: f.status,
+              additions: f.additions,
+              deletions: f.deletions,
+            })),
+          };
+        }
+        case 'worktree/applyMerge': {
+          requireWorktreeCapability();
+          const { root } = this.resolveTrustedWorkspace(request.params.workspaceRoot);
+          this.requireOwnedWorktree(request.params.id, root);
+          const outcome = await this.worktrees.applyMerge({
+            id: request.params.id,
+            previewToken: request.params.previewToken,
+            ...(request.params.commitMessage
+              ? { commitMessage: request.params.commitMessage }
+              : {}),
+          });
+          if (outcome.status === 'conflict') {
+            return {
+              status: 'conflict',
+              mergedCommit: null,
+              targetBranch: null,
+              conflictedFiles: [...outcome.conflictedFiles],
+            };
+          }
+          return {
+            status: 'merged',
+            mergedCommit: outcome.mergedCommit,
+            targetBranch: outcome.targetBranch,
+            conflictedFiles: [],
+          };
+        }
+        case 'worktree/remove': {
+          requireWorktreeCapability();
+          const { root } = this.resolveTrustedWorkspace(request.params.workspaceRoot);
+          this.requireOwnedWorktree(request.params.id, root);
+          const outcome = await this.worktrees.remove({
+            id: request.params.id,
+            ...(request.params.force !== undefined ? { force: request.params.force } : {}),
+            onBeforeRemove: async (rec) => {
+              await this.registry.closeIdleSessionsInWorktree(rec.worktreePath);
+              const matchingExternal = this.external
+                .listSessions(root)
+                .filter(
+                  (ext) =>
+                    ext.status === 'idle' &&
+                    ext.worktree &&
+                    isSamePath(ext.worktree.worktreePath, rec.worktreePath),
+                );
+              for (const ext of matchingExternal) {
+                await this.external.closeSession(ext.id, root).catch(() => {});
+              }
+            },
+          });
+          if (!outcome.removed) {
+            return {
+              removed: false,
+              reason: outcome.reason,
+              details: [...outcome.details],
+            };
+          }
+          return {
+            removed: true,
+            reason: null,
+            details: [],
+          };
+        }
         case 'watch/list': {
           // 与 session/snapshot 同门禁：先 attach 才允许读取该会话的观察面。
           if (!subscriptions.has(request.params.sessionId)) throw new Error('CONTROL_REQUIRED');
@@ -350,21 +909,62 @@ export class LocalHostServer {
         case 'external/list': {
           requireExternalCapability();
           requireAbsolute(request.params.workspaceRoot);
+          const extWireOpts = {
+            includeWorktree: negotiatedCapabilities.has('worktree'),
+            includeDiffSummary: negotiatedCapabilities.has('checkpoint'),
+          };
           return {
             items: this.external
               .listSessions(request.params.workspaceRoot)
-              .map(toExternalSessionWire),
+              .map((item) => toExternalSessionWire(item, extWireOpts)),
           } as unknown as JsonValue;
         }
         case 'external/open': {
           requireExternalCapability();
           requireAbsolute(request.params.workspaceRoot);
-          const snap = await this.external.openSession(request.params);
+          const extWireOpts = {
+            includeWorktree: negotiatedCapabilities.has('worktree'),
+            includeDiffSummary: negotiatedCapabilities.has('checkpoint'),
+          };
+          if (request.params.worktree !== undefined) {
+            requireWorktreeCapability();
+          }
+          if (request.params.worktree?.enabled) {
+            const { root } = this.resolveTrustedWorkspace(request.params.workspaceRoot);
+            const created = await this.worktrees.create({
+              projectRoot: root,
+              ...(request.params.title ? { name: request.params.title } : {}),
+              ...(request.params.worktree.branch ? { branch: request.params.worktree.branch } : {}),
+              ...(request.params.worktree.baseRef
+                ? { baseRef: request.params.worktree.baseRef }
+                : {}),
+            });
+            try {
+              const snap = await this.external.openSession({
+                projectRoot: root,
+                workspaceRoot: created.binding.worktreePath,
+                worktree: created.binding,
+                harnessId: request.params.harnessId,
+                ...(request.params.title ? { title: request.params.title } : {}),
+              });
+              this.externalControllers.set(snap.session.id, clientId);
+              return toExternalSnapshotWire(snap, extWireOpts) as unknown as JsonValue;
+            } catch (openErr) {
+              await this.worktrees.remove({ id: created.record.id, force: true }).catch(() => {});
+              throw openErr;
+            }
+          }
+          const { worktree: _unusedWorktreeOpt, ...openParams } = request.params;
+          const snap = await this.external.openSession(openParams);
           this.externalControllers.set(snap.session.id, clientId);
-          return toExternalSnapshotWire(snap) as unknown as JsonValue;
+          return toExternalSnapshotWire(snap, extWireOpts) as unknown as JsonValue;
         }
         case 'external/attach': {
           requireExternalCapability();
+          const extWireOpts = {
+            includeWorktree: negotiatedCapabilities.has('worktree'),
+            includeDiffSummary: negotiatedCapabilities.has('checkpoint'),
+          };
           const snap = this.external.getSnapshot(request.params.sessionId);
           const resolvedId = snap.session.id;
           if (!this.externalControllers.has(resolvedId)) {
@@ -377,11 +977,11 @@ export class LocalHostServer {
               peer.notifyExternal({
                 sessionId: resolvedId,
                 sequence: nextSnap.sequence,
-                snapshot: toExternalSnapshotWire(nextSnap),
+                snapshot: toExternalSnapshotWire(nextSnap, extWireOpts),
               });
             }),
           );
-          return toExternalSnapshotWire(snap) as unknown as JsonValue;
+          return toExternalSnapshotWire(snap, extWireOpts) as unknown as JsonValue;
         }
         case 'external/detach': {
           requireExternalCapability();
@@ -396,12 +996,21 @@ export class LocalHostServer {
         }
         case 'external/snapshot': {
           requireExternalCapability();
+          const extWireOpts = {
+            includeWorktree: negotiatedCapabilities.has('worktree'),
+            includeDiffSummary: negotiatedCapabilities.has('checkpoint'),
+          };
           return toExternalSnapshotWire(
             this.external.getSnapshot(request.params.sessionId),
+            extWireOpts,
           ) as unknown as JsonValue;
         }
         case 'external/prompt': {
           requireExternalCapability();
+          const extWireOpts = {
+            includeWorktree: negotiatedCapabilities.has('worktree'),
+            includeDiffSummary: negotiatedCapabilities.has('checkpoint'),
+          };
           const resolvedId = this.attachOrVerifyExternalController(
             request.params.sessionId,
             clientId,
@@ -410,7 +1019,7 @@ export class LocalHostServer {
             sessionId: resolvedId,
             text: request.params.text,
           });
-          return toExternalSnapshotWire(snap) as unknown as JsonValue;
+          return toExternalSnapshotWire(snap, extWireOpts) as unknown as JsonValue;
         }
         case 'external/approve': {
           requireExternalCapability();
@@ -483,6 +1092,7 @@ export class LocalHostServer {
           }
         }
         this.peers.delete(clientId);
+        this.peerCapabilities.delete(clientId);
         await Promise.all([
           this.registry.disconnect(clientId),
           ...ownedExternalIds.map((extId) => this.external.cancelSession(extId).catch(() => {})),
@@ -496,6 +1106,43 @@ export class LocalHostServer {
     });
     this.peers.set(clientId, peer);
     await peer.done.catch(() => {});
+  }
+
+  /**
+   * 规范化跨会话引用目标目录并强制核查项目信任态，杜绝经只读引用接口探测未信任工作区或跨桶历史。
+   */
+  private resolveTrustedWorkspace(workspaceRoot: string): {
+    root: string;
+    home: string;
+    secrets: string[];
+  } {
+    requireAbsolute(workspaceRoot);
+    let physicalRoot: string;
+    try {
+      physicalRoot = detectProjectRoot(fs.realpathSync.native(workspaceRoot));
+    } catch {
+      throw new Error('INVALID_PARAMS');
+    }
+    const home = fs.realpathSync.native(this.options.homeDir ?? os.homedir());
+    const loaded = loadSettings({ cwd: physicalRoot, homeDir: home, includeProject: false });
+    if (!isProjectTrusted(loaded.settings, physicalRoot)) {
+      throw new Error('TRUST_REQUIRED');
+    }
+    return {
+      root: physicalRoot,
+      home,
+      secrets: loadCredentialSecrets(physicalRoot, home),
+    };
+  }
+
+  /**
+   * 校验目标工作树记录归属当前已信任工作区根，阻断跨项目通过 worktreeId 越权读取或合并。
+   */
+  private requireOwnedWorktree(id: string, projectRoot: string): void {
+    const rec = this.worktrees.get(id);
+    if (!rec || !isSamePath(rec.projectRoot, projectRoot)) {
+      throw new WorktreeError('WORKTREE_NOT_FOUND', `Worktree '${id}' not found in workspace`);
+    }
   }
 
   /**

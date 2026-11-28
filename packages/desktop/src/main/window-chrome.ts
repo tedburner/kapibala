@@ -2,13 +2,16 @@ import type { BrowserWindowConstructorOptions, TitleBarOverlay } from 'electron'
 
 export type DisplayMode = 'light' | 'dark';
 
-/** 与 `theme-kapibala.css` `--kapibala-titlebar-height` 同源的 46px 顶栏高度。 */
+/** Windows 沉浸式 `titleBarOverlay` 覆盖层高度（保留 46px 跨平台系统控制安全区）。 */
 export const TITLEBAR_HEIGHT = 46;
 
-/** 主进程窗口底色与沉浸式标题栏覆盖层底色，与渲染层 `bg-kumo-base` 严格同值以避免首帧或切主题露白边。 */
+/** 深色主窗口与 Windows `titleBarOverlay` 底色，精确对齐 UI 2.0 `--kpbl-bg-canvas`（`#15171a`）。 */
+export const DARK_WINDOW_BACKGROUND = '#15171a';
+
+/** 主进程窗口底色与沉浸式标题栏覆盖层底色，与渲染层浅/深主舞台表面保持协调以避免首帧或切主题露白边。 */
 export const WINDOW_SURFACES: Readonly<Record<DisplayMode, string>> = {
   light: '#FFFFFF',
-  dark: '#181818',
+  dark: DARK_WINDOW_BACKGROUND,
 };
 
 const WINDOW_SYMBOLS: Readonly<Record<DisplayMode, string>> = {

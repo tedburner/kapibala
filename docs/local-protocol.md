@@ -9,7 +9,7 @@
 1. 服务端接受连接后分配 `clientId`；客户端**第一条**请求必须是 `initialize`，5 秒内未完成握手即关闭连接。重复 `initialize` 直接 `UNAUTHORIZED`。
 2. 服务端配置了 token 时，`initialize.params.token` 必须等长且时序安全比较通过；token 不进 argv、日志、历史或错误响应，凭证文件模式为 POSIX 0600、运行目录 0700。
 3. 版本协商：整数 `protocolVersion` 必须严格等于 2，不接受区间协商，也不承诺字段级降级。v0.1.3 及更早的 `{major, minMinor, maxMinor}` 报价已废弃，初始化参数白名单直接判定 `INVALID_PARAMS`（不再有“放行到协商层”的兼容分支）。
-4. 能力协商：`capabilities` 声明本次真正依赖的能力，当前集合为 `sessions`、`approval`、`cancel`、`watch`、`evidence`、`external-session`。任一项不被支持都返回 `PROTOCOL_MISMATCH`，不做静默降级；未知能力拼写一律拒绝而不是忽略；客户端未声明使用的能力，服务端不推送对应事件。
+4. 能力协商：`capabilities` 声明本次真正依赖的能力，当前集合为 `sessions`、`approval`、`cancel`、`watch`、`evidence`、`external-session`、`references`、`retry`、`checkpoint`、`worktree`。任一项不被支持都返回 `PROTOCOL_MISMATCH`，不做静默降级；未知能力拼写一律拒绝而不是忽略；客户端未声明使用的能力，服务端不推送对应事件（服务端对 `session/event` 采用按连接能力分流的双序列发生器，未声明 `'retry'` 的旧客户端不会收到重试事件且 `seq` 仍严格连续无缺口）。
 5. 服务端返回 `limits`（全部正值整数）。客户端校验任何字段都不得大于自身硬上限，随后调用 `LocalTransport.setLimits()` 在握手后同步收紧帧大小与发送队列；现存缓冲超限时传输关闭并抛错。缺少 `setLimits` 能力的自定义传输在连接期失败，不静默使用默认值。
 
 `DEFAULT_LIMITS`（服务端下发即采用值）：
@@ -38,16 +38,29 @@
 |---|---|---|
 | `initialize` | `ProtocolOffer`：`protocolVersion`（整数 2）、`clientName`、`capabilities`、可选 `token` | `NegotiatedProtocol & { serverInstanceId, clientId, limits }` |
 | `ping` | `{}` | `{ alive: true, serverInstanceId }` |
-| `session/list` | `workspaceRoot`（绝对路径）、可选 `cursor`、`limit`（1–50，默认 20） | `{ items: { conversationId, title }[], cursor: string \| null }` |
-| `session/create` | `workspaceRoot`（绝对路径） | `{ sessionId, conversationId }` |
-| `session/open` | `workspaceRoot`、`conversationId` | `{ sessionId, conversationId }` |
+| `session/list` | `workspaceRoot`（绝对路径）、可选 `cursor`、`limit`（1–50，默认 20） | `{ items: { conversationId, title, delegation?: WireSessionDelegation }[], cursor: string \| null }`（`delegation` 仅在声明任一 v0.1.6 能力时下发） |
+| `session/create` | `workspaceRoot`（绝对路径）、可选 `worktree?: WireWorktreeOption`（启用时需能力 `worktree`） | `{ sessionId, conversationId, worktree?: WireWorktreeSummary }`（`worktree` 仅在协商含 `worktree` 能力时下发） |
+| `session/open` | `workspaceRoot`、`conversationId` | `{ sessionId, conversationId, worktree?: WireWorktreeSummary }`（`worktree` 仅在协商含 `worktree` 能力时下发） |
 | `session/attach` | `sessionId`、`mode: 'control' \| 'observe'`、可选 `serverInstanceId` | 完整快照（`WireSnapshot`，客户端重组为 `ClientSnapshot`） |
 | `session/snapshot` | `sessionId`、可选 `cursor` | 无 `cursor`：完整快照；带 `cursor`：`{ chunk, cursor }` 原始续块 |
 | `session/detach` | `sessionId` | `{ detached: true }` |
 | `session/close` | `SessionControl` | `{ closed: true }` |
-| `run/start` | `SessionControl` + `clientOperationId`、`input` | `{ runId, accepted: true }` |
+| `run/start` | `SessionControl` + `clientOperationId`、`input`、可选 `references?: WireReferenceSelection[]`（携带时需能力 `references`；未声明 `'retry'` 的控制连接自动以 `allowMidStreamRetry: false` 运行） | `{ runId, accepted: true }` |
 | `run/cancel` | `SessionControl` + `runId` | `{ cancellationRequested: true }` |
-| `approval/request` | `ApprovalPrompt`（服务端 → 控制连接发起） | `{ choice: ApprovalChoice }` |
+| `approval/request` | `ApprovalPrompt`（服务端 → 控制连接发起；声明任一 v0.1.6 能力时含可选子代理溯源 `subagentOrigin`） | `{ choice: ApprovalChoice }` |
+| `reference/candidates` | `{ workspaceRoot, limit? }`（能力 `references`；工作区须已信任） | `{ items: WireReferenceCandidateItem[] }` |
+| `reference/search` | `{ workspaceRoot, query, limit? }`（能力 `references`；工作区须已信任） | `{ hits: WireReferenceSearchHit[] }` |
+| `reference/read` | `{ workspaceRoot, sessionId, recordIds?, branchId?, limit? }`（能力 `references`；只读冻结快照并默认脱敏） | `{ sessionId, title?, branchId, records: WireReferenceRecord[], partial? }` |
+| `checkpoint/list` | `{ sessionId, external? }`（能力 `checkpoint`；本地需先 attach，外部会话传 `external: true`） | `{ items: WireCheckpointItem[] }` |
+| `checkpoint/diff` | `{ sessionId, ordinal?, fromOrdinal?, toOrdinal?, includeLiveWorktree?, external? }`（能力 `checkpoint`） | `{ available, additions, deletions, truncated, files: WireFileDiff[] }` |
+| `checkpoint/restore` | `{ sessionId, targetOrdinal, force?, external? }`（能力 `checkpoint`；本地会话需当前控制连接且空闲，携带代际字段时校验代际一致） | `{ status: 'restored' \| 'conflict' \| 'noop', restoredFiles, deletedFiles, conflicts }` |
+| `worktree/list` | `{ workspaceRoot }`（能力 `worktree`；工作区须已信任） | `{ items: WireWorktreeSummary[] }` |
+| `worktree/create` | `{ workspaceRoot, name?, branch?, baseRef? }`（能力 `worktree`；零网络本地切出） | `WireWorktreeSummary` |
+| `worktree/status` | `{ workspaceRoot, id }`（能力 `worktree`；含 4 步 `.git` 双向回链验真结果） | `WireWorktreeStatus` |
+| `worktree/diff` | `{ workspaceRoot, id }`（能力 `worktree`） | `{ id, branch, baseCommit, headCommit, additions, deletions, truncated, files: WireFileDiff[] }` |
+| `worktree/previewMerge` | `{ workspaceRoot, id }`（能力 `worktree`；生成对称统计与防漂移 `previewToken`） | `WireMergePreview` |
+| `worktree/applyMerge` | `{ workspaceRoot, id, previewToken, commitMessage? }`（能力 `worktree`；先在工作树内预合并，冲突不污染主工作区） | `{ status: 'merged' \| 'conflict', mergedCommit: string \| null, targetBranch: string \| null, conflictedFiles: string[] }` |
+| `worktree/remove` | `{ workspaceRoot, id, force? }`（能力 `worktree`；三路脏检查与 Windows Junction 安全摘除） | `{ removed: boolean, reason: 'dirty' \| 'unmerged_commits' \| 'at_risk_ignored_files' \| null, details: string[] }` |
 | `watch/list` | `sessionId`（需先 attach） | `{ items: WatchWireItem[] }` |
 | `watch/cancel` | `SessionControl` + `watchId` | `{ cancelled: true }` |
 | `evidence/read` | `sessionId`（需先 attach；能力 `evidence`） | `ViewEvidence`：`{ summary, changes, references, mcp, delegations }` |
@@ -57,8 +70,8 @@
 | `external/harnessToggle` | `{ id, enabled }` | `{ harnesses: ExternalHarnessWireItem[] }` |
 | `external/harnessDelete` | `{ id }` | `{ harnesses: ExternalHarnessWireItem[] }` |
 | `external/harnessTest` | `{ id, workspaceRoot? }` | `ExternalProbeWire`（`available`、`status`、`loadSupported`、可选版本与提示） |
-| `external/list` | `{ workspaceRoot }`（绝对路径且须已信任） | `{ items: ExternalSessionWireItem[] }` |
-| `external/open` | `{ workspaceRoot, harnessId, title? }`（工作区须已信任，自动绑定当前连接为控制者） | `ExternalSnapshotWire` |
+| `external/list` | `{ workspaceRoot }`（绝对路径且须已信任） | `{ items: ExternalSessionWireItem[] }`（条目内 `worktree` 与 `diffSummary` 分别按 `worktree` / `checkpoint` 协商能力门控） |
+| `external/open` | `{ workspaceRoot, harnessId, title?, worktree? }`（工作区须已信任，自动绑定当前连接为控制者；携带 `worktree` 时需协商能力 `worktree`） | `ExternalSnapshotWire`（`session.worktree` 与 `session.diffSummary` 分别按 `worktree` / `checkpoint` 能力门控） |
 | `external/attach` / `external/detach` | `{ sessionId }`（无活跃控制者时 `attach` 自动接管控制权；控制者 `detach` 自动取消在途轮次） | `ExternalSnapshotWire` / `{ detached: true }` |
 | `external/snapshot` | `{ sessionId }` | `ExternalSnapshotWire` |
 | `external/prompt` | `{ sessionId, text }`（须为当前控制连接，否则 `CONTROL_REQUIRED`） | `ExternalSnapshotWire` |
@@ -71,7 +84,7 @@
 
 `WatchWireItem = { watchId, kind: 'file_change' \| 'port_ready', target, state: 'armed' \| 'fired' \| 'timeout' \| 'cancelled' \| 'orphaned', armedAt, deadlineAt, closedAt: number \| null, detail: string \| null }`。`process_exit` 自 v0.1.4 起整体摘除，不再出现在 wire 上；历史落盘的遗留记录由读取侧按残缺数据跳过并输出诊断。`watch/list` 与 `session/snapshot` 同门禁：未 attach 返回 `CONTROL_REQUIRED`；默认 `createResourceFactory`（`kpbl serve`）经 `createManagedSessionResources` 在会话单写者锁（`SessionLock`）内完整布置监视触发源，若自定义 `ResourceFactory` 未注入监视门面，则 `watch/list` 返回空列表、`watch/cancel` 返回 `INVALID_REQUEST`。
 
-`ViewEvidence` 的 `changes` 只统计成功的 `write_file` / `edit_file`：`status` 为 `recorded` 时带精确 `additions` / `deletions`，`truncated`（文件过大或超出差分预算）与 `missing`（旧历史没有落盘事实）都把数字置为 `null`，调用方必须显示「未记录」而不是 0；`run_command` 的间接改动不计入。`mcp` 按 `mcp__<server>__<tool>` 归组，失败只认工具结果的 `isError`；`delegations` 只含当前父会话派生的子会话，父会话已收尾但子任务仍在活动时 `state` 为 `ended`。该方法是只读聚合，宿主不提供证据面时返回 `INVALID_REQUEST`。
+`ViewEvidence` 的 `changes` 按用户发言轮次（0-based）逐轮对齐变更来源：已被 Shadow Git `turn` 检查点覆盖的轮次采用检查点捕获的真实磁盘增删改（涵盖 `write_file`、`edit_file` 与 `run_command` 间接改写）；未被检查点覆盖的轮次（如未启用检查点、该轮超时/熔断跳过、或正在运行尚未结算后置快照）无损回退统计成功的 `write_file` / `edit_file` 落盘事实（`status` 为 `recorded` 时带精确 `additions` / `deletions`，`truncated` 与 `missing` 均将数字置为 `null`，调用方必须显示「未记录」而不是 0）。`mcp` 按 `mcp__<server>__<tool>` 归组，失败只认工具结果的 `isError`；`delegations` 只含当前父会话派生的子会话，父会话已收尾但子任务仍在活动时 `state` 为 `ended`。该方法是只读聚合，宿主不提供证据面时返回 `INVALID_REQUEST`。
 
 `SessionControl = { sessionId, streamEpoch, controlEpoch }`。写类方法（`session/close`、`run/start`、`run/cancel`、`watch/cancel`）只有当前控制连接可调用：观察或未 attach 的连接返回 `CONTROL_REQUIRED`，代际过期返回 `STALE_CONTROL`。宿主进入停机流程后除 `ping`、`host/shutdown` 外一律 `SHUTTING_DOWN`。
 
@@ -90,6 +103,8 @@
 | `tool_finish` | `{ toolId, result, isError, truncated }` |
 | `run_started` | `{ clientOperationId }` |
 | `run_settled` | `{ outcome: 'completed' \| 'failed' \| 'cancelled' }` |
+| `stream_reset` | `{ step, attempt }`（仅向声明能力 `'retry'` 的连接下发：清空当前未落盘模型步的半截流式增量，已落盘工具步保留） |
+| `retry_scheduled` | `{ step, attempt, maxRetries, delayMs, nextRetryAt, category, message }`（仅向声明能力 `'retry'` 的连接下发：展示指数退避倒计时） |
 | `approval_closed` | `{ approvalId }` |
 | `diagnostic` | `{ code, message }` |
 
@@ -123,7 +138,7 @@
 
 ## 7. 审批
 
-审批是服务端向**控制连接**发起的反向请求，`ApprovalPrompt` 携带 `approvalId`、`runId`、`toolName`、`target`、`sessionAllowed` 与 `expiresAt`。客户端可订阅 `approval/request`（`LocalClientOptions.approval`），缺省为 `cancel`：不能从模型输出自动推导允许。
+审批是服务端向**控制连接**发起的反向请求，`ApprovalPrompt` 携带 `approvalId`、`runId`、`toolName`、`target`、`sessionAllowed`、`expiresAt` 及可选 `subagentOrigin`（当客户端协商了任一 v0.1.6 新能力时下发，子代理审批向父会话控制连接冒泡时保留最内层子代理 `agentId`、`role`、`description`、`childSessionId` 与 `parentSessionId`；含父轮次结束后后台 `detached` 子代理发起的延迟审批，此时服务端将 `runId` 回退为 `subagentOrigin.agentId ?? 'background'`）。客户端可订阅 `approval/request`（`LocalClientOptions.approval`），缺省为 `cancel`：不能从模型输出自动推导允许。
 
 - 五种选择与 Core 语义一致：`allow_once`、`allow_session`、`deny_once`、`deny_session`、`cancel`；客户端不能通过批准回复改写执行参数，执行身份由服务端保留。
 - 展示只包含可解释目标：文件路径、绑定后的完整 shell 命令与工作目录/解释器、子代理角色与任务摘要、技能名、MCP 服务名称/来源/传输/目标，以及 MCP 工具白名单定位字段。含控制字符以可见转义表示；超出预算或脱敏后无法完整说明执行目标时拒绝审批，不截断后放行。

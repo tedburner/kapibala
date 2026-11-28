@@ -1,9 +1,11 @@
 import {
   type PresentationEvent,
   type PresentationState,
+  type ViewDiffSummary,
   type ViewIdentity,
   type ViewMessage,
   type ViewTodoState,
+  type ViewWorktreeSummary,
   createPresentation,
   reducePresentation,
 } from '../view-model/index.js';
@@ -27,10 +29,19 @@ export class PresentationStore {
     identity: ViewIdentity,
     messages: readonly ViewMessage[] = [],
     todos?: ViewTodoState,
+    extra?: {
+      readonly worktree?: ViewWorktreeSummary;
+      readonly diffSummary?: ViewDiffSummary;
+    },
   ) {
     const base = createPresentation(identity, messages);
-    // 会话级任务清单从初始历史重算后随快照下发；运行中变化走 todos_changed 事件。
-    this.state = todos ? { ...base, todos } : base;
+    // 会话级任务清单、工作树绑定与初始检查点变更摘要随快照下发；运行中变化走增量事件。
+    this.state = {
+      ...base,
+      ...(todos ? { todos } : {}),
+      ...(extra?.worktree ? { worktree: { ...extra.worktree } } : {}),
+      ...(extra?.diffSummary ? { diffSummary: { ...extra.diffSummary } } : {}),
+    };
   }
 
   /** 读取已经按顺序更新的只读快照，不等待下一帧或微任务。 */
@@ -67,12 +78,20 @@ export class PresentationStore {
     return true;
   }
 
-  /** 显式切换视图必须推进代次，取消旧回调；不从旧视图恢复偏好或权限。 */
+  /** 显式切换视图必须推进代次，取消旧回调；仅在同一会话内重载分支时保留工作树与变更摘要，切往新会话时不残留旧会话工作台状态。 */
   reload(identity: ViewIdentity, messages: readonly ViewMessage[]): void {
     if (this.closed) return;
     if (identity.viewEpoch <= this.state.identity.viewEpoch)
       throw new Error('视图重载必须推进 viewEpoch');
-    this.state = createPresentation(identity, messages);
+    const sameConversation = this.state.identity.conversationId === identity.conversationId;
+    const prevWorktree = sameConversation ? this.state.worktree : undefined;
+    const prevDiffSummary = sameConversation ? this.state.diffSummary : undefined;
+    const base = createPresentation(identity, messages);
+    this.state = {
+      ...base,
+      ...(prevWorktree ? { worktree: { ...prevWorktree } } : {}),
+      ...(prevDiffSummary ? { diffSummary: { ...prevDiffSummary } } : {}),
+    };
     this.flush();
   }
 

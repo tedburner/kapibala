@@ -1,4 +1,5 @@
 import readline from 'node:readline';
+import { createCliTheme } from './theme.js';
 
 /** 菜单选项；badge 与 description 仅影响展示，选择结果由 value 承载。 */
 export interface SelectOption<T = string> {
@@ -41,6 +42,7 @@ export async function select<T = string>(config: SelectConfig<T>): Promise<T | n
     process.stdin.setRawMode(true);
     process.stdin.resume();
 
+    const ui = createCliTheme({ isTTY: Boolean(process.stdout.isTTY) });
     const render = () => {
       // 若已渲染过，先清除上一帧输出的行数
       if (isRendered) {
@@ -49,16 +51,16 @@ export async function select<T = string>(config: SelectConfig<T>): Promise<T | n
         process.stdout.write(`\x1b[${totalLines}A\r`);
       }
 
-      let buffer = `\n\x1b[1m\x1b[36m? ${message}\x1b[0m \x1b[90m(按 ↑/↓ 移动，回车确认，Esc 取消)\x1b[0m\n`;
+      let buffer = `\n${ui.strong(ui.info(`? ${message}`))} ${ui.subtle('(按 ↑/↓ 移动，回车确认，Esc 取消)')}\n`;
 
       options.forEach((opt, idx) => {
         const isCurrent = idx === selectedIndex;
-        const pointer = isCurrent ? '\x1b[36m❯\x1b[0m' : ' ';
-        const radio = isCurrent ? '\x1b[32m●\x1b[0m' : '\x1b[90m○\x1b[0m';
-        const num = `\x1b[90m${idx + 1})\x1b[0m`;
-        const labelText = isCurrent ? `\x1b[1m\x1b[32m${opt.label}\x1b[0m` : opt.label;
-        const badge = opt.badge ? ` \x1b[33m[${opt.badge}]\x1b[0m` : '';
-        const desc = opt.description ? ` \x1b[90m- ${opt.description}\x1b[0m` : '';
+        const pointer = isCurrent ? ui.info('❯') : ' ';
+        const radio = isCurrent ? ui.success(ui.glyphs.active) : ui.subtle(ui.glyphs.pending);
+        const num = ui.subtle(`${idx + 1})`);
+        const labelText = isCurrent ? ui.strong(ui.success(opt.label)) : opt.label;
+        const badge = opt.badge ? ` ${ui.warning(`[${opt.badge}]`)}` : '';
+        const desc = opt.description ? ` ${ui.subtle(`- ${opt.description}`)}` : '';
 
         buffer += `  ${pointer} ${radio} ${num} ${labelText}${badge}${desc}\x1b[K\n`;
       });
@@ -86,11 +88,13 @@ export async function select<T = string>(config: SelectConfig<T>): Promise<T | n
       } else if (key.name === 'return' || key.name === 'enter') {
         cleanup();
         const selected = options[selectedIndex]!;
-        process.stdout.write(`\n\x1b[32m✔ 已选择: ${selected.label}\x1b[0m\n\n`);
+        process.stdout.write(
+          `\n${ui.success(`${ui.glyphs.success} 已选择: ${selected.label}`)}\n\n`,
+        );
         resolve(selected.value);
       } else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
         cleanup();
-        process.stdout.write('\n\x1b[90m(已取消选择)\x1b[0m\n\n');
+        process.stdout.write(`\n${ui.subtle('(已取消选择)')}\n\n`);
         resolve(null);
       } else if (key.name && /^[1-9]$/.test(key.name)) {
         const num = Number.parseInt(key.name, 10);

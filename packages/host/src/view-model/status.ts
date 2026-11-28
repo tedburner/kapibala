@@ -18,6 +18,7 @@ export type TaskDeliveryStatus = 'not-ready' | 'pending' | 'collected' | 'unknow
 /** 宿主白名单投影后的子任务摘要；不携带提示词、权限、路径或原始可变任务对象。 */
 export interface TaskSummary {
   readonly agentId: string;
+  readonly sessionId?: string;
   readonly description: string;
   readonly role: string;
   readonly status: TaskExecutionStatus;

@@ -1,0 +1,389 @@
+/* 017 §3.3 & §6.3 · Streamdown 对话阅读流排版：15px / 1.72 行高、单层代码与表格卡片、禁用虚拟滚动测量跳动。 */
+@layer prose {
+  .kpbl-prose,
+  .kapibala-prose {
+    min-width: 0;
+    max-width: 100%;
+    color: var(--kpbl-ink-default);
+    font-size: var(--kpbl-text-prose);
+    line-height: var(--kpbl-leading-prose);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .kpbl-prose p,
+  .kapibala-prose p {
+    margin: 0.65em 0;
+  }
+
+  .kpbl-prose p:first-child,
+  .kapibala-prose p:first-child {
+    margin-top: 0;
+  }
+
+  .kpbl-prose p:last-child,
+  .kapibala-prose p:last-child {
+    margin-bottom: 0;
+  }
+
+  .kpbl-prose :is(strong, b),
+  .kapibala-prose :is(strong, b) {
+    color: var(--kpbl-ink-strong);
+    font-weight: 600;
+  }
+
+  .kpbl-prose :is(del, s),
+  .kapibala-prose :is(del, s) {
+    color: var(--kpbl-ink-subtle);
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
+
+  .kpbl-prose :is(h1, h2, h3, h4, h5, h6),
+  .kapibala-prose :is(h1, h2, h3, h4, h5, h6) {
+    color: var(--kpbl-ink-strong);
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    line-height: 1.35;
+    text-wrap: balance;
+  }
+
+  .kpbl-prose h1,
+  .kapibala-prose h1 {
+    margin: 1.25em 0 0.45em;
+    font-size: 1.28em;
+  }
+
+  .kpbl-prose h2,
+  .kapibala-prose h2 {
+    margin: 1.15em 0 0.4em;
+    font-size: 1.14em;
+  }
+
+  .kpbl-prose h3,
+  .kapibala-prose h3 {
+    margin: 1.05em 0 0.35em;
+    font-size: 1.05em;
+  }
+
+  .kpbl-prose :is(h4, h5, h6),
+  .kapibala-prose :is(h4, h5, h6) {
+    margin: 0.95em 0 0.3em;
+    font-size: 1em;
+  }
+
+  .kpbl-prose :is(h1, h2, h3, h4, h5, h6):first-child,
+  .kapibala-prose :is(h1, h2, h3, h4, h5, h6):first-child {
+    margin-top: 0;
+  }
+
+  .kpbl-prose :is(ul, ol),
+  .kapibala-prose :is(ul, ol) {
+    margin: 0.55em 0 0.75em;
+    padding-left: 1.55em;
+    list-style-position: outside;
+  }
+
+  .kpbl-prose ul,
+  .kapibala-prose ul {
+    list-style-type: disc;
+  }
+
+  .kpbl-prose ol,
+  .kapibala-prose ol {
+    list-style-type: decimal;
+    font-variant-numeric: tabular-nums;
+    padding-left: 1.7em;
+  }
+
+  .kpbl-prose li,
+  .kapibala-prose li {
+    margin: 0.24em 0;
+    padding-left: 0.15em;
+  }
+
+  .kpbl-prose li::marker,
+  .kapibala-prose li::marker {
+    color: var(--kpbl-ink-subtle);
+  }
+
+  .kpbl-prose blockquote,
+  .kapibala-prose blockquote {
+    margin: 0.8em 0;
+    padding: 0.55em 0.9em;
+    border: 0;
+    border-left: 2px solid var(--kpbl-line-default);
+    border-radius: 0 var(--kpbl-r-sm) var(--kpbl-r-sm) 0;
+    background-color: var(--kpbl-bg-subtle);
+    color: var(--kpbl-ink-subtle);
+    font-style: normal;
+  }
+
+  .kpbl-prose hr,
+  .kapibala-prose hr {
+    margin: 1.2em 0;
+    border: 0;
+    border-top: 1px solid var(--kpbl-line-subtle);
+  }
+
+  .kpbl-prose a,
+  .kapibala-prose a {
+    color: var(--kpbl-ink-strong);
+    text-decoration-line: underline;
+    text-decoration-color: var(--kpbl-line-strong);
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+    transition-property: color, text-decoration-color;
+    transition-duration: var(--kpbl-duration-fast);
+    transition-timing-function: var(--kpbl-ease-standard);
+  }
+
+  .kpbl-prose a:hover,
+  .kapibala-prose a:hover {
+    text-decoration-color: var(--kpbl-ink-strong);
+  }
+
+  /* 行内代码固定 --kpbl-r-xs (4px) 圆角（017 §3.3）。 */
+  .kpbl-prose :not(pre) > code,
+  .kpbl-prose [data-streamdown="inline-code"],
+  .kapibala-prose :not(pre) > code,
+  .kapibala-prose [data-streamdown="inline-code"] {
+    font-family: var(--kpbl-font-mono);
+    font-size: 0.86em;
+    font-variant-ligatures: none;
+    padding: 0.14em 0.4em;
+    border-radius: var(--kpbl-r-xs);
+    background-color: var(--kpbl-bg-subtle);
+    color: var(--kpbl-ink-strong);
+  }
+
+  /* 显式保持 content-visibility: visible，防止与 @tanstack/react-virtual 动态行高测量打架（017 §6.3）。 */
+  .kpbl-prose [data-streamdown="code-block"],
+  .kpbl-prose [data-streamdown="mermaid-block"],
+  .kapibala-prose [data-streamdown="code-block"],
+  .kapibala-prose [data-streamdown="mermaid-block"] {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
+    position: relative;
+    margin: 0.85em 0;
+    padding: 0;
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--kpbl-line-default);
+    border-radius: var(--kpbl-r-md);
+    background-color: var(--kpbl-bg-canvas);
+  }
+
+  .kpbl-prose [data-streamdown="code-block-header"],
+  .kpbl-prose [data-streamdown="mermaid-block"] > div:first-child,
+  .kapibala-prose [data-streamdown="code-block-header"],
+  .kapibala-prose [data-streamdown="mermaid-block"] > div:first-child {
+    display: flex;
+    height: 32px;
+    min-height: 32px;
+    align-items: center;
+    padding: 0 8.5rem 0 var(--kpbl-space-3);
+    border-bottom: 1px solid var(--kpbl-line-subtle);
+    background-color: var(--kpbl-bg-subtle);
+    color: var(--kpbl-ink-subtle);
+    font-family: var(--kpbl-font-mono);
+    font-size: var(--kpbl-text-xs);
+  }
+
+  .kpbl-prose [data-streamdown="code-block-body"],
+  .kapibala-prose [data-streamdown="code-block-body"] {
+    margin: 0;
+    padding: var(--kpbl-space-3) var(--kpbl-space-4);
+    border: 0;
+    border-radius: 0;
+    background-color: transparent;
+    font-size: var(--kpbl-text-code, var(--kpbl-text-md));
+    line-height: 1.6;
+  }
+
+  .kpbl-prose [data-streamdown="code-block-body"] pre,
+  .kpbl-prose [data-streamdown="code-block"] pre,
+  .kapibala-prose [data-streamdown="code-block-body"] pre,
+  .kapibala-prose [data-streamdown="code-block"] pre {
+    margin: 0;
+    border: 0;
+    background-color: transparent;
+    color: var(--kpbl-ink-default);
+    font-family: var(--kpbl-font-mono);
+    font-size: var(--kpbl-text-code, var(--kpbl-text-md));
+    line-height: 1.6;
+  }
+
+  :root[data-code-ligatures="true"] :is(pre, code, .kpbl-mono-inline, .kpbl-inspector-pre) {
+    font-variant-ligatures: contextual common-ligatures;
+  }
+
+  :root[data-code-ligatures="false"] :is(pre, code, .kpbl-mono-inline, .kpbl-inspector-pre) {
+    font-variant-ligatures: none;
+  }
+
+  .kpbl-prose [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]),
+  .kpbl-prose
+    [data-streamdown="mermaid-block"]
+    > div:has([data-streamdown="mermaid-block-actions"]),
+  .kapibala-prose [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]),
+  .kapibala-prose
+    [data-streamdown="mermaid-block"]
+    > div:has([data-streamdown="mermaid-block-actions"]) {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 2;
+    display: flex;
+    height: 32px;
+    align-items: center;
+    padding: 0 var(--kpbl-space-1);
+  }
+
+  .kpbl-prose [data-streamdown="code-block-actions"],
+  .kpbl-prose [data-streamdown="mermaid-block-actions"],
+  .kapibala-prose [data-streamdown="code-block-actions"],
+  .kapibala-prose [data-streamdown="mermaid-block-actions"] {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background-color: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .kpbl-prose [data-streamdown="code-block-actions"] > button:not(.kpbl-btn):not(.kpbl-icon-btn),
+  .kpbl-prose [data-streamdown="mermaid-block-actions"] > button,
+  .kapibala-prose
+    [data-streamdown="code-block-actions"]
+    > button:not(.kpbl-btn):not(.kpbl-icon-btn),
+  .kapibala-prose [data-streamdown="mermaid-block-actions"] > button {
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--kpbl-r-sm);
+    background-color: transparent;
+    color: var(--kpbl-ink-subtle);
+    cursor: pointer;
+    transition-property: background-color, color;
+    transition-duration: var(--kpbl-duration-fast);
+    transition-timing-function: var(--kpbl-ease-standard);
+  }
+
+  .kpbl-prose
+    [data-streamdown="code-block-actions"]
+    > button:not(.kpbl-btn):not(.kpbl-icon-btn):hover,
+  .kpbl-prose [data-streamdown="mermaid-block-actions"] > button:hover,
+  .kapibala-prose
+    [data-streamdown="code-block-actions"]
+    > button:not(.kpbl-btn):not(.kpbl-icon-btn):hover,
+  .kapibala-prose [data-streamdown="mermaid-block-actions"] > button:hover {
+    background-color: var(--kpbl-bg-subtle);
+    color: var(--kpbl-ink-strong);
+  }
+
+  .kpbl-prose .kapibala-code-shell[data-code-wrap="true"] [data-streamdown="code-block-body"],
+  .kpbl-prose .kapibala-code-shell[data-code-wrap="true"] [data-streamdown="code-block"] pre,
+  .kpbl-prose .kapibala-code-shell[data-code-wrap="true"] [data-streamdown="code-block"] code,
+  .kapibala-prose .kapibala-code-shell[data-code-wrap="true"] [data-streamdown="code-block-body"],
+  .kapibala-prose .kapibala-code-shell[data-code-wrap="true"] [data-streamdown="code-block"] pre,
+  .kapibala-prose .kapibala-code-shell[data-code-wrap="true"] [data-streamdown="code-block"] code {
+    overflow-x: hidden;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* 单层 GFM 表格：顶栏与 12px 表头 + tabular-nums 数值列。 */
+  .kpbl-prose [data-streamdown="table-wrapper"] > div:first-child,
+  .kapibala-prose [data-streamdown="table-wrapper"] > div:first-child {
+    display: flex;
+    height: 30px;
+    min-height: 30px;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    padding: 0 var(--kpbl-space-2);
+    border-bottom: 1px solid var(--kpbl-line-subtle);
+    border-radius: var(--kpbl-r-md) var(--kpbl-r-md) 0 0;
+    background-color: var(--kpbl-bg-subtle);
+  }
+
+  .kpbl-prose [data-streamdown="table-wrapper"] > div:last-child,
+  .kapibala-prose [data-streamdown="table-wrapper"] > div:last-child {
+    margin: 0;
+    overflow-x: auto;
+    border-radius: 0 0 var(--kpbl-r-md) var(--kpbl-r-md);
+  }
+  .kpbl-prose [data-streamdown="table-wrapper"],
+  .kapibala-prose [data-streamdown="table-wrapper"] {
+    position: relative;
+    margin: 0.85em 0;
+    overflow: visible;
+    border: 1px solid var(--kpbl-line-default);
+    border-radius: var(--kpbl-r-md);
+    background-color: var(--kpbl-bg-surface);
+  }
+
+  .kpbl-prose :is(table, [data-streamdown="table"]),
+  .kapibala-prose :is(table, [data-streamdown="table"]) {
+    width: 100%;
+    margin: 0;
+    border-collapse: collapse;
+    font-size: var(--kpbl-text-md);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.55;
+  }
+
+  .kpbl-prose th,
+  .kapibala-prose th {
+    padding: var(--kpbl-space-2) var(--kpbl-space-3);
+    border-bottom: 1px solid var(--kpbl-line-subtle);
+    background-color: var(--kpbl-bg-subtle);
+    color: var(--kpbl-ink-strong);
+    font-size: var(--kpbl-text-sm);
+    font-weight: 600;
+    text-align: left;
+  }
+
+  .kpbl-prose td,
+  .kapibala-prose td {
+    padding: var(--kpbl-space-2) var(--kpbl-space-3);
+    border-bottom: 1px solid var(--kpbl-line-subtle);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .kpbl-prose tbody tr:last-child td,
+  .kapibala-prose tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  /* KaTeX 块级公式超宽时内部横向滚动，不撑破对话阅读列。 */
+  .kpbl-prose .katex-display,
+  .kapibala-prose .katex-display {
+    max-width: 100%;
+    margin: 0.85em 0;
+    padding: var(--kpbl-space-2) var(--kpbl-space-3);
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-radius: var(--kpbl-r-md);
+    background-color: var(--kpbl-bg-canvas);
+  }
+
+  /* 思考过程紧凑排版变体（13px 次级墨色）。 */
+  .kpbl-prose-compact,
+  .kapibala-prose-compact {
+    color: var(--kpbl-ink-subtle);
+    font-size: var(--kpbl-text-md);
+    line-height: 1.6;
+  }
+}

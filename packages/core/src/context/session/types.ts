@@ -9,6 +9,7 @@ import type { ModelProfile, ModelProvider } from '../../models/index.js';
 import type {
   ContentBlock,
   ContextUsage,
+  ModelRetryOptions,
   PromptContentSource,
   RunMetrics,
   TurnMetrics,
@@ -88,6 +89,8 @@ export interface SessionOptions {
   depth?: number;
   /** 当前子会话对应的 agentId。 */
   agentId?: string;
+  /** 模型单步请求自动退避重试与断流恢复配置；缺省允许最多 2 次退避重试且禁用半截流式输出回滚。 */
+  retry?: ModelRetryOptions;
 }
 
 /** 显式工作区根至少提供其一；保留 rootDir-only 兼容输入，双字段物理冲突在构造时拒绝。 */
@@ -113,4 +116,19 @@ export interface SessionStats {
   lastRunMetrics?: RunMetrics;
   /** 最近一次内部模型请求的窗口占用；无实测时仅提供窗口上限。 */
   contextUsage: ContextUsage;
+}
+
+/**
+ * 创建附带背景摘要新分支的可选控制参数。
+ *
+ * 约束：未传 `customSummary` 时使用会话 `summary` 角色模型提炼切点前的可见对话结论；
+ * 若切点处尚无用户或助手正文，则回退确定性宿主说明而不发起空摘要模型调用。
+ */
+export interface CreateBranchWithSummaryOptions {
+  /** 分叉切点记录 ID；缺省取当前活动分支最新叶子记录。 */
+  readonly baseRecordId?: string;
+  /** 显式指定的分支背景摘要文本；传入后跳过模型生成并以 `generatedBy: 'host'` 落盘。 */
+  readonly customSummary?: string;
+  /** 控制模型生成摘要阶段的可选中止信号。 */
+  readonly signal?: AbortSignal;
 }

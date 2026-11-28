@@ -50,7 +50,8 @@ export const quoteCommand: CommandHandler = async (args, ctx) => {
     out.log('当前宿主不支持跨会话引用。');
     return;
   }
-  const projectRoot = ctx.session.workspaceRoot;
+  const projectRoot =
+    ctx.projectRoot ?? ctx.controller?.manager.project.projectRoot ?? ctx.session.workspaceRoot;
   const homeDirectory = ctx.homeDir;
   const host = { projectRoot, ...(homeDirectory ? { homeDirectory } : {}) };
 

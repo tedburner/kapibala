@@ -694,7 +694,7 @@ describe('AgentRuntime and spawn launch transactions', () => {
     });
     const ctx = createDefaultContext();
 
-    // Reject worktree isolation
+    // Reject worktree isolation when no worktreeProvider is configured
     await expect(
       runtime.prepareSpawn(ctx, {
         description: 'worktree task',
@@ -702,7 +702,7 @@ describe('AgentRuntime and spawn launch transactions', () => {
         role: 'implement',
         isolation: 'worktree',
       }),
-    ).rejects.toThrow(/Worktree isolation is not currently supported/);
+    ).rejects.toThrow(/Worktree isolation requires a configured worktree provider/);
 
     // Reject unrecognized modelOverride
     await expect(

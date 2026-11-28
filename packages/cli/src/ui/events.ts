@@ -18,6 +18,7 @@ import {
   formatToolResultSummary,
   sanitizeToolName,
 } from '@kiturone/kapibala-host/internal';
+import { createCliTheme } from './theme.js';
 import { charWidth, displayWidth } from './width.js';
 
 /** 事件渲染器的可注入项；全部缺省时直接写 stdout，宿主可替换以复用同一渲染逻辑。 */
@@ -76,22 +77,21 @@ interface FooterSegment {
   dropPriority: number;
 }
 
-const ESC = '\x1b';
+const CSI = '\x1b[';
 /**
- * 根据终端能力受控为文本添加 ANSI 色彩控制序列。
+ * 根据终端能力与环境变量策略受控为文本添加 ANSI 色彩控制序列（委托 `theme.ts` 统一维护 SGR 编码）。
  *
  * 保证与约束：
- * - 当 enabled 为 true 时包裹 ANSI 色彩码并在末尾以 reset（\x1b[0m）闭合；
- * - 当 enabled 为 false（非 TTY、管道或重定向环境）时原样返回 text，绝不输出任何 ESC 字节；
- * - 调用方应基于 isTTY 门控传入 enabled，防止管道消费乱码。
+ * - 始终优先遵守 `NO_COLOR`（定义即禁色），未定义时支持 `FORCE_COLOR` 覆盖，最后回退 `enabled`（即 `isTTY`）；
+ * - 禁色时原样返回 `text`，绝不输出任何 ESC 字节。
  *
  * @param text - 待着色的文本内容。
  * @param code - ANSI SGR 代码（如 1 为粗体，31 为红，32 为绿，36 为青，90 为灰）。
- * @param enabled - 是否允许输出 ANSI 控制序列。
+ * @param enabled - 目标输出流是否为交互式 TTY。
  * @returns 格式化后的安全文本。
  */
 export function color(text: string, code: number, enabled: boolean): string {
-  return enabled ? `${ESC}[${code}m${text}${ESC}[0m` : text;
+  return createCliTheme({ isTTY: enabled }).sgr(text, code);
 }
 
 function formatDuration(durationMs: number): string {
@@ -250,7 +250,7 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
     isThinking = false;
     thinkingKey = undefined;
     markToolLinesStale();
-    write(`${isTTY ? `${ESC}[0m` : ''}\n\n`);
+    write(`${createCliTheme({ isTTY }).reset()}\n\n`);
   };
 
   return {
@@ -342,6 +342,16 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
         finishThinking();
         markToolLinesStale();
         write(sanitizeUntrustedOutput(event.text));
+      } else if (event.type === 'stream_reset') {
+        finishThinking();
+        markToolLinesStale();
+      } else if (event.type === 'retry_scheduled') {
+        finishThinking();
+        markToolLinesStale();
+        const seconds = Math.max(1, Math.round(event.delayMs / 1_000));
+        write(
+          `\n${color(`⟳ 模型请求暂时受限，将在 ${seconds}s 后自动重试 (${event.attempt}/${event.maxRetries})…`, 33, isTTY)}\n`,
+        );
       } else if (event.type === 'tool_start') {
         finishThinking();
         const safeToolName = sanitizeToolName(event.name);
@@ -356,7 +366,7 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
           interactiveToolLines.push(event.id);
           if (interactiveToolLines.length > 8) markToolLinesStale();
           write(
-            `${color(formatToolLine(invocation, '…', undefined, currentColumns()), 33, true)}\n`,
+            `${color(formatToolLine(invocation, '…', undefined, currentColumns()), 33, isTTY)}\n`,
           );
         }
         processDetail(
@@ -377,10 +387,10 @@ export function createEventRenderer(options: EventRendererOptions = {}): EventRe
           const distance = index >= 0 ? interactiveToolLines.length - index : 0;
           if (distance > 0) {
             write(
-              `${ESC}[${distance}A\r${ESC}[2K${color(line, event.isError ? 31 : 32, true)}${ESC}[${distance}B\r`,
+              `${CSI}${distance}A\r${CSI}2K${color(line, event.isError ? 31 : 32, isTTY)}${CSI}${distance}B\r`,
             );
           } else {
-            write(`${color(line, event.isError ? 31 : 32, true)}\n`);
+            write(`${color(line, event.isError ? 31 : 32, isTTY)}\n`);
           }
         } else {
           // 契约被破坏（中间穿插了其他输出，光标位置不可信）、孤儿 tool_finish

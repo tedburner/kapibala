@@ -1,8 +1,12 @@
 import { PRIMARY_MODEL_ROLES, ROUTABLE_MODEL_ROLES } from '@kiturone/kapibala-host/internal';
 import { isInteractiveTerminal } from '../input-coordinator.js';
+import { validateBranchCommandArgs } from './branch.js';
+import { validateCheckpointsCommandArgs } from './checkpoints.js';
+import { parseDelegateInput } from './delegate.js';
 import { validateExternalCommandArgs } from './external.js';
 import { parseMcpConfigArgs, parseMcpImportArgs } from './mcp.js';
 import { parseSkillImportArgs, parseSkillTask } from './skills.js';
+import { isWorktreesCommandMutating, validateWorktreesCommandArgs } from './worktrees.js';
 
 /**
  * 单个命令的静态定义：/help、注册冲突检查与运行期门禁共用的唯一事实。
@@ -108,19 +112,7 @@ const quote = (args: string[]) => {
     : '用法: /quote [<sessionId>[#<recordId>]] | /quote --search <query> | /quote --list';
 };
 
-const branch = (args: string[]) => {
-  if (args.length === 0) return undefined;
-  if (args[0] === 'switch') {
-    return args.length === 2 && args[1].trim() ? undefined : '用法: /branch switch <branchId>';
-  }
-  if (args[0] === 'create') {
-    return args.length >= 2 && args[1].trim()
-      ? undefined
-      : '用法: /branch create <recordId> [branchName]';
-  }
-  if (args.length <= 2) return undefined;
-  return '用法: /branch [recordId [name]] | /branch switch <branchId>';
-};
+const branch = validateBranchCommandArgs;
 
 const archive = (args: string[]) => {
   if (args.length === 0)
@@ -145,20 +137,29 @@ const agents = (args: string[]) => {
   return '用法: /agents [show <id> | cancel <id> | collect <id>]';
 };
 
-const delegate = (args: string[]) =>
-  args.length === 1 && args[0].trim()
+const delegate = (args: string[]) => {
+  if (args.length !== 1 || !args[0]?.trim()) {
+    return '用法: /delegate <任务描述> [--role <角色>] [--model <模型 id>] [--name <名称>] [--worktree [--branch <分支名>]]';
+  }
+  const parsed = parseDelegateInput(args[0]);
+  if (parsed.flagError) return parsed.flagError;
+  return parsed.task
     ? undefined
-    : '用法: /delegate <任务描述> [--role <角色>] [--model <模型 id>] [--name <名称>]';
+    : '用法: /delegate <任务描述> [--role <角色>] [--model <模型 id>] [--name <名称>] [--worktree [--branch <分支名>]]';
+};
 
 const delegations = (args: string[]) => {
   if (args.length === 0 || args[0] === 'list') {
     return args.length <= 1 ? undefined : '用法: /delegations [list]';
   }
+  if (args[0] === 'prune') {
+    return args.length === 1 ? undefined : '用法: /delegations prune';
+  }
   const sub = args[0];
   if (['show', 'open', 'cancel', 'delete'].includes(sub)) {
     return args.length === 2 && args[1].trim() ? undefined : `用法: /delegations ${sub} <id>`;
   }
-  return '用法: /delegations [list | show <id> | open <id> | cancel <id> | delete <id>]';
+  return '用法: /delegations [list | prune | show <id> | open <id> | cancel <id> | delete <id>]';
 };
 
 const watches = (args: string[]) => {
@@ -337,11 +338,32 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     name: 'branch',
     interactionLevel: 'none',
-    usage: '/branch [recordId [name]] | /branch switch <branchId>',
-    description: '查看、创建或切换历史因果持久分支',
+    usage:
+      '/branch [recordId [name]] [--summary|--with-summary] [--restore-files [--force]] | /branch switch <branchId> [--restore-files [--force]]',
+    description: '查看、创建（可选附带背景摘要）或切换历史因果持久分支，支持联动还原检查点文件',
     group: 'session',
     mutates: (args) => args.length > 0,
     validate: branch,
+  },
+  {
+    name: 'checkpoints',
+    interactionLevel: 'none',
+    usage: '/checkpoints [list | diff [ordinal] | restore <ordinal> [--force]]',
+    description: '查看当前会话的轮次级检查点、文件 Diff，或将归因文件还原到指定轮次',
+    group: 'session',
+    mutates: (args) => args[0]?.toLowerCase() === 'restore',
+    validate: validateCheckpointsCommandArgs,
+  },
+  {
+    name: 'worktrees',
+    interactionLevel: 'none',
+    rawTail: true,
+    usage:
+      '/worktrees [list | create [name] [--branch <branch>] [--base <ref>] | status <id> | diff <id> | merge <id> [--commit <msg>] | remove <id> [--force] | prune]',
+    description: '管理当前项目的受管 Git Worktree（并行隔离、状态对比、冲突隔离合并与清理）',
+    group: 'session',
+    mutates: isWorktreesCommandMutating,
+    validate: validateWorktreesCommandArgs,
   },
   {
     name: 'fork',
@@ -374,8 +396,9 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     name: 'delegate',
     interactionLevel: 'none',
-    usage: '/delegate <任务描述> [--role <角色>] [--model <模型 id>] [--name <名称>]',
-    description: '以当前会话策略派发可续聊的保留型委派会话',
+    usage:
+      '/delegate <任务描述> [--role <角色>] [--model <模型 id>] [--name <名称>] [--worktree [--branch <分支名>]]',
+    description: '以当前会话策略派发可续聊的保留型委派会话（可选绑定独立 Git Worktree）',
     group: 'session',
     rawTail: true,
     mutates: () => true,
@@ -384,10 +407,10 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   {
     name: 'delegations',
     interactionLevel: 'none',
-    usage: '/delegations [list | show <id> | open <id> | cancel <id> | delete <id>]',
-    description: '查看、接续、取消或删除保留型委派会话',
+    usage: '/delegations [list | prune | show <id> | open <id> | cancel <id> | delete <id>]',
+    description: '查看、清理、接续、取消或删除保留型委派会话',
     group: 'diagnostic',
-    mutates: (args) => ['open', 'cancel', 'delete'].includes(args[0] ?? ''),
+    mutates: (args) => ['open', 'cancel', 'delete', 'prune'].includes(args[0] ?? ''),
     validate: delegations,
   },
   {
@@ -522,7 +545,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
     interactionLevel: 'none',
     rawTail: true,
     usage:
-      '/external [list | harnesses | harness <test|add|enable|disable|remove|reset> ... | start [--model <id>] <harnessId> <任务> | config <sessionId> [model|mode|thought <值>] | show|prompt|approve|cancel|close|delete ...]',
+      '/external [list | harnesses | harness <test|add|enable|disable|remove|reset> ... | start [--worktree [--branch <name>]] [--model <id>] <harnessId> <任务> | config <sessionId> [model|mode|thought <值>] | show|prompt|approve|cancel|close|delete ...]',
     description: '管理外部代理（ACP / Claude / Codex / Pi）并运行独立外部任务会话',
     group: 'session',
     mutates: (args) => {

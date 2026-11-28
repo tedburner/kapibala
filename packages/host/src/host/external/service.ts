@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { SessionWorktreeBinding } from '@kiturone/kapibala';
 import type {
+  ViewCheckpointItem,
+  ViewDiffSummary,
   ViewExternalApproval,
   ViewExternalConfigCategory,
   ViewExternalConfigOption,
@@ -11,15 +14,27 @@ import type {
   ViewExternalSession,
   ViewExternalSnapshot,
   ViewExternalTemplate,
+  ViewFileDiff,
   ViewNotice,
   ViewOperation,
   ViewTurnMeta,
+  ViewWorktreeSummary,
 } from '../../view-model/index.js';
+import type {
+  CheckpointRecord,
+  CheckpointService,
+  RestoreCheckpointResult,
+} from '../checkpoint/index.js';
 import { loadCredentialSecrets } from '../managed-session.js';
 import { redactViewMessage } from '../public-projection.js';
 import { redactText, sanitizeDisplayText } from '../redaction.js';
 import { normalizeProjectRoot } from '../resource/mcp-approval.js';
 import { isProjectTrusted, loadSettings } from '../settings.js';
+import {
+  type ExecutionRootCoordinator,
+  type WorktreeService,
+  verifyManagedWorktreeLink,
+} from '../worktree/index.js';
 import {
   deleteHarnessConfigCache,
   mergeHarnessConfigCache,
@@ -77,7 +92,8 @@ interface LiveApprovalEntry {
 }
 
 interface OpeningReservation {
-  readonly workspaceRoot: string;
+  readonly projectRoot: string;
+  readonly executionRoot: string;
   readonly title: string;
   readonly abort: AbortController;
   readonly settled: Promise<void>;
@@ -121,6 +137,12 @@ export interface ExternalSessionServiceOptions {
   readonly idleTimeoutMs?: number;
   /** 全局并发外部子进程上限（默认 4 个）。 */
   readonly maxActiveProcesses?: number;
+  /** 宿主级 Shadow Git 工作区检查点服务；注入后在外部代理每轮首尾自动捕获真实文件 Diff。 */
+  readonly checkpoints?: CheckpointService;
+  /** 宿主级受管 Git Worktree 服务；注入后复用其目录根与协调器做回链验真与并发协调。 */
+  readonly worktrees?: WorktreeService;
+  /** 横跨本地会话与外部代理会话的物理执行根互斥与移除门闩协调器；缺省取 `worktrees?.coordinator`。 */
+  readonly executionCoordinator?: ExecutionRootCoordinator;
   /** 后台外部任务完成、失败或待审批时的事件钩子（供桌面宿主触发失焦通知或 Toast）。 */
   readonly onAttentionEvent?: (event: {
     readonly kind: 'approval_requested' | 'turn_completed' | 'turn_failed';
@@ -156,6 +178,9 @@ export class ExternalSessionService {
   private readonly approvalTimeoutMs: number;
   private readonly idleTimeoutMs: number;
   private readonly maxActiveProcesses: number;
+  private readonly checkpoints?: CheckpointService;
+  private readonly coordinator?: ExecutionRootCoordinator;
+  private readonly worktreesRoot: string;
   private disposed = false;
 
   constructor(private readonly options: ExternalSessionServiceOptions = {}) {
@@ -164,6 +189,10 @@ export class ExternalSessionService {
     this.approvalTimeoutMs = options.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_REAP_MS;
     this.maxActiveProcesses = options.maxActiveProcesses ?? MAX_ACTIVE_EXTERNAL_PROCESSES;
+    this.checkpoints = options.checkpoints;
+    this.coordinator = options.executionCoordinator ?? options.worktrees?.coordinator;
+    this.worktreesRoot =
+      options.worktrees?.worktreesRoot ?? path.join(this.homeDir, '.kapibala', 'worktrees');
     this.drivers = {
       acp: new AcpStdioDriver({
         homeDir: this.homeDir,
@@ -376,19 +405,28 @@ export class ExternalSessionService {
     }
   }
 
-  /** 列出指定已信任工作区（或全部已信任工作区）下的外部会话摘要。 */
+  /** 列出指定已信任工作区（或全部已信任工作区）下的外部会话摘要；受管工作树会话归入所属 `projectRoot`。 */
   listSessions(workspaceRoot?: string): ViewExternalSession[] {
     const harnessMap = this.buildResolvedHarnessMap();
     if (workspaceRoot) {
       const nativeRoot = this.requireTrustedWorkspace(workspaceRoot);
       const records = this.registry.listRecords(nativeRoot);
-      return records.map((rec) => this.toViewSession(rec, harnessMap));
+      return records
+        .filter((rec) => {
+          try {
+            this.requireTrustedRecord(rec, { allowRemovedWorktreeForReadOnly: true });
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .map((rec) => this.toViewSession(rec, harnessMap));
     }
     const records = this.registry.listRecords();
     return records
       .filter((rec) => {
         try {
-          this.requireTrustedWorkspace(rec.workspaceRoot);
+          this.requireTrustedRecord(rec, { allowRemovedWorktreeForReadOnly: true });
           return true;
         } catch {
           return false;
@@ -405,7 +443,7 @@ export class ExternalSessionService {
     }
     const exact = this.registry.getRecord(trimmed);
     if (exact) {
-      this.verifyExpectedWorkspace(exact.workspaceRoot, workspaceRoot);
+      this.verifyExpectedWorkspace(this.recordProjectRootOf(exact), workspaceRoot);
       return trimmed;
     }
     const candidates = this.registry
@@ -426,16 +464,18 @@ export class ExternalSessionService {
     const resolvedId = this.resolveSessionId(sessionId, expectedWorkspaceRoot);
     const live = this.liveSlots.get(resolvedId);
     if (live) {
-      this.requireTrustedWorkspace(live.record.workspaceRoot);
-      this.verifyExpectedWorkspace(live.record.workspaceRoot, expectedWorkspaceRoot);
+      this.requireTrustedRecord(live.record);
+      this.verifyExpectedWorkspace(this.recordProjectRootOf(live.record), expectedWorkspaceRoot);
       return this.buildLiveSnapshot(live);
     }
     const record = this.registry.getRecord(resolvedId);
     if (!record) {
       throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未找到外部会话 '${sessionId}'`);
     }
-    const nativeRoot = this.requireTrustedWorkspace(record.workspaceRoot);
-    this.verifyExpectedWorkspace(record.workspaceRoot, expectedWorkspaceRoot);
+    const { projectRoot: nativeRoot } = this.requireTrustedRecord(record, {
+      allowRemovedWorktreeForReadOnly: true,
+    });
+    this.verifyExpectedWorkspace(nativeRoot, expectedWorkspaceRoot);
     const archive = this.registry.readArchive(resolvedId);
     const currentDef = listResolvedExternalHarnesses({
       homeDir: this.homeDir,
@@ -478,13 +518,19 @@ export class ExternalSessionService {
         ? archive.notices.map((n) => ({ ...n, text: redactFn(n.text) }))
         : [],
       ...(cachedOptions ? { configOptions: cachedOptions } : {}),
+      ...(viewSession.worktree ? { worktree: viewSession.worktree } : {}),
+      ...(viewSession.diffSummary ? { diffSummary: viewSession.diffSummary } : {}),
     };
   }
 
-  /** 在已信任工作区创建并握手打开一个新的外部代理会话（尚未发首轮 Prompt，处于 `'idle'` 态）。 */
+  /** 在已信任工作区（或其受管 Git Worktree）创建并握手打开一个新的外部代理会话（处于 `'idle'` 态）。 */
   async openSession(
     input: {
       readonly workspaceRoot: string;
+      /** 可选主项目物理根；传入 `worktree` 时缺省取 `worktree.projectRoot`，否则恒等于 `workspaceRoot`。 */
+      readonly projectRoot?: string;
+      /** 可选受管 Git Worktree 绑定；传入时子进程实际在 `worktree.worktreePath` 执行，空间归属与信任锚定 `projectRoot`。 */
+      readonly worktree?: SessionWorktreeBinding;
       readonly harnessId: string;
       readonly title?: string;
       readonly customTitle?: boolean;
@@ -501,9 +547,14 @@ export class ExternalSessionService {
     if (this.disposed) {
       throw new ExternalHarnessError('EXTERNAL_ABORTED', '外部会话服务已关闭');
     }
-    const nativeRoot = this.requireTrustedWorkspace(input.workspaceRoot);
+    const {
+      projectRoot: nativeProjectRoot,
+      executionRoot: nativeExecutionRoot,
+      worktree: normalizedWorktree,
+    } = this.resolveTrustedOpenTarget(input.projectRoot, input.workspaceRoot, input.worktree);
+    this.coordinator?.assertNotFenced(nativeExecutionRoot);
     if (input.requireIdleWorkspace) {
-      this.ensureWorkspaceNotRunning(nativeRoot, '');
+      this.ensureWorkspaceNotRunning(nativeExecutionRoot, '');
     }
     const def = this.requireEnabledHarnessDefinition(input.harnessId);
     this.ensureProcessCapacity();
@@ -512,7 +563,7 @@ export class ExternalSessionService {
     const id = `ext_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
     const now = Date.now();
     const configDigest = computeHarnessConfigDigest(def);
-    const secrets = this.collectSecrets(nativeRoot, def);
+    const secrets = this.collectSecrets(nativeProjectRoot, def);
     const hasExplicitTitle = Boolean(input.title?.trim());
     const customTitle = input.customTitle ?? hasExplicitTitle;
     const rawTitle = hasExplicitTitle ? input.title! : `${def.name} 任务`;
@@ -535,7 +586,9 @@ export class ExternalSessionService {
       harnessId: def.id,
       harnessName: def.name,
       transport: def.transport,
-      workspaceRoot: nativeRoot,
+      workspaceRoot: nativeExecutionRoot,
+      projectRoot: nativeProjectRoot,
+      ...(normalizedWorktree ? { worktree: normalizedWorktree } : {}),
       configDigest,
       title: initialTitle,
       ...(customTitle ? { customTitle: true } : {}),
@@ -544,14 +597,28 @@ export class ExternalSessionService {
       createdAt: now,
       updatedAt: now,
     };
-    const slot = await this.spawnAndBindSlot({
-      record: initialRecord,
-      def,
-      driver,
-      secrets,
-      ...(initialConfig.length > 0 ? { initialConfig } : {}),
-      signal,
-    });
+    const warmupCheckpoint = this.checkpoints
+      ? this.checkpoints
+          .capturePreTurn({
+            projectRoot: nativeProjectRoot,
+            executionRoot: nativeExecutionRoot,
+            sessionId: id,
+            ordinal: 0,
+            signal,
+          })
+          .catch(() => undefined)
+      : Promise.resolve(undefined);
+    const [slot] = await Promise.all([
+      this.spawnAndBindSlot({
+        record: initialRecord,
+        def,
+        driver,
+        secrets,
+        ...(initialConfig.length > 0 ? { initialConfig } : {}),
+        signal,
+      }),
+      warmupCheckpoint,
+    ]);
     if (!slot.closing) this.armIdleTimer(slot);
     this.flushSlotImmediate(slot);
     return this.buildLiveSnapshot(slot);
@@ -581,8 +648,11 @@ export class ExternalSessionService {
     const resolvedId = this.resolveSessionId(input.sessionId, input.expectedWorkspaceRoot);
     let slot = this.liveSlots.get(resolvedId);
     if (slot) {
-      this.requireTrustedWorkspace(slot.record.workspaceRoot);
-      this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
+      this.requireTrustedRecord(slot.record);
+      this.verifyExpectedWorkspace(
+        this.recordProjectRootOf(slot.record),
+        input.expectedWorkspaceRoot,
+      );
       if (slot.closing || slot.configuring || slot.record.status !== 'idle') {
         throw new ExternalHarnessError(
           'EXTERNAL_SESSION_BUSY',
@@ -606,14 +676,14 @@ export class ExternalSessionService {
       if (!record) {
         throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未找到外部会话 '${resolvedId}'`);
       }
-      const nativeResumeRoot = this.requireTrustedWorkspace(record.workspaceRoot);
-      if (normalizeProjectRoot(nativeResumeRoot) !== normalizeProjectRoot(record.workspaceRoot)) {
+      const { executionRoot: nativeResumeExec } = this.requireTrustedRecord(record);
+      if (normalizeProjectRoot(nativeResumeExec) !== normalizeProjectRoot(record.workspaceRoot)) {
         throw new ExternalHarnessError(
           'EXTERNAL_UNTRUSTED_WORKSPACE',
           `工作区目录物理身份已变更，拒绝恢复外部会话 '${resolvedId}'`,
         );
       }
-      this.verifyExpectedWorkspace(record.workspaceRoot, input.expectedWorkspaceRoot);
+      this.verifyExpectedWorkspace(this.recordProjectRootOf(record), input.expectedWorkspaceRoot);
       if (record.owner) {
         throw new ExternalHarnessError('EXTERNAL_SESSION_BUSY', '外部会话由另一个宿主持有');
       }
@@ -708,10 +778,12 @@ export class ExternalSessionService {
     }
   }
 
-  /** 一步式创建外部代理会话并立即发送首轮任务文本；同工作区忙时前置拦截，避免泄漏空闲子进程。 */
+  /** 一步式创建外部代理会话并立即发送首轮任务文本；同执行目录忙时前置拦截，避免泄漏空闲子进程。 */
   async startSession(
     input: {
       readonly workspaceRoot: string;
+      readonly projectRoot?: string;
+      readonly worktree?: SessionWorktreeBinding;
       readonly harnessId: string;
       readonly prompt: string;
       readonly title?: string;
@@ -728,6 +800,8 @@ export class ExternalSessionService {
     const opened = await this.openSession(
       {
         workspaceRoot: input.workspaceRoot,
+        ...(input.projectRoot ? { projectRoot: input.projectRoot } : {}),
+        ...(input.worktree ? { worktree: input.worktree } : {}),
         harnessId: input.harnessId,
         title: input.title?.trim() || input.prompt,
         customTitle: Boolean(input.title?.trim()),
@@ -838,8 +912,11 @@ export class ExternalSessionService {
 
     let slot = this.liveSlots.get(resolvedId);
     if (slot) {
-      this.requireTrustedWorkspace(slot.record.workspaceRoot);
-      this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
+      this.requireTrustedRecord(slot.record);
+      this.verifyExpectedWorkspace(
+        this.recordProjectRootOf(slot.record),
+        input.expectedWorkspaceRoot,
+      );
       if (slot.closing || slot.configuring || slot.record.status !== 'idle') {
         throw new ExternalHarnessError(
           'EXTERNAL_SESSION_BUSY',
@@ -863,14 +940,14 @@ export class ExternalSessionService {
       if (!record) {
         throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未找到外部会话 '${resolvedId}'`);
       }
-      const nativeResumeRoot = this.requireTrustedWorkspace(record.workspaceRoot);
-      if (normalizeProjectRoot(nativeResumeRoot) !== normalizeProjectRoot(record.workspaceRoot)) {
+      const { executionRoot: nativeResumeExec } = this.requireTrustedRecord(record);
+      if (normalizeProjectRoot(nativeResumeExec) !== normalizeProjectRoot(record.workspaceRoot)) {
         throw new ExternalHarnessError(
           'EXTERNAL_UNTRUSTED_WORKSPACE',
           `工作区目录物理身份已变更，拒绝恢复外部会话 '${resolvedId}'`,
         );
       }
-      this.verifyExpectedWorkspace(record.workspaceRoot, input.expectedWorkspaceRoot);
+      this.verifyExpectedWorkspace(this.recordProjectRootOf(record), input.expectedWorkspaceRoot);
       if (record.owner) {
         throw new ExternalHarnessError('EXTERNAL_SESSION_BUSY', '外部会话由另一个宿主持有');
       }
@@ -882,7 +959,8 @@ export class ExternalSessionService {
         );
       }
       this.ensureProcessCapacity();
-      this.ensureWorkspaceNotRunning(record.workspaceRoot, resolvedId);
+      this.coordinator?.assertNotFenced(nativeResumeExec);
+      this.ensureWorkspaceNotRunning(nativeResumeExec, resolvedId);
 
       const resumeConfig: ExternalConfigSelection[] = [];
       if (input.configOverrides?.modelId?.trim()) {
@@ -913,15 +991,17 @@ export class ExternalSessionService {
     if (this.disposed) {
       throw new ExternalHarnessError('EXTERNAL_ABORTED', '外部会话服务已关闭');
     }
-    this.requireTrustedWorkspace(slot.record.workspaceRoot);
-    this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
+    const { projectRoot: activeProjectRoot, executionRoot: activeExecutionRoot } =
+      this.requireTrustedRecord(slot.record);
+    this.verifyExpectedWorkspace(activeProjectRoot, input.expectedWorkspaceRoot);
     if (slot.closing || slot.configuring || slot.record.status !== 'idle') {
       throw new ExternalHarnessError(
         'EXTERNAL_SESSION_BUSY',
         '当前外部会话正在执行或等待审批，不能并发发送新轮次',
       );
     }
-    this.ensureWorkspaceNotRunning(slot.record.workspaceRoot, resolvedId);
+    this.coordinator?.assertNotFenced(activeExecutionRoot);
+    this.ensureWorkspaceNotRunning(activeExecutionRoot, resolvedId);
 
     const activeSlot = slot;
     if (activeSlot.closing || this.liveSlots.get(resolvedId) !== activeSlot) {
@@ -929,99 +1009,212 @@ export class ExternalSessionService {
     }
     this.clearIdleTimer(activeSlot);
 
-    // 仅在未设置自定义标题且首轮尚无历史消息时，以脱敏后的首轮用户输入更新标题
-    const updatedTitle =
-      !activeSlot.record.customTitle && activeSlot.projector.getMessages().length === 0
-        ? (sanitizeDisplayText(redactText(promptText, activeSlot.secrets), 80) ??
-          activeSlot.record.title)
-        : activeSlot.record.title;
+    const coordHandle = this.coordinator
+      ? await this.coordinator.acquireMutatingLease({
+          executionRoot: activeExecutionRoot,
+          ownerId: activeSlot.record.id,
+          kind: 'external',
+          signal,
+        })
+      : undefined;
+    if (this.disposed || activeSlot.closing || this.liveSlots.get(resolvedId) !== activeSlot) {
+      coordHandle?.release();
+      throw new ExternalHarnessError('EXTERNAL_ABORTED', '外部会话已关闭');
+    }
+    const overlappingNonQueuedRun = this.coordinator
+      ?.listActiveRuns(activeExecutionRoot)
+      .find((item) => item.runId !== coordHandle?.runId);
+    if (overlappingNonQueuedRun) {
+      coordHandle?.release();
+      throw new ExternalHarnessError(
+        'EXTERNAL_WORKSPACE_BUSY',
+        '同一工作目录仍有运行中的本地任务，请等待其完成后再发送',
+      );
+    }
 
-    activeSlot.projector.beginUserTurn(promptText, input.handoff?.fromTitle);
-    const wirePromptText = input.handoff?.context
-      ? `${input.handoff.context}\n\n${promptText}`
-      : promptText;
-    const frozenTurnMeta = this.buildSlotTurnMeta(activeSlot);
-    const opId = `extop_${randomUUID().slice(0, 8)}`;
-    activeSlot.operation = { id: opId, phase: 'running' };
-    this.updateSlotRecord(activeSlot, {
-      title: updatedTitle,
-      status: 'running',
-      lastError: undefined,
-    });
-    this.flushSlotImmediate(activeSlot);
-    const initialSnapshot = this.buildLiveSnapshot(activeSlot);
-
-    const completion = (async (): Promise<ViewExternalSnapshot> => {
-      try {
-        const turnRes = await activeSlot.handle.prompt(wirePromptText, signal);
-        if (activeSlot.closing) {
-          await activeSlot.closing;
-          return this.buildLiveSnapshot(activeSlot);
-        }
-        if (this.liveSlots.get(resolvedId) !== activeSlot)
-          return this.buildLiveSnapshot(activeSlot);
-        this.cancelAllSlotApprovals(activeSlot);
-        const settledTurnMeta = this.buildSlotTurnMeta(activeSlot) ?? frozenTurnMeta;
-        if (turnRes.stopReason === 'cancelled') {
-          activeSlot.projector.interruptTurn(settledTurnMeta);
-          activeSlot.operation = { id: opId, phase: 'idle', result: 'aborted' };
-        } else {
-          activeSlot.projector.completeTurn(turnRes.usage, settledTurnMeta);
-          activeSlot.operation = { id: opId, phase: 'idle', result: 'completed' };
-        }
-
-        if (turnRes.processTerminated) {
-          this.finishSlot(activeSlot, { status: 'ended' });
-        } else {
-          this.updateSlotRecord(activeSlot, { status: 'idle' });
-          this.persistSlotArchive(activeSlot);
-          this.armIdleTimer(activeSlot);
-          this.flushSlotImmediate(activeSlot);
-          if (turnRes.stopReason === 'completed') {
-            this.options.onAttentionEvent?.({
-              kind: 'turn_completed',
-              session: this.toViewSession(activeSlot.record),
-            });
+    let turnOrdinal = activeSlot.record.turnCount ?? 0;
+    try {
+      if (this.checkpoints) {
+        try {
+          const existingCheckpoints = await this.checkpoints.listCheckpoints({
+            projectRoot: activeProjectRoot,
+            executionRoot: activeExecutionRoot,
+            sessionId: activeSlot.record.id,
+          });
+          if (existingCheckpoints.length > 0) {
+            const maxExisting = Math.max(...existingCheckpoints.map((item) => item.ordinal));
+            turnOrdinal = Math.max(turnOrdinal, maxExisting + 1);
           }
+        } catch {
+          /* 检查点列举异常不阻塞外部对话主路径 */
         }
-        return this.getSnapshot(activeSlot.record.id);
-      } catch (err) {
-        if (activeSlot.closing) {
-          await activeSlot.closing;
-          return this.buildLiveSnapshot(activeSlot);
-        }
-        const sanitizedErr = this.redactErrorInstance(err, activeSlot.secrets);
-        if (this.liveSlots.get(resolvedId) !== activeSlot) throw sanitizedErr;
-        this.cancelAllSlotApprovals(activeSlot);
-        activeSlot.projector.interruptTurn(this.buildSlotTurnMeta(activeSlot) ?? frozenTurnMeta);
-        const safeErr =
-          sanitizeDisplayText(
-            redactText(err instanceof Error ? err.message : String(err), activeSlot.secrets),
-            300,
-          ) ?? '执行失败';
-        activeSlot.operation = { id: opId, phase: 'idle', result: 'failed' };
-        this.pushSlotNotice(activeSlot, {
-          id: `notice-${randomUUID().slice(0, 8)}`,
-          level: 'error',
-          text: safeErr,
-        });
-        if (err instanceof ExternalHarnessError && err.processTerminated) {
-          this.finishSlot(activeSlot, { status: 'failed', lastError: safeErr });
-        } else {
-          this.updateSlotRecord(activeSlot, { status: 'idle', lastError: safeErr });
-          this.persistSlotArchive(activeSlot);
-          this.armIdleTimer(activeSlot);
-          this.flushSlotImmediate(activeSlot);
-        }
-        this.options.onAttentionEvent?.({
-          kind: 'turn_failed',
-          session: this.toViewSession(activeSlot.record),
-        });
-        throw sanitizedErr;
       }
-    })();
 
-    return { initialSnapshot, completion };
+      // 仅在未设置自定义标题且首轮尚无历史消息时，以脱敏后的首轮用户输入更新标题
+      const updatedTitle =
+        !activeSlot.record.customTitle && activeSlot.projector.getMessages().length === 0
+          ? (sanitizeDisplayText(redactText(promptText, activeSlot.secrets), 80) ??
+            activeSlot.record.title)
+          : activeSlot.record.title;
+
+      activeSlot.projector.beginUserTurn(promptText, input.handoff?.fromTitle);
+      const wirePromptText = input.handoff?.context
+        ? `${input.handoff.context}\n\n${promptText}`
+        : promptText;
+      const frozenTurnMeta = this.buildSlotTurnMeta(activeSlot);
+      const opId = `extop_${randomUUID().slice(0, 8)}`;
+      activeSlot.operation = { id: opId, phase: 'running' };
+      this.updateSlotRecord(activeSlot, {
+        title: updatedTitle,
+        status: 'running',
+        turnCount: turnOrdinal + 1,
+        lastError: undefined,
+      });
+      this.flushSlotImmediate(activeSlot);
+      const initialSnapshot = this.buildLiveSnapshot(activeSlot);
+
+      const finalizePostTurnCheckpoint = async (
+        startTree?: string,
+        startCommitOid?: string,
+      ): Promise<ViewDiffSummary | undefined> => {
+        if (!this.checkpoints || !startTree) return activeSlot.record.diffSummary;
+        try {
+          await this.checkpoints.capturePostTurn({
+            projectRoot: activeProjectRoot,
+            executionRoot: activeExecutionRoot,
+            sessionId: activeSlot.record.id,
+            ordinal: turnOrdinal,
+            startTree,
+            ...(startCommitOid ? { startCommitOid } : {}),
+            label: updatedTitle,
+          });
+          return await this.computeRecordDiffSummary(activeSlot.record);
+        } catch {
+          return activeSlot.record.diffSummary;
+        }
+      };
+
+      const completion = (async (): Promise<ViewExternalSnapshot> => {
+        let preTurnStartTree: string | undefined;
+        let preTurnStartCommitOid: string | undefined;
+        try {
+          if (this.checkpoints) {
+            const preRes = await this.checkpoints
+              .capturePreTurn({
+                projectRoot: activeProjectRoot,
+                executionRoot: activeExecutionRoot,
+                sessionId: activeSlot.record.id,
+                ordinal: turnOrdinal,
+                signal,
+              })
+              .catch(() => undefined);
+            if (preRes?.captured) {
+              preTurnStartTree = preRes.startTree;
+              preTurnStartCommitOid = preRes.commitOid;
+            }
+          }
+          const turnRes = await activeSlot.handle.prompt(wirePromptText, signal);
+          const nextDiffSummary = await finalizePostTurnCheckpoint(
+            preTurnStartTree,
+            preTurnStartCommitOid,
+          );
+          if (activeSlot.closing) {
+            await activeSlot.closing;
+            if (nextDiffSummary !== undefined) {
+              this.updateSlotRecordSafe(activeSlot, { diffSummary: nextDiffSummary });
+            }
+            return this.buildLiveSnapshot(activeSlot);
+          }
+          if (this.liveSlots.get(resolvedId) !== activeSlot)
+            return this.buildLiveSnapshot(activeSlot);
+          this.cancelAllSlotApprovals(activeSlot);
+          const settledTurnMeta = this.buildSlotTurnMeta(activeSlot) ?? frozenTurnMeta;
+          if (turnRes.stopReason === 'cancelled') {
+            activeSlot.projector.interruptTurn(settledTurnMeta);
+            activeSlot.operation = { id: opId, phase: 'idle', result: 'aborted' };
+          } else {
+            activeSlot.projector.completeTurn(turnRes.usage, settledTurnMeta);
+            activeSlot.operation = { id: opId, phase: 'idle', result: 'completed' };
+          }
+
+          if (turnRes.processTerminated) {
+            if (nextDiffSummary !== undefined) {
+              activeSlot.record = { ...activeSlot.record, diffSummary: nextDiffSummary };
+            }
+            this.finishSlot(activeSlot, { status: 'ended' });
+          } else {
+            this.updateSlotRecord(activeSlot, {
+              status: 'idle',
+              ...(nextDiffSummary !== undefined ? { diffSummary: nextDiffSummary } : {}),
+            });
+            this.persistSlotArchive(activeSlot);
+            this.armIdleTimer(activeSlot);
+            this.flushSlotImmediate(activeSlot);
+            if (turnRes.stopReason === 'completed') {
+              this.options.onAttentionEvent?.({
+                kind: 'turn_completed',
+                session: this.toViewSession(activeSlot.record),
+              });
+            }
+          }
+          return this.getSnapshot(activeSlot.record.id);
+        } catch (err) {
+          const nextDiffSummary = await finalizePostTurnCheckpoint(
+            preTurnStartTree,
+            preTurnStartCommitOid,
+          );
+          if (activeSlot.closing) {
+            await activeSlot.closing;
+            if (nextDiffSummary !== undefined) {
+              this.updateSlotRecordSafe(activeSlot, { diffSummary: nextDiffSummary });
+            }
+            return this.buildLiveSnapshot(activeSlot);
+          }
+          const sanitizedErr = this.redactErrorInstance(err, activeSlot.secrets);
+          if (this.liveSlots.get(resolvedId) !== activeSlot) throw sanitizedErr;
+          this.cancelAllSlotApprovals(activeSlot);
+          activeSlot.projector.interruptTurn(this.buildSlotTurnMeta(activeSlot) ?? frozenTurnMeta);
+          const safeErr =
+            sanitizeDisplayText(
+              redactText(err instanceof Error ? err.message : String(err), activeSlot.secrets),
+              300,
+            ) ?? '执行失败';
+          activeSlot.operation = { id: opId, phase: 'idle', result: 'failed' };
+          this.pushSlotNotice(activeSlot, {
+            id: `notice-${randomUUID().slice(0, 8)}`,
+            level: 'error',
+            text: safeErr,
+          });
+          if (err instanceof ExternalHarnessError && err.processTerminated) {
+            if (nextDiffSummary !== undefined) {
+              activeSlot.record = { ...activeSlot.record, diffSummary: nextDiffSummary };
+            }
+            this.finishSlot(activeSlot, { status: 'failed', lastError: safeErr });
+          } else {
+            this.updateSlotRecord(activeSlot, {
+              status: 'idle',
+              lastError: safeErr,
+              ...(nextDiffSummary !== undefined ? { diffSummary: nextDiffSummary } : {}),
+            });
+            this.persistSlotArchive(activeSlot);
+            this.armIdleTimer(activeSlot);
+            this.flushSlotImmediate(activeSlot);
+          }
+          this.options.onAttentionEvent?.({
+            kind: 'turn_failed',
+            session: this.toViewSession(activeSlot.record),
+          });
+          throw sanitizedErr;
+        } finally {
+          coordHandle?.release();
+        }
+      })();
+
+      return { initialSnapshot, completion };
+    } catch (launchErr) {
+      coordHandle?.release();
+      throw launchErr;
+    }
   }
 
   /** 回复指定外部会话中的挂起人工审批请求；未知选项抛错且不销毁原挂起审批单。 */
@@ -1037,8 +1230,11 @@ export class ExternalSessionService {
     if (!slot || slot.closing) {
       throw new ExternalHarnessError('EXTERNAL_PROTOCOL_ERROR', '外部会话已关闭，审批单已失效');
     }
-    this.requireTrustedWorkspace(slot.record.workspaceRoot);
-    this.verifyExpectedWorkspace(slot.record.workspaceRoot, input.expectedWorkspaceRoot);
+    this.requireTrustedRecord(slot.record);
+    this.verifyExpectedWorkspace(
+      this.recordProjectRootOf(slot.record),
+      input.expectedWorkspaceRoot,
+    );
 
     const entry = slot.approvals.get(input.approvalId);
     if (!entry) {
@@ -1082,13 +1278,13 @@ export class ExternalSessionService {
     const resolvedId = this.resolveSessionId(sessionId, expectedWorkspaceRoot);
     const opening = this.openingSessions.get(resolvedId);
     if (opening) {
-      this.verifyExpectedWorkspace(opening.workspaceRoot, expectedWorkspaceRoot);
+      this.verifyExpectedWorkspace(opening.projectRoot, expectedWorkspaceRoot);
       opening.abort.abort();
       return;
     }
     const slot = this.liveSlots.get(resolvedId);
     if (!slot) return;
-    this.verifyExpectedWorkspace(slot.record.workspaceRoot, expectedWorkspaceRoot);
+    this.verifyExpectedWorkspace(this.recordProjectRootOf(slot.record), expectedWorkspaceRoot);
     if (slot.closing) return;
     if (
       slot.record.status !== 'running' &&
@@ -1111,7 +1307,7 @@ export class ExternalSessionService {
     const resolvedId = this.resolveSessionId(sessionId, expectedWorkspaceRoot);
     const opening = this.openingSessions.get(resolvedId);
     if (opening) {
-      this.verifyExpectedWorkspace(opening.workspaceRoot, expectedWorkspaceRoot);
+      this.verifyExpectedWorkspace(opening.projectRoot, expectedWorkspaceRoot);
       opening.abort.abort();
       await opening.settled;
       return;
@@ -1120,14 +1316,14 @@ export class ExternalSessionService {
     if (!slot) {
       const rec = this.registry.getRecord(resolvedId);
       if (rec) {
-        this.verifyExpectedWorkspace(rec.workspaceRoot, expectedWorkspaceRoot);
+        this.verifyExpectedWorkspace(this.recordProjectRootOf(rec), expectedWorkspaceRoot);
         if (rec.owner) {
           throw new ExternalHarnessError('EXTERNAL_SESSION_BUSY', '外部会话由另一个宿主持有');
         }
       }
       return;
     }
-    this.verifyExpectedWorkspace(slot.record.workspaceRoot, expectedWorkspaceRoot);
+    this.verifyExpectedWorkspace(this.recordProjectRootOf(slot.record), expectedWorkspaceRoot);
 
     slot.closing ??= Promise.resolve()
       .then(async () => {
@@ -1150,15 +1346,201 @@ export class ExternalSessionService {
     const resolvedId = this.resolveSessionId(sessionId, expectedWorkspaceRoot);
     const rec = this.registry.getRecord(resolvedId);
     if (rec) {
-      this.verifyExpectedWorkspace(rec.workspaceRoot, expectedWorkspaceRoot);
+      this.verifyExpectedWorkspace(this.recordProjectRootOf(rec), expectedWorkspaceRoot);
     }
     if (this.liveSlots.has(resolvedId) || this.openingSessions.has(resolvedId)) {
       await this.closeSession(resolvedId, expectedWorkspaceRoot);
     }
     this.sessionSubscribers.delete(resolvedId);
     const deleted = this.registry.deleteRecord(resolvedId);
-    this.notifyListChanged(rec?.workspaceRoot);
+    this.notifyListChanged(rec ? this.recordProjectRootOf(rec) : undefined);
     return deleted;
+  }
+
+  /**
+   * 列出指定外部会话已捕获的轮次级 Shadow Git 检查点摘要。
+   *
+   * 前置约束：必须属于已信任主项目，且若工作树目录仍在盘则必须通过四步 `.git` 回链验真。
+   */
+  async listSessionCheckpoints(
+    sessionId: string,
+    expectedWorkspaceRoot?: string,
+  ): Promise<ViewCheckpointItem[]> {
+    const resolvedId = this.resolveSessionId(sessionId, expectedWorkspaceRoot);
+    const record = this.liveSlots.get(resolvedId)?.record ?? this.registry.getRecord(resolvedId);
+    if (!record) {
+      throw new ExternalHarnessError('EXTERNAL_CONFIG_INVALID', `未找到外部会话 '${sessionId}'`);
+    }
+    const { projectRoot, executionRoot } = this.requireTrustedRecord(record, {
+      allowRemovedWorktreeForReadOnly: true,
+    });
+    this.verifyExpectedWorkspace(projectRoot, expectedWorkspaceRoot);
+    if (!this.checkpoints || !fs.existsSync(executionRoot)) return [];
+    const secrets = this.collectSecrets(projectRoot);
+    const items = await this.checkpoints.listCheckpoints({
+      projectRoot,
+      executionRoot,
+      sessionId: record.id,
+    });
+    return items.map((item) => ({
+      ordinal: item.ordinal,
+      createdAt: item.createdAt,
+      startTree: item.startTree,
+      endTree: item.endTree,
+      additions: item.additions,
+      deletions: item.deletions,
+      changedFilesCount: item.changedFiles.length,
+      ...(item.label ? { label: sanitizeDisplayText(redactText(item.label, secrets), 120) } : {}),
+    }));
+  }
+
+  /**
+   * 读取指定外部会话单轮或跨轮聚合的真实文件 Diff 明细。
+   */
+  async diffSessionCheckpoints(input: {
+    readonly sessionId: string;
+    readonly expectedWorkspaceRoot?: string;
+    readonly ordinal?: number;
+    readonly fromOrdinal?: number;
+    readonly toOrdinal?: number;
+    readonly includeLiveWorktree?: boolean;
+    readonly signal?: AbortSignal;
+  }): Promise<{
+    readonly available: boolean;
+    readonly files: ViewFileDiff[];
+    readonly additions: number;
+    readonly deletions: number;
+    readonly truncated: boolean;
+  }> {
+    const resolvedId = this.resolveSessionId(input.sessionId, input.expectedWorkspaceRoot);
+    const record = this.liveSlots.get(resolvedId)?.record ?? this.registry.getRecord(resolvedId);
+    if (!record) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_CONFIG_INVALID',
+        `未找到外部会话 '${input.sessionId}'`,
+      );
+    }
+    const { projectRoot, executionRoot } = this.requireTrustedRecord(record, {
+      allowRemovedWorktreeForReadOnly: true,
+    });
+    this.verifyExpectedWorkspace(projectRoot, input.expectedWorkspaceRoot);
+    if (!this.checkpoints || !fs.existsSync(executionRoot)) {
+      return { available: false, files: [], additions: 0, deletions: 0, truncated: false };
+    }
+    const secrets = this.collectSecrets(projectRoot);
+    const result = await this.checkpoints.diff({
+      projectRoot,
+      executionRoot,
+      sessionId: record.id,
+      ...(input.ordinal !== undefined ? { ordinal: input.ordinal } : {}),
+      ...(input.fromOrdinal !== undefined ? { fromOrdinal: input.fromOrdinal } : {}),
+      ...(input.toOrdinal !== undefined ? { toOrdinal: input.toOrdinal } : {}),
+      ...(input.includeLiveWorktree !== undefined
+        ? { includeLiveWorktree: input.includeLiveWorktree }
+        : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    return {
+      available: result.available,
+      additions: result.additions,
+      deletions: result.deletions,
+      truncated: result.truncated,
+      files: result.files.map((f) => ({
+        path: redactText(f.path, secrets),
+        status: f.status,
+        additions: f.additions,
+        deletions: f.deletions,
+        binary: f.binary,
+        patch: redactText(f.patch, secrets),
+        truncated: f.truncated,
+      })),
+    };
+  }
+
+  /**
+   * 仅将外部会话在指定轮次之后修改的归因磁盘文件还原到 `targetOrdinal` 水位（不伪造截断外部代理私有对话历史）。
+   *
+   * 失败边界：当外部会话正处于运行或待审批态时抛 `EXTERNAL_SESSION_BUSY` 拒绝回滚。
+   */
+  async restoreSessionCheckpoint(input: {
+    readonly sessionId: string;
+    readonly targetOrdinal: number;
+    readonly force?: boolean;
+    readonly expectedWorkspaceRoot?: string;
+    readonly signal?: AbortSignal;
+  }): Promise<RestoreCheckpointResult> {
+    const resolvedId = this.resolveSessionId(input.sessionId, input.expectedWorkspaceRoot);
+    const live = this.liveSlots.get(resolvedId);
+    if (
+      this.openingSessions.has(resolvedId) ||
+      (live &&
+        (live.closing ||
+          live.configuring ||
+          live.record.status === 'starting' ||
+          live.record.status === 'running' ||
+          live.record.status === 'waiting_approval' ||
+          live.record.status === 'cancelling'))
+    ) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_SESSION_BUSY',
+        '当前外部代理正在执行任务，请先停止或等待完成后再回滚文件',
+      );
+    }
+    const record = live?.record ?? this.registry.getRecord(resolvedId);
+    if (!record) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_CONFIG_INVALID',
+        `未找到外部会话 '${input.sessionId}'`,
+      );
+    }
+    const { projectRoot, executionRoot } = this.requireTrustedRecord(record);
+    this.verifyExpectedWorkspace(projectRoot, input.expectedWorkspaceRoot);
+    this.coordinator?.assertNotFenced(executionRoot);
+    if (this.coordinator?.hasActiveRuns(executionRoot)) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_WORKSPACE_BUSY',
+        '当前工作目录仍有运行中的本地或外部任务，请先停止或等待完成后再回滚文件',
+      );
+    }
+    if (!this.checkpoints) {
+      return { status: 'noop', restoredFiles: [], deletedFiles: [] };
+    }
+    const coordHandle = this.coordinator?.trackActiveRun({
+      executionRoot,
+      ownerId: record.id,
+      kind: 'checkpoint',
+    });
+    try {
+      const res = await this.checkpoints.restore({
+        projectRoot,
+        executionRoot,
+        sessionId: record.id,
+        targetOrdinal: input.targetOrdinal,
+        ...(input.force !== undefined ? { force: input.force } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      if (res.status === 'restored') {
+        const nextDiffSummary = await this.computeRecordDiffSummary(record);
+        if (live) {
+          this.updateSlotRecordSafe(live, { diffSummary: nextDiffSummary });
+          this.flushSlotImmediate(live);
+        } else {
+          try {
+            this.registry.upsertRecord({
+              ...record,
+              diffSummary: nextDiffSummary,
+              updatedAt: Date.now(),
+            });
+          } catch {
+            /* ignore */
+          }
+          this.notifyListChanged(projectRoot);
+        }
+      }
+      return res;
+    } finally {
+      coordHandle?.release();
+    }
   }
 
   /** 订阅外部会话列表或代理配置变更通知。 */
@@ -1257,7 +1639,8 @@ export class ExternalSessionService {
       );
     }
 
-    const secrets = params.secrets ?? this.collectSecrets(params.record.workspaceRoot, params.def);
+    const secrets =
+      params.secrets ?? this.collectSecrets(this.recordProjectRootOf(params.record), params.def);
     const projector = new ExternalTranscriptProjector(params.record.id, secrets);
     const claimed = this.registry.upsertRecord(
       { ...params.record, status: 'starting', updatedAt: Date.now() },
@@ -1297,18 +1680,19 @@ export class ExternalSessionService {
       settleOpening = resolve;
     });
     this.openingSessions.set(params.record.id, {
-      workspaceRoot: params.record.workspaceRoot,
+      projectRoot: this.recordProjectRootOf(params.record),
+      executionRoot: this.recordExecutionRootOf(params.record),
       title: params.record.title,
       abort: openingAbort,
       settled,
       slot,
     });
-    this.notifyListChanged(claimed.workspaceRoot);
+    this.notifyListChanged(this.recordProjectRootOf(claimed));
 
     try {
       const opened = await params.driver.open({
         def: params.def,
-        workspaceRoot: params.record.workspaceRoot,
+        workspaceRoot: this.recordExecutionRootOf(params.record),
         ...(params.resume && claimed.nativeSessionId
           ? { nativeSessionId: claimed.nativeSessionId }
           : {}),
@@ -1392,7 +1776,7 @@ export class ExternalSessionService {
           lastError: aborted ? undefined : sanitizeDisplayText(redactText(rawErr, secrets), 300),
         });
       }
-      this.notifyListChanged(claimed.workspaceRoot);
+      this.notifyListChanged(this.recordProjectRootOf(claimed));
       throw this.redactErrorInstance(err, secrets);
     } finally {
       params.signal?.removeEventListener('abort', onParentAbort);
@@ -1595,7 +1979,7 @@ export class ExternalSessionService {
 
   private flushSlotImmediate(slot: LiveSessionSlot): void {
     this.emitSnapshotImmediate(slot);
-    this.notifyListChanged(slot.record.workspaceRoot);
+    this.notifyListChanged(this.recordProjectRootOf(slot.record));
   }
 
   private emitSnapshot(slot: LiveSessionSlot): void {
@@ -1839,8 +2223,9 @@ export class ExternalSessionService {
 
   private buildLiveSnapshot(slot: LiveSessionSlot): ViewExternalSnapshot {
     const truncated = slot.truncatedArchive || slot.projector.wasTruncated();
+    const viewSession = this.toViewSession(slot.record);
     return {
-      session: this.toViewSession(slot.record),
+      session: viewSession,
       sequence: slot.sequence,
       ...(truncated ? { truncatedArchive: true } : {}),
       messages: slot.projector.getMessages(),
@@ -1851,6 +2236,8 @@ export class ExternalSessionService {
       ...(slot.configOptions && slot.configOptions.length > 0
         ? { configOptions: slot.configOptions }
         : {}),
+      ...(viewSession.worktree ? { worktree: viewSession.worktree } : {}),
+      ...(viewSession.diffSummary ? { diffSummary: viewSession.diffSummary } : {}),
     };
   }
 
@@ -1899,6 +2286,19 @@ export class ExternalSessionService {
     const live = this.liveSlots.get(record.id);
     if (live) return !live.closing;
     if (record.owner) return false;
+    if (record.worktree) {
+      const projectRoot = this.recordProjectRootOf(record);
+      if (
+        !fs.existsSync(record.worktree.worktreePath) ||
+        !verifyManagedWorktreeLink({
+          worktreesRoot: this.worktreesRoot,
+          projectRoot,
+          worktreePath: record.worktree.worktreePath,
+        })
+      ) {
+        return false;
+      }
+    }
     return Boolean(record.resumable && record.nativeSessionId);
   }
 
@@ -1908,6 +2308,17 @@ export class ExternalSessionService {
   ): ViewExternalSession {
     const live = this.liveSlots.get(record.id);
     const effective = live ? live.record : record;
+    const worktreeSummary: ViewWorktreeSummary | undefined = effective.worktree
+      ? {
+          id: effective.worktree.id,
+          projectRoot: effective.worktree.projectRoot,
+          worktreePath: effective.worktree.worktreePath,
+          branch: effective.worktree.branch,
+          baseRef: effective.worktree.baseRef,
+          baseCommit: effective.worktree.baseCommit,
+          createdAt: effective.worktree.createdAt,
+        }
+      : undefined;
     return {
       id: effective.id,
       harnessId: effective.harnessId,
@@ -1928,6 +2339,172 @@ export class ExternalSessionService {
       createdAt: effective.createdAt,
       updatedAt: effective.updatedAt,
       ...(effective.lastError ? { lastError: effective.lastError } : {}),
+      ...(worktreeSummary ? { worktree: worktreeSummary } : {}),
+      ...(effective.diffSummary ? { diffSummary: effective.diffSummary } : {}),
+    };
+  }
+
+  private recordProjectRootOf(
+    record: Pick<ExternalSessionRecord, 'projectRoot' | 'workspaceRoot' | 'worktree'>,
+  ): string {
+    return record.projectRoot ?? record.worktree?.projectRoot ?? record.workspaceRoot;
+  }
+
+  private recordExecutionRootOf(
+    record: Pick<ExternalSessionRecord, 'workspaceRoot' | 'worktree'>,
+  ): string {
+    return record.worktree?.worktreePath ?? record.workspaceRoot;
+  }
+
+  private async computeRecordDiffSummary(
+    record: Pick<ExternalSessionRecord, 'id' | 'projectRoot' | 'workspaceRoot' | 'worktree'>,
+  ): Promise<ViewDiffSummary | undefined> {
+    if (!this.checkpoints) return undefined;
+    const projectRoot = this.recordProjectRootOf(record);
+    const executionRoot = this.recordExecutionRootOf(record);
+    const records: readonly CheckpointRecord[] = await this.checkpoints.listCheckpoints({
+      projectRoot,
+      executionRoot,
+      sessionId: record.id,
+    });
+    if (records.length === 0) return { additions: 0, deletions: 0 };
+    if (records.length === 1) {
+      return { additions: records[0]!.additions, deletions: records[0]!.deletions };
+    }
+    const totalChanged = records.reduce((sum, item) => sum + item.changedFiles.length, 0);
+    if (totalChanged === 0) return { additions: 0, deletions: 0 };
+    const diffRes = await this.checkpoints.diff({
+      projectRoot,
+      executionRoot,
+      sessionId: record.id,
+    });
+    if (!diffRes.available) return undefined;
+    return { additions: diffRes.additions, deletions: diffRes.deletions };
+  }
+
+  private resolveTrustedOpenTarget(
+    projectRootInput: string | undefined,
+    workspaceRootInput: string,
+    worktreeInput: SessionWorktreeBinding | undefined,
+  ): {
+    readonly projectRoot: string;
+    readonly executionRoot: string;
+    readonly worktree?: SessionWorktreeBinding;
+  } {
+    if (!worktreeInput) {
+      const trustedExec = this.requireTrustedWorkspace(workspaceRootInput);
+      const trustedProject = projectRootInput
+        ? this.requireTrustedWorkspace(projectRootInput)
+        : trustedExec;
+      if (normalizeProjectRoot(trustedProject) !== normalizeProjectRoot(trustedExec)) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_CONFIG_INVALID',
+          '未提供受管工作树绑定时，projectRoot 与 workspaceRoot 必须指向同一物理目录',
+        );
+      }
+      return { projectRoot: trustedProject, executionRoot: trustedExec };
+    }
+
+    const trustedProject = this.requireTrustedWorkspace(
+      projectRootInput ?? worktreeInput.projectRoot,
+    );
+    if (normalizeProjectRoot(worktreeInput.projectRoot) !== normalizeProjectRoot(trustedProject)) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_UNTRUSTED_WORKSPACE',
+        '受管工作树绑定的 projectRoot 与目标项目根不匹配',
+      );
+    }
+    const linkOk = verifyManagedWorktreeLink({
+      worktreesRoot: this.worktreesRoot,
+      projectRoot: trustedProject,
+      worktreePath: worktreeInput.worktreePath,
+    });
+    if (!linkOk) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_UNTRUSTED_WORKSPACE',
+        `受管工作树 '${worktreeInput.worktreePath}' 未通过四步双向 Git 回链校验`,
+      );
+    }
+    const canonicalWorktreePath = fs.realpathSync.native(worktreeInput.worktreePath);
+    if (workspaceRootInput) {
+      if (!path.isAbsolute(workspaceRootInput)) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_UNTRUSTED_WORKSPACE',
+          '必须提供绝对路径的工作区根目录',
+        );
+      }
+      let canonicalWorkspaceInput: string;
+      try {
+        canonicalWorkspaceInput = fs.realpathSync.native(workspaceRootInput);
+      } catch {
+        throw new ExternalHarnessError(
+          'EXTERNAL_UNTRUSTED_WORKSPACE',
+          `工作区目录不存在或无法解析物理身份: '${workspaceRootInput}'`,
+        );
+      }
+      const inputNorm = normalizeProjectRoot(canonicalWorkspaceInput);
+      if (
+        inputNorm !== normalizeProjectRoot(trustedProject) &&
+        inputNorm !== normalizeProjectRoot(canonicalWorktreePath)
+      ) {
+        throw new ExternalHarnessError(
+          'EXTERNAL_CONFIG_INVALID',
+          'workspaceRoot 必须匹配所属主项目根或受管工作树路径',
+        );
+      }
+    }
+    return {
+      projectRoot: trustedProject,
+      executionRoot: canonicalWorktreePath,
+      worktree: {
+        ...worktreeInput,
+        projectRoot: trustedProject,
+        worktreePath: canonicalWorktreePath,
+      },
+    };
+  }
+
+  private requireTrustedRecord(
+    record: Pick<ExternalSessionRecord, 'projectRoot' | 'workspaceRoot' | 'worktree'>,
+    options?: { readonly allowRemovedWorktreeForReadOnly?: boolean },
+  ): { readonly projectRoot: string; readonly executionRoot: string } {
+    const trustedProject = this.requireTrustedWorkspace(this.recordProjectRootOf(record));
+    if (!record.worktree) {
+      const trustedExec = this.requireTrustedWorkspace(record.workspaceRoot);
+      return { projectRoot: trustedProject, executionRoot: trustedExec };
+    }
+    if (
+      normalizeProjectRoot(record.worktree.projectRoot) !== normalizeProjectRoot(trustedProject)
+    ) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_UNTRUSTED_WORKSPACE',
+        '外部会话绑定的工作树项目根与当前信任根不匹配',
+      );
+    }
+    const rawExecPath = record.worktree.worktreePath;
+    if (!fs.existsSync(rawExecPath)) {
+      if (options?.allowRemovedWorktreeForReadOnly) {
+        return { projectRoot: trustedProject, executionRoot: rawExecPath };
+      }
+      throw new ExternalHarnessError(
+        'EXTERNAL_UNTRUSTED_WORKSPACE',
+        `受管工作树目录已不存在: '${rawExecPath}'`,
+      );
+    }
+    const linkOk = verifyManagedWorktreeLink({
+      worktreesRoot: this.worktreesRoot,
+      projectRoot: trustedProject,
+      worktreePath: rawExecPath,
+    });
+    if (!linkOk) {
+      throw new ExternalHarnessError(
+        'EXTERNAL_UNTRUSTED_WORKSPACE',
+        `受管工作树 '${rawExecPath}' 双向 Git 回链校验失败，拒绝继承项目信任`,
+      );
+    }
+    return {
+      projectRoot: trustedProject,
+      executionRoot: fs.realpathSync.native(rawExecPath),
     };
   }
 
@@ -2021,19 +2598,19 @@ export class ExternalSessionService {
     }
   }
 
-  private ensureWorkspaceNotRunning(workspaceRoot: string, currentSessionId: string): void {
-    const targetNorm = normalizeProjectRoot(workspaceRoot);
+  private ensureWorkspaceNotRunning(executionRoot: string, currentSessionId: string): void {
+    const targetNorm = normalizeProjectRoot(executionRoot);
     for (const [id, opening] of this.openingSessions) {
       if (id === currentSessionId) continue;
-      if (normalizeProjectRoot(opening.workspaceRoot) !== targetNorm) continue;
+      if (normalizeProjectRoot(opening.executionRoot) !== targetNorm) continue;
       throw new ExternalHarnessError(
         'EXTERNAL_WORKSPACE_BUSY',
-        `同一工作区已有正在启动的外部代理会话（${opening.title}），请等待其完成或取消后再试`,
+        `同一工作目录已有正在启动的外部代理会话（${opening.title}），请等待其完成或取消后再试`,
       );
     }
     for (const [id, slot] of this.liveSlots) {
       if (id === currentSessionId) continue;
-      if (normalizeProjectRoot(slot.record.workspaceRoot) !== targetNorm) continue;
+      if (normalizeProjectRoot(this.recordExecutionRootOf(slot.record)) !== targetNorm) continue;
       if (
         slot.record.status === 'starting' ||
         slot.record.status === 'running' ||
@@ -2042,7 +2619,7 @@ export class ExternalSessionService {
       ) {
         throw new ExternalHarnessError(
           'EXTERNAL_WORKSPACE_BUSY',
-          `同一工作区已有运行中的外部代理会话（${slot.record.title}），请等待其完成或取消后再试`,
+          `同一工作目录已有运行中的外部代理会话（${slot.record.title}），请等待其完成或取消后再试`,
         );
       }
     }

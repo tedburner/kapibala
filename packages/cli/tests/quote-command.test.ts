@@ -172,4 +172,22 @@ describe('/quote 与引用草稿', () => {
     expect(joined).toContain('使用 /quote <sessionId>#<recordId> 引用命中消息');
     expect(draft.size).toBe(0);
   });
+
+  it('在绑定独立 Worktree 时优先按主仓库 projectRoot 读取同桶会话引用', async () => {
+    const { sessionId } = await seed([{ id: 'm1', role: 'user', text: '主仓库桶内历史' }]);
+    const isolatedWorktreeDir = path.join(home, 'isolated-wt');
+    fs.mkdirSync(isolatedWorktreeDir, { recursive: true });
+    const draft = new QuoteDraft();
+    const lines: string[] = [];
+    const wtCtx: CommandContext = {
+      ...context(draft, lines),
+      projectRoot: root,
+      executionRoot: isolatedWorktreeDir,
+      session: { workspaceRoot: isolatedWorktreeDir, conversationId: 'wt-current' } as never,
+    };
+
+    await quoteCommand([sessionId], wtCtx);
+    expect(draft.size).toBe(1);
+    expect(lines.join('\n')).toMatch(/已引用 1 条（1 个会话/);
+  });
 });

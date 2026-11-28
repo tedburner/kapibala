@@ -113,7 +113,8 @@ const api: DesktopAPI = {
   },
   preferences: {
     read: () => call('preferences.read', {}),
-    update: (theme) => done('preferences.update', { theme }),
+    update: (patch) =>
+      done('preferences.update', typeof patch === 'string' ? { theme: patch } : patch),
   },
   workspace: {
     openDefault: () => call('workspace.openDefault', {}),
@@ -121,7 +122,9 @@ const api: DesktopAPI = {
     addProject: (params) => call('workspace.addProject', params),
     openRecent: (recentId) => call('workspace.openRecent', { recentId }),
     confirmTrust: (params) => call('workspace.confirmTrust', params),
-    listFiles: (workspaceId) => call('workspace.listFiles', { workspaceId }),
+    listFiles: (arg) =>
+      call('workspace.listFiles', typeof arg === 'string' ? { workspaceId: arg } : arg),
+    readFile: (params) => call('workspace.readFile', params),
   },
   settings: {
     read: (workspaceId) => call('settings.read', { workspaceId }),
@@ -157,7 +160,12 @@ const api: DesktopAPI = {
     list: (workspaceId, page, query) =>
       call('session.list', { workspaceId, page: page ?? 1, query }),
     archived: (workspaceId, page) => call('session.archived', { workspaceId, page: page ?? 1 }),
-    create: (workspaceId, profileId) => call('session.create', { workspaceId, profileId }),
+    readArchived: (params) => call('session.readArchived', params),
+    create: (arg, profileId) =>
+      call(
+        'session.create',
+        typeof arg === 'string' ? { workspaceId: arg, ...(profileId ? { profileId } : {}) } : arg,
+      ),
     open: (params) => call('session.open', params),
     close: (params) => done('session.close', params),
     archive: (params) => done('session.archive', params),
@@ -167,9 +175,11 @@ const api: DesktopAPI = {
     rename: (params) => done('session.rename', params),
     pin: (params) => done('session.pin', params),
     evidence: (params) => call('session.evidence', params),
+    branchWithSummary: (params) => call('session.branchWithSummary', params),
   },
   run: {
     start: (params) => call('run.start', params),
+    regenerate: (params) => call('run.regenerate', params),
     cancel: (params) => call('run.cancel', params),
     status: (params) => call('run.status', params),
     command: (params) => call('run.command', params),
@@ -177,6 +187,34 @@ const api: DesktopAPI = {
     skillCatalog: (params) => call('run.skillCatalog', params),
   },
   approval: { reply: (params) => done('approval.reply', params) },
+  reference: {
+    candidates: (params) => call('reference.candidates', params),
+    search: (params) => call('reference.search', params),
+    read: (params) => call('reference.read', params),
+  },
+  checkpoint: {
+    list: (params) => call('checkpoint.list', params),
+    diff: (params) => call('checkpoint.diff', params),
+    restore: (params) => call('checkpoint.restore', params),
+  },
+  worktree: {
+    list: (arg) => call('worktree.list', typeof arg === 'string' ? { workspaceId: arg } : arg),
+    create: (params) => call('worktree.create', params),
+    status: (params) => call('worktree.status', params),
+    diff: (params) => call('worktree.diff', params),
+    previewMerge: (params) => call('worktree.previewMerge', params),
+    applyMerge: (params) => call('worktree.applyMerge', params),
+    remove: (params) => call('worktree.remove', params),
+  },
+  terminal: {
+    listShells: (workspaceId) => call('terminal.listShells', { workspaceId }),
+    ensure: (params) => call('terminal.ensure', params),
+    create: (params) => call('terminal.create', params),
+    write: (params) => done('terminal.write', params),
+    resize: (params) => done('terminal.resize', params),
+    clear: (params) => done('terminal.clear', params),
+    close: (params) => call('terminal.close', params),
+  },
   interaction: { reply: (params) => done('interaction.reply', params) },
   presentation: {
     subscribe: (params) => done('presentation.subscribe', params),

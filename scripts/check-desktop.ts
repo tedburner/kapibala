@@ -6,6 +6,8 @@ import ts from 'typescript';
 
 const repository = fileURLToPath(new URL('../', import.meta.url));
 const desktop = path.join(repository, 'packages/desktop');
+const MAX_RENDERER_LINES = 450;
+
 function files(directory: string): string[] {
   return fs
     .readdirSync(directory, { withFileTypes: true })
@@ -19,8 +21,8 @@ function insist(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
 }
 /**
- * 静态校验桌面四进程导入边界、语义主题 Token、依赖白名单与主进程安全守卫；
- * 允许渲染层按需混用既有组件库与语义化原生交互控件，仅拦截硬编码色值、未登记 UI 库及跨进程越权导入。
+ * 静态校验桌面四进程导入边界、UI 2.0 语义主题 Token、单文件行数预算、依赖白名单与主进程安全守卫；
+ * 彻底禁止 `@cloudflare/kumo`、硬编码色值、业务面直接导入 `@phosphor-icons/react` 及跨进程越权导入。
  * `artifacts = true` 时额外校验已构建渲染产物无特权依赖且 sandbox Preload 仅保留 electron 外部 require。
  */
 export function checkDesktop(artifacts = false): void {
@@ -30,6 +32,13 @@ export function checkDesktop(artifacts = false): void {
     const source = fs.readFileSync(file, 'utf8');
     const relative = path.relative(path.join(desktop, 'src'), file).replaceAll('\\', '/');
     const browser = /^(renderer|shared)\//.test(relative);
+    if (relative.startsWith('renderer/') && /\.[jt]sx?$/.test(file)) {
+      const lineCount = source.split(/\r?\n/).length;
+      insist(
+        lineCount <= MAX_RENDERER_LINES,
+        `${relative}: exceeds ${MAX_RENDERER_LINES} lines (${lineCount})`,
+      );
+    }
     const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
     function visit(node: ts.Node): void {
       let specifier: string | undefined;
@@ -78,11 +87,22 @@ export function checkDesktop(artifacts = false): void {
             !specifier.includes('@kiturone/') && !specifier.includes('agent-host'),
             `${relative}: Main imports execution domain`,
           );
-        if (relative.startsWith('renderer/'))
+        if (relative.startsWith('renderer/')) {
           insist(
             !/\/(?:agent-host|main|preload)\//.test(specifier),
             `${relative}: cross-process import`,
           );
+          insist(
+            !specifier.startsWith('@cloudflare/kumo'),
+            `${relative}: @cloudflare/kumo has been retired in UI 2.0`,
+          );
+        }
+        if (relative.startsWith('renderer/surfaces/')) {
+          insist(
+            specifier !== '@phosphor-icons/react',
+            `${relative}: surfaces must consume icons through renderer/ui/Icon`,
+          );
+        }
         if (relative.startsWith('agent-host/') && specifier.startsWith('@kiturone/kapibala-cli'))
           insist(
             specifier === '@kiturone/kapibala-cli/commands',
@@ -114,18 +134,38 @@ export function checkDesktop(artifacts = false): void {
         !/transition-all|transition:\s*all|@keyframes|\banimate-[a-z]/.test(source),
         `${relative}: application motion must remain explicit and bounded`,
       );
-    if (relative.startsWith('renderer/') && /\.tsx$/.test(file)) {
+    if (relative.startsWith('renderer/') && /\.[jt]sx?$/.test(file)) {
       insist(
-        !/#(?:[0-9a-fA-F]{3}){1,2}\b|\b(?:rgb|hsl)a?\(/.test(source),
+        !/#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b|\b(?:rgb|hsl|oklch)a?\(/.test(
+          source,
+        ),
         `${relative}: colors must use semantic theme tokens`,
       );
       insist(
-        !/from ['"](?:lucide|@radix-ui|@headlessui|framer-motion)/.test(source),
+        !/from ['"](?:@cloudflare\/kumo|lucide|@radix-ui|@headlessui|framer-motion)/.test(source),
         `${relative}: unapproved UI dependency`,
       );
       insist(
         !/dangerouslySetInnerHTML|localStorage|sessionStorage/.test(source),
         `${relative}: unsafe rendering or duplicated persistent state`,
+      );
+    }
+  }
+  for (const cssFile of files(path.join(desktop, 'src/renderer')).filter((item) =>
+    item.endsWith('.css'),
+  )) {
+    const cssSource = fs.readFileSync(cssFile, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const relCss = path.relative(path.join(desktop, 'src'), cssFile).replaceAll('\\', '/');
+    insist(
+      !/transition-all|transition:\s*all|@keyframes/.test(cssSource),
+      `${relCss}: CSS motion must remain explicit and bounded`,
+    );
+    if (relCss !== 'renderer/styles/tokens.css' && relCss !== 'renderer/styles/shiki.css') {
+      insist(
+        !/#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b|\b(?:rgb|hsl|oklch)a?\(/.test(
+          cssSource,
+        ),
+        `${relCss}: component CSS must consume --kpbl-* tokens instead of color literals`,
       );
     }
   }
@@ -137,9 +177,9 @@ export function checkDesktop(artifacts = false): void {
     '@kiturone/kapibala',
     '@kiturone/kapibala-host',
     '@kiturone/kapibala-cli',
-    '@cloudflare/kumo',
     '@phosphor-icons/react',
     '@tanstack/react-virtual',
+    'node-pty',
     'react',
     'react-dom',
     'remark-gfm',
@@ -150,8 +190,6 @@ export function checkDesktop(artifacts = false): void {
     Object.keys(manifest.dependencies).every((name) => allowed.has(name)),
     'Unapproved desktop runtime dependency',
   );
-  // devDependencies 也全量枚举：UI 运行库被打包器从 devDependencies 内联进产物，
-  // 只查 dependencies 会放行新增的未批准 UI 库；构建工具链在此单独登记，新增一律过门禁。
   const devAllowed = new Set([
     '@playwright/test',
     '@streamdown/cjk',
@@ -161,6 +199,9 @@ export function checkDesktop(artifacts = false): void {
     '@tailwindcss/vite',
     '@types/react',
     '@types/react-dom',
+    '@xterm/addon-fit',
+    '@xterm/addon-web-links',
+    '@xterm/xterm',
     'electron',
     'electron-builder',
     'electron-vite',
@@ -176,28 +217,17 @@ export function checkDesktop(artifacts = false): void {
     ),
     'Unapproved desktop development dependency',
   );
-  if (manifest.dependencies['@cloudflare/kumo']) {
-    const css = fs.readFileSync(path.join(desktop, 'src/renderer/index.css'), 'utf8');
-    insist(
-      css.indexOf('@cloudflare/kumo/styles') < css.indexOf('tailwindcss'),
-      'Kumo styles must precede Tailwind',
-    );
-    insist(
-      css.includes('../../node_modules/@cloudflare/kumo/dist'),
-      'Kumo distribution needs explicit Tailwind source',
-    );
-  }
-  const theme = fs.readFileSync(path.join(desktop, 'src/renderer/theme-kapibala.css'), 'utf8');
+  const tokensCss = fs.readFileSync(path.join(desktop, 'src/renderer/styles/tokens.css'), 'utf8');
+  const baseCss = fs.readFileSync(path.join(desktop, 'src/renderer/styles/base.css'), 'utf8');
   insist(
-    theme.includes('isolation: isolate') && theme.includes(':root[data-mode="dark"]'),
-    'Missing root isolation or dark theme',
+    baseCss.includes('isolation: isolate') && tokensCss.includes(':root[data-mode="dark"]'),
+    'Missing root isolation or dark theme tokens',
   );
   insist(
-    theme.includes('prefers-reduced-motion: reduce') &&
-      theme.includes('transition-duration: 0s !important'),
-    'Missing reduced-motion handling for library surfaces',
+    baseCss.includes('prefers-reduced-motion: reduce') &&
+      baseCss.includes('transition-duration: 0s !important'),
+    'Missing reduced-motion handling',
   );
-  // 只检查应用源码；库内部的过渡不被误判为应用新增动效。
   const html = fs.readFileSync(path.join(desktop, 'src/renderer/index.html'), 'utf8');
   insist(
     html.indexOf('boot-theme.js') < html.indexOf('main.tsx') &&
@@ -205,8 +235,6 @@ export function checkDesktop(artifacts = false): void {
     'Missing first-frame theme or CSP',
   );
   const main = fs.readFileSync(path.join(desktop, 'src/main/index.ts'), 'utf8');
-  // URL 守卫必须两侧都经 normalizeMainFrameUrl / normalizeUrl：pathToFileURL 会把 8.3 短名里的 ~ 编码成 %7E，
-  // Chromium 帧 URL 保留字面 ~，且页内 #fragment 导航不得误断控制通道或触发跨源误拒。
   for (const setting of [
     'contextIsolation: true',
     'sandbox: true',
@@ -218,8 +246,6 @@ export function checkDesktop(artifacts = false): void {
     "if (mainFrame && !inPlace) renderer?.peer.close('RENDERER_NAVIGATED')",
   ])
     insist(main.includes(setting), `Missing desktop source guard: ${setting}`);
-  // 启动环境必须经白名单构造：全量继承会把宿主注入的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE
-  // 带进 Electron 主进程，症状是窗口根本不出现、日志里只有与业务无关的模块加载错误。
   for (const file of [
     ...files(path.join(desktop, 'scripts')).filter((item) => item.endsWith('.mjs')),
     ...files(path.join(desktop, 'e2e')).filter((item) => item.endsWith('.ts')),

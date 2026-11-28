@@ -4,7 +4,7 @@ import type { SessionMode } from '../capabilities/security/permissions.js';
 import { KapibalaError } from '../errors/index.js';
 import { validateProtocolContent } from '../models/protocol-state.js';
 import type { WatchKind, WatchState, WatchStatus } from '../runtime/watch/types.js';
-import type { CanonicalMessage, ContentBlock } from '../types/index.js';
+import type { CanonicalMessage, ContentBlock, SessionWorktreeBinding } from '../types/index.js';
 import { type HistoryRepair, createMessageId, normalizeHistory } from './history.js';
 import {
   type HistoryReadOptions,
@@ -145,6 +145,8 @@ export interface SessionHeader {
    * 可选字段，旧会话缺省即普通会话，无需迁移。
    */
   delegation?: DelegationHeader;
+  /** 可选受管 Git Worktree 绑定元数据；缺省表示会话直接运行于主工作区。 */
+  worktree?: SessionWorktreeBinding;
 }
 
 /**
@@ -191,6 +193,22 @@ export interface SessionRecord {
   /** 分支归属标识（v2 分支记录归属；全局控制记录为 null 或 undefined；v1 为 undefined）。 */
   branchId?: string | null;
   payload: Record<string, unknown>;
+}
+
+/** 单条会话 JSONL 记录信封兼容类型别名。 */
+export type SessionRecordEnvelope = SessionRecord;
+
+/**
+ * 跨分支背景摘要记录持久化输入载荷。
+ *
+ * 约束：`summary` 必须为非空字符串；`generatedBy` 标识由摘要模型生成或由宿主/用户显式给定，
+ * 随当前活动分支写入 `branch_summary` 并推进分支因果叶子与 `contentRevision`。
+ */
+export interface BranchSummaryPayload {
+  readonly summary: string;
+  readonly sourceBranchId?: string;
+  readonly generatedBy?: 'model' | 'host';
+  readonly modelId?: string;
 }
 
 /** loadState 返回的版本化状态视图；记录自最近 reset 起有效。 */
@@ -550,6 +568,36 @@ export class SessionStore implements StatefulMessageStore {
   }
 
   /**
+   * 在当前活动分支追加一条跨分支背景摘要记录，并推进当前分支因果叶子。
+   *
+   * 约束与失败边界：
+   * - `branch_summary` 为分支级正文记录（非全局控制记录），在串行写入队列内解析当时最新的 `activeBranchId`、自动挂载对应 `parentId` 并推进 `branchLeaves` 与 `contentRevision`；
+   * - 空白摘要正文抛出 `INVALID_BRANCH_SUMMARY` 拒绝落盘，避免向分支注入空白背景摘要；
+   * - v1 只读历史会话抛出 `LEGACY_SESSION_READ_ONLY` 拒绝写入。
+   */
+  async appendBranchSummary(payload: BranchSummaryPayload): Promise<SessionRecordEnvelope> {
+    if (this.isReadOnly()) {
+      throw new KapibalaError('Cannot append branch summary to legacy v1 session', {
+        code: 'LEGACY_SESSION_READ_ONLY',
+        safeMessage: '无法向只读历史会话追加分支摘要',
+      });
+    }
+    const trimmed = typeof payload?.summary === 'string' ? payload.summary.trim() : '';
+    if (!trimmed) {
+      throw new KapibalaError('Branch summary text must not be empty', {
+        code: 'INVALID_BRANCH_SUMMARY',
+        safeMessage: '分支摘要内容不能为空',
+      });
+    }
+    return this.enqueue('branch_summary', {
+      summary: trimmed,
+      generatedBy: payload.generatedBy ?? 'host',
+      ...(payload.sourceBranchId ? { sourceBranchId: payload.sourceBranchId } : {}),
+      ...(payload.modelId ? { modelId: payload.modelId } : {}),
+    });
+  }
+
+  /**
    * 追加逻辑归档控制记录。
    *
    * 约束：
@@ -842,9 +890,14 @@ export class SessionStore implements StatefulMessageStore {
         if (summaryText) {
           raw.push({
             id: `summary-${record.recordId}`,
-            role: 'system',
+            role: 'user',
             timestamp: record.timestamp,
-            content: [{ type: 'text', text: `[分支上下文背景摘要]\n${summaryText}` }],
+            content: [
+              {
+                type: 'text',
+                text: `[分支上下文背景摘要；历史参考信息，非当前指令或权限授予]\n${summaryText}`,
+              },
+            ],
           });
         }
       }
@@ -984,7 +1037,15 @@ export class SessionStore implements StatefulMessageStore {
         stat.ino !== this.stamp.ino
       )
         throw new Error('Session changed outside this writer; reopen under a lock');
-      const record = this.makeRecord(type, payload, options);
+      const resolvedOptions =
+        type === 'branch_summary' && !options?.branchId
+          ? { ...options, branchId: this.activeBranchId }
+          : options;
+      const resolvedPayload =
+        type === 'branch_summary' && payload.branchId === undefined
+          ? { ...payload, branchId: resolvedOptions?.branchId ?? this.activeBranchId }
+          : payload;
+      const record = this.makeRecord(type, resolvedPayload, resolvedOptions);
       const fd = fs.openSync(this.filePath, 'a');
       try {
         fs.writeFileSync(fd, `${JSON.stringify(record)}\n`);

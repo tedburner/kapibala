@@ -27,7 +27,7 @@ describe('resolveWindowChromeOptions 跨平台顶栏与菜单栏收敛', () => {
       height: 46,
     });
     expect(titleBarOverlayOptions('dark')).toEqual({
-      color: '#181818',
+      color: '#15171a',
       symbolColor: '#EDEDED',
       height: 46,
     });

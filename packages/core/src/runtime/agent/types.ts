@@ -14,6 +14,7 @@
 
 import type { SubagentRole } from '../../capabilities/security/subagent-policy.js';
 import type { PrimaryModelRole } from '../../models/router.js';
+import type { SessionWorktreeBinding } from '../../types/index.js';
 
 /**
  * 子代理任务生命周期状态。
@@ -219,16 +220,20 @@ export interface AgentTaskRecord {
   error?: string;
   /** 实际使用的模型标识。 */
   modelId?: string;
-  /** 工作区物理根路径。 */
-  readonly workspaceRoot: string;
-  /** 执行物理目录。 */
-  readonly executionCwd: string;
+  /** 工作区物理根路径（worktree 隔离分配后更新为受管工作树根）。 */
+  workspaceRoot: string;
+  /** 执行物理目录（worktree 隔离分配后更新为受管工作树内对应目录）。 */
+  executionCwd: string;
+  /** 执行物理目录兼容字段；worktree 隔离分配后与 executionCwd 同步更新。 */
+  cwd?: string;
   /** 剩余/分配的限额。 */
   readonly limits: Readonly<Required<AgentTaskLimits>>;
   /** 显式限制的工具名称白名单。 */
   allowedTools?: readonly string[];
   /** 物理隔离模式。 */
   isolation?: 'inherit' | 'worktree';
+  /** 受管 Git Worktree 绑定元数据；仅 isolation === 'worktree' 且成功分配后填充。 */
+  worktree?: SessionWorktreeBinding;
   /** 会话生命周期模式；ephemeral 为默认且行为与历史版本一致，detached 在终态后保留会话。 */
   readonly mode: 'ephemeral' | 'detached';
   /** 子会话 conversationId；仅 detached 终态由 runner 回填，是用户可见的唯一凭据。 */
@@ -267,4 +272,43 @@ export interface ListAgentsFilter {
   parentSessionId?: string;
   /** 限定状态。 */
   status?: AgentTaskStatus | 'active' | 'terminal';
+}
+
+/**
+ * 宿主为 `isolation: 'worktree'` 子代理分配的受管 Git 链接工作树结果。
+ *
+ * 约束与边界：
+ * - `workspaceRoot` 与 `cwd` 必须为新工作树内的绝对物理路径（`cwd` 位于 `workspaceRoot` 内部并保持父执行目录相对偏移），Runtime 接收后统一按 `fs.realpathSync.native` 语义归一，消除 Windows 8.3 短路径失配；
+ * - `binding.projectRoot` 锚定主仓库根以保持会话分桶归属一致，而文件沙箱与命令执行根切换到独立 `workspaceRoot`；
+ * - 一旦 `allocate` 成功返回，即便等待期间任务已被取消或超时，Runtime 也会先登记 `binding` 再进入 `finally` 调用 `release` 回收资源，防止孤儿工作树泄漏。
+ */
+export interface AllocatedSubagentWorktree {
+  /** 写入子会话头与任务快照的工作树持久绑定元数据。 */
+  readonly binding: SessionWorktreeBinding;
+  /** 受管链接工作树的绝对物理根路径，作为子会话 `workspaceRoot` 与路径沙箱边界。 */
+  readonly workspaceRoot: string;
+  /** 子任务在链接工作树内对应的初始执行目录绝对路径。 */
+  readonly cwd: string;
+}
+
+/**
+ * 子代理受管 Git Worktree 生命周期钩子；由宿主层注入，Core 不直接调用 git 子进程。
+ *
+ * 约束：
+ * - `allocate` 在 `runTask` 启动时调用，失败直接将子任务收敛为 `failed` 并释放活动槽；
+ * - `release` 在子任务进入终态（`finally`）时必定调用，由宿主按 `mode` 与脏改动状态决定回收或保留。
+ */
+export interface SubagentWorktreeProvider {
+  allocate(input: {
+    readonly agentId: string;
+    readonly projectRoot: string;
+    readonly relativeCwd: string;
+    readonly description: string;
+    readonly mode: 'ephemeral' | 'detached';
+  }): Promise<AllocatedSubagentWorktree>;
+  release(input: {
+    readonly binding: SessionWorktreeBinding;
+    readonly mode: 'ephemeral' | 'detached';
+    readonly status: AgentTaskStatus;
+  }): Promise<void>;
 }

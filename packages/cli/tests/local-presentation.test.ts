@@ -88,4 +88,87 @@ describe('connected presentation projection', () => {
       selectMessages(presentation.state)[0].blocks.filter((block) => block.kind === 'tool'),
     ).toHaveLength(1);
   });
+
+  it('clears partial assistant text on stream_reset while keeping completed tool blocks and tracking retry_scheduled', () => {
+    const presentation = new ConnectedPresentation('s', 'i', 'e');
+    const base = { sessionId: 's', serverInstanceId: 'i', streamEpoch: 'e', runId: 'r' };
+    presentation.consume({
+      ...base,
+      seq: 1,
+      type: 'run_started',
+      payload: { clientOperationId: 'o' },
+    });
+    presentation.consume({
+      ...base,
+      seq: 2,
+      type: 'tool_start',
+      payload: { toolId: 't1', toolName: 'read_file', target: 'README.md' },
+    });
+    presentation.consume({
+      ...base,
+      seq: 3,
+      type: 'tool_finish',
+      payload: { toolId: 't1', result: 'ok', isError: false, truncated: false },
+    });
+    presentation.consume({
+      ...base,
+      seq: 4,
+      type: 'text_delta',
+      payload: { text: 'half-streamed-garbage' },
+    });
+    expect(
+      selectMessages(presentation.state).some((m) =>
+        m.blocks.some((b) => b.text === 'half-streamed-garbage'),
+      ),
+    ).toBe(true);
+
+    presentation.consume({
+      ...base,
+      seq: 5,
+      type: 'stream_reset',
+      payload: { step: 2, attempt: 1 },
+    });
+    presentation.consume({
+      ...base,
+      seq: 6,
+      type: 'retry_scheduled',
+      payload: {
+        step: 2,
+        attempt: 1,
+        maxRetries: 2,
+        delayMs: 1_500,
+        nextRetryAt: 9_999,
+        category: 'transport',
+        message: 'SSE stream interrupted',
+      },
+    });
+    expect(presentation.state.retryStatus).toMatchObject({
+      attempt: 1,
+      maxRetries: 2,
+      delayMs: 1_500,
+    });
+    expect(
+      selectMessages(presentation.state).some((m) =>
+        m.blocks.some((b) => b.text === 'half-streamed-garbage'),
+      ),
+    ).toBe(false);
+    expect(
+      selectMessages(presentation.state).some((m) =>
+        m.blocks.some((b) => b.kind === 'tool' && b.tool?.callId === 't1'),
+      ),
+    ).toBe(true);
+
+    presentation.consume({
+      ...base,
+      seq: 7,
+      type: 'text_delta',
+      payload: { text: 'clean-recovered-answer' },
+    });
+    expect(presentation.state.retryStatus).toBeUndefined();
+    expect(
+      selectMessages(presentation.state).some((m) =>
+        m.blocks.some((b) => b.text === 'clean-recovered-answer'),
+      ),
+    ).toBe(true);
+  });
 });

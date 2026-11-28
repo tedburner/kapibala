@@ -22,6 +22,7 @@ import type {
   CanonicalMessage,
   ContentBlock,
   ModelRequest,
+  ModelRetryOptions,
   RequestPreparation,
   SessionEvent,
   ToolResultBlock,
@@ -39,7 +40,39 @@ import { assertToolCallsExecutable } from './tool-call-validation.js';
 import type { AgentLoopOptions } from './types.js';
 
 // 循环宿主配置在 ./types.js 定义；此处在包根保持原导出面不变。
-export type { AgentLoopOptions } from './types.js';
+export type { AgentLoopOptions, ModelRetryOptions } from './types.js';
+
+/** 绑定 AbortSignal 的退避休眠：取消触发时立即唤醒并移除监听器，防止长退避残留闭包或定时器。 */
+async function sleepWithAbort(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new AbortError();
+  if (delayMs <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      reject(new AbortError());
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    }, delayMs);
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
 
 /**
  * 主执行循环：按 turn 推进「模型请求 → 整批校验 → 工具调度 → 历史闭合」。
@@ -67,6 +100,7 @@ export class AgentLoop {
   private readonly runId?: string;
   private readonly getMode: () => SessionMode;
   private readonly permissionRules: readonly PermissionRule[];
+  private readonly retry?: ModelRetryOptions;
 
   constructor(options: AgentLoopOptions) {
     this.interactionId = options.interactionId;
@@ -89,6 +123,7 @@ export class AgentLoop {
     this.runId = options.runId;
     this.getMode = options.getMode ?? (() => 'Approval');
     this.permissionRules = options.permissionRules ?? [];
+    this.retry = options.retry;
   }
 
   /**
@@ -173,7 +208,8 @@ export class AgentLoop {
         });
       }
       let firstTokenReceived = false;
-      let outputSeen = false;
+      let providerOutputSeen = false;
+      let visibleOutputEmitted = false;
 
       // 统一的 TurnMetrics 构造：保证错误/熔断/正常三条路径的指标结构一致
       const buildMetrics = (
@@ -198,9 +234,19 @@ export class AgentLoop {
       };
 
       try {
+        const maxRetries = Math.max(0, this.retry?.maxRetries ?? 2);
+        const baseDelayMs = Math.max(0, this.retry?.baseDelayMs ?? 1_000);
+        const maxDelayMs = Math.max(baseDelayMs, this.retry?.maxDelayMs ?? 30_000);
+        const maxRetryAfterMs = Math.max(0, this.retry?.maxRetryAfterMs ?? 60_000);
+        const allowMidStreamRetry = this.retry?.allowMidStreamRetry ?? false;
+        const rand = this.retry?.random ?? Math.random;
+        const sleepFn = this.retry?.sleep ?? sleepWithAbort;
+
         let attempt = 0;
+        let backoffAttempt = 0;
         while (true) {
           attempt++;
+          const attemptStartTime = Date.now();
           try {
             for await (const event of this.provider.create(request)) {
               if (this.signal?.aborted) throw new AbortError();
@@ -219,7 +265,14 @@ export class AgentLoop {
                 event.type === 'tool_call_delta' ||
                 event.type === 'tool_call_finish'
               )
-                outputSeen = true;
+                providerOutputSeen = true;
+              if (
+                event.type === 'text_delta' ||
+                event.type === 'thinking_delta' ||
+                event.type === 'thinking_block_start' ||
+                event.type === 'thinking_block_stop'
+              )
+                visibleOutputEmitted = true;
 
               if (
                 !firstTokenReceived &&
@@ -228,7 +281,7 @@ export class AgentLoop {
                   event.type === 'tool_call_start')
               ) {
                 firstTokenReceived = true;
-                turnTtftMs = Date.now() - modelStartTime;
+                turnTtftMs = Date.now() - attemptStartTime;
                 yield {
                   type: 'step_log',
                   log: {
@@ -337,34 +390,110 @@ export class AgentLoop {
             assertToolCallsExecutable(history, toolCalls);
             break;
           } catch (error) {
-            // 溢出重试只允许一次，且要求模型尚未产出任何输出、准备器可用且未被取消。
+            // 溢出重试优先且只允许一次，要求模型尚未产出任何输出、准备器可用且未被取消，不占退避次数。
             if (
-              !(error instanceof ContextOverflowError) ||
-              outputSeen ||
-              accumulatedText ||
-              accumulatedThinking ||
-              toolCalls.length ||
-              overflowRetried ||
-              !this.prepareRequest ||
-              this.signal?.aborted
-            )
-              throw error;
-            overflowRetried = true;
-            const before = JSON.stringify({
-              systemPrompt: request.systemPrompt,
-              messages: request.messages,
-              tools: request.tools,
-              maxTokens: request.maxTokens,
-            });
-            const candidate = yield* this.prepareRequest(request, history, 'overflow');
-            const after = JSON.stringify({
-              systemPrompt: candidate.systemPrompt,
-              messages: candidate.messages,
-              tools: candidate.tools,
-              maxTokens: candidate.maxTokens,
-            });
-            if (before === after) throw error;
-            request = candidate;
+              error instanceof ContextOverflowError &&
+              !providerOutputSeen &&
+              !accumulatedText &&
+              !accumulatedThinking &&
+              !toolCalls.length &&
+              !overflowRetried &&
+              this.prepareRequest &&
+              !this.signal?.aborted
+            ) {
+              overflowRetried = true;
+              const before = JSON.stringify({
+                systemPrompt: request.systemPrompt,
+                messages: request.messages,
+                tools: request.tools,
+                maxTokens: request.maxTokens,
+              });
+              const candidate = yield* this.prepareRequest(request, history, 'overflow');
+              const after = JSON.stringify({
+                systemPrompt: candidate.systemPrompt,
+                messages: candidate.messages,
+                tools: candidate.tools,
+                maxTokens: candidate.maxTokens,
+              });
+              if (before === after) throw error;
+              request = candidate;
+              continue;
+            }
+
+            if (
+              error instanceof ModelError &&
+              error.retryable &&
+              !this.signal?.aborted &&
+              backoffAttempt < maxRetries &&
+              (!visibleOutputEmitted || allowMidStreamRetry)
+            ) {
+              if (error.retryAfterMs !== undefined && error.retryAfterMs > maxRetryAfterMs) {
+                throw error;
+              }
+              backoffAttempt++;
+              const hadVisibleOutput = visibleOutputEmitted;
+              accumulatedText = '';
+              accumulatedThinking = '';
+              toolCalls.length = 0;
+              finalContent = undefined;
+              responseStopped = false;
+              invalidToolArguments = false;
+              refused = false;
+              turnUsage = undefined;
+              finishReason = undefined;
+              turnTtftMs = undefined;
+              firstTokenReceived = false;
+              providerOutputSeen = false;
+              visibleOutputEmitted = false;
+
+              if (hadVisibleOutput) {
+                yield { type: 'stream_reset', step, attempt: backoffAttempt };
+              }
+
+              const jitterSample = Math.min(1 - Number.EPSILON, Math.max(0, rand()));
+              const delayMs =
+                error.retryAfterMs !== undefined
+                  ? Math.round(
+                      error.retryAfterMs + jitterSample * Math.min(error.retryAfterMs * 0.2, 2_000),
+                    )
+                  : Math.round(
+                      Math.min(baseDelayMs * 2 ** (backoffAttempt - 1), maxDelayMs) *
+                        (1 + 0.25 * jitterSample),
+                    );
+              const nextRetryAt = Date.now() + delayMs;
+              if (this.eventLogger && this.sessionId) {
+                await this.eventLogger.record({
+                  level: 'warn',
+                  event: 'model.retry_scheduled',
+                  sessionId: this.sessionId,
+                  runId: this.runId,
+                  fields: {
+                    step,
+                    attempt: backoffAttempt,
+                    maxRetries,
+                    delayMs,
+                    category: error.category,
+                    errorCode: error.code,
+                  },
+                });
+              }
+              yield {
+                type: 'retry_scheduled',
+                step,
+                attempt: backoffAttempt,
+                maxRetries,
+                delayMs,
+                nextRetryAt,
+                category: error.category,
+                message: error.safeMessage,
+              };
+              if (this.signal?.aborted) throw new AbortError();
+              await sleepFn(delayMs, this.signal);
+              if (this.signal?.aborted) throw new AbortError();
+              continue;
+            }
+
+            throw error;
           }
         }
       } catch (err: unknown) {

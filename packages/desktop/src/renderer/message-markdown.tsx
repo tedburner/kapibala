@@ -1,5 +1,3 @@
-import { Button } from '@cloudflare/kumo';
-import { ArrowBendDownLeftIcon } from '@phosphor-icons/react';
 import { cjk } from '@streamdown/cjk';
 import { code as shikiCodePlugin } from '@streamdown/code';
 import { createMathPlugin } from '@streamdown/math';
@@ -13,13 +11,10 @@ import {
   memo,
   useEffect,
   useMemo,
-  useState,
   useSyncExternalStore,
 } from 'react';
 import remarkGfm from 'remark-gfm';
 import {
-  CodeBlock,
-  CodeBlockCopyButton,
   type Components,
   type ControlsConfig,
   Streamdown,
@@ -27,14 +22,12 @@ import {
   defaultComponents,
   defaultRemarkPlugins,
   defaultUrlTransform,
-  useIsCodeFenceIncomplete,
 } from 'streamdown';
-import { PlainCodeBlock } from './code-display.js';
+import { FencedCodeBlock } from './code-display.js';
 import { clipForDisplay } from './display-budget.js';
-import { HtmlPreview, HtmlPreviewButton } from './html-preview.js';
 import { classifyImageSource } from './markdown-image-model.js';
 import { MarkdownImage } from './markdown-image.js';
-import { codePreviewKind, prepareMarkdownText } from './message-markdown-model.js';
+import { prepareMarkdownText } from './message-markdown-model.js';
 
 type Pluggable = NonNullable<ComponentProps<typeof Streamdown>['remarkPlugins']>[number];
 
@@ -70,7 +63,7 @@ const CJK_PLUGIN = {
 
 const MATH_PLUGIN = createMathPlugin({
   singleDollarTextMath: true,
-  errorColor: 'var(--text-color-kumo-subtle)',
+  errorColor: 'var(--kpbl-ink-subtle)',
 });
 
 /** 正文全功能插件集：引用固定在模块级，避免 Streamdown 因插件对象身份变化丢弃块级缓存。 */
@@ -178,73 +171,6 @@ function extractText(children: ReactNode): string {
 
 const LANGUAGE_CLASS = /(?:^|\s)language-([^\s]+)/;
 
-/**
- * 围栏代码块统一出口：Streamdown Shiki 按需高亮、长行折行开关、一键复制，以及 html/svg 沙箱预览。
- *
- * 超过 {@link clipForDisplay} 展示预算的内容直接降级为 {@link PlainCodeBlock}，避免超大代码块进入
- * Shiki 分词阻塞主线程；预算内统一复用单层卡片顶栏，消除高亮块与无语言块之间的样式割裂。
- */
-function FencedCodeBlock({
-  code,
-  language,
-  compact,
-}: {
-  code: string;
-  language: string;
-  compact: boolean;
-}) {
-  const isIncomplete = useIsCodeFenceIncomplete();
-  const clip = clipForDisplay(code);
-  const [preview, setPreview] = useState(false);
-  const [wrapped, setWrapped] = useState(false);
-  const normalized = language.trim().toLowerCase();
-  const previewKind = isIncomplete ? undefined : codePreviewKind(normalized, code.length, compact);
-  if (clip.truncated) {
-    return <PlainCodeBlock code={code} ariaLabel="复制代码" />;
-  }
-  const lineCount = code.split('\n').length;
-  return (
-    <div className="kapibala-code-shell min-w-0" data-code-wrap={wrapped ? 'true' : undefined}>
-      <CodeBlock
-        code={code}
-        language={normalized || 'text'}
-        isIncomplete={isIncomplete}
-        lineNumbers={!compact && lineCount >= 5}
-      >
-        {!compact && (
-          <>
-            {previewKind && (
-              <HtmlPreviewButton
-                open={preview}
-                onClick={() => setPreview((open) => !open)}
-                kind={previewKind}
-              />
-            )}
-            <Button
-              className="kapibala-action kapibala-code-wrap-btn"
-              variant="ghost"
-              size="sm"
-              shape="square"
-              aria-label={wrapped ? '取消自动换行' : '自动换行'}
-              aria-pressed={wrapped}
-              title={wrapped ? '取消自动换行' : '自动换行'}
-              onClick={() => setWrapped((value) => !value)}
-            >
-              <ArrowBendDownLeftIcon size={14} />
-            </Button>
-            <CodeBlockCopyButton code={code} />
-          </>
-        )}
-      </CodeBlock>
-      {preview && previewKind && (
-        <div className="mt-2">
-          <HtmlPreview html={code} label={`${previewKind} 代码预览`} />
-        </div>
-      )}
-    </div>
-  );
-}
-
 interface BoundaryProps {
   resetKey: string;
   fallbackText: string;
@@ -289,21 +215,23 @@ class MarkdownErrorBoundary extends Component<BoundaryProps, BoundaryState> {
   }
 }
 
-/**
- * 消息正文与思考过程共用的 Markdown 渲染器（基于 Streamdown）。
- *
- * 约束与安全边界：
- * - 原始 HTML 一律跳过（`skipHtml` + 空 `rehypePlugins`），HTML/SVG 需经显式沙箱 iframe 预览；
- * - 流式阶段（`streaming = true`）启用未闭合语法自愈与块级增量缓存，完成态固定走 `static` 模式；
- * - 流式期间暂缓本地相对路径图片读取，避免半截路径触发无效 IPC 报错，流结束后一次性解析；
- * - 超出展示预算（`clipForDisplay`）的超长正文先裁剪渲染并提示用户，完整原文仍可通过「复制正文」获取；
- * - `variant="compact"` 用于折叠思考块，采用次级墨色、压平标题字阶与紧凑块间距。
- */
 function MermaidErrorFallback({ chart }: { error: string; chart: string; retry: () => void }) {
   return (
-    <div className="my-2 rounded-lg border border-kumo-line bg-kumo-recessed p-3 text-xs text-kumo-subtle">
-      <p className="font-medium text-kumo-default">Mermaid 图表语法无法解析，已保留源码：</p>
-      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs text-kumo-default">
+    <div
+      className="my-2 rounded-lg border p-3 text-xs"
+      style={{
+        borderColor: 'var(--kpbl-line-default)',
+        backgroundColor: 'var(--kpbl-bg-canvas)',
+        color: 'var(--kpbl-ink-subtle)',
+      }}
+    >
+      <p className="font-medium" style={{ color: 'var(--kpbl-ink-default)' }}>
+        Mermaid 图表语法无法解析，已保留源码：
+      </p>
+      <pre
+        className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs"
+        style={{ color: 'var(--kpbl-ink-default)' }}
+      >
         {chart}
       </pre>
     </div>
@@ -364,6 +292,16 @@ function onDocumentClickCapture(event: MouseEvent): void {
   }
 }
 
+/**
+ * 消息正文与思考过程共用的 Markdown 渲染器（基于 Streamdown）。
+ *
+ * 约束与安全边界：
+ * - 原始 HTML 一律跳过（`skipHtml` + 空 `rehypePlugins`），HTML/SVG 需经显式沙箱 iframe 预览；
+ * - 流式阶段（`streaming = true`）启用未闭合语法自愈与块级增量缓存，完成态固定走 `static` 模式；
+ * - 流式期间暂缓本地相对路径图片读取，避免半截路径触发无效 IPC 报错，流结束后一次性解析；
+ * - 超出展示预算（`clipForDisplay`）的超长正文先裁剪渲染并提示用户，完整原文仍可通过「复制正文」获取；
+ * - `variant="compact"` 用于折叠思考块，采用次级墨色、压平标题字阶与紧凑块间距。
+ */
 export const MessageMarkdown = memo(function MessageMarkdown({
   text,
   root,
@@ -404,7 +342,7 @@ export const MessageMarkdown = memo(function MessageMarkdown({
   const mermaidConfig = useMemo(
     () => ({
       config: {
-        // 浅色采用 neutral 单色灰阶与 PI 纸面风格对齐，深色跟随 dark；strict 禁止图内脚本执行。
+        // 浅色采用 neutral 单色灰阶与墨工坊纸面风格对齐，深色跟随 dark；strict 禁止图内脚本执行。
         theme: theme === 'dark' ? 'dark' : 'neutral',
         securityLevel: 'strict' as const,
       },
@@ -491,7 +429,7 @@ export const MessageMarkdown = memo(function MessageMarkdown({
           {prepared}
         </Streamdown>
         {clip.truncated && (
-          <p className="mt-2 text-xs text-kumo-subtle">
+          <p className="mt-2 text-xs" style={{ color: 'var(--kpbl-ink-subtle)' }}>
             正文超过展示预算，已截断显示；可通过下方「复制正文」获取完整内容。
           </p>
         )}

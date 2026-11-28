@@ -48,6 +48,8 @@ function fakeHandle(conversationId: string, run: () => Promise<void> = async () 
     // 打开中的会话改名/置顶应走句柄；用 mock 记录调用，验证没有重新抢锁。
     rename: vi.fn(async (_title: string) => {}),
     setPinned: vi.fn(async (_pinned: boolean) => {}),
+    createBranchWithSummary: vi.fn(async (branchId: string) => ({ branchId, summary: '' })),
+    forgetDelegation: vi.fn(),
     snapshot: () => state,
     subscribeEvents: (_listener: (event: PresentationEvent) => void) => () => {},
     configuration: () => ({
@@ -83,6 +85,20 @@ function fakeHandle(conversationId: string, run: () => Promise<void> = async () 
       mcp: [],
       delegations: [],
     }),
+    checkpoints: async () => [],
+    checkpointDiff: async () => ({
+      available: false,
+      files: [],
+      additions: 0,
+      deletions: 0,
+      truncated: false,
+    }),
+    restoreCheckpoint: async () => ({
+      status: 'noop' as const,
+      restoredFiles: [],
+      deletedFiles: [],
+    }),
+    worktree: () => undefined,
   } satisfies ManagedHostSession;
 }
 /** 用 Core 在默认空间的桶里落一条真实会话，避免假句柄绕开文件系统。 */
@@ -292,5 +308,89 @@ it('已打开（含运行中）的会话改名与置顶走句柄，不重新抢�
   expect(assembled?.setPinned).toHaveBeenCalledWith(true);
   // 句柄未被关闭：改名与置顶都不需要先停止任务。
   expect(host.counts().sessions).toBe(1);
+  await host.disconnect();
+});
+
+it('session.readArchived 只读读取已归档对话正文与工具摘要，保持归档态不变且不残留写锁', async () => {
+  const { host, home, workspace } = fixture(async () => fakeHandle('unused'));
+  const manager = new SessionManager({
+    workspaceRoot: workspace.root,
+    homeDirectory: home,
+    projectRootMode: 'exact',
+  });
+  const created = await manager.create();
+  const conversationId = created.conversationId;
+  await created.store.append({
+    id: 'u-1',
+    role: 'user',
+    timestamp: 1_700_000_010_000,
+    content: [{ type: 'text', text: '请帮我检查登录超时问题' }],
+  });
+  await created.store.append({
+    id: 'a-1',
+    role: 'assistant',
+    timestamp: 1_700_000_020_000,
+    content: [
+      {
+        type: 'tool_use',
+        id: 'call-1',
+        name: 'read_file',
+        input: { path: 'src/auth.ts' },
+      },
+    ],
+  });
+  await created.store.append({
+    id: 't-1',
+    role: 'tool',
+    timestamp: 1_700_000_021_000,
+    content: [
+      {
+        type: 'tool_result',
+        toolUseId: 'call-1',
+        content: 'timeout = 5000',
+        isError: false,
+      },
+    ],
+  });
+  await created.store.append({
+    id: 'a-2',
+    role: 'assistant',
+    timestamp: 1_700_000_030_000,
+    content: [{ type: 'text', text: '已确认 `src/auth.ts` 超时配置为 5s，建议放宽至 30s。' }],
+  });
+  await created.release();
+  await manager.close();
+
+  await host.dispatch('session.archive', { workspaceId: workspace.id, conversationId });
+
+  const preview = (await host.dispatch('session.readArchived', {
+    workspaceId: workspace.id,
+    conversationId,
+  })) as Output<'session.readArchived'>;
+
+  expect(preview.conversationId).toBe(conversationId);
+  expect(preview.archived).toBe(true);
+  expect(preview.items).toHaveLength(2);
+  expect(preview.items[0]?.role).toBe('user');
+  expect(preview.items[0]?.text).toContain('请帮我检查登录超时问题');
+  expect(preview.items[1]?.role).toBe('assistant');
+  expect(preview.items[1]?.text).toContain('已确认 `src/auth.ts` 超时配置为 5s');
+  expect(preview.items[1]?.toolSummaries).toEqual([
+    { name: 'read_file', summary: 'src/auth.ts', isError: false },
+  ]);
+
+  // 读取归档内容后会话仍保持在归档列表，且未残留写锁（紧接着可正常恢复或删除）。
+  expect(
+    ((await host.dispatch('session.list', { workspaceId: workspace.id })) as Output<'session.list'>)
+      .total,
+  ).toBe(0);
+  expect(
+    (
+      (await host.dispatch('session.archived', {
+        workspaceId: workspace.id,
+      })) as Output<'session.archived'>
+    ).total,
+  ).toBe(1);
+  await host.dispatch('session.delete', { workspaceId: workspace.id, conversationId });
   await host.disconnect();
 });

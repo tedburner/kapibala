@@ -3,6 +3,7 @@ import { archiveCommand } from './archive.js';
 import { branchCommand } from './branch.js';
 import type { CommandDefinition } from './catalog.js';
 import { COMMAND_CATALOG } from './catalog.js';
+import { checkpointsCommand } from './checkpoints.js';
 import { compactCommand, contextCommand } from './context.js';
 import { delegateCommand } from './delegate.js';
 import { delegationsCommand } from './delegations.js';
@@ -25,6 +26,7 @@ import { skillCommand, skillsCommand } from './skills.js';
 import { statusCommand } from './status.js';
 import { todosCommand } from './todos.js';
 import { watchesCommand } from './watches.js';
+import { worktreesCommand } from './worktrees.js';
 
 /**
  * 按 COMMAND_CATALOG 装配默认斜杠命令分发器：CLI REPL 与桌面会话命令面共用同一装配源。
@@ -60,6 +62,8 @@ export function createDefaultCommandDispatcher(): CommandDispatcher {
     quote: quoteCommand,
     help: helpCommand,
     branch: branchCommand,
+    checkpoints: checkpointsCommand,
+    worktrees: worktreesCommand,
     fork: forkCommand,
     archive: archiveCommand,
     agents: agentsCommand,

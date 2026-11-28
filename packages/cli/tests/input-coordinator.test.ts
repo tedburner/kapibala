@@ -173,6 +173,61 @@ describe('shared CLI input ownership', () => {
     );
     input.write('1\n');
     expect(await approval).toBe('allow_once');
+    // 审批结束后恢复用户在空闲提示符上尚未提交的草稿文本
+    expect(coordinator.getLine()).toBe('previous prompt');
+    coordinator.close();
+  });
+
+  it('restores unfinished idle draft and cursor after background approve() and protects multi-step withCommandSession()', async () => {
+    const { input, coordinator } = create(true, true);
+    coordinator.onLine(() => {});
+    input.write('draft before approval');
+    expect(coordinator.getLine()).toBe('draft before approval');
+
+    const bgApproval = coordinator.approve({
+      toolName: 'write_file',
+      capabilities: ['fs:write'],
+      input: { path: 'x.ts' },
+      rootDir: '/repo',
+      sessionAllowed: true,
+    });
+    input.write('2\n');
+    expect(await bgApproval).toBe('allow_session');
+    expect(coordinator.getLine()).toBe('draft before approval');
+
+    // 在多步命令（select -> readSecret）期间到达的后台审批必须等整个 withCommandSession 结束后才接管输入
+    const events: string[] = [];
+    let queuedApproval!: Promise<string>;
+    const sessionFlow = coordinator.withCommandSession(async () => {
+      const firstPromise = coordinator.select({
+        message: 'step 1',
+        options: [{ label: 'provider-a', value: 'a' }],
+      });
+      queuedApproval = coordinator
+        .approve({
+          toolName: 'write_file',
+          capabilities: ['fs:write'],
+          input: { path: 'y.ts' },
+          rootDir: '/repo',
+          sessionAllowed: true,
+        })
+        .then((choice) => {
+          events.push(`approval:${choice}`);
+          return choice;
+        });
+      input.write('1\n');
+      const selected = await firstPromise;
+      events.push(`select:${selected}`);
+      const keyPromise = coordinator.readSecret('API Key: ');
+      input.write('sk-multi-step\n');
+      const key = await keyPromise;
+      events.push(`secret:${key}`);
+    });
+
+    await sessionFlow;
+    input.write('1\n');
+    await queuedApproval;
+    expect(events).toEqual(['select:a', 'secret:sk-multi-step', 'approval:allow_once']);
     coordinator.close();
   });
 });

@@ -1,6 +1,6 @@
-import { Button } from '@cloudflare/kumo';
 import { useEffect, useState } from 'react';
 import { htmlPreviewSource } from './html-preview-model.js';
+import { Button } from './ui/index.js';
 
 /**
  * 沙箱内嵌 HTML 预览。
@@ -32,19 +32,29 @@ export function HtmlPreview({ html, label }: { html: string; label: string }) {
   }, [html]);
   if (error)
     return (
-      <p role="alert" className="text-xs text-kumo-danger">
+      <p role="alert" className="text-xs" style={{ color: 'var(--kpbl-status-danger)' }}>
         {error}
       </p>
     );
   if (!url)
     return (
-      <p className="rounded-md border border-kumo-line px-3 py-6 text-center text-xs text-kumo-subtle">
+      <p
+        className="rounded-md border px-3 py-6 text-center text-xs"
+        style={{
+          borderColor: 'var(--kpbl-line-default)',
+          color: 'var(--kpbl-ink-subtle)',
+        }}
+      >
         正在准备预览…
       </p>
     );
   return (
     <iframe
-      className="h-96 w-full resize-y rounded-md border border-kumo-line bg-kumo-base"
+      className="h-96 w-full resize-y rounded-md border"
+      style={{
+        borderColor: 'var(--kpbl-line-default)',
+        backgroundColor: 'var(--kpbl-bg-surface)',
+      }}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
       src={url}
@@ -71,13 +81,7 @@ export function HtmlPreviewButton({
   kind?: 'HTML' | 'SVG';
 }) {
   return (
-    <Button
-      className="kapibala-action shrink-0"
-      size="sm"
-      variant="ghost"
-      aria-expanded={open}
-      onClick={onClick}
-    >
+    <Button className="shrink-0" size="xs" variant="ghost" aria-expanded={open} onClick={onClick}>
       {open ? '收起预览' : `预览 ${kind}`}
     </Button>
   );

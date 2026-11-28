@@ -41,6 +41,15 @@ export type ApprovalChoice =
   | 'deny_session'
   | 'cancel';
 
+/** 子代理向父会话冒泡人工审批时的最内层身份溯源快照。 */
+export interface WireSubagentOrigin {
+  agentId: string;
+  role: string;
+  description: string;
+  childSessionId?: string;
+  parentSessionId: string;
+}
+
 /** 审批展示数据不包含可回写的原始参数，执行身份由服务端保留。 */
 export interface ApprovalPrompt extends SessionControl {
   approvalId: string;
@@ -49,6 +58,51 @@ export interface ApprovalPrompt extends SessionControl {
   target: string;
   sessionAllowed: boolean;
   expiresAt: number;
+  subagentOrigin?: WireSubagentOrigin;
+}
+
+/** 会话列表中保留型委派子会话的父级归属摘要。 */
+export interface WireSessionDelegation {
+  parentSessionId: string;
+  parentTitle?: string;
+  taskName: string;
+}
+
+/** `run/start` 传入的单条跨会话引用身份选择（客户端只传身份，正文由宿主冻结读取）。 */
+export interface WireReferenceSelection {
+  sessionId: string;
+  recordId?: string;
+  branchId?: string;
+}
+
+/** `reference/candidates` 返回的同项目桶候选会话摘要。 */
+export interface WireReferenceCandidateItem {
+  sessionId: string;
+  title: string;
+  lastActivityAt: number;
+  messageCount: number;
+  isDelegation?: boolean;
+}
+
+/** `reference/search` 返回的同项目桶消息级全文检索命中项。 */
+export interface WireReferenceSearchHit {
+  sessionId: string;
+  title: string;
+  recordId: string;
+  branchId: string;
+  role: 'user' | 'assistant' | 'branch_summary';
+  snippet: string;
+  timestamp: number;
+}
+
+/** `reference/read` 返回的冻结可见消息快照。 */
+export interface WireReferenceRecord {
+  recordId: string;
+  role: 'user' | 'assistant' | 'branch_summary';
+  branchId: string;
+  timestamp: number;
+  text: string;
+  truncated: boolean;
 }
 
 /** 快照中的待审批摘要；观察者可展示但不能代替控制者回复。 */
@@ -189,6 +243,8 @@ export interface ExternalSessionWireItem {
   createdAt: number;
   updatedAt: number;
   lastError: string | null;
+  worktree?: WireWorktreeSummary;
+  diffSummary?: { additions: number; deletions: number };
 }
 
 /** 外部代理人工审批卡片的 wire 形状。 */
@@ -251,6 +307,8 @@ export interface ExternalSnapshotWire {
     revision: number;
   } | null;
   notices: { id: string; level: 'info' | 'warning' | 'error'; text: string }[];
+  worktree?: WireWorktreeSummary;
+  diffSummary?: { additions: number; deletions: number };
 }
 
 /** `external/event` 通知载荷（仅向声明 `'external-session'` 且已 `external/attach` 的连接下发）。 */
@@ -260,12 +318,106 @@ export interface ExternalWireEvent {
   snapshot: ExternalSnapshotWire;
 }
 
+/** 新建本地或外部会话时的受管 Git Worktree 请求配置。 */
+export type WireWorktreeOption = {
+  enabled: boolean;
+  branch?: string;
+  baseRef?: string;
+};
+
+/** 受管 Git Worktree 摘要的 wire 形状。 */
+export type WireWorktreeSummary = {
+  id: string;
+  projectRoot: string;
+  worktreePath: string;
+  branch: string;
+  baseRef: string;
+  baseCommit: string;
+  createdAt: number;
+};
+
+/** 工作树相对基线变更文件的 wire 摘要。 */
+export type WireWorktreeChangedFile = {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  oldPath: string | null;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+/** `worktree/status` 返回的受管工作树状态快照 wire 形状。 */
+export type WireWorktreeStatus = {
+  id: string;
+  projectRoot: string;
+  worktreePath: string;
+  branch: string;
+  baseRef: string;
+  baseCommit: string;
+  headCommit: string | null;
+  exists: boolean;
+  linkVerified: boolean;
+  dirty: boolean;
+  untrackedCount: number;
+  aheadCount: number;
+  behindCount: number;
+  additions: number;
+  deletions: number;
+  changedFiles: WireWorktreeChangedFile[];
+};
+
+/** `worktree/previewMerge` 返回的本地合并审阅快照 wire 形状。 */
+export type WireMergePreview = {
+  worktreeId: string;
+  branch: string;
+  baseRef: string;
+  aheadCount: number;
+  behindCount: number;
+  worktreeDirty: boolean;
+  mainDirty: boolean;
+  canApply: boolean;
+  blockingReason: string | null;
+  additions: number;
+  deletions: number;
+  previewToken: string;
+  changedFiles: {
+    path: string;
+    status: 'added' | 'modified' | 'deleted' | 'renamed';
+    additions: number;
+    deletions: number;
+  }[];
+};
+
+/** `checkpoint/list` 返回的单轮检查点条目 wire 形状。 */
+export type WireCheckpointItem = {
+  ordinal: number;
+  createdAt: number;
+  startTree: string;
+  endTree: string;
+  additions: number;
+  deletions: number;
+  changedFilesCount: number;
+  label: string | null;
+};
+
+/** `checkpoint/diff` 与 `worktree/diff` 共用的单文件结构化 Unified Diff wire 形状。 */
+export type WireFileDiff = {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  originalPath: string | null;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  patch: string;
+  truncated: boolean;
+};
+
 /** 请求参数目录；连接角色、会话权限和实际执行参数仍须由服务端复核。 */
 export interface RequestParams {
   initialize: ProtocolOffer;
   ping: Record<string, never>;
   'session/list': { workspaceRoot: string; cursor?: string; limit?: number };
-  'session/create': { workspaceRoot: string };
+  'session/create': { workspaceRoot: string; worktree?: WireWorktreeOption };
   'session/open': { workspaceRoot: string; conversationId: string };
   'session/attach': {
     sessionId: string;
@@ -275,9 +427,49 @@ export interface RequestParams {
   'session/detach': { sessionId: string };
   'session/close': SessionControl;
   'session/snapshot': { sessionId: string; cursor?: string };
-  'run/start': SessionControl & { clientOperationId: string; input: string };
+  'run/start': SessionControl & {
+    clientOperationId: string;
+    input: string;
+    references?: WireReferenceSelection[];
+  };
   'run/cancel': SessionControl & { runId: string };
   'approval/request': ApprovalPrompt;
+  'reference/candidates': { workspaceRoot: string; limit?: number };
+  'reference/search': { workspaceRoot: string; query: string; limit?: number };
+  'reference/read': {
+    workspaceRoot: string;
+    sessionId: string;
+    recordIds?: string[];
+    branchId?: string;
+    limit?: number;
+  };
+  'checkpoint/list': { sessionId: string; external?: boolean };
+  'checkpoint/diff': {
+    sessionId: string;
+    ordinal?: number;
+    fromOrdinal?: number;
+    toOrdinal?: number;
+    includeLiveWorktree?: boolean;
+    external?: boolean;
+  };
+  'checkpoint/restore': {
+    sessionId: string;
+    targetOrdinal: number;
+    force?: boolean;
+    external?: boolean;
+  };
+  'worktree/list': { workspaceRoot: string };
+  'worktree/create': { workspaceRoot: string; name?: string; branch?: string; baseRef?: string };
+  'worktree/status': { workspaceRoot: string; id: string };
+  'worktree/diff': { workspaceRoot: string; id: string };
+  'worktree/previewMerge': { workspaceRoot: string; id: string };
+  'worktree/applyMerge': {
+    workspaceRoot: string;
+    id: string;
+    previewToken: string;
+    commitMessage?: string;
+  };
+  'worktree/remove': { workspaceRoot: string; id: string; force?: boolean };
   'watch/list': { sessionId: string };
   'watch/cancel': SessionControl & { watchId: string };
   /** 会话看板只读聚合；与 watch/list 同门禁，必须先 attach 才能读取该会话证据。 */
@@ -298,7 +490,12 @@ export interface RequestParams {
   'external/harnessDelete': { id: string };
   'external/harnessTest': { id: string; workspaceRoot?: string };
   'external/list': { workspaceRoot: string };
-  'external/open': { workspaceRoot: string; harnessId: string; title?: string };
+  'external/open': {
+    workspaceRoot: string;
+    harnessId: string;
+    title?: string;
+    worktree?: WireWorktreeOption;
+  };
   'external/attach': { sessionId: string };
   'external/detach': { sessionId: string };
   'external/snapshot': { sessionId: string };
@@ -354,6 +551,16 @@ export interface EventPayloads {
   tool_finish: { toolId: string; result: string; isError: boolean; truncated: boolean };
   run_started: { clientOperationId: string };
   run_settled: { outcome: 'completed' | 'failed' | 'cancelled' };
+  stream_reset: { step: number; attempt: number };
+  retry_scheduled: {
+    step: number;
+    attempt: number;
+    maxRetries: number;
+    delayMs: number;
+    nextRetryAt: number;
+    category: string;
+    message: string;
+  };
   approval_closed: { approvalId: string };
   diagnostic: { code: string; message: string };
 }

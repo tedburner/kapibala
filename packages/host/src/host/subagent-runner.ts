@@ -18,12 +18,14 @@ import path from 'node:path';
  */
 
 import {
+  type AgentRuntime,
   AgentSession,
   type AgentTaskRecord,
   type ApprovalChannel,
   KapibalaError,
   type ManagedSession,
   PathSandbox,
+  type PermissionRule,
   type PrimaryModelRole,
   type SessionManager,
   type SessionMode,
@@ -34,14 +36,32 @@ import {
   type WorkspaceLeaseCoordinator,
   computeProjectKey,
   createDelegationError,
+  deriveChildPolicy,
   formatDelegationTitle,
   sessionToolResultsDirectory,
   toNativePhysicalPath,
 } from '@kiturone/kapibala';
-import { MAX_RETAINED_DELEGATIONS, countRetainedDelegations } from './delegations.js';
+import {
+  MAX_RETAINED_DELEGATIONS,
+  countRetainedDelegations,
+  pruneDelegationSessions,
+} from './delegations.js';
 import { type CliModelBindings, createModelBinding } from './model-bindings.js';
 import type { UserSettings } from './settings.js';
+import { type SessionApprovalHub, createSubagentApprovalChannel } from './subagent-approval.js';
 import { registerBuiltinTools } from './tool-registration.js';
+import type { ExecutionRootCoordinator } from './worktree/index.js';
+
+const restrictedLineageByCoordinator = new WeakMap<object, Set<string>>();
+
+function getRestrictedAgentSet(key: object): Set<string> {
+  let set = restrictedLineageByCoordinator.get(key);
+  if (!set) {
+    set = new Set<string>();
+    restrictedLineageByCoordinator.set(key, set);
+  }
+  return set;
+}
 
 /**
  * 子代理执行器配置选项。
@@ -61,9 +81,20 @@ export interface CliSubagentRunnerOptions {
   isTrusted?: boolean;
   /** 本地宿主显式传入审批与租约；不因子代理隔离绕过父宿主权限。 */
   approvalChannel?: ApprovalChannel;
+  /** 父会话树常驻审批中枢；提供后启用跨兄弟子代理 `allow_session` 缓存共享与排队重判。 */
+  approvalHub?: SessionApprovalHub;
+  /** 可选注入的子代理运行时实例，用于嵌套子代理工具挂载及委派淘汰时查询活跃任务。 */
+  runtime?: AgentRuntime;
+  /** 可选诊断回调（如自动淘汰过期委派会话时记录说明）。 */
+  onDiagnostic?: (message: string) => void;
   /** 同一宿主所有会话共享的工作区写互斥，不使用新的隐式单例。 */
   leaseCoordinator: WorkspaceLeaseCoordinator;
+  /** 可选跨子系统物理执行根协调器；传入后在子代理生命周期内校验移除门闩并登记活动运行。 */
+  executionCoordinator?: ExecutionRootCoordinator;
 }
+
+/** 委派子会话续聊执行器配置选项；与首次派发共享同一安全与协调边界。 */
+export type CliSubagentResumerOptions = CliSubagentRunnerOptions;
 
 /** 单轮委派执行的公共入参；runner 与 resumer 只在会话获取方式上不同。 */
 interface DelegationTurnRequest {
@@ -75,6 +106,8 @@ interface DelegationTurnRequest {
   prompt: string;
   /** 取消/超时信号。 */
   signal: AbortSignal;
+  /** 运行时上下文（提供人工审批期间暂停墙钟超时的句柄）。 */
+  context?: SubagentRunnerContext;
   /** 宿主装配选项。 */
   options: CliSubagentRunnerOptions;
 }
@@ -97,10 +130,13 @@ async function runDelegationTurn(request: DelegationTurnRequest): Promise<{
   const toolResultsRoot = options.homeDirectory
     ? path.join(options.homeDirectory, '.kapibala', 'tool-results')
     : undefined;
+  const subagentProjectRoot = toNativePhysicalPath(
+    task.worktree?.projectRoot ?? options.manager.project.projectRoot,
+  );
   const subagentResultsDir = toolResultsRoot
     ? sessionToolResultsDirectory({
         resultsRoot: toolResultsRoot,
-        projectKey: computeProjectKey(toNativePhysicalPath(task.workspaceRoot)),
+        projectKey: computeProjectKey(subagentProjectRoot),
         sessionId: handle.conversationId,
       })
     : undefined;
@@ -123,8 +159,104 @@ async function runDelegationTurn(request: DelegationTurnRequest): Promise<{
     selectedProvider = overrideBinding.provider;
   }
 
-  const effectiveMode: SessionMode =
-    (task.effectivePolicy as { mode?: SessionMode } | undefined)?.mode ?? 'Approval';
+  const derivedPolicy = task.effectivePolicy as
+    | {
+        mode?: SessionMode;
+        rules?: readonly PermissionRule[];
+        allowedTools?: readonly string[];
+        hasExplicitAllowedTools?: boolean;
+        restrictedAllowedTools?: boolean;
+      }
+    | undefined;
+  const effectiveMode: SessionMode = derivedPolicy?.mode ?? 'Approval';
+  const derivedRules = derivedPolicy?.rules;
+
+  const tempRegistry = new ToolRegistry();
+  if (task.role !== 'advisor') {
+    registerBuiltinTools(tempRegistry, {
+      cwd: task.executionCwd,
+      shell: options.preference ?? 'auto',
+      disableShell: task.role === 'explore' || task.role === 'planner',
+      ...(options.runtime ? { runtime: options.runtime } : {}),
+    });
+  }
+
+  const effectiveAllowed = derivedPolicy?.allowedTools;
+  const allowedToolSet = new Set(effectiveAllowed ?? task.allowedTools ?? []);
+
+  // 判断当前子代理或其任意祖先是否收紧过 allowedTools（含 A 缩权后派生未显式传 allowedTools 的子级 B）。
+  const restrictedAgents = getRestrictedAgentSet(options.approvalHub ?? options.leaseCoordinator);
+  let hasLineageToolRestriction =
+    Boolean(task.allowedTools && task.allowedTools.length > 0) ||
+    task.role === 'custom' ||
+    Boolean(derivedPolicy?.hasExplicitAllowedTools) ||
+    Boolean(derivedPolicy?.restrictedAllowedTools);
+
+  if (!hasLineageToolRestriction && task.origin.parentAgentId) {
+    if (restrictedAgents.has(task.origin.parentAgentId)) {
+      hasLineageToolRestriction = true;
+    } else if (options.runtime) {
+      const visited = new Set<string>([task.agentId]);
+      let cursorId: string | undefined = task.origin.parentAgentId;
+      while (cursorId && !visited.has(cursorId)) {
+        visited.add(cursorId);
+        if (restrictedAgents.has(cursorId)) {
+          hasLineageToolRestriction = true;
+          break;
+        }
+        const ancestor = options.runtime.getTask(cursorId);
+        if (!ancestor) break;
+        if (
+          (ancestor.allowedTools && ancestor.allowedTools.length > 0) ||
+          ancestor.role === 'custom'
+        ) {
+          hasLineageToolRestriction = true;
+          break;
+        }
+        cursorId = ancestor.origin.parentAgentId;
+      }
+    }
+  }
+
+  if (!hasLineageToolRestriction && effectiveAllowed && task.role !== 'advisor') {
+    try {
+      const unrestrictedBaseline = deriveChildPolicy(
+        {
+          mode: effectiveMode,
+          rules: derivedRules ?? [],
+          availableTools: tempRegistry.list(),
+          workspaceRoot: task.workspaceRoot,
+          executionCwd: task.executionCwd,
+          currentDepth: Math.max(0, task.origin.depth - 1),
+        },
+        { role: task.role },
+      );
+      if (unrestrictedBaseline.allowedTools.some((name) => !allowedToolSet.has(name))) {
+        hasLineageToolRestriction = true;
+      }
+    } catch {
+      hasLineageToolRestriction = true;
+    }
+  }
+
+  if (hasLineageToolRestriction) {
+    restrictedAgents.add(task.agentId);
+  }
+
+  const subagentApprovalChannel = createSubagentApprovalChannel({
+    parentChannel: options.approvalChannel,
+    hub: options.approvalHub,
+    origin: {
+      agentId: task.agentId,
+      role: task.role,
+      description: task.description,
+      ...(task.mode === 'detached' ? { childSessionId: handle.conversationId } : {}),
+      parentSessionId: task.origin.parentSessionId,
+    },
+    // 自身或任意祖先显式收紧过 allowedTools 的子代理仅只读命中父树缓存、禁止回写，防缩权分支污染根会话缓存。
+    canWriteTreeCache: !hasLineageToolRestriction,
+    pauseTimeout: () => request.context?.pauseTimeout?.() ?? (() => {}),
+  });
 
   const subSession = new AgentSession({
     userInstructionsPath: options.homeDirectory
@@ -136,11 +268,11 @@ async function runDelegationTurn(request: DelegationTurnRequest): Promise<{
     auditRecoveryDirectory: options.homeDirectory
       ? path.join(options.homeDirectory, '.kapibala/audit')
       : undefined,
-    approvalChannel: options.approvalChannel,
+    approvalChannel: subagentApprovalChannel,
     leaseCoordinator: options.leaseCoordinator,
     workspaceRoot: task.workspaceRoot,
     executionCwd: task.executionCwd,
-    rootDir: task.workspaceRoot,
+    projectRoot: subagentProjectRoot,
     sandbox,
     ...(toolResultsRoot ? { toolResultsDirectory: toolResultsRoot } : {}),
     store: handle.store,
@@ -152,22 +284,11 @@ async function runDelegationTurn(request: DelegationTurnRequest): Promise<{
     agentId: task.agentId,
     maxSteps: task.limits.maxSteps,
     mode: effectiveMode,
+    ...(derivedRules ? { permissionRules: [...derivedRules] } : {}),
   });
 
   try {
-    const effectiveAllowed = (
-      task.effectivePolicy as { allowedTools?: readonly string[] } | undefined
-    )?.allowedTools;
-    const allowedToolSet = new Set(effectiveAllowed ?? task.allowedTools ?? []);
-
     if (task.role !== 'advisor') {
-      const tempRegistry = new ToolRegistry();
-      registerBuiltinTools(tempRegistry, {
-        cwd: task.executionCwd,
-        shell: options.preference ?? 'auto',
-        disableShell: task.role === 'explore' || task.role === 'planner',
-      });
-
       // 仅注册 effectivePolicy.allowedTools 允许的工具，绝不上溢写/执行工具
       for (const tool of tempRegistry.list()) {
         if (allowedToolSet.has(tool.name)) {
@@ -225,80 +346,112 @@ export function createCliSubagentRunner(options: CliSubagentRunnerOptions): Suba
         code: 'CONFIG_INVALID',
         safeMessage: '父会话与子代理宿主写租约身份不一致',
       });
-    // 1. 分配独立子会话存储文件与单写者句柄；detached 在创建时写入委派头部身份。
-    const detached = task.mode === 'detached';
-    // 保留预算在创建前检查：达上限直接拒绝，不先建文件再失败（设计 007 §5.1 最小保留）。
-    if (detached) {
-      const retained = await countRetainedDelegations(options.manager);
-      if (retained >= MAX_RETAINED_DELEGATIONS) {
-        throw createDelegationError(
-          'DELEGATION_LIMIT_EXCEEDED',
-          `Retained delegation limit reached (${MAX_RETAINED_DELEGATIONS}); delete one via /delegations delete`,
-        );
-      }
-    }
-    const handle = await options.manager.create(
-      detached
-        ? {
-            delegation: {
-              kind: 'delegation',
-              parentSessionId: task.origin.parentSessionId,
-              ...(context.parentTitle ? { parentTitle: context.parentTitle } : {}),
-              taskName: task.description,
-              createdAt: Date.now(),
-              ...(task.requestId ? { requestId: task.requestId } : {}),
-              ...(task.requestSignature ? { requestSignature: task.requestSignature } : {}),
-              // 回执快照里的 sessionId 由 header.conversationId 唯一确定，这里不重复写入。
-              ...(task.requestReceipt ? { requestReceipt: { ...task.requestReceipt } } : {}),
-            },
-          }
-        : undefined,
-    );
-    if (detached) context.onSessionCreated?.(handle.conversationId);
-
-    let result:
-      | { summary: string; modelId?: string; sessionId?: string; title?: string }
-      | undefined;
-    let failure: unknown;
-    let succeeded = false;
+    options.executionCoordinator?.assertNotFenced(task.workspaceRoot);
+    const execRunHandle = options.executionCoordinator?.trackActiveRun({
+      executionRoot: task.workspaceRoot,
+      ownerId: `subagent:${task.agentId}`,
+      kind: 'native',
+    });
     try {
-      const turn = await runDelegationTurn({ handle, task, prompt: task.prompt, signal, options });
-      result = {
-        summary: turn.summary,
-        modelId: turn.modelId,
-        ...(detached
-          ? {
-              sessionId: handle.conversationId,
-              title: formatDelegationTitle(task.description, context.parentTitle),
-            }
-          : {}),
-      };
-      succeeded = true;
-    } catch (error) {
-      failure = error;
-    }
-    // 终态命名：detached 会话在销毁前写一次 title 记录；失败也写，保证续聊入口可辨认。
-    // 名称只取创建时快照，后续父会话改名不联动。
-    const failures: unknown[] = [];
-    if (detached) {
-      try {
-        await handle.store.appendRecord('title', {
-          title: formatDelegationTitle(task.description, context.parentTitle),
+      // 1. 分配独立子会话存储文件与单写者句柄；detached 在创建时写入委派头部身份。
+      const detached = task.mode === 'detached';
+      // 保留预算在创建前检查：先尝试清理超期或超额的终态委派会话，仍达上限时直接拒绝，不先建文件再失败。
+      if (detached) {
+        const activeSessionIds = new Set(
+          (options.runtime?.listTasks({ status: 'active' }) ?? []).flatMap((item) =>
+            item.sessionId ? [item.sessionId] : [],
+          ),
+        );
+        const pruned = await pruneDelegationSessions(options.manager, {
+          activeSessionIds,
+          onDiagnostic: options.onDiagnostic,
         });
+        for (const prunedId of pruned) {
+          options.runtime?.forgetDelegationSession(prunedId);
+        }
+        const retained = await countRetainedDelegations(options.manager);
+        if (retained >= MAX_RETAINED_DELEGATIONS) {
+          throw createDelegationError(
+            'DELEGATION_LIMIT_EXCEEDED',
+            `Retained delegation limit reached (${MAX_RETAINED_DELEGATIONS}); delete one via /delegations delete`,
+          );
+        }
+      }
+      const handle = await options.manager.create(
+        detached
+          ? {
+              delegation: {
+                kind: 'delegation',
+                parentSessionId: task.origin.parentSessionId,
+                ...(context.parentTitle ? { parentTitle: context.parentTitle } : {}),
+                taskName: task.description,
+                createdAt: Date.now(),
+                ...(task.requestId ? { requestId: task.requestId } : {}),
+                ...(task.requestSignature ? { requestSignature: task.requestSignature } : {}),
+                // 回执快照里的 sessionId 由 header.conversationId 唯一确定，这里不重复写入。
+                ...(task.requestReceipt ? { requestReceipt: { ...task.requestReceipt } } : {}),
+              },
+              ...(task.worktree ? { worktree: task.worktree } : {}),
+            }
+          : task.worktree
+            ? { worktree: task.worktree }
+            : undefined,
+      );
+      if (detached) context.onSessionCreated?.(handle.conversationId);
+
+      let result:
+        | { summary: string; modelId?: string; sessionId?: string; title?: string }
+        | undefined;
+      let failure: unknown;
+      let succeeded = false;
+      try {
+        const turn = await runDelegationTurn({
+          handle,
+          task,
+          prompt: task.prompt,
+          signal,
+          context,
+          options,
+        });
+        result = {
+          summary: turn.summary,
+          modelId: turn.modelId,
+          ...(detached
+            ? {
+                sessionId: handle.conversationId,
+                title: formatDelegationTitle(task.description, context.parentTitle),
+              }
+            : {}),
+        };
+        succeeded = true;
+      } catch (error) {
+        failure = error;
+      }
+      // 终态命名：detached 会话在销毁前写一次 title 记录；失败也写，保证续聊入口可辨认。
+      // 名称只取创建时快照，后续父会话改名不联动。
+      const failures: unknown[] = [];
+      if (detached) {
+        try {
+          await handle.store.appendRecord('title', {
+            title: formatDelegationTitle(task.description, context.parentTitle),
+          });
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      // 存储句柄必须无论成功或标题追加失败都尝试释放；
+      // 清理错误不覆盖主流程异常：主流程失败时抛出原错误，否则抛出首个清理错误。
+      try {
+        await handle.release();
       } catch (error) {
         failures.push(error);
       }
+      if (!succeeded) throw failure;
+      if (failures.length) throw failures[0];
+      return result!;
+    } finally {
+      execRunHandle?.release();
     }
-    // 存储句柄必须无论成功或标题追加失败都尝试释放；
-    // 清理错误不覆盖主流程异常：主流程失败时抛出原错误，否则抛出首个清理错误。
-    try {
-      await handle.release();
-    } catch (error) {
-      failures.push(error);
-    }
-    if (!succeeded) throw failure;
-    if (failures.length) throw failures[0];
-    return result!;
   };
 }
 
@@ -314,7 +467,7 @@ export function createCliSubagentRunner(options: CliSubagentRunnerOptions): Suba
  * @returns 标准的 SubagentSessionResumer 异步执行函数
  */
 export function createCliSubagentResumer(
-  options: CliSubagentRunnerOptions,
+  options: CliSubagentResumerOptions,
 ): SubagentSessionResumer {
   if (!options.leaseCoordinator)
     throw new KapibalaError('Missing host lease coordinator', {
@@ -339,19 +492,29 @@ export function createCliSubagentResumer(
       );
     }
 
-    const handle = await options.manager.open(task.sessionId);
-    let result: { summary: string; modelId?: string } | undefined;
-    let failure: unknown;
-    let succeeded = false;
+    options.executionCoordinator?.assertNotFenced(task.workspaceRoot);
+    const execRunHandle = options.executionCoordinator?.trackActiveRun({
+      executionRoot: task.workspaceRoot,
+      ownerId: task.sessionId,
+      kind: 'native',
+    });
     try {
-      result = await runDelegationTurn({ handle, task, prompt, signal, options });
-      succeeded = true;
-    } catch (error) {
-      failure = error;
+      const handle = await options.manager.open(task.sessionId);
+      let result: { summary: string; modelId?: string } | undefined;
+      let failure: unknown;
+      let succeeded = false;
+      try {
+        result = await runDelegationTurn({ handle, task, prompt, signal, context, options });
+        succeeded = true;
+      } catch (error) {
+        failure = error;
+      }
+      const releaseError = await handle.release().catch((error: unknown) => error);
+      if (!succeeded) throw failure;
+      if (releaseError) throw releaseError;
+      return result!;
+    } finally {
+      execRunHandle?.release();
     }
-    const releaseError = await handle.release().catch((error: unknown) => error);
-    if (!succeeded) throw failure;
-    if (releaseError) throw releaseError;
-    return result!;
   };
 }

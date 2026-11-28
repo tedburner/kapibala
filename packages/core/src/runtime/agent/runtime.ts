@@ -44,6 +44,7 @@ import {
   type SendAgentReceipt,
   type SpawnAgentParams,
   type SpawnAgentReceipt,
+  type SubagentWorktreeProvider,
   isActiveTaskStatus,
   isTerminalTaskStatus,
 } from './types.js';
@@ -81,6 +82,11 @@ export interface SubagentRunnerContext {
    * 不必等 runner 正常返回（异常路径拿不到返回值）。
    */
   readonly onSessionCreated?: (sessionId: string) => void;
+  /**
+   * 暂停当前子任务的墙钟运行超时守卫（人工审批等待期间调用）。
+   * 返回幂等恢复函数；支持并发审批引用计数，仅当全部挂起审批结束（pausedCount 归零）时按剩余预算重设超时。
+   */
+  readonly pauseTimeout: () => () => void;
 }
 
 /** 启动子代理时的调用方上下文。 */
@@ -136,10 +142,21 @@ export interface AgentRuntimeOptions {
   runner?: SubagentSessionRunner;
   /** 委派会话续聊执行器；缺失时 send_agent 可用但 prepareResume 直接拒绝。 */
   resumer?: SubagentSessionResumer;
+  /** 可选受管 Git Worktree 分配器；提供后解锁 isolation: 'worktree' 物理隔离。 */
+  worktreeProvider?: SubagentWorktreeProvider;
   validateModelOverride?: (modelId: string) => boolean;
   outboxPath?: string;
   /** 宿主扫描委派会话头后回填的幂等索引；进程重启后防止同一 requestId 重复派发。 */
   restoredRequests?: readonly RestoredDelegationRequest[];
+}
+
+/** 单轮任务墙钟超时计数状态：支持并发人工审批挂起期间冻结剩余预算。 */
+interface TaskTimeoutState {
+  remainingMs: number;
+  armedAt?: number;
+  pausedCount: number;
+  timer?: NodeJS.Timeout;
+  expired: boolean;
 }
 
 /** 幂等索引条目：签名决定「同 ID 是否同参」，回执用于直接重放。 */
@@ -167,7 +184,7 @@ export class AgentRuntime {
   private readonly runnerContexts = new Map<string, SubagentRunnerContext>();
   private readonly tasks = new Map<string, AgentTaskRecord>();
   private readonly controllers = new Map<string, AbortController>();
-  private readonly timers = new Map<string, NodeJS.Timeout>();
+  private readonly timeouts = new Map<string, TaskTimeoutState>();
   private readonly stateListeners = new Set<() => void>();
   /** 宿主观察订阅独立于调度等待；关闭宿主订阅不能影响任务收口。 */
   private readonly taskChangeListeners = new Set<() => void | Promise<void>>();
@@ -182,6 +199,7 @@ export class AgentRuntime {
   private readonly resumeSnapshots = new Map<string, ResumeSnapshot>();
   private runner: SubagentSessionRunner;
   private resumer?: SubagentSessionResumer;
+  private worktreeProvider?: SubagentWorktreeProvider;
   private readonly validateModelOverride?: (modelId: string) => boolean;
   private isClosed = false;
 
@@ -196,6 +214,7 @@ export class AgentRuntime {
         return { summary: 'Completed successfully' };
       });
     this.resumer = options?.resumer;
+    this.worktreeProvider = options?.worktreeProvider;
     this.validateModelOverride = options?.validateModelOverride;
     this.outbox = new SubagentOutbox({ storagePath: options?.outboxPath });
     if (options?.restoredRequests) this.restoreIdempotentRequests(options.restoredRequests);
@@ -237,6 +256,75 @@ export class AgentRuntime {
    */
   setRunner(runner: SubagentSessionRunner): void {
     this.runner = runner;
+  }
+
+  /**
+   * 注入或替换受管 Git Worktree 提供者；仅影响后续受理与启动的子任务。
+   */
+  setWorktreeProvider(provider?: SubagentWorktreeProvider): void {
+    this.worktreeProvider = provider;
+  }
+
+  /**
+   * 暂停指定运行中子任务及其全部活跃祖先子任务的墙钟超时计时器（用于等待人工审批期间防误杀）。
+   *
+   * 保证：
+   * - 沿 `origin.parentAgentId` 向上遍历整条活跃子代理祖先链，避免后代等待人工审批时父级在 `waiting_children` / `waitAgents` 中超时并级联误杀后代；
+   * - 采用引用计数 `pausedCount` 支持同一子树内并发 `Promise.all` 审批；
+   * - 每次调用返回独立幂等的恢复函数，重复调用同一恢复函数只扣减一次；
+   * - 当链路中某节点的 `pausedCount` 归零且该节点仍处于活跃运行态时，以冻结的剩余 `remainingMs` 重新挂载超时守卫。
+   */
+  pauseTaskTimeout(agentId: string): () => void {
+    const pausedChain: Array<{ targetId: string; state: TaskTimeoutState }> = [];
+    const visited = new Set<string>();
+    let cursorId: string | undefined = agentId;
+
+    while (cursorId && !visited.has(cursorId)) {
+      visited.add(cursorId);
+      const task = this.tasks.get(cursorId);
+      const state = this.timeouts.get(cursorId);
+      if (task && isActiveTaskStatus(task.status) && state && !state.expired) {
+        if (state.pausedCount === 0) {
+          if (state.timer !== undefined) {
+            clearTimeout(state.timer);
+            state.timer = undefined;
+          }
+          const elapsed = state.armedAt !== undefined ? Math.max(0, Date.now() - state.armedAt) : 0;
+          state.remainingMs = Math.max(1, state.remainingMs - elapsed);
+          state.armedAt = undefined;
+        }
+        state.pausedCount++;
+        pausedChain.push({ targetId: cursorId, state });
+      }
+      cursorId = task?.origin.parentAgentId;
+    }
+
+    if (pausedChain.length === 0) {
+      return () => {};
+    }
+
+    let resumed = false;
+    return () => {
+      if (resumed) return;
+      resumed = true;
+      for (const { targetId, state } of pausedChain) {
+        const current = this.timeouts.get(targetId);
+        const currentTask = this.tasks.get(targetId);
+        if (
+          !current ||
+          current !== state ||
+          current.expired ||
+          !currentTask ||
+          !isActiveTaskStatus(currentTask.status)
+        ) {
+          continue;
+        }
+        current.pausedCount = Math.max(0, current.pausedCount - 1);
+        if (current.pausedCount === 0) {
+          this.armTaskTimeout(targetId, current);
+        }
+      }
+    };
   }
 
   /**
@@ -329,14 +417,11 @@ export class AgentRuntime {
       }
     }
 
-    if (params.isolation === 'worktree') {
-      throw new KapibalaError(
-        'Worktree isolation is not currently supported; use inherit isolation',
-        {
-          code: 'CONFIG_INVALID',
-          safeMessage: '当前环境暂不支持 worktree 物理隔离模式',
-        },
-      );
+    if (params.isolation === 'worktree' && !this.worktreeProvider) {
+      throw new KapibalaError('Worktree isolation requires a configured worktree provider', {
+        code: 'CONFIG_INVALID',
+        safeMessage: '当前环境未配置受管 Worktree 提供者，无法启用 worktree 物理隔离',
+      });
     }
 
     if (
@@ -502,6 +587,7 @@ export class AgentRuntime {
       Object.freeze({
         leaseCoordinator: context.leaseCoordinator,
         ...(context.parentTitle ? { parentTitle: context.parentTitle } : {}),
+        pauseTimeout: () => this.pauseTaskTimeout(agentId),
         onSessionCreated: (sessionId: string) => {
           const target = this.tasks.get(agentId);
           if (!target || target.mode !== 'detached') return;
@@ -800,17 +886,81 @@ export class AgentRuntime {
     const controller = new AbortController();
     this.controllers.set(task.agentId, controller);
 
-    // 启动墙钟硬超时守卫
-    const timer = setTimeout(() => {
-      void this.handleTaskTimeout(task.agentId);
-    }, task.limits.timeoutMs);
-    this.timers.set(task.agentId, timer);
+    // 启动支持人工审批冻结的墙钟硬超时守卫
+    const timeoutState: TaskTimeoutState = {
+      remainingMs: task.limits.timeoutMs,
+      pausedCount: 0,
+      expired: false,
+    };
+    this.timeouts.set(task.agentId, timeoutState);
+    this.armTaskTimeout(task.agentId, timeoutState);
 
     let runError: Error | undefined;
     try {
       const context = this.runnerContexts.get(task.agentId);
       if (!context)
         throw new KapibalaError('Runner context is unavailable', { code: 'CONFIG_INVALID' });
+
+      if (task.isolation === 'worktree' && resumePrompt === undefined && !task.worktree) {
+        if (!this.worktreeProvider) {
+          throw new KapibalaError('Worktree isolation requires a configured worktree provider', {
+            code: 'CONFIG_INVALID',
+            safeMessage: '当前环境未配置受管 Worktree 提供者，无法启用 worktree 物理隔离',
+          });
+        }
+        const preAllocateStatus = task.status as AgentTaskStatus;
+        if (
+          controller.signal.aborted ||
+          preAllocateStatus === 'cancelling' ||
+          isTerminalTaskStatus(preAllocateStatus)
+        ) {
+          if (preAllocateStatus === 'cancelling' || preAllocateStatus === 'cancelled') {
+            task.status = 'cancelled';
+          } else {
+            task.status = 'failed';
+            task.error = task.error ?? 'Task timed out';
+          }
+          return;
+        }
+        const relativeCwd = path.relative(task.workspaceRoot, task.executionCwd);
+        const allocated = await this.worktreeProvider.allocate({
+          agentId: task.agentId,
+          projectRoot: task.workspaceRoot,
+          relativeCwd,
+          description: task.description,
+          mode: task.mode,
+        });
+        const allocatedRoot = toNativePhysicalPath(allocated.workspaceRoot);
+        const allocatedCwd = toNativePhysicalPath(allocated.cwd);
+        task.workspaceRoot = allocatedRoot;
+        task.executionCwd = allocatedCwd;
+        task.cwd = allocatedCwd;
+        task.worktree = structuredClone(allocated.binding);
+        if (task.effectivePolicy && typeof task.effectivePolicy === 'object') {
+          task.effectivePolicy = {
+            ...(task.effectivePolicy as Record<string, unknown>),
+            workspaceRoot: allocatedRoot,
+            executionCwd: allocatedCwd,
+          };
+        }
+        this.notifyStateChange();
+        // allocate 异步期间若已被取消或墙钟超时，先完成 worktree 绑定登记后立即进入 finally 触发 release 回收，严禁拉起 runner。
+        const postAllocateStatus = task.status as AgentTaskStatus;
+        if (
+          controller.signal.aborted ||
+          postAllocateStatus === 'cancelling' ||
+          isTerminalTaskStatus(postAllocateStatus)
+        ) {
+          if (postAllocateStatus === 'cancelling' || postAllocateStatus === 'cancelled') {
+            task.status = 'cancelled';
+          } else {
+            task.status = 'failed';
+            task.error = task.error ?? 'Task timed out';
+          }
+          return;
+        }
+      }
+
       // 续聊只接受 summary/modelId；会话身份在首次派发时已确定，不允许被改写。
       let result: { summary: string; modelId?: string; sessionId?: string; title?: string };
       if (resumePrompt === undefined) {
@@ -902,6 +1052,18 @@ export class AgentRuntime {
       // cancelled 的后代由 cancelTask 发起时已经级联，这里不重复触发，避免覆盖调用方原因。
       if (task.status === 'failed') {
         await this.cascadeCancelChildren(task.agentId, task.error ?? 'Parent task failed');
+      }
+
+      if (task.worktree && this.worktreeProvider) {
+        try {
+          await this.worktreeProvider.release({
+            binding: structuredClone(task.worktree),
+            mode: task.mode,
+            status: task.status,
+          });
+        } catch {
+          /* 工作树回收异常不得阻断活动槽位释放与终态通知入箱 */
+        }
       }
 
       task.finishedAt = Date.now();
@@ -1118,10 +1280,10 @@ export class AgentRuntime {
     const activeTasks = Array.from(this.tasks.values()).filter((t) => isActiveTaskStatus(t.status));
     await Promise.all(activeTasks.map((t) => this.cancelTask(t.agentId, 'Runtime closing')));
     await Promise.all(Array.from(this.runningPromises.values()).map((p) => p.catch(() => {})));
-    for (const timer of this.timers.values()) {
-      clearTimeout(timer);
+    for (const state of this.timeouts.values()) {
+      if (state.timer !== undefined) clearTimeout(state.timer);
     }
-    this.timers.clear();
+    this.timeouts.clear();
     this.controllers.clear();
     this.runnerContexts.clear();
     this.stateListeners.clear();
@@ -1147,11 +1309,25 @@ export class AgentRuntime {
     }
   }
 
+  private armTaskTimeout(agentId: string, state: TaskTimeoutState): void {
+    if (state.timer !== undefined) {
+      clearTimeout(state.timer);
+    }
+    state.armedAt = Date.now();
+    state.timer = setTimeout(() => {
+      state.timer = undefined;
+      state.expired = true;
+      void this.handleTaskTimeout(agentId);
+    }, state.remainingMs);
+  }
+
   private clearTaskTimer(agentId: string): void {
-    const timer = this.timers.get(agentId);
-    if (timer) {
-      clearTimeout(timer);
-      this.timers.delete(agentId);
+    const state = this.timeouts.get(agentId);
+    if (state) {
+      if (state.timer !== undefined) {
+        clearTimeout(state.timer);
+      }
+      this.timeouts.delete(agentId);
     }
   }
 

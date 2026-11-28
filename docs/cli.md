@@ -1,6 +1,6 @@
 # CLI 使用指南（kpbl）
 
-`kpbl` 是 Kapibala 的交互式命令行入口。本文是完整使用参考；安装与最小上手见 [README](../README.md#2-命令行与守护进程)。
+`kpbl` 是卡皮巴拉的交互式命令行入口。本文是完整使用参考；安装与最小上手见 [README](../README.md#2-命令行与守护进程)。
 
 ## 启动方式速览
 
@@ -26,12 +26,14 @@ pnpm build && node packages/cli/dist/bin.js
   --base-url <url>       临时覆盖模型 API 端点 (例如使用自建代理/中转)
   --api-key <key>        临时指定 API 密钥
   --debug                向 stderr 输出脱敏开发诊断与每步阶段耗时
+  --output-detail <mode> 过程显示: summary|detailed（默认 summary，TTY 可用 Ctrl+O 切换）
   --permission <mode>    本次会话权限: approval|plan|auto|full-access
-  --shell <kind>         命令解释器: auto|bash|pwsh|powershell
+  --shell <kind>         命令解释器: auto|bash|wsl|pwsh|powershell 或解释器全路径
   --disable-shell        关闭默认命令工具
   --no-mcp               停用 MCP 生态服务与提示词
   --continue             继续当前项目最近有内容的会话
   --resume <id>          按完整 ID 或唯一前缀恢复会话
+  -w, --worktree [branch] 在受管独立 Git Worktree 分支中启动会话（避免抢占主目录写锁）
   -v, --version          查看当前版本
   -h, --help             查看帮助信息
 ```
@@ -45,7 +47,7 @@ pnpm build && node packages/cli/dist/bin.js
 初次使用且本机尚未配置任何 API Key 时，系统将自动弹出交互向导。厂商清单取自内置目录，**2 步选择**（先选厂商、再选档位）：
 
 ```text
-🐾 欢迎使用 Kapibala (kpbl)!
+欢迎使用卡皮巴拉 (kpbl)!
 检测到当前尚未配置可用的模型服务。请选择您要使用的提供商：
 
   1) DeepSeek (推荐默认) —— DeepSeek Flash / V4 Pro (2个模型)
@@ -120,14 +122,16 @@ pnpm build && node packages/cli/dist/bin.js
 | `/history --all [page]` | 跨项目全局会话漫游 | `/history --all 2` |
 | `/history --agents` | 列出后台子代理任务树 | `/history --agents` |
 | `/resume [id]` | 选择历史或按 ID/唯一前缀续答（v1 历史续答前自动升级副本） | `/resume` |
-| `/branch`、`/branch switch <branchId>`、`/branch <recordId> [name]` | 列出分支、切换活动分支、以指定记录为切点分叉并自动切换；未闭合工具事务拒绝分叉 | `/branch msg-12 perf-lab` |
+| `/branch`、`/branch switch <branchId> [--restore-files [--force]]`、`/branch [recordId [name]] [--summary\|--with-summary] [--restore-files [--force]]` | 列出分支、切换活动分支、以指定记录或当前活动叶子为切点分叉并自动切换；`--summary`（或 `--with-summary`）自动附带源分支结构化背景摘要，`--restore-files` 联动按检查点还原归因磁盘文件；未闭合工具事务拒绝分叉 | `/branch msg-12 perf-lab --summary` |
 | `/fork [title]` | 把当前活动分支导出为独立新会话并切换，导入历史不计入新会话费用 | `/fork 性能实验` |
 | `/archive <id>`、`/archive list [page]`、`/archive restore <id>` | 逻辑归档、浏览归档清单与恢复；运行中会话禁止归档 | `/archive list` |
 | `/agents`、`/agents show <id>`、`/agents cancel <id>`、`/agents collect <id>` | 观测任务树、查看明细、取消任务、把终态通知注入来源分支（异分支拒绝） | `/agents collect a1b2` |
 | `/quote`、`/quote <id\|id#record>`、`/quote --search <query>`、`/quote --list [--remove n]` | 引用其它会话历史：菜单选择、`会话ID#记录ID` 精确引用、项目桶内检索、查看并删除本轮已挂载引用；草稿在下一条输入发送时冻结注入 | `/quote --search 并发调度` |
-| `/delegate <任务> [--role\|--model\|--name]` | 用户级派发 detached 委派会话（复用当前会话写租约），终态保留可续聊 | `/delegate 整理 docs/ 链接 --name 文档巡检` |
-| `/delegations [list\|show\|open\|cancel\|delete] <id>` | 委派会话面板：元数据跨进程可见，按 ID 或唯一前缀操作；delete 物理删除释放保留名额 | `/delegations open a1b2` |
-| `/external ...` | 管理外部代理（`harnesses`、`harness test\|add\|enable\|disable\|remove\|reset`）并操作独立外部会话（`list`、`start [--model <id>]`、`config`、`show\|prompt\|approve\|cancel\|close\|delete`） | `/external start codex 检查测试` |
+| `/delegate <任务> [--role <角色>] [--model <id>] [--name <名称>] [--worktree [--branch <分支名>]]` | 用户级派发 detached 委派会话（`--worktree` 分配受管独立工作树以解除主目录写租约串行限制，派发前自动回收过期委派），终态保留可续聊 | `/delegate 整理 docs/ 链接 --worktree --branch wt/docs` |
+| `/delegations [list\|prune\|show <id>\|open <id>\|cancel <id>\|delete <id>]` | 委派会话面板：元数据跨进程可见，按 ID 或唯一前缀操作；`prune` 清理过期或超额委派，`delete` 物理删除释放保留名额 | `/delegations open a1b2` |
+| `/external ...` | 管理外部代理（`harnesses`、`harness test\|add\|enable\|disable\|remove\|reset`）并操作独立外部会话（`list`、`start <harnessId> [--worktree [--branch <name>]] [--model <id>] [--thought <level>] [--mode <mode>] <任务>`，选项可置于 `<harnessId>` 前或后、`config`、`show\|prompt\|approve\|cancel\|close\|delete`） | `/external start codex --worktree 检查测试` |
+| `/checkpoints [list\|diff [n]\|restore <n> [--force]]` | 查看本会话 Shadow Git 轮次检查点、审阅真实文件 Diff 或按归因路径回滚磁盘文件（不动用户原有未跟踪文件） | `/checkpoints restore 1` |
+| `/worktrees [list\|create [name] [--branch <branch>] [--base <ref>]\|status <id>\|diff <id>\|merge <id> [--commit <msg>]\|remove <id> [--force]\|prune]` | 管理当前仓库受管 Git Worktree：本地切出、双向回链状态核查、差异审阅、冲突隔离合并回主分支与安全清理 | `/worktrees merge a3f9` |
 | `/watches [cancel <watchId>]` | 查看当前会话的外部条件监视（文件变化 / 端口就绪）或取消其中一条 | `/watches cancel w1` |
 | `/evidence` | 只读汇总当前会话证据（文件变更行数、跨会话引用、MCP 调用统计、委派会话状态） | `/evidence` |
 | `/todos` | 查看当前活动分支最近一次成功写入的会话任务清单（完成度与四态分组） | `/todos` |
@@ -166,4 +170,4 @@ pnpm build && node packages/cli/dist/bin.js
 
 在本仓库构建后，可使用 `kpbl daemon start` 启动本地宿主，`kpbl connect --workspace /absolute/project` 进入连接模式，`kpbl daemon stop` 等待清理并停止。非交互问答使用 `kpbl connect --workspace /absolute/project -p "解释项目结构"`；父进程托管使用 `kpbl serve --stdio`。
 
-默认 CLI 行为保持不变；能力范围与预算见 [本地宿主说明](local-host.md)，当前协议契约与迁移边界见 [本地宿主协议 2](local-protocol.md)、[v0.1.4 迁移说明](migration/v0.1.4.md)、[v0.1.5 迁移说明](migration/v0.1.5.md) 及 [SDK 兼容性说明](sdk-compatibility.md)。
+默认 CLI 行为保持不变；能力范围与预算见 [本地宿主说明](local-host.md)，当前协议契约与迁移边界见 [本地宿主协议 2](local-protocol.md)、[v0.1.4 迁移说明](migration/v0.1.4.md)、[v0.1.5 迁移说明](migration/v0.1.5.md)、[v0.1.6 迁移说明](migration/v0.1.6.md) 及 [SDK 兼容性说明](sdk-compatibility.md)。

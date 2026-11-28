@@ -38,7 +38,7 @@ export type ArtifactResolution =
 export interface ArtifactPolicyOptions {
   /** 会话工作区根；相对产物路径以它为基准解析。 */
   readonly workspaceRoot: string;
-  /** 用户主目录；`~/.kapibala` 整根排除（含 settings.json 等凭据）。 */
+  /** 用户主目录；除会话自身显式挂载于受管默认工作区或受管工作树根内之外，`~/.kapibala` 其余凭据与状态目录一律排除。 */
   readonly homeDirectory: string;
   /** OS 临时目录；仅测试可覆盖，生产缺省 `os.tmpdir()`。 */
   readonly tempRoot?: string;
@@ -93,13 +93,32 @@ export function resolveWriteArtifact(
     ? path.normalize(raw)
     : path.resolve(options.workspaceRoot, raw);
   const target = canonicalize(candidate);
-  const allowedRoots = [
-    canonicalize(options.workspaceRoot),
-    canonicalize(options.tempRoot ?? os.tmpdir()),
-  ];
-  const excluded = canonicalize(path.join(options.homeDirectory, '.kapibala'));
-  // 排除整根 `.kapibala`：它会存放凭据与会话状态，即使工作区恰好包含主目录也不能预览。
-  if (within(excluded, target)) return { ok: false, code: 'path_not_allowed' };
+  const canonicalWorkspace = canonicalize(options.workspaceRoot);
+  const allowedRoots = [canonicalWorkspace, canonicalize(options.tempRoot ?? os.tmpdir())];
+
+  // 工作区内部的 `.kapibala`（项目级 `mcp.json`、发件箱等）始终禁止作为图片产物预览。
+  const workspaceDotKapibala = canonicalize(path.join(canonicalWorkspace, '.kapibala'));
+  if (within(workspaceDotKapibala, target)) return { ok: false, code: 'path_not_allowed' };
+
+  const kapibalaHomeRoot = canonicalize(path.join(options.homeDirectory, '.kapibala'));
+  if (within(kapibalaHomeRoot, target)) {
+    // 仅当会话 workspaceRoot 自身规范化后位于受管默认工作区或受管工作树根之内时，放行该工作区内部产物，
+    // 其余 `~/.kapibala/**`（settings.json、sessions、mcp.json 及其他工作树）一律拒绝。
+    const managedWorkspaceRoots = [
+      canonicalize(path.join(options.homeDirectory, '.kapibala', 'workspaces', 'default')),
+      canonicalize(path.join(options.homeDirectory, '.kapibala', 'worktrees')),
+    ];
+    const matchedManagedSubroot = managedWorkspaceRoots.find((subroot) =>
+      within(subroot, canonicalWorkspace),
+    );
+    if (
+      !matchedManagedSubroot ||
+      !within(matchedManagedSubroot, target) ||
+      !within(canonicalWorkspace, target)
+    ) {
+      return { ok: false, code: 'path_not_allowed' };
+    }
+  }
   if (!allowedRoots.some((root) => within(root, target)))
     return { ok: false, code: 'path_not_allowed' };
 

@@ -92,7 +92,7 @@ wire 1 的 `{major, minMinor, maxMinor}`，新端报价从候选构建的 `PROTO
 | Core 新增 `SkillLifecyclePhase` / `SkillLifecycleEvent` / `SKILL_LIFECYCLE_LIMIT`；`SkillRegistry` 增加 `lifecycle` / `roots` 只读访问器；`AgentSession.getSkills()` 返回值附加 `enabled` / `roots` / `lifecycle` | 纯新增导出与只读字段，既有字段语义不变 | 无迁移动作；生命周期事件只用于诊断，不参与优先级或权限判定 |
 | ViewModel 新增 `ViewUsage` 与可选 `ViewMessage.usage`、`history_replaced`（含可选 `branchId`）展示变更；Core 新增 `AgentSession.getMessageUsages()`、`rewindLastTurn()`、`restoreBranch()`、`validatePrimaryBinding()`、`syncExternalHistory()`；`ManagedSessionOptions` 新增可选 `isHostIdle` / `onAutoResume` | 纯可选字段与新增方法；不投影 usage 的宿主行为不变，重试只在宿主显式调用 `rewindLastTurn()` 时发生 | 需要回答级 token 时把 `getMessageUsages()` 按消息 ID 投影；重试后必须按 `history_replaced` 整体替换消息列表并同步 `branchId` |
 
-## v0.1.5 增量（开发中）
+## v0.1.5 增量（已随 v0.1.5 发布）
 
 本版聚焦宿主层「外部代理（External Harness）」独立会话域（通用 `acp`、`claude-cli`、`codex-app-server` 与 `pi-rpc` 四套传输驱动及 13 项按本机安装状态自动启停的内置预设），**`@kiturone/kapibala`（Core）与 `@kiturone/kapibala-mcp` 公共导出快照零破坏性变更**，本地宿主协议**保持整数 `PROTOCOL_VERSION = 2` 不变**，仅通过能力集合增量扩展 `'external-session'`，对既有 v0.1.4 客户端非破坏兼容。详见 [v0.1.5 迁移说明](migration/v0.1.5.md)。
 
@@ -105,6 +105,19 @@ wire 1 的 `{major, minMinor, maxMinor}`，新端报价从候选构建的 `PROTO
 | `view-model` 子路径新增 `ViewExternalHarness`、`ViewExternalHarnessProbe`、`ViewExternalTemplate`、`ViewExternalSession`、`ViewExternalSessionStatus`、`ViewExternalTransport`、`ViewExternalApproval`、`ViewExternalSnapshot`、`ViewExternalConfigCategory`、`ViewExternalConfigChoice`、`ViewExternalConfigOption`、`ViewTurnMeta`，`ViewMessage` 增加可选 `turnMeta` | 纯新增浏览器安全 DTO 与可选展示字段（0 Node 依赖） | 无迁移动作；外部会话的消息流与计划直接复用既有 `ViewMessage` 与 `ViewTodoState` |
 | `host` 子路径 `ManagedHostSession.run(input, signal?, options?)` 的 `options` 增加可选 `handoff?: { fromTitle, context }` | 纯新增可选运行参数；不传时与既有行为完全一致 | 无迁移动作；供桌面跨代理切换时通过 `runPreparedTask` 注入受脱敏保护的上下文接力块 |
 | `@kiturone/kapibala-cli` 新增声明模块 `commands/external.d.ts`（`/external` 命令组）与 `local-host/external-wire.d.ts` | 纯新增内部命令与 wire 转换模块 | 无迁移动作 |
+
+## v0.1.6 增量（分支开发已完成）
+
+本版落地受管 Git Worktree 并行隔离、Shadow Git 工作区检查点、子代理审批向父会话冒泡、跨会话引用压缩溯源与跨分支摘要、模型请求有限退避重试与流中自动重置恢复，以及桌面 UI 2.0 五标签工作台。**`@kiturone/kapibala`（Core，保持 0 运行时依赖）与 `@kiturone/kapibala-mcp` 相对 v0.1.5 零移除符号**；本地宿主协议**保持整数 `PROTOCOL_VERSION = 2` 不变**，通过增量能力 `'references'`、`'retry'`、`'checkpoint'`、`'worktree'` 扩展，服务端使用双序列发生器确保旧客户端 `seq` 零缺口兼容。详见 [v0.1.6 迁移说明](migration/v0.1.6.md)。
+
+| 变化 | 影响 | 迁移方式 |
+|---|---|---|
+| `SERVER_CAPABILITIES` 新增 `'references'`、`'retry'`、`'checkpoint'`、`'worktree'`，`PROTOCOL_VERSION` 保持 `2` | 不声明新能力的客户端照常握手，且服务端过滤 `'retry'` 事件时为其维持独立连续 `seq`；调用新 RPC 需在握手中声明对应能力 | 需要跨会话引用、检查点、受管工作树或重试进度事件的客户端显式声明对应能力 |
+| `protocol` 子路径新增 `WireReferenceSelection`、`WireReferenceCandidateItem`、`WireReferenceSearchHit`、`WireReferenceRecord`、`WireSubagentOrigin`、`WireSessionDelegation`、`WireWorktreeOption`、`WireWorktreeSummary`、`WireWorktreeChangedFile`、`WireWorktreeStatus`、`WireMergePreview`、`WireCheckpointItem`、`WireFileDiff`，扩展 `ApprovalPrompt`、`EventPayloads`（`stream_reset`、`retry_scheduled`）、`REQUEST_SCHEMAS` 与 `RESULT_SCHEMAS` | 纯新增导出与可选字段/联合分支 | 无破坏性迁移动作 |
+| `view-model` 子路径新增 `ViewRetryStatus`、`ViewCheckpointItem`、`ViewDiffSummary`、`ViewFileDiff`、`ViewWorktreeSummary`、`ViewMergePreview`（含 `canApply`、`blockingReason`、`additions`、`deletions` 可选预检字段），`PresentationState` 增加可选 `retryStatus`、`worktree`、`diffSummary`，`PresentationChange` 增加重试与工作树分支 | 纯新增浏览器安全 DTO（0 Node 依赖）；既有消费方忽略可选字段即可 | 展示层收到 `stream_reset` 对应的状态更新时渲染最新无脏前缀的流式块 |
+| Core 新增 `SessionWorktreeBinding`、`SubagentWorktreeProvider`、`AllocatedSubagentWorktree`、`SubagentApprovalOrigin`、`ModelRetryOptions`、`ParseSSEOptions`、`DEFAULT_STREAM_IDLE_TIMEOUT_MS`、`parseRetryHeaders`、`BranchSummaryPayload`、`CreateBranchWithSummaryOptions`、`extractReferenceIndex`、`formatReferenceSummaryStub`、`formatContextSummaryAsText`；`AgentSession` 新增 `createBranchWithSummary`、`setRetryOptions`、`getRetryOptions` 与单次运行 `retry` 覆盖选项；`PathSandbox` 将 `.git` 精确路径与 `.git/config.worktree` 纳入写硬禁区 | 纯新增可选能力与安全收紧；工作区写工具不再允许覆盖 `<worktree>/.git` 指针文件或工作树私有配置 | 若 SDK 调用方不希望启用默认最多 2 次自动重试，传 `retry: { maxRetries: 0 }` 或调用 `session.setRetryOptions({ maxRetries: 0 })` |
+| `host` 子路径新增 `CheckpointService`、`WorktreeService`、`ExecutionRootCoordinator`、`verifyManagedWorktreeLink` 及配套结果/错误类型；`ManagedSessionOptions` 新增可选 `projectRoot`、`worktree`、`checkpoints`、`worktrees`、`executionCoordinator`；`ManagedHostSession` 新增 `checkpoints()`、`checkpointDiff()`、`restoreCheckpoint()`、`worktree()`、`createBranchWithSummary()` | 自定义实现 `ManagedHostSession` 的宿主适配器需补齐新增方法签名；调用 `createManagedSession` 的既有代码无需修改 | 自定义适配器实现新方法（未接入检查点/工作树时返回空数组/`undefined` 或抛不可用错误） |
+| `@kiturone/kapibala-cli` 新增声明模块 `commands/checkpoints.d.ts`、`commands/worktrees.d.ts`、`ui/theme.d.ts`、`ui/welcome.d.ts` | 纯新增命令与终端主题模块 | 无迁移动作 |
 
 ## 1. 盘点口径
 

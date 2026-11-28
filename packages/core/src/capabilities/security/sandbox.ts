@@ -67,7 +67,8 @@ function hasNtfsStreamSuffix(rawPath: string): boolean {
  * 内置硬禁区判定（workspace 相对路径）：写入这些位置会让后续操作获得代码执行或规则扩权能力。
  *
  * 边界：
- * - `.git/hooks`、`.git/config`、`.git/modules` 写入可劫持下一次 git 操作；
+ * - `.git` 精确路径（含嵌套目录）在链接工作树与子模块中是记录 `gitdir:` 的普通文件，篡改即可重定向仓库边界；
+ * - `.git/hooks`、`.git/config`、`.git/config.worktree`、`.git/modules` 写入可劫持下一次 git 操作；
  * - `.env` / `.env.*` 是密钥载体，但 `.env.example` / `.env.sample` / `.env.template` 不含密钥，明确豁免；
  * - `.envrc` 由 direnv 进入目录即自动执行，写入等于埋下任意命令执行点，与 `.git/hooks` 同威胁级；
  * - `.kapibala/**` 含规则与 MCP 配置，写入等于自我提权；
@@ -82,7 +83,13 @@ export function isProtectedWorkspacePath(relativePath: string): boolean {
     normalized.includes(`/${segment}/`);
   if (matches('.git/hooks')) return true;
   if (normalized === '.git/config' || normalized.endsWith('/.git/config')) return true;
+  if (normalized === '.git/config.worktree' || normalized.endsWith('/.git/config.worktree')) {
+    return true;
+  }
   if (matches('.git/modules')) return true;
+  if (matches('.git/worktrees') || matches('.git/info') || matches('.git/objects/info')) {
+    return true;
+  }
   if (
     normalized === '.kapibala' ||
     normalized.startsWith('.kapibala/') ||
@@ -90,6 +97,7 @@ export function isProtectedWorkspacePath(relativePath: string): boolean {
   )
     return true;
   const base = normalized.slice(normalized.lastIndexOf('/') + 1);
+  if (base === '.git') return true;
   if (base === '.env') return true;
   if (base.startsWith('.env.') && !/^\.env\.(example|sample|template)$/.test(base)) return true;
   // direnv 对 `.envrc` 是「进入目录即执行」，无需任何用户动作，因此与 hooks 同级硬拒。

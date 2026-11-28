@@ -18,6 +18,7 @@ import {
 } from '@kiturone/kapibala-host/internal';
 import { formatTokenCount } from './ui/metrics.js';
 import { readSecret } from './ui/secret.js';
+import { theme } from './ui/theme.js';
 
 /** 端点探测结论：ok 可达、auth 密钥被拒、unreachable 网络或端点未实现 /models；detail 供原样展示。 */
 export interface ProbeResult {
@@ -101,20 +102,22 @@ async function executeSetupWizard(
   closeReadline: () => void,
   options: SetupWizardOptions,
 ): Promise<{ profile: ModelProfile; apiKey: string }> {
-  console.log('\n🐾 \x1b[36m欢迎使用 Kapibala (kpbl)!\x1b[0m');
+  console.log(`\n${theme.info('欢迎使用卡皮巴拉 (kpbl)!')}`);
   console.log('检测到当前尚未配置可用的模型服务。请选择您要使用的提供商：\n');
 
   // 厂商与模型清单全部来自内置目录，不再在这里硬编码 id ——
   // 硬编码会在模型换代后变成一句 `BUILTIN_PROFILES.find(...)!` 的运行时崩溃。
   const providerEntries = listBuiltinProviders();
   providerEntries.forEach((entry, index) => {
-    const recommended = entry.meta.key === 'deepseek' ? ' \x1b[32m(推荐默认)\x1b[0m' : '';
+    const recommended = entry.meta.key === 'deepseek' ? ` ${theme.success('(推荐默认)')}` : '';
     console.log(
-      `  ${index + 1}) \x1b[36m${entry.meta.name}\x1b[0m${recommended} —— ${entry.meta.desc} (${entry.models.length}个模型)`,
+      `  ${index + 1}) ${theme.info(entry.meta.name)}${recommended} —— ${entry.meta.desc} (${entry.models.length}个模型)`,
     );
   });
   const customChoice = providerEntries.length + 1;
-  console.log(`  ${customChoice}) \x1b[35m自定义 OpenAI 兼容接口\x1b[0m —— OneAPI / vLLM / 代理\n`);
+  console.log(
+    `  ${customChoice}) ${theme.sgr('自定义 OpenAI 兼容接口', 35)} —— OneAPI / vLLM / 代理\n`,
+  );
 
   const choice = (await rl.question(`请输入选项 [1-${customChoice}] (默认 1): `)).trim() || '1';
 
@@ -244,21 +247,23 @@ async function executeSetupWizard(
   console.log('\n⏳ 正在验证连接与可用性...');
   const probe = await probeEndpoint(selectedProfile, enteredKey);
   if (probe.status === 'ok') {
-    console.log(`\x1b[32m✔ 连接验证成功 (${probe.detail})\x1b[0m`);
+    console.log(theme.success(`✔ 连接验证成功 (${probe.detail})`));
   } else if (probe.status === 'auth') {
     console.log(
-      `\x1b[33m⚠ 端点可达但密钥被拒绝 (${probe.detail})。配置仍会保存，请稍后核对密钥。\x1b[0m`,
+      theme.warning(`⚠ 端点可达但密钥被拒绝 (${probe.detail})。配置仍会保存，请稍后核对密钥。`),
     );
   } else {
     console.log(
-      `\x1b[33m⚠ 未能验证连通性 (${probe.detail})。配置仍会保存，可稍后直接发起一次对话确认。\x1b[0m`,
+      theme.warning(
+        `⚠ 未能验证连通性 (${probe.detail})。配置仍会保存，可稍后直接发起一次对话确认。`,
+      ),
     );
   }
   // 探测成功且端点为该模型声明了窗口时回填：仅限 profile 未声明窗口的场景（自定义端点不询问窗口），
   // 已存配置的声明优先，绝不覆盖用户显式填写的值。回退路径由运行时按统一默认值估算。
   if (probe.status === 'ok' && probe.contextWindow && selectedProfile.contextWindow === undefined) {
     selectedProfile = { ...selectedProfile, contextWindow: probe.contextWindow };
-    console.log(`\x1b[36mℹ 已从端点探测到上下文窗口：${probe.contextWindow} tokens\x1b[0m`);
+    console.log(theme.info(`ℹ 已从端点探测到上下文窗口：${probe.contextWindow} tokens`));
   }
 
   // 交互和端点探测全部结束后才获取短锁；只提交本次选中模型和默认项。
@@ -291,19 +296,21 @@ async function executeSetupWizard(
 
   if (enteredKey && enteredKey !== 'ollama') {
     console.log(
-      '\x1b[33m⚠ API Key 将保存在全局配置 ~/.kapibala/settings.json，请确保仅当前用户可访问。\x1b[0m',
+      theme.warning(
+        '⚠ API Key 将保存在全局配置 ~/.kapibala/settings.json，请确保仅当前用户可访问。',
+      ),
     );
   }
-  console.log(`\x1b[32m✔ 配置已成功持久化至全局：${savedPath}\x1b[0m`);
+  console.log(theme.success(`✔ 配置已成功持久化至全局：${savedPath}`));
 
   if (enteredKey && enteredKey !== 'ollama') {
     console.log(
-      `\x1b[33m⚠ API Key 已保存在 ${savedPath}；Kapibala 已尝试将文件权限限制为当前用户。\x1b[0m`,
+      theme.warning(`⚠ API Key 已保存在 ${savedPath}；Kapibala 已尝试将文件权限限制为当前用户。`),
     );
   }
 
   console.log(
-    `\x1b[36m已就绪！当前默认模型：${selectedProfile.name} (${selectedProfile.modelName})\x1b[0m\n`,
+    `${theme.info(`已就绪！当前默认模型：${selectedProfile.name} (${selectedProfile.modelName})`)}\n`,
   );
 
   return { profile: selectedProfile, apiKey: enteredKey };

@@ -1,0 +1,60 @@
+/**
+ * Kapibala UI 2.0 四域 Zustand Store 统一公共入口（显式命名重导出，禁用 `export *`）。
+ */
+export {
+  buildDraftScopeKey,
+  createSessionStore,
+  type ReferenceChip,
+  type SessionStoreBridge,
+  type SessionStoreState,
+  type StagedNextTurnSelection,
+  selectReferenceChips,
+  useSessionStore,
+} from './session-store.js';
+export {
+  applyDesktopPreferencesToDom,
+  createSettingsStore,
+  type HydratedDesktopPreferences,
+  type ModelProfileSummary,
+  type ProviderGroupSummary,
+  type ReleaseUpdateState,
+  type ResourceDiagnosticsSummary,
+  type SettingsStoreBridge,
+  type SettingsStoreState,
+  selectEnabledHarnesses,
+  type ThemeMode,
+  useSettingsStore,
+} from './settings-store.js';
+export {
+  type ActiveSurface,
+  createShellStore,
+  DEFAULT_SESSION_WORKBENCH_STATE,
+  type OpenWorkbenchTabInput,
+  type SessionWorkbenchState,
+  type SettingsTabId,
+  type ShellStoreState,
+  selectSessionWorkbench,
+  useShellStore,
+  WORKBENCH_TAB_LABELS,
+  WORKBENCH_TAB_ORDER,
+  type WorkbenchTab,
+  type WorkbenchTabKind,
+} from './shell-store.js';
+export {
+  createWorkspaceStore,
+  type InboxItem,
+  type SessionLiveStatusEntry,
+  type SessionLiveStatusKind,
+  selectInboxItems,
+  selectWorkspaceHierarchy,
+  useWorkspaceStore,
+  type WorkspaceHierarchyNode,
+  type WorkspaceHierarchyView,
+  type WorkspaceHistoryPage,
+  type WorkspaceNativeSessionItem,
+  type WorkspaceSessionDelegation,
+  type WorkspaceSessionWorktree,
+  type WorkspaceSpace,
+  type WorkspaceStoreBridge,
+  type WorkspaceStoreState,
+} from './workspace-store.js';

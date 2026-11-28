@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { SessionMode } from '../capabilities/security/permissions.js';
 import { KapibalaError, createSessionError } from '../errors/index.js';
-import type { CanonicalMessage } from '../types/index.js';
+import type { CanonicalMessage, SessionWorktreeBinding } from '../types/index.js';
 import { createMessageId, identifyHistory } from './history.js';
 import {
   assertHistoryReadBudget,
@@ -154,8 +154,22 @@ export interface SessionMetadata {
    * 与 header.delegation 同源，供委派面板与保留预算在不读正文的情况下筛选。
    */
   delegation?: SessionHeader['delegation'];
+  /** 受管 Git Worktree 绑定快照；与 header.worktree 同源，sidecar 重建时原样保留。 */
+  worktree?: SessionWorktreeBinding;
   /** 预算不足时仅提供定位与提示，不把超限文件误判为损坏或写入不完整缓存。 */
   unavailableReason?: 'HISTORY_READ_LIMIT';
+}
+
+/** 新建会话时的头部扩展选项；项目归属根始终固定为当前 SessionManager 的 projectRoot。 */
+export interface CreateSessionOptions {
+  /** 保留型委派归属标记。 */
+  delegation?: DelegationHeader;
+  /** 受管 Git Worktree 物理隔离绑定。 */
+  worktree?: SessionWorktreeBinding;
+  /** 可选初始执行目录覆盖；缺省在绑定 worktree 时取 worktreePath，否则取项目 cwd。 */
+  initialCwd?: string;
+  /** 可选初始 Git 分支覆盖；缺省在绑定 worktree 时取 worktree.branch，否则取项目分支。 */
+  gitBranch?: string;
 }
 
 /** 打开的会话句柄：持有单写者锁与 Store，宿主用毕必须 release。 */
@@ -270,7 +284,7 @@ export class SessionManager {
   }
 
   /** 默认新建独立空会话，写入头部并持有单写者锁；不读取其它正文。 */
-  async create(options: { delegation?: DelegationHeader } = {}): Promise<ManagedSession> {
+  async create(options: CreateSessionOptions = {}): Promise<ManagedSession> {
     const conversationId = createMessageId();
     const file = path.join(this.directory, `${Date.now()}_${conversationId}.jsonl`);
     const lock = await SessionLock.acquire(this.lockPath(conversationId));
@@ -280,9 +294,10 @@ export class SessionManager {
         {
           conversationId,
           projectRoot: this.project.projectRoot,
-          initialCwd: this.project.cwd,
-          gitBranch: this.project.gitBranch,
+          initialCwd: options.initialCwd ?? options.worktree?.worktreePath ?? this.project.cwd,
+          gitBranch: options.gitBranch ?? options.worktree?.branch ?? this.project.gitBranch,
           ...(options.delegation ? { delegation: options.delegation } : {}),
+          ...(options.worktree ? { worktree: options.worktree } : {}),
         },
         this.readOptions,
       );
@@ -1095,6 +1110,7 @@ export class SessionManager {
       (message) => this.report(message),
     );
     const manager = this;
+    const expectedBranch = header.worktree ? header.worktree.branch : this.project.gitBranch;
     const handle: ManagedSession = {
       conversationId: header.conversationId,
       store,
@@ -1104,8 +1120,8 @@ export class SessionManager {
         return manager.readMetadata(store.filePath);
       },
       branchDrift:
-        header.gitBranch !== this.project.gitBranch
-          ? { createdBranch: header.gitBranch, currentBranch: this.project.gitBranch }
+        header.gitBranch !== expectedBranch
+          ? { createdBranch: header.gitBranch, currentBranch: expectedBranch }
           : undefined,
       release: async () => {
         try {
@@ -1233,6 +1249,7 @@ export class SessionManager {
         importIdentity: header.importIdentity,
         upgradeIdentity: header.upgradeIdentity,
         ...(header.delegation ? { delegation: header.delegation } : {}),
+        ...(header.worktree ? { worktree: header.worktree } : {}),
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         revision: first.value.recordId,

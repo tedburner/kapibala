@@ -23,13 +23,17 @@ import {
 } from '@kiturone/kapibala-host/internal';
 import { getCliSkillOptions } from '@kiturone/kapibala-host/internal';
 import {
+  SessionApprovalHub,
   createCliSubagentResumer,
   createCliSubagentRunner,
 } from '@kiturone/kapibala-host/internal';
 import { readDelegationRequestEntries } from '@kiturone/kapibala-host/internal';
 import {
+  CheckpointService,
+  ExecutionRootCoordinator,
   ExternalSessionService,
   WatchService,
+  WorktreeService,
   createWatchTools,
   importSkills,
   registerBuiltinTools,
@@ -44,9 +48,14 @@ import { parseLocalCommand, runLocalCommand } from './local-host/entry.js';
 import { runOneShot } from './oneshot.js';
 import { resolveProjectTrust } from './project-trust.js';
 import { startREPL } from './repl.js';
-import { openStartupSession, validateSessionStartup } from './session-startup.js';
+import {
+  extractWorktreeCliOption,
+  openStartupSession,
+  validateSessionStartup,
+} from './session-startup.js';
 import { CliApprovalChannel } from './ui/approval.js';
 import { parseOutputDetail } from './ui/events.js';
+import { theme } from './ui/theme.js';
 import { CLI_VERSION } from './version.js';
 import { runWatchResume, setActiveWatchService } from './watch-context.js';
 import { runSetupWizard } from './wizard.js';
@@ -67,7 +76,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     await runLocalCommand(localCommand);
     return;
   }
-  const args = minimist(argv, {
+  const { normalizedArgv, worktree: startupWorktree } = extractWorktreeCliOption(argv);
+  const args = minimist(normalizedArgv, {
     string: [
       'model',
       'role',
@@ -86,7 +96,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   if (args.help) {
     console.log(`
-🐾 Kapibala (kpbl) v${CLI_VERSION} - Production-grade TypeScript AI Agent Harness
+卡皮巴拉 (kpbl) v${CLI_VERSION} - AI Agent Harness
 
 使用方式:
   kpbl [选项] [问题/指令]
@@ -98,6 +108,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   kpbl                             # 启动交互式会话终端 (REPL)
   kpbl "请帮我查看当前目录结构"    # 免交互单次会话模式 (直接问答)
   kpbl -m deepseek-v4-pro          # 指定 DeepSeek V4 Pro 启动终端
+  kpbl -w feat/refactor            # 在独立受管 Git Worktree 中启动终端
 
 选项:
   -m, --model <id>       指定要使用的模型 profile id (如 deepseek-flash, claude-opus-5)
@@ -113,6 +124,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   --no-mcp               停用 MCP 生态服务与提示词
   --continue             续答当前项目最近有内容的会话
   --resume <id>          按完整 ID 或唯一前缀恢复会话
+  -w, --worktree [branch] 在受管独立 Git Worktree 分支中启动会话
   -v, --version          查看当前版本
   -h, --help             查看帮助信息
 
@@ -129,37 +141,44 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const requestedRole = parsePrimaryModelRole(args.role);
   const outputDetail = parseOutputDetail(args['output-detail']);
 
-  // 0. 内置模型清单升级
-  validateSessionStartup({ continue: args.continue, resume: args.resume });
+  // 0. 内置模型清单升级与启动互斥预检
+  validateSessionStartup({
+    continue: args.continue,
+    resume: args.resume,
+    worktree: startupWorktree,
+  });
   // 厂商换代后老配置里的 modelName 会指向已退役模型（如 deepseek-chat 已不可访问）。
   // 这里只动全局配置文件，且仅在版本落后时写回；失败不能挡住启动。
   try {
     const catalogChanges = migrateGlobalSettingsCatalog();
     if (catalogChanges.length > 0) {
-      console.log(`\x1b[36m⬆ 内置模型清单已更新（${catalogChanges.length} 项）：\x1b[0m`);
+      console.log(theme.info(`⬆ 内置模型清单已更新（${catalogChanges.length} 项）：`));
       for (const change of catalogChanges) {
-        console.log(`\x1b[90m  · ${change}\x1b[0m`);
+        console.log(theme.subtle(`  · ${change}`));
       }
     }
   } catch (err: unknown) {
-    console.error(`\x1b[33m[kapibala] 内置模型清单升级失败：${(err as Error).message}\x1b[0m`);
+    console.error(theme.warning(`[kapibala] 内置模型清单升级失败：${(err as Error).message}`));
   }
 
   // 1. 加载 settings
   // 项目根只解析一次：信任检查复用该结果，SessionManager 在缓存窗口内直接命中，避免重复 Git 探测。
   const startupCwd = fs.realpathSync.native(path.resolve(process.cwd()));
   const projectIdentity = resolveSessionProject(startupCwd);
+  if (startupWorktree?.enabled && !projectIdentity.gitWorktree) {
+    throw new Error(`当前目录不是 Git 仓库，无法使用 --worktree 创建受管工作树: ${startupCwd}`);
+  }
   const trustResult = await resolveProjectTrust(loadSettings(), {
     projectRoot: projectIdentity.projectRoot,
   });
   if (trustResult.status === 'rejected') {
-    console.error('\x1b[31m项目配置未获信任，Kapibala 已退出。\x1b[0m');
+    console.error(theme.danger('项目配置未获信任，Kapibala 已退出。'));
     process.exitCode = 2;
     return;
   }
   if (trustResult.status === 'non_interactive') {
     console.error(
-      '\x1b[31m检测到未信任的项目配置；非交互环境无法确认信任，Kapibala 已退出。\x1b[0m',
+      theme.danger('检测到未信任的项目配置；非交互环境无法确认信任，Kapibala 已退出。'),
     );
     process.exitCode = 2;
     return;
@@ -194,7 +213,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (settings.defaultModel) {
       const fallbackId = settings.profiles[0]?.id ?? BUILTIN_PROFILES[0]!.id;
       console.error(
-        `\x1b[33m[kapibala] 配置的默认模型 ${settings.defaultModel} 不存在，已回退到 ${fallbackId}。\x1b[0m`,
+        theme.warning(
+          `[kapibala] 配置的默认模型 ${settings.defaultModel} 不存在，已回退到 ${fallbackId}。`,
+        ),
       );
     }
     activeProfile = settings.profiles[0] ?? BUILTIN_PROFILES[0]!;
@@ -266,36 +287,42 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       trustResult.status === 'trusted' || isProjectTrusted(settings, manager.project.projectRoot);
     const leaseCoordinator = new WorkspaceLeaseCoordinator();
     const homeDirectory = os.homedir();
+    const executionCoordinator = new ExecutionRootCoordinator();
+    const checkpointService = new CheckpointService({ homeDir: homeDirectory });
+    const worktreeService = new WorktreeService({
+      homeDir: homeDirectory,
+      coordinator: executionCoordinator,
+    });
+    const approvalChannel = new CliApprovalChannel();
+    const approvalHub = new SessionApprovalHub(approvalChannel);
+    const rootApprovalChannel = approvalHub.createRootChannel();
+    const buildSubagentOptions = () => ({
+      manager,
+      models,
+      settings,
+      preference,
+      isTrusted,
+      approvalChannel,
+      approvalHub,
+      runtime: agentRuntime,
+      leaseCoordinator,
+      homeDirectory,
+      executionCoordinator,
+    });
     agentRuntime = new AgentRuntime({
-      runner: createCliSubagentRunner({
-        manager,
-        models,
-        settings,
-        preference,
-        isTrusted,
-        leaseCoordinator,
-        homeDirectory,
-      }),
+      worktreeProvider: worktreeService.asSubagentWorktreeProvider(),
+      runner: (...runnerArgs) => createCliSubagentRunner(buildSubagentOptions())(...runnerArgs),
       // 续聊执行器与首次派发共享同一套装配；缺失时 send_agent 会明确拒绝而非静默失败。
-      resumer: createCliSubagentResumer({
-        manager,
-        models,
-        settings,
-        preference,
-        isTrusted,
-        leaseCoordinator,
-        homeDirectory,
-      }),
+      resumer: (...resumerArgs) => createCliSubagentResumer(buildSubagentOptions())(...resumerArgs),
       // 重启后从委派头重建幂等索引：同一 requestId 不会重复派发第二个委派会话。
       restoredRequests: readDelegationRequestEntries(manager),
       validateModelOverride: (modelId: string) => settings.profiles.some((p) => p.id === modelId),
-      outboxPath: path.join(manager.project.projectRoot, '.kapibala', 'outbox.jsonl'),
+      outboxPath: path.join(projectIdentity.projectRoot, '.kapibala', 'outbox.jsonl'),
     });
-    const approvalChannel = new CliApprovalChannel();
     const builtinTools = new ToolRegistry();
     try {
       registerBuiltinTools(builtinTools, {
-        cwd: process.cwd(),
+        cwd: startupCwd,
         shell: preference,
         disableShell: args['disable-shell'] || settings.shell?.enabled === false,
         runtime: agentRuntime,
@@ -307,25 +334,55 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       );
     }
     const mcpOptions = resolveCliMcpOptions({
-      projectRoot: manager.project.projectRoot,
+      projectRoot: projectIdentity.projectRoot,
       isProjectTrusted: isTrusted,
       noMcp: args.mcp === false || Boolean(args['no-mcp']),
     });
     for (const diag of mcpOptions.diagnostics) {
       if (diag.severity === 'error') {
-        console.error(`\x1b[31m[kapibala] MCP 配置错误: ${diag.message}\x1b[0m`);
+        console.error(theme.danger(`[kapibala] MCP 配置错误: ${diag.message}`));
       } else if (diag.severity === 'warning') {
-        console.error(`\x1b[33m[kapibala] MCP 配置警告: ${diag.message}\x1b[0m`);
+        console.error(theme.warning(`[kapibala] MCP 配置警告: ${diag.message}`));
       }
     }
+    const oneShotPrompt = args.prompt || (args._.length > 0 ? args._.join(' ') : null);
+    let createdStartupWorktree: Awaited<ReturnType<WorktreeService['create']>> | undefined;
     try {
       await manager.importLegacy();
-      const initialHandle =
-        restoredHandle ??
-        (await openStartupSession(manager, {
-          continue: args.continue,
-          resume: args.resume,
-        }));
+      if (startupWorktree?.enabled) {
+        const rawRelCwd = path.relative(projectIdentity.projectRoot, startupCwd);
+        const relativeCwd =
+          rawRelCwd && !rawRelCwd.startsWith('..') && !path.isAbsolute(rawRelCwd)
+            ? rawRelCwd
+            : undefined;
+        createdStartupWorktree = await worktreeService.create({
+          projectRoot: projectIdentity.projectRoot,
+          ...(startupWorktree.branch ? { branch: startupWorktree.branch.trim() } : {}),
+          ...(typeof oneShotPrompt === 'string' && oneShotPrompt.trim()
+            ? { name: oneShotPrompt.trim() }
+            : {}),
+          ...(relativeCwd ? { relativeCwd } : {}),
+        });
+      }
+      let initialHandle: import('@kiturone/kapibala').ManagedSession;
+      try {
+        initialHandle =
+          restoredHandle ??
+          (await openStartupSession(manager, {
+            continue: args.continue,
+            resume: args.resume,
+            worktree: startupWorktree,
+            worktreeBinding: createdStartupWorktree?.binding,
+          }));
+      } catch (openErr) {
+        if (createdStartupWorktree) {
+          await worktreeService
+            .remove({ id: createdStartupWorktree.record.id, force: true })
+            .catch(() => {});
+          createdStartupWorktree = undefined;
+        }
+        throw openErr;
+      }
       const sessionWatches = new WeakMap<AgentSession, WatchService>();
       const activateSessionWatches = (target: AgentSession) => {
         const svc = sessionWatches.get(target);
@@ -336,33 +393,68 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         });
       };
       const factory = async (handle: import('@kiturone/kapibala').ManagedSession) => {
+        const persistedWorktree = handle.header?.worktree;
+        let execRoot = projectIdentity.projectRoot;
+        let execCwd = startupCwd;
+        if (persistedWorktree) {
+          if (
+            fs.existsSync(persistedWorktree.worktreePath) &&
+            worktreeService.verifyLink(projectIdentity.projectRoot, persistedWorktree.worktreePath)
+          ) {
+            execRoot = fs.realpathSync.native(persistedWorktree.worktreePath);
+            execCwd =
+              createdStartupWorktree && persistedWorktree.id === createdStartupWorktree.binding.id
+                ? createdStartupWorktree.executionCwd
+                : execRoot;
+          } else {
+            throw new Error(
+              `会话绑定的受管工作树不可用或回链校验未通过: ${persistedWorktree.worktreePath}`,
+            );
+          }
+        }
         const created = new AgentSession({
           leaseCoordinator,
           loggingDirectory: path.join(os.homedir(), '.kapibala'),
           auditRecoveryDirectory: path.join(os.homedir(), '.kapibala/audit'),
           defaultProfile: models.defaultBinding.profile,
-          skills: getCliSkillOptions(settings, { projectRoot: manager.project.projectRoot }),
+          skills: getCliSkillOptions(settings, {
+            cwd: execCwd,
+            projectRoot: projectIdentity.projectRoot,
+          }),
           defaultProvider: models.defaultBinding.provider,
           store: handle.store,
           conversationId: handle.conversationId,
-          workspaceRoot: manager.project.projectRoot,
-          executionCwd: startupCwd,
-          rootDir: manager.project.projectRoot,
-          projectRoot: manager.project.projectRoot,
-          cwd: startupCwd,
-          gitBranch: manager.project.gitBranch,
+          workspaceRoot: execRoot,
+          executionCwd: execCwd,
+          rootDir: execRoot,
+          projectRoot: projectIdentity.projectRoot,
+          cwd: execCwd,
+          gitBranch: persistedWorktree?.branch ?? manager.project.gitBranch,
           logger: args.debug ? (message) => console.error(`[DEBUG] ${message}`) : undefined,
           onDiagnostic: (message) => console.error(`[kapibala] ${message}`),
           mode: controller?.session.getMode() ?? mode,
           permissionRules: settings.permissionRules,
-          approvalChannel,
+          approvalChannel: rootApprovalChannel,
         });
-        for (const tool of builtinTools.list()) created.tools.register(tool);
+        if (persistedWorktree) {
+          try {
+            registerBuiltinTools(created.tools, {
+              cwd: execCwd,
+              shell: preference,
+              disableShell: args['disable-shell'] || settings.shell?.enabled === false,
+              runtime: agentRuntime,
+            });
+          } catch (toolErr: unknown) {
+            if (preference !== 'auto') throw toolErr;
+          }
+        } else {
+          for (const tool of builtinTools.list()) created.tools.register(tool);
+        }
         // 监视服务先登记不立即启动：等会话 init 成功并正式发布为活动会话后再激活轮询，
         // 防止 /resume 准备失败时提前销毁旧会话监视，也避免 -p 单次模式残留后台轮询。
         const watchInbox = new WatchInbox(handle.store);
         const watches = new WatchService({
-          workspaceRoot: manager.project.projectRoot,
+          workspaceRoot: execRoot,
           store: handle.store,
           deliver: async (notification, branchId) => {
             const written = await watchInbox.consume(notification, branchId);
@@ -415,6 +507,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const dispatcher = createDefaultCommandDispatcher();
       externalService = new ExternalSessionService({
         homeDir: os.homedir(),
+        checkpoints: checkpointService,
+        worktrees: worktreeService,
+        executionCoordinator,
         isWorkspaceTrusted: (root) =>
           isProjectTrusted(settings, root) ||
           isProjectTrusted(
@@ -426,27 +521,33 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         get session() {
           return active.session;
         },
+        get executionRoot() {
+          return active.session.workspaceRoot;
+        },
         controller: active,
         dispatcher,
         runtime: agentRuntime,
         external: externalService,
+        checkpoints: checkpointService,
+        worktrees: worktreeService,
+        executionCoordinator,
         settings,
         settingsPath: sourcePath,
-        projectRoot: manager.project.projectRoot,
+        projectRoot: projectIdentity.projectRoot,
         // 导入能力在命令显式调用时才扫描，不预热；信任状态与目标作用域每次按当前参数重算。
         scanImportableSkills: (scope) =>
           scanImportableSkills({
             homeDir: os.homedir(),
-            projectRoot: manager.project.projectRoot,
-            projectTrusted: isProjectTrusted(settings, manager.project.projectRoot),
+            projectRoot: projectIdentity.projectRoot,
+            projectTrusted: isProjectTrusted(settings, projectIdentity.projectRoot),
             settings,
             scope,
           }),
         importSkills: (request) =>
           importSkills({
             homeDir: os.homedir(),
-            projectRoot: manager.project.projectRoot,
-            projectTrusted: isProjectTrusted(settings, manager.project.projectRoot),
+            projectRoot: projectIdentity.projectRoot,
+            projectTrusted: isProjectTrusted(settings, projectIdentity.projectRoot),
             settings,
             scope: request.scope,
             items: request.items,
@@ -469,7 +570,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           inputCoordinator.close();
         },
       };
-      const oneShotPrompt = args.prompt || (args._.length > 0 ? args._.join(' ') : null);
+      if (createdStartupWorktree) {
+        console.log(
+          theme.info(
+            `${theme.glyphs.worktree} 已创建并进入受管独立工作树 [${createdStartupWorktree.binding.id}] (${createdStartupWorktree.binding.branch}) -> ${createdStartupWorktree.binding.worktreePath}`,
+          ),
+        );
+      }
       if (oneShotPrompt && typeof oneShotPrompt === 'string' && oneShotPrompt.trim()) {
         const exitCode = await runOneShot({
           session: active.session,
@@ -479,6 +586,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           debug: Boolean(args.debug),
           outputDetail,
           approvalChannel,
+          projectRoot: projectIdentity.projectRoot,
+          checkpoints: checkpointService,
+          executionCoordinator,
+          runtime: agentRuntime,
         });
         if (exitCode) process.exitCode = exitCode;
         return;
@@ -496,6 +607,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       });
     } finally {
       setActiveWatchService(undefined);
+      approvalHub.dispose();
       if (externalService) await externalService.dispose();
       if (agentRuntime) await agentRuntime.close();
       if (controller) await controller.close();

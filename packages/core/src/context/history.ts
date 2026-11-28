@@ -40,9 +40,14 @@ export interface NormalizedHistory {
   diagnostics: string[];
 }
 
+/** 判定是否为无独立用户轮次身份的背景摘要锚点（检查点摘要或分支背景摘要），禁止与相邻用户提问合并或吞并后续轮次。 */
+function isStandaloneSummaryMessage(message: CanonicalMessage | undefined): boolean {
+  return Boolean(message && !message.interactionId && message.id?.startsWith('summary-'));
+}
+
 /**
  * 构造合法且独立的请求视图：只接受紧邻事务的结果，缺失结果标为未知；重复调用身份明确失败。
- * 合并仅适用于纯文本的同角色消息，失败正文不重放，所有来源均可追踪。
+ * 合并仅适用于纯文本的同角色普通消息（排除摘要锚点），失败正文不重放，所有来源均可追踪。
  */
 export function normalizeHistory(input: readonly CanonicalMessage[]): NormalizedHistory {
   const result: NormalizedHistory = { messages: [], sources: [], repairs: [], diagnostics: [] };
@@ -56,6 +61,8 @@ export function normalizeHistory(input: readonly CanonicalMessage[]): Normalized
       last &&
       !last.contextSummary &&
       !message.contextSummary &&
+      !isStandaloneSummaryMessage(last) &&
+      !isStandaloneSummaryMessage(message) &&
       last.role === message.role &&
       ['user', 'assistant'].includes(message.role) &&
       pure(last) &&
@@ -190,6 +197,8 @@ function lastSuccessfulTodoInteraction(groups: readonly CanonicalMessage[][]): n
 
 /**
  * 以显式终态为准恢复用户交互；旧历史仅在完整工具事务之后存在非空最终答复时推断成功。
+ * 无 `interactionId` 的独立 `summary-*` 消息（如跨分支摘要）单独构成已闭合边界，不吞并后续用户轮次，
+ * 使上下文管理器可跨越并在摘要之后正常执行压缩。
  * 保护最近成功交互及其后的所有交互；含最近一次成功 `todo_write` 的交互即便早于最近成功
  * 交互也不得压缩，否则旧任务清单声明会先于新交互被裁掉。没有成功证据时保护全部历史。
  */
@@ -205,14 +214,17 @@ export function indexInteractions(
   const groups: CanonicalMessage[][] = [];
   for (const message of messages) {
     const current = interactions.at(-1);
+    const previousFirst = groups.at(-1)?.[0];
     if (
       !current ||
+      isStandaloneSummaryMessage(message) ||
+      isStandaloneSummaryMessage(previousFirst) ||
       (message.role === 'user' &&
         (!message.interactionId || message.interactionId !== current.interactionId))
     ) {
       interactions.push({
         interactionId: message.interactionId ?? message.id!,
-        status: 'interrupted',
+        status: isStandaloneSummaryMessage(message) ? 'completed' : 'interrupted',
         messageIds: [],
       });
       groups.push([]);
@@ -222,6 +234,11 @@ export function indexInteractions(
   }
   for (let i = 0; i < interactions.length; i++) {
     const boundary = interactions[i];
+    const group = groups[i];
+    if (group.length === 1 && isStandaloneSummaryMessage(group[0])) {
+      boundary.status = 'completed';
+      continue;
+    }
     const terminal = [...terminals]
       .reverse()
       .find((t) => t.interactionId === boundary.interactionId);
@@ -229,7 +246,6 @@ export function indexInteractions(
       boundary.status = terminal.status;
       continue;
     }
-    const group = groups[i];
     const last = group.at(-1)!;
     const normalized = normalizeHistory(group);
     if (

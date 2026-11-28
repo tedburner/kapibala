@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { InspectionSchema, RuntimeSnapshotSchema } from './observations.js';
+import {
+  type DesktopPreferences,
+  DesktopPreferencesSchema,
+  InspectionSchema,
+  RuntimeSnapshotSchema,
+} from './observations.js';
+
+export { DesktopPreferencesSchema, type DesktopPreferences };
 
 /** 桌面固定编码预算；不接受页面或环境变量扩大上限。 */
 export const LIMITS = Object.freeze({
@@ -222,6 +229,129 @@ const todos = z
     revision: z.number().int().nonnegative(),
   })
   .strict();
+const retryStatus = z
+  .object({
+    step: z.number().int().nonnegative(),
+    attempt: z.number().int().positive(),
+    maxRetries: z.number().int().nonnegative(),
+    delayMs: z.number().nonnegative(),
+    nextRetryAt: z.number().nonnegative(),
+    category: text,
+    message: text,
+  })
+  .strict();
+const diffSummary = z
+  .object({
+    additions: z.number().int().nonnegative(),
+    deletions: z.number().int().nonnegative(),
+  })
+  .strict();
+/** 受管 Git Worktree 只读摘要；工作树列表查询额外附带当前空间内的会话占用与可清理提示。 */
+export const WorktreeSummarySchema = z
+  .object({
+    id,
+    projectRoot: text,
+    worktreePath: text,
+    branch: text,
+    baseRef: text,
+    baseCommit: id,
+    createdAt: z.number().int().nonnegative(),
+    inUse: z.boolean().optional(),
+    prunable: z.boolean().optional(),
+  })
+  .strict();
+/** 受管 Git Worktree 只读摘要 DTO。 */
+export type WorktreeSummary = z.infer<typeof WorktreeSummarySchema>;
+const worktreeSummary = WorktreeSummarySchema;
+const worktreeCreateOption = z
+  .object({
+    enabled: z.boolean().optional(),
+    branch: z.string().min(1).max(256).optional(),
+    baseRef: z.string().min(1).max(256).optional(),
+  })
+  .strict();
+const checkpointItem = z
+  .object({
+    ordinal: z.number().int().nonnegative(),
+    createdAt: z.number().int().nonnegative(),
+    startTree: id,
+    endTree: id,
+    additions: z.number().int().nonnegative(),
+    deletions: z.number().int().nonnegative(),
+    changedFilesCount: z.number().int().nonnegative(),
+    label: text.optional(),
+  })
+  .strict();
+const fileDiffItem = z
+  .object({
+    path: text,
+    status: z.enum(['added', 'modified', 'deleted', 'renamed']),
+    originalPath: text.optional(),
+    additions: z.number().int().nonnegative(),
+    deletions: z.number().int().nonnegative(),
+    binary: z.boolean(),
+    patch: text,
+    truncated: z.boolean(),
+  })
+  .strict();
+const worktreeChangedFile = z
+  .object({
+    path: text,
+    status: z.enum(['added', 'modified', 'deleted', 'renamed']),
+    oldPath: text.optional(),
+    additions: z.number().int().nonnegative(),
+    deletions: z.number().int().nonnegative(),
+    binary: z.boolean(),
+  })
+  .strict();
+const worktreeStatus = z
+  .object({
+    id,
+    projectRoot: text,
+    worktreePath: text,
+    branch: text,
+    baseRef: text,
+    baseCommit: id,
+    headCommit: id.optional(),
+    exists: z.boolean(),
+    linkVerified: z.boolean(),
+    dirty: z.boolean(),
+    untrackedCount: z.number().int().nonnegative(),
+    aheadCount: z.number().int().nonnegative(),
+    behindCount: z.number().int().nonnegative(),
+    additions: z.number().int().nonnegative(),
+    deletions: z.number().int().nonnegative(),
+    changedFiles: z.array(worktreeChangedFile).max(10_000),
+  })
+  .strict();
+const mergePreview = z
+  .object({
+    worktreeId: id,
+    branch: text,
+    baseRef: text,
+    aheadCount: z.number().int().nonnegative(),
+    behindCount: z.number().int().nonnegative(),
+    worktreeDirty: z.boolean(),
+    mainDirty: z.boolean(),
+    canApply: z.boolean().optional(),
+    blockingReason: text.optional(),
+    additions: z.number().int().nonnegative().optional(),
+    deletions: z.number().int().nonnegative().optional(),
+    previewToken: id,
+    changedFiles: z
+      .array(
+        z
+          .object({
+            path: text,
+            status: text,
+            additions: z.number().int().nonnegative(),
+            deletions: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .max(10_000),
+  })
+  .strict();
 /** 完整展示白名单校验，拒绝传入 Core 私有块与任意扩展字段。 */
 export const PresentationStateSchema = z
   .object({
@@ -242,6 +372,12 @@ export const PresentationStateSchema = z
     notices: z.array(notice),
     /** 无成功 `todo_write` 历史时缺省；桌面 pill 与浮层据此隐藏。 */
     todos: todos.optional(),
+    /** 模型请求处于自动退避重试等待窗口时下发；收到新流式增量或终态后自动清除。 */
+    retryStatus: retryStatus.optional(),
+    /** 会话绑定的受管 Git Worktree 只读摘要（运行在主工作区时缺省）。 */
+    worktree: worktreeSummary.optional(),
+    /** 当前会话检查点累计增删行数摘要。 */
+    diffSummary: diffSummary.optional(),
   })
   .strict();
 const change = z.discriminatedUnion('type', [
@@ -276,6 +412,13 @@ const change = z.discriminatedUnion('type', [
       branchId: id.optional(),
     })
     .strict(),
+  z.object({ type: z.literal('stream_reset'), messageId: text }).strict(),
+  z
+    .object({
+      type: z.literal('retry_status_changed'),
+      retryStatus: retryStatus.optional(),
+    })
+    .strict(),
   z
     .object({
       type: z.literal('set_expanded'),
@@ -284,6 +427,9 @@ const change = z.discriminatedUnion('type', [
     })
     .strict(),
   z.object({ type: z.literal('todos_changed'), todos: todos.optional() }).strict(),
+  z
+    .object({ type: z.literal('diff_summary_changed'), diffSummary: diffSummary.optional() })
+    .strict(),
   notice.extend({ type: z.literal('diagnostic') }),
 ]);
 /** 顺序增量只承载展示字段，序号不作为授权凭证。 */
@@ -305,6 +451,15 @@ const runReceipt = z
     error: error.optional(),
   })
   .strict();
+const subagentOrigin = z
+  .object({
+    agentId: id,
+    role: id,
+    description: text,
+    childSessionId: id.optional(),
+    parentSessionId: id,
+  })
+  .strict();
 const approval = session.extend({
   workspaceName: text,
   workspaceRoot: text,
@@ -316,11 +471,20 @@ const approval = session.extend({
   description: text,
   sessionAllowed: z.boolean(),
   expiresAt: z.number(),
+  subagentOrigin: subagentOrigin.optional(),
 });
 const opened = session.extend({
   conversationId: id,
   configuration: z.object({ profileId: id, role, mode }).strict(),
+  worktree: worktreeSummary.optional(),
 });
+const sessionDelegation = z
+  .object({
+    parentSessionId: id,
+    parentTitle: text.optional(),
+    taskName: text,
+  })
+  .strict();
 const history = z
   .object({
     conversationId: id,
@@ -330,6 +494,8 @@ const history = z
     /** 置顶只影响列表次序；Host 已按置顶优先排好，页面不再二次重排。 */
     pinned: z.boolean().optional(),
     unavailableReason: text.optional(),
+    /** 保留型委派子会话的父级归属摘要；普通根会话缺省。 */
+    delegation: sessionDelegation.optional(),
   })
   .strict();
 /** 活跃历史与归档历史共用同一页结构；归档页只换数据来源，不另立字段。 */
@@ -787,6 +953,8 @@ const externalSession = z
     createdAt: z.number().int().nonnegative(),
     updatedAt: z.number().int().nonnegative(),
     lastError: text.optional(),
+    worktree: worktreeSummary.optional(),
+    diffSummary: diffSummary.optional(),
   })
   .strict();
 const externalApproval = z
@@ -822,6 +990,156 @@ const externalSnapshot = z
     plan: todos.optional(),
     notices: z.array(notice),
     configOptions: z.array(externalConfigOption).max(16).optional(),
+    worktree: worktreeSummary.optional(),
+    diffSummary: diffSummary.optional(),
+  })
+  .strict();
+
+const referenceSelection = z
+  .object({
+    sessionId: id,
+    recordId: id.optional(),
+    branchId: id.optional(),
+  })
+  .strict();
+const referenceRole = z.enum(['user', 'assistant', 'branch_summary']);
+const referenceCandidateItem = z
+  .object({
+    sessionId: id,
+    title: text,
+    lastActivityAt: z.number().int().nonnegative(),
+    messageCount: z.number().int().nonnegative(),
+    isDelegation: z.boolean().optional(),
+  })
+  .strict();
+const referenceSearchHit = z
+  .object({
+    sessionId: id,
+    title: text,
+    recordId: id,
+    branchId: id,
+    role: referenceRole,
+    snippet: text,
+    timestamp: z.number().int().nonnegative(),
+  })
+  .strict();
+const referenceRecordSnapshot = z
+  .object({
+    recordId: id,
+    role: referenceRole,
+    branchId: id,
+    timestamp: z.number().int().nonnegative(),
+    text,
+    truncated: z.boolean(),
+  })
+  .strict();
+
+const terminalShellOption = z
+  .object({
+    id,
+    label: text,
+  })
+  .strict();
+
+const terminalInstance = z
+  .object({
+    id,
+    title: text,
+    cwdLabel: text,
+    shell: text,
+    status: z.enum(['starting', 'running', 'exited', 'unavailable']),
+    exitCode: z.number().int().nullable().optional(),
+    replayBuffer: text,
+    unavailableReason: text.optional(),
+  })
+  .strict();
+
+const terminalSessionSnapshot = z
+  .object({
+    terminals: z.array(terminalInstance).max(8),
+    activeTerminalId: id.optional(),
+    shells: z.array(terminalShellOption).max(32),
+    unavailableReason: text.optional(),
+  })
+  .strict();
+
+const localePreference = z.enum(['system', 'zh-CN', 'en']);
+const resolvedLocale = z.enum(['zh-CN', 'en']);
+const preferredShell = z.enum([
+  'auto',
+  'pwsh',
+  'powershell',
+  'cmd',
+  'git-bash',
+  'zsh',
+  'bash',
+  'fish',
+  'sh',
+]);
+const typographyPreferences = z
+  .object({
+    uiFontFamily: z.string().min(1).max(120),
+    codeFontFamily: z.string().min(1).max(120),
+    chatFontSize: z.number().int().min(13).max(18),
+    terminalFontSize: z.number().int().min(11).max(18),
+    codeLigatures: z.boolean(),
+  })
+  .strict();
+const generalPreferences = z
+  .object({
+    timeFormat: z.enum(['system', 'relative', '24h', '12h']),
+    sendShortcut: z.enum(['enter', 'mod-enter']),
+    codeWordWrap: z.boolean(),
+    desktopNotifications: z.boolean(),
+    preferredShell,
+  })
+  .strict();
+const confirmationPreferences = z
+  .object({
+    deleteSession: z.boolean(),
+    archiveSession: z.boolean(),
+    closeActiveTerminal: z.boolean(),
+  })
+  .strict();
+const preferencesPatch = z
+  .object({
+    theme: theme.optional(),
+    locale: localePreference.optional(),
+    typography: typographyPreferences.partial().optional(),
+    general: generalPreferences.partial().optional(),
+    confirmations: confirmationPreferences.partial().optional(),
+    resetGeneral: z.boolean().optional(),
+  })
+  .strict();
+const archivedPreviewTurn = z
+  .object({
+    id: text,
+    role: z.enum(['user', 'assistant']),
+    timestamp: z.number().int().nonnegative(),
+    text,
+    toolSummaries: z
+      .array(
+        z
+          .object({
+            name: text,
+            summary: text,
+            isError: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .max(64),
+  })
+  .strict();
+const archivedSessionPreview = z
+  .object({
+    conversationId: id,
+    title: text,
+    archived: z.boolean(),
+    gitBranch: text.optional(),
+    lastActivityAt: z.number().int().nonnegative(),
+    messageCount: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    items: z.array(archivedPreviewTurn).max(200),
   })
   .strict();
 
@@ -836,7 +1154,7 @@ export const PARAMS = {
   'app.reload': empty,
   'app.openExternal': z.object({ url: z.url().max(2048) }).strict(),
   'preferences.read': empty,
-  'preferences.update': z.object({ theme }).strict(),
+  'preferences.update': preferencesPatch,
   'workspace.openDefault': empty,
   'workspace.pick': empty,
   'workspace.addProject': z
@@ -1014,10 +1332,18 @@ export const PARAMS = {
   'session.archived': z
     .object({ workspaceId: id, page: z.number().int().positive().default(1) })
     .strict(),
+  /** 只读预览单条归档会话的正文与工具摘要，不解除归档状态、不驻留活跃句柄。 */
+  'session.readArchived': conversation,
   'session.runtimeSubscribe': z.object({ subscriptionId: z.uuid() }).strict(),
   'session.runtimeUnsubscribe': z.object({ subscriptionId: z.uuid() }).strict(),
   'session.inspect': session.extend({ subscriptionId: z.uuid() }),
-  'session.create': z.object({ workspaceId: id, profileId: id.optional() }).strict(),
+  'session.create': z
+    .object({
+      workspaceId: id,
+      profileId: id.optional(),
+      worktree: worktreeCreateOption.optional(),
+    })
+    .strict(),
   'session.open': z.object({ workspaceId: id, conversationId: id }).strict(),
   'session.close': session,
   /** 只追加 archive_state 控制记录，历史正文保持不动，可 restore 还原。 */
@@ -1039,21 +1365,61 @@ export const PARAMS = {
   'session.pin': conversation.extend({ pinned: z.boolean() }),
   /** 会话看板只读聚合；每次按当前 canonical 历史重算，页面只消费聚合结果。 */
   'session.evidence': session,
+  /** 在当前分支或指定记录处分叉并自动生成前序背景摘要。 */
+  'session.branchWithSummary': conversation.extend({
+    branchName: z.string().trim().min(1).max(128).optional(),
+    baseRecordId: id.optional(),
+  }),
   'run.start': session.extend({
     operationId: z.uuid(),
     input: z.string().min(1).max(512_000),
     /** 重试：宿主先截断上一轮再按同一输入重跑；缺省为普通发送。 */
     regenerate: z.boolean().optional(),
+    /** 重试时是否同步按检查点还原上一轮归因磁盘文件。 */
+    restoreFiles: z.boolean().optional(),
+    /** 还原检查点命中手动改动冲突时是否强制覆盖。 */
+    force: z.boolean().optional(),
     /** 跨代理接力上下文：以受控 `promptSource` 注入请求，不在用户气泡平铺历史文本。 */
     handoff: handoffPayload.optional(),
+    /** 跨会话引用身份选择（客户端只传身份，宿主在运行锁内读取冻结并脱敏展开）。 */
+    references: z.array(referenceSelection).max(8).optional(),
+  }),
+  /** 专用重生上一轮回答入口；支持原子联动回退上一轮检查点文件。 */
+  'run.regenerate': session.extend({
+    operationId: z.uuid().optional(),
+    input: z.string().max(512_000).optional(),
+    restoreFiles: z.boolean().optional(),
+    force: z.boolean().optional(),
   }),
   'run.cancel': session.extend({ runId: id }),
   'run.status': session,
   'approval.reply': session.extend({
     approvalId: id,
     runId: id,
-    choice: z.enum(['allow_once', 'allow_session', 'deny_once', 'cancel']),
+    choice: z.enum(['allow_once', 'allow_session', 'deny_once', 'deny_session', 'cancel']),
   }),
+  'reference.candidates': z
+    .object({
+      workspaceId: id,
+      limit: z.number().int().min(1).max(100).optional(),
+    })
+    .strict(),
+  'reference.search': z
+    .object({
+      workspaceId: id,
+      query: z.string().max(4096),
+      limit: z.number().int().min(1).max(200).optional(),
+    })
+    .strict(),
+  'reference.read': z
+    .object({
+      workspaceId: id,
+      sessionId: id,
+      recordIds: z.array(id).max(8).optional(),
+      branchId: id.optional(),
+      limit: z.number().int().min(1).max(12).optional(),
+    })
+    .strict(),
   /** 斜杠命令执行；以 `/` 开头的输入由页面拦截后走命令系统，不再作为普通消息发模型。 */
   'run.command': session.extend({ input: z.string().min(1).max(4096) }).strict(),
   /** 命令目录（补全数据源）：与 CLI 命令目录同源，含交互分级供页面提示可用性。 */
@@ -1069,8 +1435,124 @@ export const PARAMS = {
     requestId: id,
     value: z.string().max(32_768).optional(),
   }),
-  /** 沙箱内文件路径枚举（相对路径清单），供 composer `@` 文件补全；有界返回。 */
-  'workspace.listFiles': z.object({ workspaceId: id }).strict(),
+  /** 沙箱内文件路径枚举（相对路径清单），供 composer `@` 文件补全与工作台 `Files` 树使用；支持服务端搜索与指定受管工作树。 */
+  'workspace.listFiles': z
+    .object({
+      workspaceId: id,
+      query: z.string().max(512).optional(),
+      worktreeId: id.optional(),
+    })
+    .strict(),
+  /** 工作台 `Files` 标签只读读取单个工作区或受管工作树文件（512 KiB 封顶，硬禁区拦截 `.kapibala` 与敏感 `.env`）。 */
+  'workspace.readFile': z
+    .object({
+      workspaceId: id,
+      path: z.string().min(1).max(4096),
+      worktreeId: id.optional(),
+    })
+    .strict(),
+  'checkpoint.list': z
+    .object({
+      workspaceId: id,
+      sessionId: id.optional(),
+      conversationId: id.optional(),
+      externalSessionId: id.optional(),
+    })
+    .strict(),
+  'checkpoint.diff': z
+    .object({
+      workspaceId: id,
+      sessionId: id.optional(),
+      conversationId: id.optional(),
+      externalSessionId: id.optional(),
+      ordinal: z.number().int().nonnegative().optional(),
+      fromOrdinal: z.number().int().nonnegative().optional(),
+      toOrdinal: z.number().int().nonnegative().optional(),
+      includeLiveWorktree: z.boolean().optional(),
+    })
+    .strict(),
+  'checkpoint.restore': z
+    .object({
+      workspaceId: id,
+      sessionId: id.optional(),
+      conversationId: id.optional(),
+      externalSessionId: id.optional(),
+      targetOrdinal: z.number().int().min(-1),
+      force: z.boolean().optional(),
+    })
+    .strict(),
+  'worktree.list': z.object({ workspaceId: id }).strict(),
+  'worktree.create': z
+    .object({
+      workspaceId: id,
+      name: z.string().max(200).optional(),
+      branch: z.string().min(1).max(256).optional(),
+      baseRef: z.string().min(1).max(256).optional(),
+    })
+    .strict(),
+  'worktree.status': z.object({ workspaceId: id, id }).strict(),
+  'worktree.diff': z.object({ workspaceId: id, id }).strict(),
+  'worktree.previewMerge': z.object({ workspaceId: id, id }).strict(),
+  'worktree.applyMerge': z
+    .object({
+      workspaceId: id,
+      id,
+      previewToken: id,
+      commitMessage: z.string().min(1).max(4096).optional(),
+    })
+    .strict(),
+  'worktree.remove': z.object({ workspaceId: id, id, force: z.boolean().optional() }).strict(),
+  'terminal.listShells': z.object({ workspaceId: id }).strict(),
+  'terminal.ensure': z
+    .object({
+      workspaceId: id,
+      sessionKey: id,
+      shellId: id.optional(),
+      cols: z.number().int().min(2).max(500).optional(),
+      rows: z.number().int().min(1).max(200).optional(),
+    })
+    .strict(),
+  'terminal.create': z
+    .object({
+      workspaceId: id,
+      sessionKey: id,
+      shellId: id.optional(),
+      replaceTerminalId: id.optional(),
+      cols: z.number().int().min(2).max(500).optional(),
+      rows: z.number().int().min(1).max(200).optional(),
+    })
+    .strict(),
+  'terminal.write': z
+    .object({
+      workspaceId: id,
+      sessionKey: id,
+      terminalId: id,
+      data: z.string().max(65_536),
+    })
+    .strict(),
+  'terminal.resize': z
+    .object({
+      workspaceId: id,
+      sessionKey: id,
+      terminalId: id,
+      cols: z.number().int().min(2).max(500),
+      rows: z.number().int().min(1).max(200),
+    })
+    .strict(),
+  'terminal.clear': z
+    .object({
+      workspaceId: id,
+      sessionKey: id,
+      terminalId: id,
+    })
+    .strict(),
+  'terminal.close': z
+    .object({
+      workspaceId: id,
+      sessionKey: id,
+      terminalId: id,
+    })
+    .strict(),
   'external.harnesses': z.object({ workspaceId: id.optional() }).strict(),
   'external.saveHarness': z
     .object({
@@ -1113,6 +1595,7 @@ export const PARAMS = {
       modeId: z.string().min(1).max(256).optional(),
       thoughtLevel: z.string().min(1).max(256).optional(),
       handoff: handoffPayload.optional(),
+      worktree: worktreeCreateOption.optional(),
     })
     .strict(),
   'external.snapshot': session,
@@ -1178,13 +1661,7 @@ export const RESULTS = {
   'app.reconnect': empty,
   'app.reload': empty,
   'app.openExternal': empty,
-  'preferences.read': z
-    .object({
-      theme,
-      mode: z.enum(['light', 'dark']),
-      recent: z.array(z.object({ id, name: text, parent: text }).strict()).max(20),
-    })
-    .strict(),
+  'preferences.read': DesktopPreferencesSchema,
   'preferences.update': empty,
   'workspace.openDefault': workspace,
   'workspace.pick': workspace.nullable(),
@@ -1218,6 +1695,7 @@ export const RESULTS = {
   'resources.importSkills': skillImportResult,
   'session.list': historyList,
   'session.archived': historyList,
+  'session.readArchived': archivedSessionPreview,
   'session.runtimeSubscribe': RuntimeSnapshotSchema,
   'session.runtimeUnsubscribe': empty,
   'session.inspect': InspectionSchema,
@@ -1231,10 +1709,23 @@ export const RESULTS = {
   'session.rename': empty,
   'session.pin': empty,
   'session.evidence': evidence,
+  'session.branchWithSummary': z.object({ branchId: id, summary: text }).strict(),
   'run.start': runReceipt,
+  'run.regenerate': runReceipt,
   'run.cancel': runReceipt,
   'run.status': runReceipt.nullable(),
   'approval.reply': empty,
+  'reference.candidates': z.object({ items: z.array(referenceCandidateItem).max(100) }).strict(),
+  'reference.search': z.object({ hits: z.array(referenceSearchHit).max(200) }).strict(),
+  'reference.read': z
+    .object({
+      sessionId: id,
+      title: text.optional(),
+      branchId: id,
+      records: z.array(referenceRecordSnapshot).max(12),
+      partial: text.optional(),
+    })
+    .strict(),
   'run.command': z.object({ handled: z.boolean(), feedback: z.array(text).max(500) }).strict(),
   'run.commandList': z
     .object({
@@ -1286,6 +1777,77 @@ export const RESULTS = {
       truncated: z.boolean(),
     })
     .strict(),
+  'workspace.readFile': z
+    .object({
+      path: text,
+      content: text,
+      byteLength: z.number().int().nonnegative(),
+      truncated: z.boolean(),
+      binary: z.boolean(),
+      language: text,
+    })
+    .strict(),
+  'checkpoint.list': z.object({ items: z.array(checkpointItem).max(10_000) }).strict(),
+  'checkpoint.diff': z
+    .object({
+      available: z.boolean(),
+      additions: z.number().int().nonnegative(),
+      deletions: z.number().int().nonnegative(),
+      truncated: z.boolean(),
+      files: z.array(fileDiffItem).max(10_000),
+    })
+    .strict(),
+  'checkpoint.restore': z
+    .object({
+      status: z.enum(['restored', 'conflict', 'noop']),
+      restoredFiles: z.array(text).max(100_000),
+      deletedFiles: z.array(text).max(100_000),
+      conflicts: z.array(text).max(100_000),
+    })
+    .strict(),
+  'worktree.list': z.object({ items: z.array(worktreeSummary).max(1000) }).strict(),
+  'worktree.create': worktreeSummary,
+  'worktree.status': worktreeStatus,
+  'worktree.diff': z
+    .object({
+      id,
+      branch: text,
+      baseCommit: id,
+      headCommit: id,
+      additions: z.number().int().nonnegative(),
+      deletions: z.number().int().nonnegative(),
+      truncated: z.boolean(),
+      files: z.array(fileDiffItem).max(10_000),
+    })
+    .strict(),
+  'worktree.previewMerge': mergePreview,
+  'worktree.applyMerge': z
+    .object({
+      status: z.enum(['merged', 'conflict']),
+      mergedCommit: id.optional(),
+      targetBranch: text.optional(),
+      conflictedFiles: z.array(text).max(100_000),
+    })
+    .strict(),
+  'worktree.remove': z
+    .object({
+      removed: z.boolean(),
+      reason: z.enum(['dirty', 'unmerged_commits', 'at_risk_ignored_files']).optional(),
+      details: z.array(text).max(100_000),
+    })
+    .strict(),
+  'terminal.listShells': z
+    .object({
+      shells: z.array(terminalShellOption).max(32),
+      activeTerminalsCount: z.number().int().nonnegative(),
+    })
+    .strict(),
+  'terminal.ensure': terminalSessionSnapshot,
+  'terminal.create': terminalSessionSnapshot,
+  'terminal.write': empty,
+  'terminal.resize': empty,
+  'terminal.clear': empty,
+  'terminal.close': terminalSessionSnapshot,
   'external.harnesses': z
     .object({
       harnesses: z.array(externalHarness).max(200),
@@ -1409,6 +1971,12 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
       mode: z.enum(['light', 'dark']),
     })
     .strict(),
+  z
+    .object({
+      type: z.literal('preferences.changed'),
+      preferences: DesktopPreferencesSchema,
+    })
+    .strict(),
   // 下载进度只用于界面反馈：主进程节流后发送，丢一帧不影响最终结果（结果走 RPC 回复）。
   z
     .object({
@@ -1449,8 +2017,28 @@ export const NOTIFICATION = z.discriminatedUnion('type', [
       harnessName: text,
     })
     .strict(),
+  z
+    .object({
+      type: z.literal('terminal.data'),
+      workspaceId: id,
+      sessionKey: id,
+      terminalId: id,
+      data: text,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('terminal.exit'),
+      workspaceId: id,
+      sessionKey: id,
+      terminalId: id,
+      exitCode: z.number().int().nullable(),
+    })
+    .strict(),
   z.object({ type: z.literal('host.unavailable'), error }).strict(),
 ]);
+/** 页面通知 Schema 别名，供测试与状态仓库统一引用校验。 */
+export const NotificationSchema = NOTIFICATION;
 /** 页面只能收到这些安全通知，不暴露 MessagePort 或原始 SessionEvent。 */
 export type Notification = z.infer<typeof NOTIFICATION>;
 /** 命令交互请求事件（question/select/secret）；应答经 interaction.reply 单点回传。 */
@@ -1512,7 +2100,7 @@ export type DesktopAPI = {
   };
   preferences: {
     read(): Promise<Output<'preferences.read'>>;
-    update(theme: 'light' | 'dark' | 'system'): Promise<void>;
+    update(patch: 'light' | 'dark' | 'system' | Params<'preferences.update'>): Promise<void>;
   };
   workspace: {
     openDefault(): Promise<Workspace>;
@@ -1520,7 +2108,10 @@ export type DesktopAPI = {
     addProject(params: Params<'workspace.addProject'>): Promise<Workspace>;
     openRecent(recentId: string): Promise<Workspace>;
     confirmTrust(params: Params<'workspace.confirmTrust'>): Promise<Workspace>;
-    listFiles(workspaceId: string): Promise<Output<'workspace.listFiles'>>;
+    listFiles(
+      workspaceIdOrParams: string | Params<'workspace.listFiles'>,
+    ): Promise<Output<'workspace.listFiles'>>;
+    readFile(params: Params<'workspace.readFile'>): Promise<Output<'workspace.readFile'>>;
   };
   settings: {
     read(workspaceId?: string): Promise<Output<'settings.read'>>;
@@ -1588,7 +2179,12 @@ export type DesktopAPI = {
     list(workspaceId: string, page?: number, query?: string): Promise<Output<'session.list'>>;
     /** 已归档会话单独分页读取；不混进活跃列表，避免归档项挤占侧栏页码。 */
     archived(workspaceId: string, page?: number): Promise<Output<'session.archived'>>;
-    create(workspaceId: string, profileId?: string): Promise<Output<'session.create'>>;
+    /** 只读预览已归档会话正文与工具调用摘要，不改变归档状态。 */
+    readArchived(params: Params<'session.readArchived'>): Promise<Output<'session.readArchived'>>;
+    create(
+      workspaceIdOrParams: string | Params<'session.create'>,
+      profileId?: string,
+    ): Promise<Output<'session.create'>>;
     open(params: Params<'session.open'>): Promise<Output<'session.open'>>;
     close(params: Params<'session.close'>): Promise<void>;
     archive(params: Params<'session.archive'>): Promise<void>;
@@ -1602,9 +2198,14 @@ export type DesktopAPI = {
     pin(params: Params<'session.pin'>): Promise<void>;
     /** 会话看板只读聚合；面板与摘要 chip 消费同一份结果。 */
     evidence(params: Params<'session.evidence'>): Promise<Output<'session.evidence'>>;
+    /** 在当前分支或指定记录处分叉并自动生成前序背景摘要。 */
+    branchWithSummary(
+      params: Params<'session.branchWithSummary'>,
+    ): Promise<Output<'session.branchWithSummary'>>;
   };
   run: {
     start(params: Params<'run.start'>): Promise<RunReceipt>;
+    regenerate(params: Params<'run.regenerate'>): Promise<RunReceipt>;
     cancel(params: Params<'run.cancel'>): Promise<RunReceipt>;
     status(params: Params<'run.status'>): Promise<RunReceipt | null>;
     command(params: Params<'run.command'>): Promise<Output<'run.command'>>;
@@ -1613,6 +2214,34 @@ export type DesktopAPI = {
     skillCatalog(params: Params<'run.skillCatalog'>): Promise<Output<'run.skillCatalog'>>;
   };
   approval: { reply(params: Params<'approval.reply'>): Promise<void> };
+  reference: {
+    candidates(params: Params<'reference.candidates'>): Promise<Output<'reference.candidates'>>;
+    search(params: Params<'reference.search'>): Promise<Output<'reference.search'>>;
+    read(params: Params<'reference.read'>): Promise<Output<'reference.read'>>;
+  };
+  checkpoint: {
+    list(params: Params<'checkpoint.list'>): Promise<Output<'checkpoint.list'>>;
+    diff(params: Params<'checkpoint.diff'>): Promise<Output<'checkpoint.diff'>>;
+    restore(params: Params<'checkpoint.restore'>): Promise<Output<'checkpoint.restore'>>;
+  };
+  worktree: {
+    list(workspaceIdOrParams: string | Params<'worktree.list'>): Promise<Output<'worktree.list'>>;
+    create(params: Params<'worktree.create'>): Promise<Output<'worktree.create'>>;
+    status(params: Params<'worktree.status'>): Promise<Output<'worktree.status'>>;
+    diff(params: Params<'worktree.diff'>): Promise<Output<'worktree.diff'>>;
+    previewMerge(params: Params<'worktree.previewMerge'>): Promise<Output<'worktree.previewMerge'>>;
+    applyMerge(params: Params<'worktree.applyMerge'>): Promise<Output<'worktree.applyMerge'>>;
+    remove(params: Params<'worktree.remove'>): Promise<Output<'worktree.remove'>>;
+  };
+  terminal: {
+    listShells(workspaceId: string): Promise<Output<'terminal.listShells'>>;
+    ensure(params: Params<'terminal.ensure'>): Promise<Output<'terminal.ensure'>>;
+    create(params: Params<'terminal.create'>): Promise<Output<'terminal.create'>>;
+    write(params: Params<'terminal.write'>): Promise<void>;
+    resize(params: Params<'terminal.resize'>): Promise<void>;
+    clear(params: Params<'terminal.clear'>): Promise<void>;
+    close(params: Params<'terminal.close'>): Promise<Output<'terminal.close'>>;
+  };
   interaction: { reply(params: Params<'interaction.reply'>): Promise<void> };
   presentation: {
     subscribe(params: Params<'presentation.subscribe'>): Promise<void>;
@@ -1657,6 +2286,7 @@ export function notificationLane(type: Notification['type']): 'data' | 'control'
     'session.runtimeChanged',
     'session.inspectionChanged',
     'external.snapshotChanged',
+    'terminal.data',
   ].includes(type)
     ? 'data'
     : 'control';

@@ -93,13 +93,22 @@ export type { LoadSettingsOptions, LoadedSettings, UserSettings } from './settin
 export { getCliSkillOptions, hasProjectSkills } from './skills.js';
 export { GitStatusCache, projectStatusFacts } from './status-facts.js';
 export {
+  DEFAULT_DELEGATION_MAX_IDLE_MS,
   MAX_RETAINED_DELEGATIONS,
   countRetainedDelegations,
   listDelegationSessions,
+  pruneDelegationSessions,
   readDelegationRequestEntries,
 } from './delegations.js';
-export type { DelegationSessionSummary } from './delegations.js';
+export type { DelegationSessionSummary, PruneDelegationOptions } from './delegations.js';
+export {
+  SessionApprovalHub,
+  TreeApprovalCache,
+  createSubagentApprovalChannel,
+} from './subagent-approval.js';
+export type { SubagentApprovalChannelOptions } from './subagent-approval.js';
 export { createCliSubagentResumer, createCliSubagentRunner } from './subagent-runner.js';
+export type { CliSubagentResumerOptions, CliSubagentRunnerOptions } from './subagent-runner.js';
 export { TaskObservation } from './task-observation.js';
 export { registerBuiltinTools } from './tool-registration.js';
 export { WATCH_RESUME_INPUT, WatchService } from './watch/service.js';
@@ -321,3 +330,91 @@ export {
   MAX_ACTIVE_EXTERNAL_PROCESSES,
 } from './external/service.js';
 export type { ExternalSessionServiceOptions } from './external/service.js';
+export {
+  BUILTIN_EXCLUDES,
+  CheckpointBucketMutex,
+  CheckpointError,
+  CheckpointService,
+  DEFAULT_MAX_CHECKPOINT_BUCKET_BYTES,
+  DEFAULT_MAX_CHECKPOINT_SESSIONS,
+  DEFAULT_PRE_TURN_TIMEOUT_MS,
+  MAX_SINGLE_FILE_PATCH_BYTES,
+  MAX_TOTAL_DIFF_PATCH_BYTES,
+  MAX_UNTRACKED_DIR_FILES,
+  MAX_UNTRACKED_FILE_BYTES,
+  MAX_UNTRACKED_TOTAL_BYTES,
+  PRE_TURN_TIMEOUT_CIRCUIT_THRESHOLD,
+  buildCleanGitEnv,
+  computeExecutionRootHash,
+  isUnsafeCheckpointRoot,
+  runGit,
+  splitNulStrings,
+  toSafeRefSegment,
+  truncateUtf8Safe,
+} from './checkpoint/index.js';
+export type {
+  CapturePostTurnInput,
+  CapturePreTurnInput,
+  CapturePreTurnResult,
+  CheckpointAvailability,
+  CheckpointChangedFile,
+  CheckpointDiffInput,
+  CheckpointDiffResult,
+  CheckpointErrorCode,
+  CheckpointFileDiff,
+  CheckpointRecord,
+  CheckpointServiceOptions,
+  ListCheckpointsInput,
+  PruneCheckpointsInput,
+  PruneCheckpointsResult,
+  RestoreCheckpointInput,
+  RestoreCheckpointResult,
+  RunGitOptions,
+  RunGitResult,
+} from './checkpoint/index.js';
+export {
+  DEFAULT_WORKTREE_COMMIT_MESSAGE,
+  ExecutionRootCoordinator,
+  MAX_GIT_LINK_READ_BYTES,
+  MAX_WORKTREE_FILE_PATCH_BYTES,
+  MAX_WORKTREE_INCLUDE_FILE_BYTES,
+  MAX_WORKTREE_INCLUDE_TOTAL_BYTES,
+  MAX_WORKTREE_TOTAL_PATCH_BYTES,
+  WORKTREE_BUCKET_MAX_RETRIES,
+  WORKTREE_REGISTRY_FILE_NAME,
+  WorktreeError,
+  WorktreeRegistry,
+  WorktreeService,
+  buildWorktreeGitEnv,
+  copyWorktreeIncludeFiles,
+  runWorktreeGit,
+  sanitizeWorktreeSlug,
+  toExecutionRootKey,
+  verifyManagedWorktreeLink,
+} from './worktree/index.js';
+export type {
+  ActiveExecutionRun,
+  AllocatedSubagentWorktree,
+  ApplyWorktreeMergeOptions,
+  ApplyWorktreeMergeResult,
+  CreateWorktreeOptions,
+  CreatedWorktree,
+  ExecutionRemovalFence,
+  ExecutionRunHandle,
+  ExecutionSubsystemKind,
+  RemoveWorktreeOptions,
+  RemoveWorktreeResult,
+  RunWorktreeGitOptions,
+  RunWorktreeGitResult,
+  SessionWorktreeBinding,
+  SubagentWorktreeProvider,
+  VerifyManagedWorktreeLinkInput,
+  WorktreeChangedFile,
+  WorktreeDiffResult,
+  WorktreeErrorCode,
+  WorktreeFileDiff,
+  WorktreeMergePreview,
+  WorktreeRecord,
+  WorktreeServiceOptions,
+  WorktreeStatus,
+} from './worktree/index.js';

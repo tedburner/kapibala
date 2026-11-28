@@ -52,6 +52,8 @@ function handle() {
     // 重命名与置顶只写控制记录：本层测试不落盘，签名满足受管会话即可。
     rename: vi.fn(async () => {}),
     setPinned: vi.fn(async () => {}),
+    createBranchWithSummary: vi.fn(async (branchId: string) => ({ branchId, summary: '' })),
+    forgetDelegation: vi.fn(),
     snapshot: () => state,
     subscribeEvents: (_listener: (event: PresentationEvent) => void) => () => {},
     configuration: () => ({
@@ -87,6 +89,20 @@ function handle() {
       mcp: [],
       delegations: [],
     }),
+    checkpoints: async () => [],
+    checkpointDiff: async () => ({
+      available: false,
+      files: [],
+      additions: 0,
+      deletions: 0,
+      truncated: false,
+    }),
+    restoreCheckpoint: async () => ({
+      status: 'noop' as const,
+      restoredFiles: [],
+      deletedFiles: [],
+    }),
+    worktree: () => undefined,
   } satisfies ManagedHostSession;
 }
 it('断开等待正在装配的会话释放，未释放前不得宣告 cleaned', async () => {
