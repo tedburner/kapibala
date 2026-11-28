@@ -549,9 +549,12 @@ test('受管 Git Worktree 物理隔离编辑与两阶段可视化合并审阅（
     await expect(applyBtn).toBeEnabled();
     await applyBtn.click();
     await expect(workbench.getByText(/已无冲突快进合并回/)).toBeVisible({ timeout: 15_000 });
-    expect(fs.readFileSync(path.join(projectDir, 'src/feature.ts'), 'utf8')).toBe(
-      'export const featureFlag = 42;\n',
-    );
+    // ff 合并的 checkout 遵循主仓 git 配置：Windows runner 系统级 `core.autocrlf=true` 会把
+    // LF 落盘为 CRLF（与用户本地 git 行为一致，产品不得覆写主仓配置）。合并语义是「内容到达
+    // 主工作区」而非字节恒等，因此断言按行归一后再比较。
+    expect(
+      fs.readFileSync(path.join(projectDir, 'src/feature.ts'), 'utf8').replace(/\r\n/g, '\n'),
+    ).toBe('export const featureFlag = 42;\n');
   } finally {
     await stop(app);
     modelServer.closeAllConnections();
